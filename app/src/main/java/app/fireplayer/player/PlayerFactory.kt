@@ -38,7 +38,9 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.text.TextOutput
 import androidx.media3.exoplayer.video.VideoRendererEventListener
 import androidx.media3.extractor.DefaultExtractorsFactory
+import androidx.media3.extractor.text.DefaultSubtitleParserFactory
 import androidx.media3.ui.SubtitleView
+import app.fireplayer.subs.PictureText
 import io.github.peerless2012.ass.media.AssHandler
 import io.github.peerless2012.ass.media.AssHandlerConfig
 import io.github.peerless2012.ass.media.kt.withAssMkvSupport
@@ -131,6 +133,8 @@ object PlayerFactory {
         useAss: Boolean,
         assSubtitleView: SubtitleView,
         headers: Map<String, String>,
+        /** Reads picture subtitles as text while they load (see [PictureText]); only used without libass. */
+        pictureText: PictureText,
     ): Built {
         val dataSourceFactory = dataSourceFactory(context, headers)
 
@@ -167,6 +171,8 @@ object PlayerFactory {
             .setSeekForwardIncrementMs(10_000)
             .setHandleAudioBecomingNoisy(true)
             .setVideoScalingMode(C.VIDEO_SCALING_MODE_SCALE_TO_FIT)
+            // Keeps Wi-Fi at full speed while playing; left to itself it may save power and fall behind the film.
+            .setWakeMode(C.WAKE_MODE_NETWORK)
 
         // Slow IPTV servers drop connections now and then; keep retrying before giving up.
         val retryPolicy = DefaultLoadErrorHandlingPolicy(5)
@@ -174,6 +180,7 @@ object PlayerFactory {
         if (!useAss) {
             val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory, SeekableMkvExtractorsFactory(extractors))
                 .setLoadErrorHandlingPolicy(retryPolicy)
+                .setSubtitleParserFactory(pictureText.readAhead(DefaultSubtitleParserFactory()))
             val player = builder
                 .setMediaSourceFactory(mediaSourceFactory)
                 .setRenderersFactory(DelayRenderersFactory(baseRenderers, delays))

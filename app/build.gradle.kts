@@ -65,4 +65,5 @@ dependencies {
     implementation(libs.media3.ui)
     implementation(libs.ass.media)
     implementation(libs.ffmpeg.decoder)
+    implementation(libs.mlkit.text.recognition)
 }

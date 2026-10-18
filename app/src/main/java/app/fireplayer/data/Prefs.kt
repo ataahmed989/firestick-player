@@ -23,6 +23,11 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("hold_speed_up", true)
         set(v) = sp.edit().putBoolean("hold_speed_up", v).apply()
 
+    /** What the remote's menu button (three lines) opens during playback. */
+    var menuOpensStyle: Boolean
+        get() = sp.getBoolean("menu_opens_style", false)
+        set(v) = sp.edit().putBoolean("menu_opens_style", v).apply()
+
     /** ISO 639-1 code, or "" for off. */
     var subtitleLanguage: String
         get() = sp.getString("sub_lang", "en") ?: "en"
