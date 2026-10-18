@@ -82,9 +82,9 @@ object PlayerFactory {
             .setBufferDurationsMs(
                 /* minBufferMs = */ 30_000,
                 /* maxBufferMs = */ 60_000,
-                // A little more up front after a start or skip means fewer stalls right after it.
-                /* bufferForPlaybackMs = */ 2_500,
-                /* bufferForPlaybackAfterRebufferMs = */ 5_000,
+                // Start quickly after a skip; after a stall, build a bigger cushion so it doesn't repeat.
+                /* bufferForPlaybackMs = */ 1_000,
+                /* bufferForPlaybackAfterRebufferMs = */ 4_000,
             )
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
@@ -97,10 +97,10 @@ object PlayerFactory {
             .setVideoScalingMode(C.VIDEO_SCALING_MODE_SCALE_TO_FIT)
 
         // Slow IPTV servers drop connections now and then; keep retrying before giving up.
-        val retryPolicy = DefaultLoadErrorHandlingPolicy(8)
+        val retryPolicy = DefaultLoadErrorHandlingPolicy(5)
 
         if (!useAss) {
-            val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory, extractors)
+            val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory, SeekableMkvExtractorsFactory(extractors))
                 .setLoadErrorHandlingPolicy(retryPolicy)
             val player = builder
                 .setMediaSourceFactory(mediaSourceFactory)
@@ -117,7 +117,7 @@ object PlayerFactory {
         val parserFactory = AssSubtitleParserFactory(assHandler)
         val mediaSourceFactory = DefaultMediaSourceFactory(
             dataSourceFactory,
-            extractors.withAssMkvSupport(parserFactory, assHandler),
+            SeekableMkvExtractorsFactory(extractors.withAssMkvSupport(parserFactory, assHandler)),
         )
         mediaSourceFactory.setSubtitleParserFactory(parserFactory)
         mediaSourceFactory.setLoadErrorHandlingPolicy(retryPolicy)

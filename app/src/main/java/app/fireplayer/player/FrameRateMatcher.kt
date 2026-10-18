@@ -38,13 +38,19 @@ class FrameRateMatcher(private val activity: Activity) {
     }
 
     private fun pickMode(modes: Array<Display.Mode>, current: Display.Mode, fps: Float): Display.Mode? {
+        // Already showing the rate or an exact multiple of it: switching would only blank the screen.
+        for (multiple in 1..3) {
+            if (abs(current.refreshRate - fps * multiple) < 0.01f) return current
+        }
         val sameSize = modes.filter {
             it.physicalWidth == current.physicalWidth && it.physicalHeight == current.physicalHeight
         }
-        // Exact rate first (24 for 23.976), then a whole multiple (48, 60 for 30, 50 for 25).
-        sameSize.firstOrNull { rateMatches(it.refreshRate, fps) }?.let { return it }
-        for (multiple in 2..3) {
-            sameSize.firstOrNull { rateMatches(it.refreshRate, fps * multiple) }?.let { return it }
+        // The closest rate (23.976 over 24 when the TV offers both), then a whole multiple (48, 60 for 30, 50 for 25).
+        for (multiple in 1..3) {
+            val target = fps * multiple
+            sameSize.filter { rateMatches(it.refreshRate, target) }
+                .minByOrNull { abs(it.refreshRate - target) }
+                ?.let { return it }
         }
         return null
     }

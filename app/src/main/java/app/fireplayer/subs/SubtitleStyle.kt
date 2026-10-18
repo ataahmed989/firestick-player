@@ -36,7 +36,12 @@ data class SubtitleStyle(
     val boxRounded: Boolean = true,
     /** Only used with the soft shadow edge. */
     val shadow: ShadowStrength = ShadowStrength.MEDIUM,
+    /** Only used with the outline edge. */
+    val outlineColor: Int = Color.BLACK,
 ) {
+    /** Same look, whatever it's called. */
+    fun looksLike(other: SubtitleStyle) = copy(name = "") == other.copy(name = "")
+
     fun toJson(): JSONObject = JSONObject()
         .put("name", name)
         .put("textSize", textSize.toDouble())
@@ -49,6 +54,7 @@ data class SubtitleStyle(
         .put("boxColor", boxColor)
         .put("boxRounded", boxRounded)
         .put("shadow", shadow.name)
+        .put("outlineColor", outlineColor)
 
     companion object {
         const val NETFLIX_NAME = "Netflix"
@@ -97,6 +103,7 @@ data class SubtitleStyle(
             boxRounded = o.optBoolean("boxRounded", true),
             shadow = runCatching { ShadowStrength.valueOf(o.optString("shadow")) }
                 .getOrDefault(ShadowStrength.MEDIUM),
+            outlineColor = o.optInt("outlineColor", Color.BLACK),
         )
 
         fun colorLabel(color: Int): String =
@@ -136,7 +143,10 @@ class SubtitlePresets(private val prefs: Prefs) {
 
     /** Any edit turns the current look into the "Custom" style. */
     fun editActive(change: (SubtitleStyle) -> SubtitleStyle) {
-        val edited = change(active()).copy(name = SubtitleStyle.CUSTOM_NAME)
+        val current = active()
+        // Picking the value that's already set isn't a change.
+        if (change(current).looksLike(current)) return
+        val edited = change(current).copy(name = SubtitleStyle.CUSTOM_NAME)
         prefs.customSubtitleStyleJson = edited.toJson().toString()
         prefs.activeSubtitlePreset = SubtitleStyle.CUSTOM_NAME
     }
@@ -152,6 +162,12 @@ class SubtitlePresets(private val prefs: Prefs) {
     }
 
     fun isSaved(name: String): Boolean = saved().any { it.name == name }
+
+    /** True when the Custom style is something new, not just a copy of Netflix or a saved preset. */
+    fun customIsNew(): Boolean {
+        val custom = custom()
+        return (listOf(SubtitleStyle.NETFLIX) + saved()).none { it.looksLike(custom) }
+    }
 
     fun delete(name: String) {
         write(saved().filterNot { it.name == name })

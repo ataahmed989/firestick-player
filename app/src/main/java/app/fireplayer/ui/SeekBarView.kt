@@ -5,7 +5,9 @@ import android.animation.ValueAnimator
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.RadialGradient
 import android.graphics.RectF
+import android.graphics.Shader
 import android.util.AttributeSet
 import android.view.View
 import android.view.animation.DecelerateInterpolator
@@ -24,12 +26,18 @@ class SeekBarView @JvmOverloads constructor(
 
     private val density = resources.displayMetrics.density
     private val barHeight = 4f * density
+    private val focusedBarHeight = 6f * density
     private val thumbRadius = 6.5f * density
-    private val focusedThumbRadius = 8.5f * density
-    private val ringGap = 2.5f * density
-    private val ringWidth = 2.5f * density
-    /** Room the selected thumb and its ring need, so they're never cut off at the ends or edges. */
-    private val outerRadius = focusedThumbRadius + ringGap + ringWidth / 2 + 1f * density
+    private val focusedThumbRadius = 10f * density
+    private val borderWidth = 3f * density
+    private val glowRadius = 26f * density
+    /** Room the selected thumb needs, so it's never cut off at the ends. The glow may spill past the bar. */
+    private val outerRadius = focusedThumbRadius + 2f * density
+    private val accent = ContextCompat.getColor(context, R.color.accent)
+
+    /** 0 = resting, 1 = selected; animated so the thumb grows smoothly. */
+    private var focusAmount = 0f
+    private var focusAnimator: ValueAnimator? = null
 
     private val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(0x38, 255, 255, 255) }
     private val bufferPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(0x66, 255, 255, 255) }
@@ -40,11 +48,28 @@ class SeekBarView @JvmOverloads constructor(
         color = ContextCompat.getColor(context, R.color.accent) and 0x00FFFFFF or (0x99 shl 24)
     }
     private val jumpBackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(0x80, 255, 255, 255) }
-    private val thumbPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
-    private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = ContextCompat.getColor(context, R.color.accent)
+    private val thumbPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = ContextCompat.getColor(context, R.color.focus_fill) }
+    // Selected: the same white-with-blue-border look as the selected buttons, with a soft blue glow.
+    private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = accent
         style = Paint.Style.STROKE
-        strokeWidth = ringWidth
+        strokeWidth = borderWidth
+    }
+    private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        shader = RadialGradient(
+            0f, 0f, glowRadius,
+            intArrayOf(accent and 0x00FFFFFF or (0x80 shl 24), accent and 0x00FFFFFF or (0x2E shl 24), accent and 0x00FFFFFF),
+            floatArrayOf(0f, 0.45f, 1f),
+            Shader.TileMode.CLAMP,
+        )
+    }
+    private val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        shader = RadialGradient(
+            0f, 0f, focusedThumbRadius + 4f * density,
+            intArrayOf(Color.argb(0x66, 0, 0, 0), Color.argb(0x66, 0, 0, 0), Color.TRANSPARENT),
+            floatArrayOf(0f, 0.7f, 1f),
+            Shader.TileMode.CLAMP,
+        )
     }
     private val rect = RectF()
 
@@ -105,11 +130,20 @@ class SeekBarView @JvmOverloads constructor(
 
     override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: android.graphics.Rect?) {
         super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
-        invalidate()
+        focusAnimator?.cancel()
+        focusAnimator = ValueAnimator.ofFloat(focusAmount, if (gainFocus) 1f else 0f).apply {
+            duration = 180
+            interpolator = DecelerateInterpolator()
+            addUpdateListener {
+                focusAmount = it.animatedValue as Float
+                invalidate()
+            }
+            start()
+        }
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        val h = Math.ceil((outerRadius * 2).toDouble()).toInt()
+        val h = Math.ceil(((focusedThumbRadius + 3f * density) * 2).toDouble()).toInt()
         setMeasuredDimension(getDefaultSize(suggestedMinimumWidth, widthMeasureSpec), h)
     }
 
@@ -117,9 +151,11 @@ class SeekBarView @JvmOverloads constructor(
         val left = trackLeft()
         val w = trackWidth()
         val cy = height / 2f
-        val top = cy - barHeight / 2
-        val bottom = cy + barHeight / 2
-        val r = barHeight / 2
+        val f = focusAmount
+        val bar = barHeight + (focusedBarHeight - barHeight) * f
+        val top = cy - bar / 2
+        val bottom = cy + bar / 2
+        val r = bar / 2
 
         rect.set(left, top, left + w, bottom)
         canvas.drawRoundRect(rect, r, r, trackPaint)
@@ -140,11 +176,22 @@ class SeekBarView @JvmOverloads constructor(
             canvas.drawRoundRect(rect, r, r, if (target > position) jumpForwardPaint else jumpBackPaint)
         }
 
-        if (isFocused) {
-            canvas.drawCircle(thumbX(), cy, focusedThumbRadius, thumbPaint)
-            canvas.drawCircle(thumbX(), cy, focusedThumbRadius + ringGap, ringPaint)
-        } else {
-            canvas.drawCircle(thumbX(), cy, thumbRadius, thumbPaint)
+        val x = thumbX()
+        val radius = thumbRadius + (focusedThumbRadius - thumbRadius) * f
+        if (f > 0f) {
+            canvas.save()
+            canvas.translate(x, cy)
+            glowPaint.alpha = (255 * f).toInt()
+            canvas.drawCircle(0f, 0f, glowRadius, glowPaint)
+            canvas.translate(0f, 1.5f * density * f)
+            shadowPaint.alpha = (255 * f).toInt()
+            canvas.drawCircle(0f, 0f, radius + 4f * density, shadowPaint)
+            canvas.restore()
+        }
+        canvas.drawCircle(x, cy, radius, thumbPaint)
+        if (f > 0f) {
+            borderPaint.alpha = (255 * f).toInt()
+            canvas.drawCircle(x, cy, radius - borderWidth / 2, borderPaint)
         }
     }
 }

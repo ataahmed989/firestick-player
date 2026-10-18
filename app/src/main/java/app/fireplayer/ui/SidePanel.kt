@@ -141,7 +141,7 @@ class SidePanel(private val activity: Activity) {
         val value = options.getOrNull(selected) ?: ""
         return row(label, value) {
             FireDialog.choose(activity, label, options, selected, besidePanel = true) { index ->
-                onPick(index)
+                if (index != selected) onPick(index)
                 refresh()
             }
         }

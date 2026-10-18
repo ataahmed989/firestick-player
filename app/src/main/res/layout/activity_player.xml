@@ -5,6 +5,7 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/black"
+    android:clipChildren="false"
     android:keepScreenOn="true">
 
     <androidx.media3.ui.AspectRatioFrameLayout
@@ -162,7 +163,7 @@
                 android:paddingTop="2dp"
                 android:paddingEnd="8dp"
                 android:paddingBottom="2dp"
-                android:textColor="@color/accent"
+                android:textColor="@color/text_dark"
                 android:textSize="13sp"
                 android:visibility="invisible"
                 tools:text="+4:00" />
@@ -172,6 +173,7 @@
             android:id="@+id/seek_row"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:clipChildren="false"
             android:layout_marginTop="7dp"
             android:gravity="center_vertical"
             android:orientation="horizontal">
@@ -239,6 +241,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginStart="9dp"
                     android:layout_marginTop="6dp"
+                    android:clipChildren="false"
                     android:gravity="center_horizontal"
                     android:orientation="vertical">
 
@@ -265,6 +268,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginStart="9dp"
                     android:layout_marginTop="6dp"
+                    android:clipChildren="false"
                     android:gravity="center_horizontal"
                     android:orientation="vertical"
                     android:visibility="gone">

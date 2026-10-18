@@ -30,6 +30,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.TrackSelectionParameters
 import androidx.media3.common.Tracks
@@ -37,6 +38,7 @@ import androidx.media3.common.VideoSize
 import androidx.media3.common.text.Cue
 import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.SubtitleView
@@ -180,7 +182,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     // Network hiccups are retried quietly before an error is shown
     private var retries = 0
-    private val retryRunnable = Runnable { player?.prepare() }
+    private var retryPending = false
+    private val retryRunnable = Runnable {
+        retryPending = false
+        player?.prepare()
+    }
 
     private var resumeDialogShowing = false
     private var pendingAudioId: String? = null
@@ -188,6 +194,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     // Subtitle style preview
     private var lastTextCues: List<Cue> = emptyList()
+    private var lastPictureCues: List<Cue> = emptyList()
     private var stylePreviewing = false
 
     // Time labels keep a fixed width so the bar never changes length
@@ -233,6 +240,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     override fun onStop() {
         super.onStop()
         commitSeek()
+        notice = false
+        retryPending = false
         savePosition()
         releasePlayer()
         handler.removeCallbacksAndMessages(null)
@@ -454,6 +463,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         assHandler?.release()
         assHandler = null
         player = null
+        // The old player can't clear its last line any more, so do it here.
+        lastTextCues = emptyList()
+        lastPictureCues = emptyList()
+        screenSubtitles.setCues(emptyList())
+        frameSubtitles.setCues(emptyList())
         // The ASS overlay view belongs to the old handler.
         for (i in frameSubtitles.childCount - 1 downTo 0) {
             val child = frameSubtitles.getChildAt(i)
@@ -482,8 +496,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
                     player?.play()
                 },
             ),
+            // Back means "never mind": carry on from where you were rather than losing the spot.
             onDismiss = {
                 resumeDialogShowing = false
+                player?.seekTo(positionMs)
                 player?.play()
             },
         )
@@ -524,12 +540,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         handler.removeCallbacks(showBuffering)
         if (state == Player.STATE_BUFFERING) {
             handler.postDelayed(showBuffering, 400)
-        } else {
+        } else if (!(state == Player.STATE_IDLE && retryPending)) {
             buffering.visibility = View.GONE
         }
         if (state == Player.STATE_READY) {
             errorBox.visibility = View.GONE
             retries = 0
+            retryPending = false
         }
         if (state == Player.STATE_ENDED) {
             completed = true
@@ -541,15 +558,18 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     override fun onIsPlayingChanged(isPlaying: Boolean) {
         updatePlayButton()
-        if (stylePreviewing) showTextCues()
         root.keepScreenOn = isPlaying
         if (isPlaying) scheduleHide() else handler.removeCallbacks(hideControlsRunnable)
     }
 
     override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
         if (sleepAtEnd && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM) {
+            completed = true
+            entries.getOrNull(player?.currentMediaItemIndex ?: -1)?.let { prefs.savePosition(it.key, 0L) }
             finishWithResult()
+            return
         }
+        if (stylePreviewing) showTextCues()
     }
 
     override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
@@ -588,7 +608,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     override fun onCues(cueGroup: CueGroup) {
         val (pictures, text) = cueGroup.cues.partition { it.bitmap != null }
-        frameSubtitles.setCues(pictures)
+        lastPictureCues = pictures
         lastTextCues = text
         showTextCues()
     }
@@ -598,8 +618,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
      * and the video is paused with nothing on screen, example text shows the style instead.
      */
     private fun showTextCues() {
-        val preview = stylePreviewing && lastTextCues.isEmpty() && player?.isPlaying != true
+        // libass draws its own subtitles; picture subtitles are images. Example text would sit on top of them.
+        val otherShowing = lastPictureCues.isNotEmpty() || (assHandler != null && selectedFormat(C.TRACK_TYPE_TEXT)?.let {
+            it.sampleMimeType == MimeTypes.TEXT_SSA || it.codecs == MimeTypes.TEXT_SSA
+        } == true)
+        val preview = stylePreviewing && lastTextCues.isEmpty() && !otherShowing && player?.playWhenReady != true
         screenSubtitles.setCues(if (preview) styler.sample() else styler.normalize(lastTextCues))
+        frameSubtitles.setCues(styler.pictures(lastPictureCues))
     }
 
     override fun onPlayerError(error: PlaybackException) {
@@ -611,9 +636,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         }
         // Dropped connections and slow servers (common right after a jump) are retried quietly,
         // waiting a little longer each time, before an error is shown.
-        val network = error.errorCode in 2000..2999 && error.errorCode !in NOT_RETRIED
+        val status = (error.cause as? HttpDataSource.InvalidResponseCodeException)?.responseCode
+        // 4xx answers (missing, forbidden) won't change on a retry, except timeouts and rate limits.
+        val permanent = status != null && status in 400..499 && status != 408 && status != 429
+        val network = error.errorCode in 2000..2999 && error.errorCode !in NOT_RETRIED && !permanent
         if (network && retries < MAX_RETRIES) {
             retries++
+            retryPending = true
             handler.removeCallbacks(showBuffering)
             buffering.visibility = View.VISIBLE
             handler.removeCallbacks(retryRunnable)
@@ -621,7 +650,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             return
         }
         retries = 0
+        retryPending = false
         buffering.visibility = View.GONE
+        // The error box needs OK, so a settings window can't be left in front of it.
+        if (panel.isOpen) panel.close()
         errorText.text = when (error.errorCode) {
             PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
             PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT -> "Can't reach the video. Check your connection."
@@ -736,7 +768,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         titleView.text = entry.info.title
         subtitleView.text = entry.info.subtitle
         subtitleView.visibility = if (entry.info.subtitle != null) View.VISIBLE else View.GONE
-        nextGroup.visibility = if (player?.hasNextMediaItem() == true) View.VISIBLE else View.GONE
+        val hasNext = player?.hasNextMediaItem() == true
+        // Hiding the focused Next button would send focus to the time bar; keep it on the buttons.
+        if (!hasNext && btnNext.hasFocus()) btnPlay.requestFocus()
+        nextGroup.visibility = if (hasNext) View.VISIBLE else View.GONE
     }
 
     private fun updatePlayButton() {
@@ -804,8 +839,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     }
 
     private fun fpsLabel(fps: Float): String {
-        val standard = STANDARD_FPS.minByOrNull { abs(it - fps) }
-        val value = if (standard != null && abs(standard - fps) < 0.05f) standard else fps
+        val value = FpsMeter.snap(fps)
         val text = if (abs(value - value.roundToInt()) < 0.001f) value.roundToInt().toString()
             else "%.3f".format(Locale.US, value).trimEnd('0')
         return "$text FPS"
@@ -1000,8 +1034,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         val p = player ?: return
         if (p.isCurrentMediaItemLive) return
         if (!p.isCurrentMediaItemSeekable) {
-            if (event.repeatCount == 0) showNotice("Can't skip in this video")
-            return
+            // While a video is still loading, Media3 says "not seekable" until it knows; let the jump through.
+            val timeline = p.currentTimeline
+            val window = if (timeline.isEmpty) null else timeline.getWindow(p.currentMediaItemIndex, Timeline.Window())
+            if (window != null && !window.isPlaceholder) {
+                if (event.repeatCount == 0) showNotice("Can't skip in this video")
+                return
+            }
         }
         val now = event.eventTime
         if (event.repeatCount > 0 && now - lastNudgeTime < 150) return
@@ -1129,7 +1168,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             if (panel.isOpen && !panel.root.hasFocus()) {
                 if (before != null && before.isAttachedToWindow) before.requestFocus() else panel.focusRow(0)
             }
-            return handled
+            // Arrows the rows didn't use would otherwise let Android move focus out of the window.
+            val arrow = code == KeyEvent.KEYCODE_DPAD_LEFT || code == KeyEvent.KEYCODE_DPAD_RIGHT ||
+                code == KeyEvent.KEYCODE_DPAD_UP || code == KeyEvent.KEYCODE_DPAD_DOWN
+            return handled || arrow
         }
 
         val isOk = code == KeyEvent.KEYCODE_DPAD_CENTER || code == KeyEvent.KEYCODE_ENTER ||
@@ -1209,6 +1251,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private fun openPanel(title: String, from: View, onClosed: () -> Unit = {}, render: SidePanel.() -> Unit) {
         hideControls()
         panel.open(title, onClose = { onClosed(); showControls(from) }, render = render)
+        focusSink.isFocusable = false
     }
 
     private fun trackOptions(type: Int): List<TrackOption> {
@@ -1258,11 +1301,18 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         return if (extras.isEmpty()) name else "$name (${extras.joinToString(", ")})"
     }
 
-    /** Track ids gain a "0:" style prefix when subtitles are added, so compare without it. */
+    /** Track ids gain a "0:" style prefix when subtitles are added, so ignore just that prefix. */
     private fun sameId(o: TrackOption, id: String): Boolean {
         val trackId = o.group.getTrackFormat(o.trackIndex).id ?: return false
-        return trackId.substringAfter(':') == id.substringAfter(':')
+        return trackId == id || trackId.endsWith(":$id") || id.endsWith(":$trackId")
     }
+
+    private fun hasSsaTrack(): Boolean = player?.currentTracks?.groups?.any { g ->
+        g.type == C.TRACK_TYPE_TEXT && (0 until g.length).any { i ->
+            val f = g.getTrackFormat(i)
+            f.sampleMimeType == MimeTypes.TEXT_SSA || f.codecs == MimeTypes.TEXT_SSA || f.containerMimeType == MimeTypes.TEXT_SSA
+        }
+    } == true
 
     private fun selectTrack(o: TrackOption) {
         val p = player ?: return
@@ -1337,12 +1387,22 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private fun openStylePanel(from: View) {
         // Changes show on the subtitles as they're made; paused, example text stands in.
         stylePreviewing = true
+        // Centre the subtitles in the part of the screen the window doesn't cover.
+        screenSubtitles.setPadding(0, 0, panel.root.layoutParams.width + (18 * resources.displayMetrics.density).toInt(), 0)
         showTextCues()
-        openPanel("Subtitle style", from, onClosed = { stylePreviewing = false; showTextCues() }) {
+        openPanel("Subtitle style", from, onClosed = {
+            stylePreviewing = false
+            screenSubtitles.setPadding(0, 0, 0, 0)
+            showTextCues()
+        }) {
             settingsPanels.renderSubtitleStyle(
                 this,
                 onStyleChanged = { applySubtitleStyle(); refreshLabels() },
-                onAssChanged = { applySubtitleStyle(); rebuildPlayer() },
+                onAssChanged = {
+                    applySubtitleStyle()
+                    // Only ASS/SSA switches between libass and plain text; other subtitles just restyle.
+                    if (hasSsaTrack()) rebuildPlayer()
+                },
             )
         }
     }
@@ -1391,6 +1451,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             refreshLabels()
             showControls(from)
         }) { settingsPanels.renderSettings(this) }
+        focusSink.isFocusable = false
     }
 
     // Find subtitles (OpenSubtitles)
@@ -1511,13 +1572,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         val VIDEO_EXTENSIONS = setOf("mkv", "mp4", "m4v", "avi", "mov", "ts", "m2ts", "webm", "wmv", "flv", "mpg", "mpeg")
         val SUBTITLE_EXTENSIONS = setOf("srt", "ass", "ssa", "vtt", "ttml", "dfxp")
         val DISPLAY_MODES = listOf("Normal", "Fill screen", "Zoom", "Stretch", "16:9", "4:3", "21:9")
-        val STANDARD_FPS = listOf(23.976f, 24f, 25f, 29.97f, 30f, 47.952f, 48f, 50f, 59.94f, 60f, 100f, 119.88f, 120f)
 
         const val EXT_PREFIX = "ext"
         /** Subtitles we added ourselves ("ext3", or "1:ext3" once merged into the video). */
         val EXT_ID = Regex("^(\\d+:)?$EXT_PREFIX\\d+$")
 
-        const val MAX_RETRIES = 6
+        const val MAX_RETRIES = 4
         /** File missing, no permission and cleartext blocked won't fix themselves. */
         val NOT_RETRIED = setOf(
             PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND,

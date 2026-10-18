@@ -143,6 +143,12 @@ class SettingsPanels(
         choice("Edge", edges.map { it.label }, edges.indexOf(style.edge)) { i ->
             presets.editActive { it.copy(edge = edges[i]) }; onStyleChanged()
         }
+        if (style.edge == SubtitleEdge.OUTLINE) {
+            val outlineColors = SubtitleStyle.BOX_COLORS
+            choice("Outline color", outlineColors.map { it.second }, outlineColors.indexOfFirst { it.first == style.outlineColor }) { i ->
+                presets.editActive { it.copy(outlineColor = outlineColors[i].first) }; onStyleChanged()
+            }.indent()
+        }
         if (style.edge == SubtitleEdge.DROP_SHADOW) {
             val strengths = ShadowStrength.entries
             choice("Shadow strength", strengths.map { it.label }, strengths.indexOf(style.shadow)) { i ->
@@ -189,14 +195,23 @@ class SettingsPanels(
 
         spacer(6)
         // Saving only makes sense once something has been changed.
-        row("Save as preset", enabled = style.name == SubtitleStyle.CUSTOM_NAME) {
+        row("Save as preset", enabled = style.name == SubtitleStyle.CUSTOM_NAME && presets.customIsNew()) {
             SidePanel.prompt(activity, "Preset name", "") { name ->
                 presets.saveActiveAs(name); onStyleChanged(); refresh()
+                // Saving swaps this row for "Delete"; start back at the top instead of on it.
+                focusRow(0)
             }
         }
         if (presets.isSaved(style.name)) {
             row("Delete \"${style.name}\"") {
-                presets.delete(style.name); onStyleChanged(); refresh()
+                FireDialog.ask(
+                    activity,
+                    "Delete \"${style.name}\"?",
+                    listOf<Pair<String, () -> Unit>>(
+                        "Delete" to { presets.delete(style.name); onStyleChanged(); refresh(); focusRow(0) },
+                        "Keep it" to {},
+                    ),
+                )
             }
         }
         row("Reset to Netflix", enabled = style.name != SubtitleStyle.NETFLIX_NAME) {
@@ -212,7 +227,7 @@ class SettingsPanels(
     private fun fontLabel(font: SubtitleFont): String =
         if (font == SubtitleFont.NETFLIX) importedFontName ?: font.label else font.label
 
-    private fun sizeLabel(size: Float) = "${(size / SubtitleStyle.NETFLIX.textSize * 100).toInt()}%"
+    private fun sizeLabel(size: Float) = "${(size / SubtitleStyle.NETFLIX.textSize * 100).roundToInt()}%"
 
     private fun positionLabel(bottom: Float): String = when (nearest(SubtitleStyle.BOTTOMS, bottom)) {
         SubtitleStyle.BOTTOMS[0] -> "Lowest"

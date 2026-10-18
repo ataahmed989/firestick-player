@@ -34,7 +34,7 @@ import java.util.zip.ZipInputStream
 class FontImport(private val activity: Activity, private val prefs: Prefs, private val onImported: () -> Unit) {
 
     private val handler = Handler(Looper.getMainLooper())
-    private var server: ServerSocket? = null
+    @Volatile private var stopped = false
 
     fun show() {
         val rows = Rows(activity)
@@ -97,11 +97,27 @@ class FontImport(private val activity: Activity, private val prefs: Prefs, priva
 
     private fun start(report: (String, Boolean) -> Unit) {
         Thread {
-            val socket = runCatching { ServerSocket(PORT) }.getOrElse {
+            // Only one upload page at a time; close any left over from a window that didn't close cleanly.
+            synchronized(FontImport) {
+                runCatching { running?.close() }
+                running = null
+            }
+            val socket = runCatching {
+                ServerSocket().apply {
+                    reuseAddress = true
+                    bind(java.net.InetSocketAddress(PORT))
+                }
+            }.getOrElse {
                 handler.post { report("Couldn't open the address. Close other apps and try again.", false) }
                 return@Thread
             }
-            server = socket
+            synchronized(FontImport) {
+                if (stopped) {
+                    runCatching { socket.close() }
+                    return@Thread
+                }
+                running = socket
+            }
             while (!socket.isClosed) {
                 val client = runCatching { socket.accept() }.getOrNull() ?: break
                 runCatching { handle(client, report) }
@@ -111,8 +127,11 @@ class FontImport(private val activity: Activity, private val prefs: Prefs, priva
     }
 
     private fun stop() {
-        runCatching { server?.close() }
-        server = null
+        synchronized(FontImport) {
+            stopped = true
+            runCatching { running?.close() }
+            running = null
+        }
     }
 
     private fun handle(client: Socket, report: (String, Boolean) -> Unit) {
@@ -143,8 +162,8 @@ class FontImport(private val activity: Activity, private val prefs: Prefs, priva
             handler.post { report("Receiving $name…", false) }
             val result = runCatching { save(name, body) }
             result.onSuccess { fontName ->
-                respond(client, 200, "ok")
                 handler.post { report("$fontName is ready for your subtitles.", true) }
+                runCatching { respond(client, 200, "ok") }
             }.onFailure {
                 respond(client, 400, it.message ?: "That file isn't a font.")
                 handler.post { report(it.message ?: "That file isn't a font.", false) }
@@ -169,10 +188,48 @@ class FontImport(private val activity: Activity, private val prefs: Prefs, priva
         val target = customFontFile(activity)
         target.delete()
         temp.renameTo(target)
-        val display = fontName.substringAfterLast('/').substringBeforeLast('.').replace('-', ' ')
+        val display = fullName(fontBytes) ?: prettyFileName(fontName)
         prefs.customFontName = display
         return display
     }
+
+    /** "NetflixSans-Md.otf" → "Netflix Sans Medium", for fonts without a readable name. */
+    private fun prettyFileName(file: String): String {
+        val weights = mapOf("Md" to "Medium", "Rg" to "Regular", "Bd" to "Bold", "Lt" to "Light", "Bk" to "Black", "Th" to "Thin")
+        val base = file.substringAfterLast('/').substringBeforeLast('.')
+        return base.split('-', '_', ' ').filter { it.isNotEmpty() }
+            .joinToString(" ") { part -> weights[part] ?: part.replace(Regex("(?<=[a-z])(?=[A-Z])"), " ") }
+    }
+
+    /** The font's own full name from its 'name' table (ID 4), e.g. "Netflix Sans Medium". */
+    private fun fullName(font: ByteArray): String? = runCatching {
+        val buf = java.nio.ByteBuffer.wrap(font)
+        val tables = buf.getShort(4).toInt() and 0xFFFF
+        var nameOffset = -1
+        for (t in 0 until tables) {
+            val record = 12 + t * 16
+            val tag = String(font, record, 4, Charsets.US_ASCII)
+            if (tag == "name") nameOffset = buf.getInt(record + 8)
+        }
+        if (nameOffset < 0) return@runCatching null
+        val count = buf.getShort(nameOffset + 2).toInt() and 0xFFFF
+        val strings = nameOffset + (buf.getShort(nameOffset + 4).toInt() and 0xFFFF)
+        var best: String? = null
+        for (r in 0 until count) {
+            val rec = nameOffset + 6 + r * 12
+            val platform = buf.getShort(rec).toInt() and 0xFFFF
+            val nameId = buf.getShort(rec + 6).toInt() and 0xFFFF
+            if (nameId != 4) continue
+            val len = buf.getShort(rec + 8).toInt() and 0xFFFF
+            val off = strings + (buf.getShort(rec + 10).toInt() and 0xFFFF)
+            val value = if (platform == 3 || platform == 0) String(font, off, len, Charsets.UTF_16BE) else String(font, off, len, Charsets.ISO_8859_1)
+            if (value.isNotBlank()) {
+                best = value.trim()
+                if (platform == 3) break
+            }
+        }
+        best
+    }.getOrNull()
 
     /** Prefers a Medium or Regular upright weight, which read best as subtitles. */
     private fun pickFromZip(zip: ByteArray): Pair<ByteArray, String> {
@@ -228,6 +285,9 @@ class FontImport(private val activity: Activity, private val prefs: Prefs, priva
     companion object {
         const val PORT = 8765
         private const val MAX_BYTES = 20 * 1024 * 1024
+
+        /** The upload page currently listening, if any. */
+        private var running: ServerSocket? = null
 
         fun customFontFile(activity: android.content.Context) = File(File(activity.filesDir, "fonts"), "subtitle_font")
 

@@ -1,9 +1,13 @@
 package app.fireplayer.subs
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.text.Layout
@@ -66,7 +70,7 @@ class SubtitleStyler(private val context: Context) {
                 Color.TRANSPARENT,
                 Color.TRANSPARENT,
                 edgeType,
-                Color.argb(0xE6, 0, 0, 0),
+                (style.outlineColor and 0x00FFFFFF) or (0xE6 shl 24),
                 typeface,
             ),
         )
@@ -119,6 +123,47 @@ class SubtitleStyler(private val context: Context) {
         return listOf(cue)
     }
 
+    private var recolorSource: Bitmap? = null
+    private var recolorColor = 0
+    private var recolorResult: Bitmap? = null
+
+    /**
+     * Picture subtitles (DVB, PGS, VobSub) are images, so their colour is baked in. Unless embedded
+     * styling is kept, they're recoloured to the chosen colour: bright text takes the colour and
+     * dark outlines stay dark.
+     */
+    fun pictures(cues: List<Cue>): List<Cue> {
+        if (keepEmbedded || cues.isEmpty()) return cues
+        return cues.map { cue ->
+            val bitmap = cue.bitmap ?: return@map cue
+            cue.buildUpon().setBitmap(recolor(bitmap, style.color)).build()
+        }
+    }
+
+    private fun recolor(source: Bitmap, color: Int): Bitmap {
+        val cached = recolorResult
+        if (cached != null && source === recolorSource && color == recolorColor) return cached
+        // Brightness times the colour, a little boosted so light grey and yellow text become fully coloured.
+        val r = Color.red(color) / 255f * 1.25f
+        val g = Color.green(color) / 255f * 1.25f
+        val b = Color.blue(color) / 255f * 1.25f
+        val matrix = ColorMatrix(
+            floatArrayOf(
+                0.299f * r, 0.587f * r, 0.114f * r, 0f, 0f,
+                0.299f * g, 0.587f * g, 0.114f * g, 0f, 0f,
+                0.299f * b, 0.587f * b, 0.114f * b, 0f, 0f,
+                0f, 0f, 0f, 1f, 0f,
+            ),
+        )
+        val out = runCatching { Bitmap.createBitmap(source.width, source.height, Bitmap.Config.ARGB_8888) }.getOrNull()
+            ?: return source
+        Canvas(out).drawBitmap(source, 0f, 0f, Paint(Paint.FILTER_BITMAP_FLAG).apply { colorFilter = ColorMatrixColorFilter(matrix) })
+        recolorSource = source
+        recolorColor = color
+        recolorResult = out
+        return out
+    }
+
     /** Example text shown while the Subtitle style window is open and the video is paused. */
     fun sample(): List<Cue> = normalize(
         listOf(Cue.Builder().setText("This is how your subtitles will look.\nChanges show up right away.").build()),
@@ -139,6 +184,8 @@ class SubtitleStyler(private val context: Context) {
     private class BoxSpan(color: Int, private val rounded: Boolean, private val drawWithOutline: Boolean) : LineBackgroundSpan {
         private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = color }
         private val rect = RectF()
+        private val path = Path()
+        private val radii = FloatArray(8)
 
         override fun drawBackground(
             canvas: Canvas, paint: Paint, left: Int, right: Int, top: Int, baseline: Int, bottom: Int,
@@ -166,8 +213,15 @@ class SubtitleStyler(private val context: Context) {
                 centre + width / 2 + padX,
                 if (last) baseline + size * 0.24f + padY else bottom.toFloat(),
             )
+            // Only the outer corners are rounded, so stacked lines join cleanly.
             val radius = if (rounded) size * 0.16f else 0f
-            canvas.drawRoundRect(rect, radius, radius, fill)
+            val topRadius = if (first) radius else 0f
+            val bottomRadius = if (last) radius else 0f
+            radii.fill(topRadius, 0, 4)
+            radii.fill(bottomRadius, 4, 8)
+            path.reset()
+            path.addRoundRect(rect, radii, Path.Direction.CW)
+            canvas.drawPath(path, fill)
         }
     }
 }
