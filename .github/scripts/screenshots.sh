@@ -10,11 +10,11 @@ adb_ready() { adb shell "rm -rf $DEV; mkdir -p $DEV"; }
 # Screenshots are saved raw on the device (quick) and turned into PNGs at the end, so taking one doesn't hold up
 # the key presses that follow: the controls hide by themselves after 5 seconds.
 shot() { sleep "${2:-2}"; adb shell screencap "$DEV/$1.raw"; }
-# Presses keys, then takes three screenshots on the device itself, a few tenths of a second apart, so a screen
-# that only shows briefly (the skip preview) is caught despite adb's own delays.
+# Presses keys and, while they're being sent, takes five screenshots on the device itself a moment apart, so a
+# screen that only shows briefly (the skip preview) is caught however slow the emulator's input command is.
 burst() {
-  local name=$1 wait=$2; shift 2
-  adb shell "input keyevent $*; sleep $wait; screencap $DEV/$name-1.raw; sleep 0.3; screencap $DEV/$name-2.raw; sleep 0.3; screencap $DEV/$name-3.raw"
+  local name=$1; shift
+  adb shell "input keyevent $* & sleep 0.6; for i in 1 2 3 4 5; do screencap $DEV/$name-\$i.raw; sleep 0.25; done; wait"
 }
 key() { for k in "$@"; do adb shell input keyevent "$k"; sleep 0.7; done; }
 movie() {
@@ -42,15 +42,15 @@ key KEYCODE_BACK
 movie "http://10.0.2.2:8000/movie.mkv" "EN - 4K UHD - Dune: Part Two (2024)"
 shot 04-playing 15
 # Skipping with the controls hidden brings up the bar and the "+0:20" card.
-burst 04b-skip 0.4 KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT
+burst 04b-skip KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT
 sleep 4
 key KEYCODE_DPAD_UP
 shot 05-controls 1.5
 key KEYCODE_DPAD_UP
 shot 06-seek-bar-selected 0.6
 # Moving along the selected bar (it waits 2 s before jumping) shows a picture of where it would land.
-burst 06b-seek-back-preview 0.5 KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT
-burst 06c-seek-preview-moved 0.5 KEYCODE_DPAD_RIGHT
+burst 06b-seek-back-preview KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT
+burst 06c-seek-preview-moved KEYCODE_DPAD_RIGHT
 sleep 3
 key KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN
 shot 07-more-row 1
