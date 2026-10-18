@@ -1,13 +1,18 @@
 package app.fireplayer
 
 import android.content.Intent
+import android.graphics.Paint
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.text.Layout
 import android.text.SpannableStringBuilder
 import android.text.Spanned
+import android.text.StaticLayout
+import android.text.TextPaint
 import android.text.format.DateFormat
 import android.text.style.ForegroundColorSpan
 import android.view.Gravity
@@ -576,6 +581,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             retries = 0
             retryPending = false
         }
+        if (state == Player.STATE_ENDED && seeking && seekOffsetMs < 0) {
+            // The film ended while a jump back in it was being lined up: make that jump instead of closing.
+            commitSeek()
+            return
+        }
         if (state == Player.STATE_ENDED) {
             completed = true
             prefs.savePosition(entries.getOrNull(player?.currentMediaItemIndex ?: 0)?.key ?: "", 0L)
@@ -591,6 +601,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     }
 
     override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+        if (sleepAtEnd && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM && seeking && seekOffsetMs < 0) {
+            // Same for a jump back right at the end with sleep set for the end of the video: it still stops there later.
+            commitSeek()
+            player?.play()
+            return
+        }
         if (sleepAtEnd && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM) {
             completed = true
             entries.getOrNull(player?.currentMediaItemIndex ?: -1)?.let { prefs.savePosition(it.key, 0L) }
@@ -1047,9 +1063,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             val floor = if (controlsShown) Float.MAX_VALUE else bottomBlock.top + seekRow.bottom + 6f * density
             val height = root.height.toFloat()
             val textBottom = height * (1f - styler.bottomFraction)
-            // The lines showing now; a new subtitle is placed again as it appears (see onCues).
-            val lines = lastTextCues.sumOf { cue -> (cue.text?.count { it == '\n' } ?: 0) + 1 }
-            val textTop = textBottom - (lines * 1.2f + 0.2f) * styler.textSizeFraction * height
+            // The rows showing now; a new subtitle is placed again as it appears (see onCues).
+            val textSize = styler.textSizeFraction * height
+            val textTop = textBottom - (subtitleRows(textSize) * 1.21f + 0.25f) * textSize
             screen = liftFor(textTop, textBottom, limit, floor)
             if (!libassShowing()) frame = pictureLift(limit, floor)
         }
@@ -1060,6 +1076,27 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         if (frame != frameLift) {
             frameLift = frame
             frameSubtitles.animate().translationY(-frame).setDuration(if (animate) 200 else 0).start()
+        }
+    }
+
+    /** How many rows the subtitles showing now take on screen, wrapped the way the subtitle view wraps them. */
+    private fun subtitleRows(textSize: Float): Int {
+        val cues = styler.normalize(lastTextCues)
+        if (cues.isEmpty()) return 0
+        val paint = TextPaint(Paint.ANTI_ALIAS_FLAG)
+        paint.textSize = textSize
+        paint.typeface = styler.typeface
+        // Media3 keeps an eighth of the text size clear on each side.
+        val inset = 2 * (textSize * 0.125f + 0.5f).toInt()
+        val width = (screenSubtitles.width - screenSubtitles.paddingLeft - screenSubtitles.paddingRight - inset).coerceAtLeast(1)
+        return cues.sumOf { cue ->
+            val text = cue.text ?: return@sumOf 0
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                StaticLayout.Builder.obtain(text, 0, text.length, paint, width).setIncludePad(true).build().lineCount
+            } else {
+                @Suppress("DEPRECATION")
+                StaticLayout(text, paint, width, Layout.Alignment.ALIGN_CENTER, 1f, 0f, true).lineCount
+            }
         }
     }
 
