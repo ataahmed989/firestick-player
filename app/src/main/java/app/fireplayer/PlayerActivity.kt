@@ -202,14 +202,23 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private var retries = 0
     private var firstErrorAt = 0L
     private var retryPending = false
-    private val retryRunnable = Runnable {
-        retryPending = false
-        player?.prepare()
+    private val retryRunnable = object : Runnable {
+        override fun run() {
+            // A refresh-rate switch that began after this was scheduled (the next video's) has to settle first.
+            val settle = displaySwitchAt + DISPLAY_SETTLE_MS - SystemClock.elapsedRealtime()
+            if (settle > 0) {
+                handler.postDelayed(this, settle)
+                return
+            }
+            retryPending = false
+            player?.prepare()
+        }
     }
     // Sound or a decoder the device couldn't start, counted apart: these can fail again right after
-    // playback resumes, so a working start doesn't reset them.
+    // playback resumes, so only half a minute of playing (or another video) gives them back.
     private var deviceRetries = 0
     private var firstDeviceErrorAt = 0L
+    private val deviceRetriesBack = Runnable { deviceRetries = 0 }
     // When the TV was last asked to change refresh rate; its sound output drops out while it switches.
     private var displaySwitchAt = 0L
 
@@ -454,6 +463,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             }
         }
         playingIndex = index
+        deviceRetries = 0
         // TIME_UNSET starts VOD at the beginning and live at the live edge.
         try {
             p.setMediaItems(items, index, position)
@@ -592,6 +602,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             errorBox.visibility = View.GONE
             retries = 0
             retryPending = false
+            handler.removeCallbacks(deviceRetriesBack)
+            handler.postDelayed(deviceRetriesBack, DEVICE_RETRY_WINDOW_MS / 2)
         }
         if (state == Player.STATE_ENDED && seeking && seekOffsetMs < 0) {
             // The film ended while a jump back in it was being lined up: make that jump instead of closing.
@@ -646,6 +658,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         if (seeking) cancelSeek()
         playingIndex = now
         matchedFpsForIndex = -1
+        deviceRetries = 0
         measuredFps = 0f
         fpsMeter.reset()
         updateTitle()
@@ -720,10 +733,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         // that opened us not having let go of it yet. The player only waits a fifth of a second for it;
         // starting again a moment later works.
         val device = error.errorCode == PlaybackException.ERROR_CODE_DECODER_INIT_FAILED || error.errorCode in 5000..5999
+        handler.removeCallbacks(deviceRetriesBack)
         if (device) {
-            if (now - firstDeviceErrorAt > DEVICE_RETRY_WINDOW_MS) deviceRetries = 0
             if (deviceRetries == 0) firstDeviceErrorAt = now
-            if (deviceRetries < MAX_DEVICE_RETRIES) {
+            // Like the network retries, these stop after a while, so a failure that keeps coming back ends in an error.
+            if (deviceRetries < MAX_DEVICE_RETRIES && now - firstDeviceErrorAt < DEVICE_RETRY_WINDOW_MS) {
                 deviceRetries++
                 // Not before a refresh-rate switch has settled, or it fails the same way.
                 retryQuietly(maxOf(1_000L * deviceRetries, displaySwitchAt + DISPLAY_SETTLE_MS - now))
