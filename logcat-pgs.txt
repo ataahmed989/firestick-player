@@ -1,0 +1,26 @@
+10-18 18:07:39.163 I/ExoPlayerImpl( 7419): Init 356f537 [AndroidXMedia3/1.8.0] [generic_x86, AOSP TV on x86, Google, 30]
+10-18 18:08:18.354 I/ExoPlayerImpl( 7419): Release 356f537 [AndroidXMedia3/1.8.0] [generic_x86, AOSP TV on x86, Google, 30] [media3.common, media3.exoplayer, media3.decoder, media3.datasource, media3.extractor, media3.decoder.ffmpeg]
+10-18 18:08:18.371 I/ExoPlayerImpl( 7419): Init a44604c [AndroidXMedia3/1.8.0] [generic_x86, AOSP TV on x86, Google, 30]
+10-18 18:08:18.582 D/DecoupledTextDelegate( 7419): Start loading thick OCR module.
+10-18 18:08:33.586 D/PipelineManager( 7419): OCR process succeeded via visionkit pipeline.
+10-18 18:08:33.622 D/FirePlayerOcr( 7419): Read a picture in 15268 ms, 29 waiting
+10-18 18:08:38.000 D/PipelineManager( 7419): OCR process succeeded via visionkit pipeline.
+10-18 18:08:38.015 D/FirePlayerOcr( 7419): Read a picture in 4393 ms, 28 waiting
+10-18 18:08:42.902 D/PipelineManager( 7419): OCR process succeeded via visionkit pipeline.
+10-18 18:08:42.916 D/FirePlayerOcr( 7419): Read a picture in 4901 ms, 27 waiting
+10-18 18:08:47.941 D/PipelineManager( 7419): OCR process succeeded via visionkit pipeline.
+10-18 18:08:47.944 D/FirePlayerOcr( 7419): Read a picture in 5028 ms, 29 waiting
+10-18 18:08:52.351 D/PipelineManager( 7419): OCR process succeeded via visionkit pipeline.
+10-18 18:08:52.353 D/FirePlayerOcr( 7419): Read a picture in 4409 ms, 28 waiting
+10-18 18:08:56.226 D/PipelineManager( 7419): OCR process succeeded via visionkit pipeline.
+10-18 18:08:56.230 D/FirePlayerOcr( 7419): Read a picture in 3877 ms, 27 waiting
+10-18 18:09:00.723 D/PipelineManager( 7419): OCR process succeeded via visionkit pipeline.
+10-18 18:09:00.726 D/FirePlayerOcr( 7419): Read a picture in 4496 ms, 26 waiting
+10-18 18:09:03.778 D/PipelineManager( 7419): OCR process succeeded via visionkit pipeline.
+10-18 18:09:03.781 D/FirePlayerOcr( 7419): Read a picture in 3050 ms, 25 waiting
+10-18 18:09:07.383 D/PipelineManager( 7419): OCR process succeeded via visionkit pipeline.
+10-18 18:09:07.385 D/FirePlayerOcr( 7419): Read a picture in 3601 ms, 24 waiting
+10-18 18:09:11.008 D/PipelineManager( 7419): OCR process succeeded via visionkit pipeline.
+10-18 18:09:11.010 D/FirePlayerOcr( 7419): Read a picture in 3625 ms, 23 waiting
+10-18 18:09:14.806 D/PipelineManager( 7419): OCR process succeeded via visionkit pipeline.
+10-18 18:09:14.809 D/FirePlayerOcr( 7419): Read a picture in 3799 ms, 22 waiting

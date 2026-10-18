@@ -1,0 +1,41 @@
+--------- beginning of main
+10-18 18:09:35.957 W/app.fireplayer(10290): Unexpected CPU variant for X86 using defaults: x86
+10-18 18:09:35.972 E/app.fireplayer(10290): Not starting debugger since process cannot load the jdwp agent.
+10-18 18:09:36.027 D/NetworkSecurityConfig(10290): No Network Security Config specified, using platform default
+10-18 18:09:36.027 D/NetworkSecurityConfig(10290): No Network Security Config specified, using platform default
+10-18 18:09:36.093 D/libEGL  (10290): loaded /vendor/lib/egl/libEGL_emulation.so
+10-18 18:09:36.097 D/libEGL  (10290): loaded /vendor/lib/egl/libGLESv1_CM_emulation.so
+10-18 18:09:36.099 D/libEGL  (10290): loaded /vendor/lib/egl/libGLESv2_emulation.so
+10-18 18:09:36.109 D/AppCompatDelegate(10290): Checking for metadata for AppLocalesMetadataHolderService : Service not found
+10-18 18:09:36.398 I/ExoPlayerImpl(10290): Init 356f537 [AndroidXMedia3/1.8.0] [generic_x86, AOSP TV on x86, Google, 30]
+10-18 18:09:36.400 W/app.fireplayer(10290): Accessing hidden method Landroid/media/MediaRouter2$RoutingController;->getRoutingSessionInfo()Landroid/media/RoutingSessionInfo; (blacklist, linking, denied)
+10-18 18:09:36.403 I/DefaultRenderersFactory(10290): Loaded FfmpegVideoRenderer.
+10-18 18:09:36.404 I/DefaultRenderersFactory(10290): Loaded FfmpegAudioRenderer.
+10-18 18:09:36.490 D/HostConnection(10290): HostConnection::get() New Host Connection established 0xf295f960, tid 10307
+10-18 18:09:36.526 D/HostConnection(10290): HostComposition ext ANDROID_EMU_CHECKSUM_HELPER_v1 ANDROID_EMU_native_sync_v2 ANDROID_EMU_dma_v1 ANDROID_EMU_direct_mem ANDROID_EMU_host_composition_v1 ANDROID_EMU_host_composition_v2 ANDROID_EMU_vulkan ANDROID_EMU_deferred_vulkan_commands ANDROID_EMU_vulkan_null_optional_strings ANDROID_EMU_vulkan_create_resources_with_requirements ANDROID_EMU_YUV_Cache ANDROID_EMU_vulkan_ignored_handles ANDROID_EMU_has_shared_slots_host_memory_allocator ANDROID_EMU_vulkan_free_memory_sync ANDROID_EMU_vulkan_shader_float16_int8 ANDROID_EMU_vulkan_async_queue_submit ANDROID_EMU_sync_buffer_data ANDROID_EMU_vulkan_async_qsri ANDROID_EMU_read_color_buffer_dma ANDROID_EMU_hwc_color_transform GL_OES_EGL_image_external_essl3 GL_OES_vertex_array_object GL_KHR_texture_compression_astc_ldr ANDROID_EMU_host_side_tracing ANDROID_EMU_gles_max_version_3_0 
+10-18 18:09:36.528 D/EGL_emulation(10290): eglCreateContext: 0xf295f340: maj 3 min 0 rcv 3
+10-18 18:09:36.533 D/EGL_emulation(10290): eglMakeCurrent: 0xf295f340: ver 3 0 (tinfo 0xf2cb87d0) (first time)
+10-18 18:09:36.546 I/Gralloc4(10290): mapper 4.x is not supported
+10-18 18:09:36.547 D/HostConnection(10290): createUnique: call
+10-18 18:09:36.547 D/HostConnection(10290): HostConnection::get() New Host Connection established 0xf295f1f0, tid 10307
+10-18 18:09:36.547 D/goldfish-address-space(10290): allocate: Ask for block of size 0x100
+10-18 18:09:36.547 D/goldfish-address-space(10290): allocate: ioctl allocate returned offset 0x3f7ffe000 size 0x2000
+10-18 18:09:36.575 D/HostConnection(10290): HostComposition ext ANDROID_EMU_CHECKSUM_HELPER_v1 ANDROID_EMU_native_sync_v2 ANDROID_EMU_dma_v1 ANDROID_EMU_direct_mem ANDROID_EMU_host_composition_v1 ANDROID_EMU_host_composition_v2 ANDROID_EMU_vulkan ANDROID_EMU_deferred_vulkan_commands ANDROID_EMU_vulkan_null_optional_strings ANDROID_EMU_vulkan_create_resources_with_requirements ANDROID_EMU_YUV_Cache ANDROID_EMU_vulkan_ignored_handles ANDROID_EMU_has_shared_slots_host_memory_allocator ANDROID_EMU_vulkan_free_memory_sync ANDROID_EMU_vulkan_shader_float16_int8 ANDROID_EMU_vulkan_async_queue_submit ANDROID_EMU_sync_buffer_data ANDROID_EMU_vulkan_async_qsri ANDROID_EMU_read_color_buffer_dma ANDROID_EMU_hwc_color_transform GL_OES_EGL_image_external_essl3 GL_OES_vertex_array_object GL_KHR_texture_compression_astc_ldr ANDROID_EMU_host_side_tracing ANDROID_EMU_gles_max_version_3_0 
+10-18 18:09:36.682 I/TetheringManager(10290): registerTetheringEventCallback:app.fireplayer
+10-18 18:09:42.476 D/ProfileInstaller(10290): Skipping profile installation for app.fireplayer
+10-18 18:09:46.610 E/ExoPlayerImplInternal(10290): Playback error
+10-18 18:09:46.610 E/ExoPlayerImplInternal(10290):   androidx.media3.exoplayer.ExoPlaybackException: Source error
+10-18 18:09:46.610 E/ExoPlayerImplInternal(10290):       at androidx.media3.exoplayer.ExoPlayerImplInternal.handleIoException(ExoPlayerImplInternal.java:927)
+10-18 18:09:46.610 E/ExoPlayerImplInternal(10290):       at androidx.media3.exoplayer.ExoPlayerImplInternal.handleMessage(ExoPlayerImplInternal.java:899)
+10-18 18:09:46.610 E/ExoPlayerImplInternal(10290):       at android.os.Handler.dispatchMessage(Handler.java:102)
+10-18 18:09:46.610 E/ExoPlayerImplInternal(10290):       at android.os.Looper.loop(Looper.java:223)
+10-18 18:09:46.610 E/ExoPlayerImplInternal(10290):       at android.os.HandlerThread.run(HandlerThread.java:67)
+10-18 18:09:46.610 E/ExoPlayerImplInternal(10290):   Caused by: androidx.media3.datasource.HttpDataSource$InvalidResponseCodeException: Response code: 404
+10-18 18:09:46.610 E/ExoPlayerImplInternal(10290):       at androidx.media3.datasource.DefaultHttpDataSource.open(DefaultHttpDataSource.java:400)
+10-18 18:09:46.610 E/ExoPlayerImplInternal(10290):       at androidx.media3.datasource.DefaultDataSource.open(DefaultDataSource.java:275)
+10-18 18:09:46.610 E/ExoPlayerImplInternal(10290):       at androidx.media3.datasource.StatsDataSource.open(StatsDataSource.java:88)
+10-18 18:09:46.610 E/ExoPlayerImplInternal(10290):       at androidx.media3.exoplayer.source.ProgressiveMediaPeriod$ExtractingLoadable.load(ProgressiveMediaPeriod.java:1109)
+10-18 18:09:46.610 E/ExoPlayerImplInternal(10290):       at androidx.media3.exoplayer.upstream.Loader$LoadTask.run(Loader.java:453)
+10-18 18:09:46.610 E/ExoPlayerImplInternal(10290):       at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1167)
+10-18 18:09:46.610 E/ExoPlayerImplInternal(10290):       at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:641)
+10-18 18:09:46.610 E/ExoPlayerImplInternal(10290):       at java.lang.Thread.run(Thread.java:923)
