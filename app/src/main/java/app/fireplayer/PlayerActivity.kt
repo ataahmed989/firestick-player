@@ -1089,15 +1089,17 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         // Media3 keeps an eighth of the text size clear on each side.
         val inset = 2 * (textSize * 0.125f + 0.5f).toInt()
         val width = (screenSubtitles.width - screenSubtitles.paddingLeft - screenSubtitles.paddingRight - inset).coerceAtLeast(1)
-        return cues.sumOf { cue ->
-            val text = cue.text ?: return@sumOf 0
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        var rows = 0
+        for (cue in cues) {
+            val text = cue.text ?: continue
+            rows += if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 StaticLayout.Builder.obtain(text, 0, text.length, paint, width).setIncludePad(true).build().lineCount
             } else {
                 @Suppress("DEPRECATION")
                 StaticLayout(text, paint, width, Layout.Alignment.ALIGN_CENTER, 1f, 0f, true).lineCount
             }
         }
+        return rows
     }
 
     /** How far something spanning [top] to [bottom] on screen must move up to clear the controls between [limit] and [floor]. */
