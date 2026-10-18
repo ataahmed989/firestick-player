@@ -179,9 +179,12 @@ object PlayerFactory {
         val retryPolicy = DefaultLoadErrorHandlingPolicy(5)
 
         if (!useAss) {
+            val parsers = pictureText.readAhead(DefaultSubtitleParserFactory())
+            // Set on the extractors themselves too: the MKV wrapper doesn't pass this setting on to them.
+            extractors.setSubtitleParserFactory(parsers)
             val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory, SeekableMkvExtractorsFactory(extractors))
                 .setLoadErrorHandlingPolicy(retryPolicy)
-                .setSubtitleParserFactory(pictureText.readAhead(DefaultSubtitleParserFactory()))
+                .setSubtitleParserFactory(parsers)
             val player = builder
                 .setMediaSourceFactory(mediaSourceFactory)
                 .setRenderersFactory(DelayRenderersFactory(baseRenderers, delays))

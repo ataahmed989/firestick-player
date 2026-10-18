@@ -3,6 +3,7 @@ package app.fireplayer.subs
 import android.graphics.Bitmap
 import android.graphics.Rect
 import android.os.Process
+import android.os.SystemClock
 import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.Format
@@ -45,12 +46,10 @@ class PictureText(private val onRead: () -> Unit) {
     @Volatile private var broken = false
     @Volatile private var released = false
     private var recognizer: TextRecognizer? = null
-    // Recognition itself runs here, also at low priority, so the film's decoding always comes first.
+    // Recognition itself runs here. Playback runs at a far higher priority, so it still comes first, but a
+    // background priority could starve this behind the film's audio decoding and make subtitles late.
     private val recognition = Executors.newSingleThreadExecutor { r ->
-        Thread({
-            Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
-            r.run()
-        }, "FirePlayerOcrRun").apply { isDaemon = true }
+        Thread(r, "FirePlayerOcrRun").apply { isDaemon = true }
     }
 
     private val worker = Thread({
@@ -61,7 +60,9 @@ class PictureText(private val onRead: () -> Unit) {
             } catch (_: InterruptedException) {
                 break
             }
+            val started = SystemClock.elapsedRealtime()
             val text = read(job)
+            Log.d(TAG, "Read a picture in ${SystemClock.elapsedRealtime() - started} ms, ${jobs.size} waiting")
             synchronized(this) {
                 pending.remove(job.key)
                 if (text != null) results[job.key] = text

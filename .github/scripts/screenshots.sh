@@ -88,10 +88,12 @@ key KEYCODE_DPAD_CENTER
 shot 15b-pgs-styling-off 1.5
 # Back closes the window, Back again hides the controls. Turning it off rebuilds the player, so give it a moment.
 key KEYCODE_BACK KEYCODE_BACK
+# The emulator takes a while to load text recognition the first time, so these spread over half a minute.
 shot 15-pgs-as-text-1 5
-shot 15-pgs-as-text-2 3
-shot 15-pgs-as-text-3 3
-shot 15-pgs-as-text-4 3
+shot 15-pgs-as-text-2 4
+shot 15-pgs-as-text-3 5
+shot 15-pgs-as-text-4 6
+shot 15-pgs-as-text-5 6
 pid=$(adb shell pidof $PKG | tr -d '\r')
 adb logcat -d -v time ${pid:+--pid=$pid} | grep -E "Ocr|OCR|Subtitle|PGS|Pgs|ExoPlayerImpl|AndroidRuntime" | tail -300 > "$OUT/logcat-pgs.txt"
 
