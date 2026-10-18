@@ -240,7 +240,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     // Pictures being read now that they're due (not read ahead in time), and until when they stay hidden for it.
     private var readingPictures: List<Cue>? = null
     private var readingUntil = 0L
-    private val readingTimeout = Runnable { showTextCues() }
+    private val readingTimeout = Runnable { showCues() }
 
     // Time labels keep a fixed width so the bar never changes length
     private var longTimes: Boolean? = null
@@ -254,7 +254,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         prefs = Prefs(this)
         presets = SubtitlePresets(prefs)
         styler = SubtitleStyler(this)
-        pictureText = PictureText { handler.post { if (readingPictures != null) showTextCues() } }
+        pictureText = PictureText { handler.post { if (readingPictures != null) showCues() } }
         settingsPanels = SettingsPanels(this, prefs, presets)
         frameRateMatcher = FrameRateMatcher(this)
         openSubtitles = OpenSubtitles(prefs)
@@ -677,6 +677,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         }
         // Any other jump being lined up was for the video that was playing, not this one.
         if (seeking) cancelSeek()
+        if (now != playingIndex) pictureText.discardAhead()
         playingIndex = now
         matchedFpsForIndex = -1
         deviceRetries = 0
@@ -705,6 +706,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         refreshLabels()
         updateChips()
         matchFrameRate()
+        updatePictureReading()
         // "Keep embedded styling" was switched before an ASS track showed up (still loading, or added later).
         if (stylingNeedsRebuild()) {
             handler.removeCallbacks(rebuildForAss)
@@ -721,9 +723,21 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         val (pictures, text) = cueGroup.cues.partition { it.bitmap != null }
         lastPictureCues = pictures
         lastTextCues = text
+        showCues()
+    }
+
+    /** Shows what changed on screen: a new subtitle, or a picture subtitle that was read (or wasn't, in time). */
+    private fun showCues() {
         showTextCues()
-        // A new subtitle can have more lines, or (a picture) sit elsewhere: move it clear of the controls at once.
+        // It can have more lines, or (a picture) sit elsewhere: move it clear of the controls at once.
         if (controlsShown || seeking || notice) liftSubtitles(animate = false)
+    }
+
+    override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+        // Going back reloads the film from there (nothing behind is kept), so what was lined up to read is stale.
+        if (reason == Player.DISCONTINUITY_REASON_SEEK && newPosition.positionMs < oldPosition.positionMs) {
+            pictureText.discardAhead()
+        }
     }
 
     /**
@@ -734,8 +748,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         readPictures()
         // libass draws its own subtitles; picture subtitles are images. Example text would sit on top of them.
         val otherShowing = lastPictureCues.isNotEmpty() || libassShowing()
-        val preview = stylePreviewing && lastTextCues.isEmpty() && !otherShowing && player?.playWhenReady != true
-        screenSubtitles.setCues(if (preview) styler.sample() else styler.normalize(shownTextCues))
+        val text = styler.normalize(shownTextCues)
+        val preview = stylePreviewing && text.isEmpty() && !otherShowing && player?.playWhenReady != true
+        screenSubtitles.setCues(if (preview) styler.sample() else text)
         frameSubtitles.setCues(styler.pictures(shownPictureCues))
     }
 
@@ -747,9 +762,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private fun readPictures() {
         shownTextCues = lastTextCues
         shownPictureCues = lastPictureCues
-        if (lastPictureCues.isEmpty() || styler.keepEmbedded ||
-            !pictureText.canRead(selectedFormat(C.TRACK_TYPE_TEXT)?.language)
-        ) {
+        val language = selectedFormat(C.TRACK_TYPE_TEXT)?.language
+        if (lastPictureCues.isEmpty() || styler.keepEmbedded || !pictureText.canRead(language)) {
             readingPictures = null
             return
         }
@@ -759,7 +773,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             if (readingPictures !== lastPictureCues) {
                 readingPictures = lastPictureCues
                 readingUntil = now + PICTURE_READ_WAIT_MS
-                for (cue in lastPictureCues) cue.bitmap?.let { pictureText.prepare(it, soon = true) }
+                for (cue in lastPictureCues) cue.bitmap?.let { pictureText.prepare(it, language, soon = true) }
                 handler.removeCallbacks(readingTimeout)
                 handler.postDelayed(readingTimeout, PICTURE_READ_WAIT_MS)
             }
@@ -1465,8 +1479,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     private fun commitSeek() {
         if (!seeking) return
+        // Presses that cancel out: nothing to jump to (a seek to here would still land on an earlier keyframe).
+        if (seekOffsetMs == 0L) {
+            cancelSeek()
+            return
+        }
         seekPreview.hide()
         handler.removeCallbacks(commitSeekRunnable)
+        // Past what's loaded: the film loads again from there, so what was lined up to read is stale.
+        if (seekTarget() > (player?.bufferedPosition ?: 0L)) pictureText.discardAhead()
         player?.seekTo(seekTarget())
         seeking = false
         updateOverlay()
@@ -1716,10 +1737,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     /**
      * Whether "Keep embedded styling" changed in a way the current player can't follow: ASS/SSA switches between
-     * libass and plain text, and picture subtitles are only read as text (ahead of time) by a player without libass.
+     * libass and plain text, and the picture subtitles being shown are only read as text (ahead of time) by a player
+     * without libass.
      */
     private fun stylingNeedsRebuild(): Boolean = prefs.keepAssStyling != builtWithAss &&
-        (hasSsaTrack() || (!prefs.keepAssStyling && hasTextTrack { it in PictureText.PICTURE_FORMATS }))
+        (hasSsaTrack() || (!prefs.keepAssStyling && readablePictureTrack() != null))
 
     private fun selectTrack(o: TrackOption) {
         val p = player ?: return
@@ -1945,7 +1967,21 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private fun applySubtitleStyle() {
         styler.keepEmbedded = prefs.keepAssStyling
         styler.apply(screenSubtitles, presets.active())
+        updatePictureReading()
         showTextCues()
+    }
+
+    /** The picture subtitle track that's shown as text, if any: the only one worth reading ahead. */
+    private fun readablePictureTrack(): Format? = selectedFormat(C.TRACK_TYPE_TEXT)?.takeIf { f ->
+        isPictureFormat(f) && pictureText.canRead(f.language)
+    }
+
+    private fun isPictureFormat(f: Format): Boolean =
+        listOf(f.sampleMimeType, f.codecs, f.containerMimeType).any { it in PictureText.PICTURE_FORMATS }
+
+    private fun updatePictureReading() {
+        if (!::pictureText.isInitialized) return
+        pictureText.showTrack(if (styler.keepEmbedded) null else readablePictureTrack()?.id)
     }
 
     private fun applyDisplayMode() {

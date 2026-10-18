@@ -34,7 +34,16 @@ import java.util.concurrent.TimeUnit
 @OptIn(UnstableApi::class)
 class PictureText(private val onRead: () -> Unit) {
 
-    private class Job(val key: Long, val nv21: ByteArray, val width: Int, val height: Int) {
+    private class Job(
+        val key: Long,
+        val nv21: ByteArray,
+        val width: Int,
+        val height: Int,
+        // Read ahead from this track (format id); null when asked for at display time.
+        val track: String?,
+        // The track's language is unknown, so a read only counts when it's confident (see [read]).
+        val strict: Boolean,
+    ) {
         // On screen now, so read first.
         var due = false
     }
@@ -47,6 +56,8 @@ class PictureText(private val onRead: () -> Unit) {
     private val jobs = LinkedBlockingDeque<Job>()
     private val keys = WeakHashMap<Bitmap, Long>()
     @Volatile private var broken = false
+    // The picture track being shown as text: the only one read ahead. Null: none.
+    @Volatile private var shownTrack: String? = null
     @Volatile private var released = false
     private var recognizer: TextRecognizer? = null
     // Recognition itself runs here. Playback runs at a far higher priority, so it still comes first, but a
@@ -82,8 +93,23 @@ class PictureText(private val onRead: () -> Unit) {
     /** Whether pictures in [language] can be read. */
     fun canRead(language: String?): Boolean = !broken && !released && readable(language)
 
-    /** Starts reading [bitmap] unless it has been read or is on its way. [soon]: it's due now, so it goes first. */
-    fun prepare(bitmap: Bitmap, soon: Boolean = false) {
+    /**
+     * Sets the picture track (its format id) being shown as text, or null for none. Other tracks in the file are
+     * loaded too, but only this one is read ahead; what was waiting from another track is dropped.
+     */
+    fun showTrack(id: String?) {
+        shownTrack = id
+        dropQueued { !shows(it.track) }
+    }
+
+    /** Drops what was waiting to be read ahead: after a jump the film loads again from somewhere else. */
+    fun discardAhead() = dropQueued { true }
+
+    /**
+     * Starts reading [bitmap] (a subtitle in [language]) unless it has been read or is on its way. [soon]: it's due
+     * now, so it goes first.
+     */
+    fun prepare(bitmap: Bitmap, language: String?, soon: Boolean = false, track: String? = null) {
         if (broken || released) return
         val key = keyOf(bitmap)
         synchronized(this) {
@@ -114,7 +140,7 @@ class PictureText(private val onRead: () -> Unit) {
                 return
             }
         }
-        val job = toJob(key, bitmap)
+        val job = toJob(key, bitmap, track, unknown(language))
         if (soon) {
             job.due = true
             jobs.offerFirst(job)
@@ -144,6 +170,7 @@ class PictureText(private val onRead: () -> Unit) {
         override fun create(format: Format): SubtitleParser {
             val parser = base.create(format)
             if (format.sampleMimeType !in PICTURE_FORMATS || !readable(format.language)) return parser
+            val track = format.id
             return object : SubtitleParser {
                 override fun parse(
                     data: ByteArray,
@@ -153,7 +180,7 @@ class PictureText(private val onRead: () -> Unit) {
                     output: Consumer<CuesWithTiming>,
                 ) {
                     parser.parse(data, offset, length, outputOptions) { cues ->
-                        for (cue in cues.cues) cue.bitmap?.let { prepare(it) }
+                        if (shows(track)) for (cue in cues.cues) cue.bitmap?.let { prepare(it, format.language, track = track) }
                         output.accept(cues)
                     }
                 }
@@ -161,6 +188,23 @@ class PictureText(private val onRead: () -> Unit) {
                 override fun reset() = parser.reset()
 
                 override fun getCueReplacementBehavior() = parser.cueReplacementBehavior
+            }
+        }
+    }
+
+    private fun shows(track: String?): Boolean {
+        val shown = shownTrack ?: return false
+        // Ids of the film's tracks gain a "1:" prefix once subtitle files are added alongside.
+        return track != null && (shown == track || shown.endsWith(":$track"))
+    }
+
+    private fun dropQueued(drop: (Job) -> Boolean) = synchronized(this) {
+        val queued = jobs.iterator()
+        while (queued.hasNext()) {
+            val job = queued.next()
+            if (!job.due && drop(job)) {
+                queued.remove()
+                pending.remove(job.key)
             }
         }
     }
@@ -203,7 +247,7 @@ class PictureText(private val onRead: () -> Unit) {
      * halved, which still leaves letters about 30 pixels tall and makes reading four times quicker; tiny ones are
      * doubled.
      */
-    private fun toJob(key: Long, bitmap: Bitmap): Job {
+    private fun toJob(key: Long, bitmap: Bitmap, track: String?, strict: Boolean): Job {
         val w = bitmap.width
         val h = bitmap.height
         val pixels = IntArray(w * h)
@@ -242,7 +286,7 @@ class PictureText(private val onRead: () -> Unit) {
                 nv21[row + x] = value.toByte()
             }
         }
-        return Job(key, nv21, outW, outH)
+        return Job(key, nv21, outW, outH, track, strict)
     }
 
     /** Text read from the job, "" for none, or null when reading failed and should be tried again later. */
@@ -254,7 +298,11 @@ class PictureText(private val onRead: () -> Unit) {
             val image = InputImage.fromByteArray(job.nv21, job.width, job.height, 0, InputImage.IMAGE_FORMAT_NV21)
             // Generous: a slow read still beats none, and it's kept for when the subtitle comes round again.
             val result = Tasks.await(client.process(image), 30, TimeUnit.SECONDS)
-            val lines = result.textBlocks.flatMap { it.lines }.mapNotNull { line ->
+            val found = result.textBlocks.flatMap { it.lines }
+            // A track of unknown language may be Cyrillic or Chinese, which this recogniser turns into look-alike
+            // letters: only a confident read replaces the picture.
+            if (job.strict && found.any { it.confidence < MIN_CONFIDENCE }) return ""
+            val lines = found.mapNotNull { line ->
                 val box = line.boundingBox ?: return@mapNotNull null
                 box to line.text
             }
@@ -303,6 +351,7 @@ class PictureText(private val onRead: () -> Unit) {
         private const val LARGE_HEIGHT = 120
         private const val SMALL_HEIGHT = 50
         private const val PAD = 16
+        private const val MIN_CONFIDENCE = 0.7f
 
         val PICTURE_FORMATS = setOf(MimeTypes.APPLICATION_PGS, MimeTypes.APPLICATION_VOBSUB, MimeTypes.APPLICATION_DVBSUBS)
 
@@ -310,8 +359,12 @@ class PictureText(private val onRead: () -> Unit) {
         private val OTHER_SCRIPTS = setOf(
             "ar", "fa", "ur", "ps", "ku", "he", "yi", "ru", "uk", "be", "bg", "mk", "kk", "ky", "tg", "mn", "el",
             "hy", "ka", "zh", "ja", "ko", "hi", "mr", "ne", "bn", "pa", "gu", "or", "ta", "te", "kn", "ml", "si",
-            "th", "lo", "km", "my", "am", "ti", "dv",
+            "th", "lo", "km", "my", "am", "ti", "dv", "sr", "tt", "ba", "cv", "os", "ce", "sah", "ab", "av", "ug",
+            "sd", "ks", "bo", "dz", "iu",
         )
+
+        private fun unknown(language: String?): Boolean =
+            language == null || language.lowercase() in setOf("und", "mul", "mis", "zxx")
 
         fun readable(language: String?): Boolean {
             val code = language?.lowercase()?.substringBefore('-')?.substringBefore('_') ?: return true

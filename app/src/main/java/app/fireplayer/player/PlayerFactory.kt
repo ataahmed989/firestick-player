@@ -162,8 +162,10 @@ object PlayerFactory {
                 )
                 .setTargetBufferBytes(budget)
                 .setPrioritizeTimeOverSizeThresholds(false)
-                // No back buffer: it would come out of the same memory, and a high-quality film needs all of it ahead.
-                .setBackBuffer(0, false)
+                // Nothing behind is kept (it would come out of the same memory, and a high-quality film needs all of
+                // it ahead) except the keyframe the picture is decoded from, without which a skip inside the buffer
+                // would find no keyframe to start from and load everything again.
+                .setBackBuffer(0, /* retainBackBufferFromKeyframe = */ true)
                 .build(),
             budget,
         )
@@ -176,8 +178,8 @@ object PlayerFactory {
             .setVideoScalingMode(C.VIDEO_SCALING_MODE_SCALE_TO_FIT)
             // Keeps Wi-Fi at full speed while playing; left to itself it may save power and fall behind the film.
             .setWakeMode(C.WAKE_MODE_NETWORK)
-            // Jumps land on a keyframe up to 2 s before the time asked for (never after), so less video has to be
-            // downloaded and decoded before the picture moves.
+            // Jumps land on a keyframe up to 2 s before the time asked for (never after; 2 s before when there's none
+            // in between), so less video has to be downloaded and decoded before the picture moves.
             .setSeekParameters(SeekParameters(2_000_000L, 0L))
 
         // Slow IPTV servers drop connections now and then; keep retrying before giving up.
