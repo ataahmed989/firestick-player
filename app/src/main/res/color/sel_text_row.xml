@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Selected rows turn white, so their text and icons turn dark; the current choice is blue otherwise. -->
 <selector xmlns:android="http://schemas.android.com/apk/res/android">
-    <item android:state_focused="true" android:color="@color/accent" />
+    <item android:state_focused="true" android:color="@color/text_dark" />
     <item android:state_selected="true" android:color="@color/accent" />
     <item android:color="@color/text" />
 </selector>
