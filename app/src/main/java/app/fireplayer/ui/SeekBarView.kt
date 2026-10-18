@@ -16,8 +16,9 @@ import app.fireplayer.R
 
 /**
  * The time bar. Seeking is done with the D-pad (when the bar is selected, or while the
- * controls are hidden) and the remote's rewind / fast-forward keys. A pending jump is drawn
- * as its own segment, and the thumb glides to each new target.
+ * controls are hidden) and the remote's rewind / fast-forward keys. The thumb glides to each
+ * new target and the played part follows it, so the bar looks the same whether or not a jump
+ * is pending: one look when selected, a quieter one otherwise.
  */
 class SeekBarView @JvmOverloads constructor(
     context: Context,
@@ -39,11 +40,10 @@ class SeekBarView @JvmOverloads constructor(
     private var focusAnimator: ValueAnimator? = null
 
     // Resting, the bar is quieter so it doesn't pull the eye from the film; selected, it comes up to full strength.
+    // Solid colours, so it looks the same over any picture.
     private val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val bufferPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val progressPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val jumpForwardPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val jumpBackPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val thumbPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     // Selected: a soft white ring around the knob, like light around a pressed button.
     private val haloPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
@@ -131,9 +131,14 @@ class SeekBarView @JvmOverloads constructor(
         setMeasuredDimension(getDefaultSize(suggestedMinimumWidth, widthMeasureSpec), h)
     }
 
-    private fun lerp(a: Int, b: Int, f: Float) = (a + (b - a) * f).toInt()
+    private fun lerp(a: Int, b: Int, f: Float) = (a + (b - a) * f + 0.5f).toInt()
 
-    private fun withAlpha(color: Int, alpha: Int) = (color and 0x00FFFFFF) or (alpha.coerceIn(0, 255) shl 24)
+    /** The resting colour [from] blended towards the selected colour [to]. */
+    private fun mix(from: Int, to: Int, f: Float) = Color.rgb(
+        lerp(Color.red(from), Color.red(to), f),
+        lerp(Color.green(from), Color.green(to), f),
+        lerp(Color.blue(from), Color.blue(to), f),
+    )
 
     override fun onDraw(canvas: Canvas) {
         val left = trackLeft()
@@ -145,12 +150,10 @@ class SeekBarView @JvmOverloads constructor(
         val bottom = cy + bar / 2
         val r = bar / 2
 
-        trackPaint.color = withAlpha(Color.WHITE, lerp(0x2E, 0x40, f))
-        bufferPaint.color = withAlpha(Color.WHITE, lerp(0x47, 0x6B, f))
-        progressPaint.color = withAlpha(accent, lerp(0xB8, 0xFF, f))
-        jumpForwardPaint.color = withAlpha(accent, lerp(0x70, 0x99, f))
-        jumpBackPaint.color = withAlpha(Color.WHITE, lerp(0x60, 0x80, f))
-        thumbPaint.color = withAlpha(Color.WHITE, lerp(0xD9, 0xFF, f))
+        trackPaint.color = mix(TRACK, SELECTED_TRACK, f)
+        bufferPaint.color = mix(BUFFER, SELECTED_BUFFER, f)
+        progressPaint.color = mix(PROGRESS, accent, f)
+        thumbPaint.color = mix(THUMB, Color.WHITE, f)
 
         rect.set(left, top, left + w, bottom)
         canvas.drawRoundRect(rect, r, r, trackPaint)
@@ -158,20 +161,11 @@ class SeekBarView @JvmOverloads constructor(
         rect.set(left, top, left + w * fraction(bufferedMs), bottom)
         canvas.drawRoundRect(rect, r, r, bufferPaint)
 
-        val target = shownTargetMs
-        val position = positionMs.toFloat()
-        val playedEnd = fraction(if (target != null) minOf(target, position) else position)
-        rect.set(left, top, left + w * playedEnd, bottom)
+        // Played up to the thumb, wherever it is.
+        val x = thumbX()
+        rect.set(left, top, x, bottom)
         canvas.drawRoundRect(rect, r, r, progressPaint)
 
-        if (target != null && target != position) {
-            val a = fraction(minOf(target, position))
-            val b = fraction(maxOf(target, position))
-            rect.set(left + w * a, top, left + w * b, bottom)
-            canvas.drawRoundRect(rect, r, r, if (target > position) jumpForwardPaint else jumpBackPaint)
-        }
-
-        val x = thumbX()
         val radius = thumbRadius + (focusedThumbRadius - thumbRadius) * f
         // A soft shadow just below the knob, so it sits on the bar instead of looking pasted on.
         canvas.save()
@@ -185,5 +179,15 @@ class SeekBarView @JvmOverloads constructor(
             canvas.drawCircle(x, cy, radius + haloWidth * f, haloPaint)
         }
         canvas.drawCircle(x, cy, radius, thumbPaint)
+    }
+
+    private companion object {
+        // Resting colours: the selected ones, dulled.
+        val TRACK = Color.rgb(0x34, 0x3A, 0x46)
+        val BUFFER = Color.rgb(0x6E, 0x76, 0x84)
+        val PROGRESS = Color.rgb(0x4B, 0x87, 0xE0)
+        val THUMB = Color.rgb(0xE3, 0xE4, 0xE6)
+        val SELECTED_TRACK = Color.rgb(0x46, 0x4D, 0x5A)
+        val SELECTED_BUFFER = Color.rgb(0x94, 0x99, 0xA3)
     }
 }
