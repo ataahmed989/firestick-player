@@ -652,7 +652,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         lastPictureCues = pictures
         lastTextCues = text
         showTextCues()
-        // New picture subtitles can be taller or sit elsewhere: move them clear of the controls at once.
+        // A new subtitle can have more lines, or (a picture) sit elsewhere: move it clear of the controls at once.
         if (controlsShown || seeking || notice) liftSubtitles(animate = false)
     }
 
@@ -1039,8 +1039,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             val floor = if (controlsShown) Float.MAX_VALUE else bottomBlock.top + seekRow.bottom + 6f * density
             val height = root.height.toFloat()
             val textBottom = height * (1f - styler.bottomFraction)
-            // Two lines of text, which most subtitles are, so the lift doesn't change from line to line.
-            val textTop = textBottom - 2.4f * styler.textSizeFraction * height
+            // The lines showing now; a new subtitle is placed again as it appears (see onCues).
+            val lines = lastTextCues.sumOf { cue -> (cue.text?.count { it == '\n' } ?: 0) + 1 }
+            val textTop = textBottom - lines * 1.2f * styler.textSizeFraction * height
             screen = liftFor(textTop, textBottom, limit, floor)
             if (!libassShowing()) frame = pictureLift(limit, floor)
         }

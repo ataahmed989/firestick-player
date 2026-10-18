@@ -40,10 +40,14 @@ class SeekPreview(
     private var itemKey: String? = null
     private var item: MediaItem? = null
     private var requestedMs = 0L
-    // The target of the last seek actually sent to the player, which the next picture belongs to.
+    // The target of the last seek sent to the player, which the next picture belongs to.
     private var issuedMs = 0L
-    // A newer target is waiting to be sent; pictures arriving meanwhile are for an older one.
-    private var seekPending = false
+    // A seek was sent and its picture isn't ready yet. Only one is sent at a time, so holding a key (a new target
+    // every 150 ms) still gets pictures: each new seek goes to wherever skipping has got to by then.
+    private var inFlight = false
+    // Counts rounds of skipping, so a picture asked for in an earlier round isn't shown in this one.
+    private var round = 0
+    private var issuedRound = 0
     private var jumpAt = 0L
     // The card is on screen with a picture from this round of skipping.
     private var shown = false
@@ -71,22 +75,21 @@ class SeekPreview(
         active = true
         requestedMs = targetMs
         this.jumpAt = jumpAt
-        seekPending = true
         handler.removeCallbacks(releaseRunnable)
-        handler.removeCallbacks(seekRunnable)
-        handler.removeCallbacks(revealRunnable)
-        // Quick presses add up; only the target where they settle is fetched. The picture and time
-        // on show stay together until the new picture is ready.
-        handler.postDelayed(seekRunnable, if (player == null) 0L else 140L)
+        // While a picture is on its way, the next seek waits for it. The picture and time on show stay together.
+        if (!inFlight) {
+            handler.removeCallbacks(seekRunnable)
+            handler.post(seekRunnable)
+        }
     }
 
     /** Hides the preview; the player is let go a little later in case skipping resumes. */
     fun hide() {
         if (!active) return
         active = false
-        seekPending = false
+        round++
+        // A picture still on its way is let in (and not shown), so the next round's first seek isn't held up.
         handler.removeCallbacks(seekRunnable)
-        handler.removeCallbacks(revealRunnable)
         card.animate().cancel()
         card.animate().alpha(0f).setDuration(140).start()
         setShown(false)
@@ -103,7 +106,7 @@ class SeekPreview(
             it.release()
         }
         player = null
-        seekPending = false
+        inFlight = false
         card.animate().cancel()
         card.alpha = 0f
         setShown(false)
@@ -124,6 +127,7 @@ class SeekPreview(
     }
 
     private val seekRunnable = Runnable {
+        if (!active || inFlight) return@Runnable
         val target = requestedMs
         val current = player
         if (current != null) {
@@ -148,7 +152,8 @@ class SeekPreview(
             }
         }
         issuedMs = target
-        seekPending = false
+        issuedRound = round
+        inFlight = true
     }
 
     private val releaseRunnable = Runnable { release() }
@@ -157,7 +162,8 @@ class SeekPreview(
     private val revealRunnable = Runnable { reveal() }
 
     override fun onPlaybackStateChanged(playbackState: Int) {
-        if (playbackState == Player.STATE_READY) {
+        // Ended: the target was past the last picture; there's nothing to show, but the next seek can go.
+        if (playbackState == Player.STATE_READY || playbackState == Player.STATE_ENDED) {
             handler.removeCallbacks(revealRunnable)
             handler.postDelayed(revealRunnable, 40)
         }
@@ -178,8 +184,13 @@ class SeekPreview(
 
     private fun reveal() {
         val p = player ?: return
-        // Not for an older target, nor while the player is still fetching the newest one.
-        if (!active || seekPending || p.playbackState != Player.STATE_READY) return
+        val state = p.playbackState
+        if (!inFlight || (state != Player.STATE_READY && state != Player.STATE_ENDED)) return
+        inFlight = false
+        // Skipping has moved on since this seek was sent (or it was for an earlier round): fetch where it is now.
+        if (active && (requestedMs != issuedMs || issuedRound != round)) handler.post(seekRunnable)
+        // Not a picture asked for in an earlier round of skipping.
+        if (!active || issuedRound != round || state != Player.STATE_READY) return
         // Popping up only to vanish with the jump a moment later would just flicker.
         if (!shown && SystemClock.uptimeMillis() > jumpAt - 300) return
         time.text = format(issuedMs)
