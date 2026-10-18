@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.FirePlayer" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">@color/black</item>
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="colorAccent">@color/accent</item>
+        <item name="colorPrimary">@color/black</item>
+        <item name="android:textColor">@color/text</item>
+        <item name="android:fontFamily">@font/figtree_500</item>
+        <item name="alertDialogTheme">@style/Dialog.FirePlayer</item>
+    </style>
+
+    <style name="Dialog.FirePlayer" parent="Theme.AppCompat.Dialog.Alert">
+        <item name="colorAccent">@color/accent</item>
+        <item name="android:windowBackground">@drawable/bg_dialog</item>
+        <item name="android:textColorPrimary">@color/text</item>
+        <item name="android:textColor">@color/text</item>
+        <item name="android:fontFamily">@font/figtree_500</item>
+        <item name="buttonBarPositiveButtonStyle">@style/DialogButton</item>
+        <item name="buttonBarNegativeButtonStyle">@style/DialogButton</item>
+        <item name="buttonBarNeutralButtonStyle">@style/DialogButton</item>
+    </style>
+
+    <style name="DialogButton" parent="Widget.AppCompat.Button.ButtonBar.AlertDialog">
+        <item name="android:textColor">@color/sel_text_row</item>
+        <item name="android:background">@drawable/bg_row</item>
+        <item name="android:fontFamily">@font/figtree_600</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:layout_marginStart">6dp</item>
+        <item name="android:minWidth">88dp</item>
+    </style>
+
+    <style name="Chip">
+        <item name="android:layout_width">wrap_content</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginEnd">5dp</item>
+        <item name="android:background">@drawable/bg_chip</item>
+        <item name="android:paddingStart">6dp</item>
+        <item name="android:paddingEnd">6dp</item>
+        <item name="android:paddingTop">2dp</item>
+        <item name="android:paddingBottom">2dp</item>
+        <item name="android:textSize">10sp</item>
+        <item name="android:textColor">@color/text</item>
+        <item name="android:fontFamily">@font/figtree_700</item>
+    </style>
+
+    <style name="Tooltip">
+        <item name="android:layout_width">wrap_content</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginTop">4dp</item>
+        <item name="android:background">@drawable/bg_tooltip</item>
+        <item name="android:paddingStart">6dp</item>
+        <item name="android:paddingEnd">6dp</item>
+        <item name="android:paddingTop">2dp</item>
+        <item name="android:paddingBottom">2dp</item>
+        <item name="android:textSize">10sp</item>
+        <item name="android:textColor">@color/text</item>
+        <item name="android:fontFamily">@font/figtree_600</item>
+        <item name="android:singleLine">true</item>
+        <item name="android:visibility">invisible</item>
+    </style>
+</resources>

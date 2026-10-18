@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="accent">#FF3D8BFF</color>
+    <color name="text">#FFF4F2EE</color>
+    <color name="text_muted">#FFC9CDD0</color>
+    <color name="text_dark">#FF111315</color>
+    <color name="focus_fill">#FFF4F2EE</color>
+    <color name="button_fill">#1FFFFFFF</color>
+    <color name="row_fill">#E61A1E24</color>
+    <color name="panel_fill">#700B0E12</color>
+    <color name="panel_stroke">#1FFFFFFF</color>
+    <color name="chip_fill">#26FFFFFF</color>
+    <color name="tooltip_fill">#B3000000</color>
+    <color name="black">#FF000000</color>
+</resources>

@@ -1,0 +1,57 @@
+package app.fireplayer.player
+
+import android.app.Activity
+import android.os.Build
+import android.view.Display
+import kotlin.math.abs
+import kotlin.math.roundToInt
+
+/**
+ * Switches the TV's refresh rate to suit the video (e.g. 23.976 fps -> 24 Hz)
+ * so camera pans don't judder. Fire TV honours preferredDisplayModeId.
+ */
+class FrameRateMatcher(private val activity: Activity) {
+
+    private var switched = false
+
+    /** Returns true when the TV is about to switch modes (the picture blanks briefly). */
+    fun match(fps: Float): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || fps <= 0f) return false
+        @Suppress("DEPRECATION")
+        val display = activity.windowManager.defaultDisplay ?: return false
+        val current = display.mode
+        val best = pickMode(display.supportedModes, current, fps) ?: return false
+        if (best.modeId == current.modeId) return false
+        val params = activity.window.attributes
+        params.preferredDisplayModeId = best.modeId
+        activity.window.attributes = params
+        switched = true
+        return true
+    }
+
+    fun reset() {
+        if (!switched || Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        val params = activity.window.attributes
+        params.preferredDisplayModeId = 0
+        activity.window.attributes = params
+        switched = false
+    }
+
+    private fun pickMode(modes: Array<Display.Mode>, current: Display.Mode, fps: Float): Display.Mode? {
+        val sameSize = modes.filter {
+            it.physicalWidth == current.physicalWidth && it.physicalHeight == current.physicalHeight
+        }
+        // Exact rate first (24 for 23.976), then a whole multiple (48, 60 for 30, 50 for 25).
+        sameSize.firstOrNull { rateMatches(it.refreshRate, fps) }?.let { return it }
+        for (multiple in 2..3) {
+            sameSize.firstOrNull { rateMatches(it.refreshRate, fps * multiple) }?.let { return it }
+        }
+        return null
+    }
+
+    private fun rateMatches(refresh: Float, target: Float): Boolean {
+        // 23.976 and 24 are treated as the same family; TVs often list only one.
+        return abs(refresh - target) < 0.05f || refresh.roundToInt() == target.roundToInt() &&
+            abs(refresh - target) < 0.1f
+    }
+}
