@@ -98,7 +98,7 @@ class HomeActivity : AppCompatActivity() {
         val iconView = ImageView(this).apply {
             setImageResource(icon)
             imageTintList = colors
-            duplicateParentState = true
+            isDuplicateParentStateEnabled = true
         }
         val size = (20 * density).toInt()
         row.addView(iconView, LinearLayout.LayoutParams(size, size).apply { marginEnd = (12 * density).toInt() })
@@ -107,7 +107,7 @@ class HomeActivity : AppCompatActivity() {
             typeface = ResourcesCompat.getFont(this@HomeActivity, R.font.figtree_600)
             setTextColor(colors)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
-            duplicateParentState = true
+            isDuplicateParentStateEnabled = true
         })
         row.setOnClickListener { onClick(it) }
         list.addView(

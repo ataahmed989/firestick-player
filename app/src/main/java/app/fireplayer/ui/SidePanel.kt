@@ -134,7 +134,7 @@ class SidePanel(private val activity: Activity) {
         if (checked) {
             val tick = ImageView(activity).apply {
                 setImageResource(R.drawable.ic_check)
-                duplicateParentState = true
+                isDuplicateParentStateEnabled = true
                 imageTintList = rowTextColors
             }
             val size = (15 * density).toInt()
@@ -180,7 +180,7 @@ class SidePanel(private val activity: Activity) {
     private fun rowText(text: String) = TextView(activity).apply {
         this.text = text
         typeface = font600
-        duplicateParentState = true
+        isDuplicateParentStateEnabled = true
         setTextColor(rowTextColors)
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
         isSingleLine = true
