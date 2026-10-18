@@ -15,6 +15,7 @@ import androidx.media3.exoplayer.ForwardingRenderer
 import androidx.media3.common.Format
 import androidx.media3.exoplayer.Renderer
 import androidx.media3.exoplayer.RendererConfiguration
+import androidx.media3.exoplayer.SeekParameters
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.SampleStream
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
@@ -48,6 +49,48 @@ object PlayerFactory {
 
     class Built(val player: ExoPlayer, val assHandler: AssHandler?)
 
+    private fun dataSourceFactory(context: Context, headers: Map<String, String>): DataSource.Factory {
+        // IPTV providers often require the User-Agent TiviMate passes along, so it must win over ours.
+        val userAgent = headers.entries.firstOrNull { it.key.equals("User-Agent", true) }?.value
+        val httpFactory = DefaultHttpDataSource.Factory()
+            .setUserAgent(userAgent ?: "FirePlayer/1.0 (Linux; Android) ExoPlayer")
+            .setAllowCrossProtocolRedirects(true)
+            // A server that doesn't answer in 12 s won't answer at 20; failing sooner lets the retries take over.
+            .setConnectTimeoutMs(12_000)
+            .setReadTimeoutMs(30_000)
+            .setDefaultRequestProperties(headers.filterKeys { !it.equals("User-Agent", true) })
+        return DefaultDataSource.Factory(context, httpFactory)
+    }
+
+    /**
+     * A small video-only player for the skip preview: it loads a second or so around a jump target,
+     * shows the nearest keyframe, and never plays sound or subtitles.
+     */
+    fun buildPreview(context: Context, headers: Map<String, String>): ExoPlayer {
+        val extractors = SeekableMkvExtractorsFactory(DefaultExtractorsFactory().setConstantBitrateSeekingEnabled(true))
+        val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory(context, headers), extractors)
+            .setLoadErrorHandlingPolicy(DefaultLoadErrorHandlingPolicy(1))
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(500, 1_500, 100, 100)
+            .setPrioritizeTimeOverSizeThresholds(true)
+            .build()
+        val player = ExoPlayer.Builder(context)
+            .setMediaSourceFactory(mediaSourceFactory)
+            .setRenderersFactory(DefaultRenderersFactory(context).setEnableDecoderFallback(true))
+            .setLoadControl(loadControl)
+            .build()
+        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, true)
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+            .setMaxVideoSize(1920, 1080)
+            .build()
+        // Jumping to the nearest keyframe is what makes a preview quick.
+        player.setSeekParameters(SeekParameters.CLOSEST_SYNC)
+        player.volume = 0f
+        player.playWhenReady = false
+        return player
+    }
+
     /**
      * Builds a player tuned for streaming on a Fire TV:
      * hardware decoders first, FFmpeg for audio the device can't decode, a deeper
@@ -61,16 +104,7 @@ object PlayerFactory {
         assSubtitleView: SubtitleView,
         headers: Map<String, String>,
     ): Built {
-        // IPTV providers often require the User-Agent TiviMate passes along, so it must win over ours.
-        val userAgent = headers.entries.firstOrNull { it.key.equals("User-Agent", true) }?.value
-        val httpFactory = DefaultHttpDataSource.Factory()
-            .setUserAgent(userAgent ?: "FirePlayer/1.0 (Linux; Android) ExoPlayer")
-            .setAllowCrossProtocolRedirects(true)
-            // A server that doesn't answer in 12 s won't answer at 20; failing sooner lets the retries take over.
-            .setConnectTimeoutMs(12_000)
-            .setReadTimeoutMs(30_000)
-            .setDefaultRequestProperties(headers.filterKeys { !it.equals("User-Agent", true) })
-        val dataSourceFactory: DataSource.Factory = DefaultDataSource.Factory(context, httpFactory)
+        val dataSourceFactory = dataSourceFactory(context, headers)
 
         val extractors = DefaultExtractorsFactory()
             .setConstantBitrateSeekingEnabled(true)

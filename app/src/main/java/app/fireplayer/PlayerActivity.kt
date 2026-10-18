@@ -54,6 +54,7 @@ import app.fireplayer.subs.SubtitlePresets
 import app.fireplayer.subs.SubtitleStyler
 import app.fireplayer.ui.FireDialog
 import app.fireplayer.ui.SeekBarView
+import app.fireplayer.ui.SeekPreview
 import app.fireplayer.ui.SettingsPanels
 import app.fireplayer.ui.SidePanel
 import io.github.peerless2012.ass.media.AssHandler
@@ -123,6 +124,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private lateinit var chipFps: TextView
     private lateinit var chipAudio: TextView
     private lateinit var seekBubble: TextView
+    private lateinit var seekPreview: SeekPreview
     private lateinit var seekRow: View
     private lateinit var timeElapsed: TextView
     private lateinit var seekBar: SeekBarView
@@ -248,6 +250,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     override fun onStop() {
         super.onStop()
         commitSeek()
+        seekPreview.release()
         notice = false
         retryPending = false
         savePosition()
@@ -748,6 +751,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         chipFps = findViewById(R.id.chip_fps)
         chipAudio = findViewById(R.id.chip_audio)
         seekBubble = findViewById(R.id.seek_bubble)
+        seekPreview = SeekPreview(
+            card = findViewById(R.id.preview_card),
+            frame = findViewById(R.id.preview_frame),
+            texture = findViewById(R.id.preview_texture),
+            time = findViewById(R.id.preview_time),
+            format = { formatTime(it, longTimes == true) },
+            create = { PlayerFactory.buildPreview(this, headersFromIntent()) },
+        )
         seekRow = findViewById(R.id.seek_row)
         timeElapsed = findViewById(R.id.time_elapsed)
         seekBar = findViewById(R.id.seek_bar)
@@ -1128,11 +1139,24 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         clearNotice()
         val sign = if (seekOffsetMs < 0) "−" else "+"
         seekBubble.text = sign + formatTime(abs(seekOffsetMs))
+        val previews = prefs.seekPreviews
+        if (previews) {
+            entries.getOrNull(p.currentMediaItemIndex)?.let { entry ->
+                // Video only: the preview needs no subtitles.
+                val item = mediaItem(entry).buildUpon().setSubtitleConfigurations(emptyList()).build()
+                seekPreview.update(entry.key, item, seekTarget())
+            }
+        }
         updateOverlay()
         updateProgress()
         handler.removeCallbacks(commitSeekRunnable)
         // On the selected time bar there's more time to keep going; OK jumps at once.
-        handler.postDelayed(commitSeekRunnable, if (seekBar.isFocused) 1_500L else 900L)
+        // With the preview on, a little longer, so there's time to see where you'd land.
+        val delay = when {
+            seekBar.isFocused -> if (previews) 2_000L else 1_500L
+            else -> if (previews) 1_400L else 900L
+        }
+        handler.postDelayed(commitSeekRunnable, delay)
         if (controlsShown) scheduleHide()
     }
 
@@ -1161,6 +1185,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     private fun commitSeek() {
         if (!seeking) return
+        seekPreview.hide()
         handler.removeCallbacks(commitSeekRunnable)
         player?.seekTo(seekTarget())
         seeking = false
@@ -1169,6 +1194,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     }
 
     private fun cancelSeek() {
+        seekPreview.hide()
         handler.removeCallbacks(commitSeekRunnable)
         seeking = false
         updateOverlay()
@@ -1184,6 +1210,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         val layer = seekBubble.parent as View
         val x = seekRow.left + seekBar.left + seekBar.thumbX() - seekBubble.width / 2f
         seekBubble.translationX = x.coerceIn(0f, (layer.width - seekBubble.width).toFloat().coerceAtLeast(0f))
+        // The preview sits just above the "+4:00" card, over the same spot on the bar.
+        val thumbX = bottomBlock.left + seekRow.left + seekBar.left + seekBar.thumbX()
+        val bubbleTop = bottomBlock.top + layer.top + seekBubble.top
+        val margin = 24f * resources.displayMetrics.density
+        seekPreview.place(thumbX, bubbleTop - 8f * resources.displayMetrics.density, margin, root.width - margin)
     }
 
     // ---------------------------------------------------------------------

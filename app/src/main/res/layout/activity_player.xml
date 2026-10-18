@@ -393,6 +393,50 @@
         </FrameLayout>
     </LinearLayout>
 
+    <!-- A still from where a jump will land, placed over the thumb while skipping (see SeekPreview). -->
+    <FrameLayout
+        android:id="@+id/preview_card"
+        android:layout_width="224dp"
+        android:layout_height="126dp"
+        android:layout_gravity="bottom|start"
+        android:background="@drawable/bg_preview"
+        android:elevation="10dp"
+        android:foreground="@drawable/fg_preview">
+
+        <androidx.media3.ui.AspectRatioFrameLayout
+            android:id="@+id/preview_frame"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:layout_gravity="center">
+
+            <TextureView
+                android:id="@+id/preview_texture"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent" />
+        </androidx.media3.ui.AspectRatioFrameLayout>
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="36dp"
+            android:layout_gravity="bottom"
+            android:background="@drawable/scrim_preview" />
+
+        <TextView
+            android:id="@+id/preview_time"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|center_horizontal"
+            android:layout_marginBottom="6dp"
+            android:fontFamily="@font/figtree_700"
+            android:fontFeatureSettings="tnum"
+            android:shadowColor="#99000000"
+            android:shadowDy="1"
+            android:shadowRadius="3"
+            android:textColor="@color/text"
+            android:textSize="12sp"
+            tools:text="1:12:48" />
+    </FrameLayout>
+
     <LinearLayout
         android:id="@+id/error_box"
         android:layout_width="wrap_content"

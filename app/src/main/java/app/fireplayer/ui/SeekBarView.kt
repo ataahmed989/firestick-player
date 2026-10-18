@@ -27,47 +27,31 @@ class SeekBarView @JvmOverloads constructor(
     private val density = resources.displayMetrics.density
     private val barHeight = 4f * density
     private val focusedBarHeight = 6f * density
-    private val thumbRadius = 6.5f * density
-    private val focusedThumbRadius = 10f * density
-    private val borderWidth = 3f * density
-    private val glowRadius = 26f * density
-    /** Room the selected thumb needs, so it's never cut off at the ends. The glow may spill past the bar. */
-    private val outerRadius = focusedThumbRadius + 2f * density
+    private val thumbRadius = 5f * density
+    private val focusedThumbRadius = 8.5f * density
+    private val haloWidth = 5f * density
+    /** Room the selected thumb and its halo need, so they're never cut off at the ends. */
+    private val outerRadius = focusedThumbRadius + haloWidth
     private val accent = ContextCompat.getColor(context, R.color.accent)
 
-    /** 0 = resting, 1 = selected; animated so the thumb grows smoothly. */
+    /** 0 = resting, 1 = selected; animated so the bar brightens and the thumb grows smoothly. */
     private var focusAmount = 0f
     private var focusAnimator: ValueAnimator? = null
 
-    private val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(0x38, 255, 255, 255) }
-    private val bufferPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(0x66, 255, 255, 255) }
-    private val progressPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = ContextCompat.getColor(context, R.color.accent)
-    }
-    private val jumpForwardPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = ContextCompat.getColor(context, R.color.accent) and 0x00FFFFFF or (0x99 shl 24)
-    }
-    private val jumpBackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(0x80, 255, 255, 255) }
-    private val thumbPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = ContextCompat.getColor(context, R.color.focus_fill) }
-    // Selected: the same white-with-blue-border look as the selected buttons, with a soft blue glow.
-    private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = accent
-        style = Paint.Style.STROKE
-        strokeWidth = borderWidth
-    }
-    private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        shader = RadialGradient(
-            0f, 0f, glowRadius,
-            intArrayOf(accent and 0x00FFFFFF or (0x80 shl 24), accent and 0x00FFFFFF or (0x2E shl 24), accent and 0x00FFFFFF),
-            floatArrayOf(0f, 0.45f, 1f),
-            Shader.TileMode.CLAMP,
-        )
-    }
+    // Resting, the bar is quieter so it doesn't pull the eye from the film; selected, it comes up to full strength.
+    private val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val bufferPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val progressPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val jumpForwardPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val jumpBackPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val thumbPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    // Selected: a soft white ring around the knob, like light around a pressed button.
+    private val haloPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
     private val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         shader = RadialGradient(
-            0f, 0f, focusedThumbRadius + 4f * density,
-            intArrayOf(Color.argb(0x66, 0, 0, 0), Color.argb(0x66, 0, 0, 0), Color.TRANSPARENT),
-            floatArrayOf(0f, 0.7f, 1f),
+            0f, 0f, 1f,
+            intArrayOf(Color.argb(0x73, 0, 0, 0), Color.argb(0x40, 0, 0, 0), Color.TRANSPARENT),
+            floatArrayOf(0f, 0.6f, 1f),
             Shader.TileMode.CLAMP,
         )
     }
@@ -143,9 +127,13 @@ class SeekBarView @JvmOverloads constructor(
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        val h = Math.ceil(((focusedThumbRadius + 3f * density) * 2).toDouble()).toInt()
+        val h = Math.ceil(((outerRadius + 1f * density) * 2).toDouble()).toInt()
         setMeasuredDimension(getDefaultSize(suggestedMinimumWidth, widthMeasureSpec), h)
     }
+
+    private fun lerp(a: Int, b: Int, f: Float) = (a + (b - a) * f).toInt()
+
+    private fun withAlpha(color: Int, alpha: Int) = (color and 0x00FFFFFF) or (alpha.coerceIn(0, 255) shl 24)
 
     override fun onDraw(canvas: Canvas) {
         val left = trackLeft()
@@ -156,6 +144,13 @@ class SeekBarView @JvmOverloads constructor(
         val top = cy - bar / 2
         val bottom = cy + bar / 2
         val r = bar / 2
+
+        trackPaint.color = withAlpha(Color.WHITE, lerp(0x2E, 0x40, f))
+        bufferPaint.color = withAlpha(Color.WHITE, lerp(0x47, 0x6B, f))
+        progressPaint.color = withAlpha(accent, lerp(0xB8, 0xFF, f))
+        jumpForwardPaint.color = withAlpha(accent, lerp(0x70, 0x99, f))
+        jumpBackPaint.color = withAlpha(Color.WHITE, lerp(0x60, 0x80, f))
+        thumbPaint.color = withAlpha(Color.WHITE, lerp(0xD9, 0xFF, f))
 
         rect.set(left, top, left + w, bottom)
         canvas.drawRoundRect(rect, r, r, trackPaint)
@@ -178,20 +173,17 @@ class SeekBarView @JvmOverloads constructor(
 
         val x = thumbX()
         val radius = thumbRadius + (focusedThumbRadius - thumbRadius) * f
+        // A soft shadow just below the knob, so it sits on the bar instead of looking pasted on.
+        canvas.save()
+        canvas.translate(x, cy + (0.5f + f) * density)
+        val shadow = radius + (2.5f + 2f * f) * density
+        canvas.scale(shadow, shadow)
+        canvas.drawCircle(0f, 0f, 1f, shadowPaint)
+        canvas.restore()
         if (f > 0f) {
-            canvas.save()
-            canvas.translate(x, cy)
-            glowPaint.alpha = (255 * f).toInt()
-            canvas.drawCircle(0f, 0f, glowRadius, glowPaint)
-            canvas.translate(0f, 1.5f * density * f)
-            shadowPaint.alpha = (255 * f).toInt()
-            canvas.drawCircle(0f, 0f, radius + 4f * density, shadowPaint)
-            canvas.restore()
+            haloPaint.alpha = (0x2E * f).toInt()
+            canvas.drawCircle(x, cy, radius + haloWidth * f, haloPaint)
         }
         canvas.drawCircle(x, cy, radius, thumbPaint)
-        if (f > 0f) {
-            borderPaint.alpha = (255 * f).toInt()
-            canvas.drawCircle(x, cy, radius - borderWidth / 2, borderPaint)
-        }
     }
 }

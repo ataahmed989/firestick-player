@@ -49,6 +49,10 @@ class SettingsPanels(
         row("Hold to speed up", onOff(prefs.holdSpeedUp)) {
             prefs.holdSpeedUp = !prefs.holdSpeedUp; refresh()
         }
+        row("Preview while skipping", onOff(prefs.seekPreviews)) {
+            prefs.seekPreviews = !prefs.seekPreviews; refresh()
+        }
+        if (prefs.seekPreviews) message("Uses a second connection to the server. Turn it off if your IPTV plan allows only one.")
 
         header("Defaults")
         val subLanguages = languages + ""
