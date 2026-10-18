@@ -254,9 +254,13 @@ private class FilmRetryPolicy : DefaultLoadErrorHandlingPolicy(RETRIES) {
 }
 
 /**
- * The film's buffer rules (see [PlayerFactory.build]). After a stall it waits for 4 seconds of video; when stalls
- * keep coming (a film the connection can only just keep up with) it waits for 10, then 20, so playback stops now
- * and then for a little longer instead of every few seconds.
+ * The film's buffer rules (see [PlayerFactory.build]).
+ *
+ * It measures how fast the film arrives, in seconds of film per second. When the connection brings it faster than it
+ * plays, playback starts (or restarts) after a second or a few. When it only just keeps up, or falls behind (a
+ * high-quality film on a slower line), playback waits for enough to then play a minute without stopping, instead of
+ * starting at once and stopping again every few seconds. Stalls that keep coming also make the next wait longer
+ * (4, 10, then 20 seconds).
  */
 @OptIn(UnstableApi::class)
 private class FilmLoadControl(private val inner: DefaultLoadControl, private val budgetBytes: Int) : LoadControl {
@@ -268,22 +272,87 @@ private class FilmLoadControl(private val inner: DefaultLoadControl, private val
     private val window = Timeline.Window()
     private val period = Timeline.Period()
 
+    // How fast the film arrives: seconds of film loaded during loadingMs of loading, since the last jump. On the
+    // playback thread only.
+    private var loadedUs = 0L
+    private var loadingMs = 0L
+    private var lastAtMs = 0L
+    private var lastEndUs = C.TIME_UNSET
+    private var lastPositionUs = C.TIME_UNSET
+    private var lastPeriod: Any? = null
+    private var loading = false
+    // Film has started arriving since the last jump; the wait for the connection before that doesn't count.
+    private var arriving = false
+
     override fun shouldStartPlayback(parameters: LoadControl.Parameters): Boolean {
         // Live channels can't build up a cushion (the stream only comes as fast as it plays), so they keep the usual rule.
-        if (!parameters.rebuffering || isLive(parameters)) return inner.shouldStartPlayback(parameters)
+        if (isLive(parameters)) return inner.shouldStartPlayback(parameters)
+        measure(parameters)
+        // Memory full means nothing more can come before playing on.
+        if (inner.allocator.totalBytesAllocated >= budgetBytes) return true
+        val buffered = parameters.bufferedDurationUs
+        val rate = fillRate()
+        if (!parameters.rebuffering) {
+            // Starting, or after a jump: a second's worth, once it's clear how fast the rest is coming (or plenty).
+            if (rate == null) return buffered >= 10_000_000L
+            return buffered >= maxOf(START_US, cushionFor(rate))
+        }
         val now = SystemClock.elapsedRealtime()
         if (parameters.lastRebufferRealtimeMs != stallId) {
             stallId = parameters.lastRebufferRealtimeMs
             stalls.addLast(now)
         }
         while (stalls.isNotEmpty() && now - stalls.first() > STALL_MEMORY_MS) stalls.removeFirst()
-        val cushionUs = when (stalls.size) {
+        val afterStallUs = when (stalls.size) {
             0, 1 -> 4_000_000L
             2 -> 10_000_000L
             else -> 20_000_000L
         }
-        // Memory full means nothing more can come before playing on.
-        return parameters.bufferedDurationUs >= cushionUs || inner.allocator.totalBytesAllocated >= budgetBytes
+        return buffered >= maxOf(afterStallUs, rate?.let { cushionFor(it) } ?: 0L)
+    }
+
+    /** Seconds of film arriving per second of loading, once there's enough to tell; null before that. */
+    private fun fillRate(): Float? = if (loadingMs < MEASURE_MS) null else loadedUs / 1000f / loadingMs
+
+    /** How much to have before playing so it then plays [SMOOTH_US] without stopping, at [rate]. */
+    private fun cushionFor(rate: Float): Long = when {
+        rate >= 1.3f -> 0L
+        // Only just keeping up: room for the connection's ups and downs.
+        rate >= 1f -> 8_000_000L
+        // Falling behind by (1 - rate) every second.
+        else -> (SMOOTH_US * (1f - rate)).toLong().coerceAtMost(MAX_CUSHION_US)
+    }
+
+    /** Follows how far the loaded film reaches, counting only time spent loading, and starts over after a jump. */
+    private fun measure(parameters: LoadControl.Parameters) {
+        val now = SystemClock.elapsedRealtime()
+        val positionUs = parameters.playbackPositionUs
+        val endUs = positionUs + parameters.bufferedDurationUs
+        val periodUid = parameters.mediaPeriodId.periodUid
+        val elapsedMs = now - lastAtMs
+        // A jump within what's loaded moves the position but not the end of what's loaded; one past it moves both.
+        val moved = kotlin.math.abs(positionUs - lastPositionUs) > elapsedMs * 2_000 + 1_000_000
+        val jumped = lastEndUs == C.TIME_UNSET || periodUid != lastPeriod || endUs < lastEndUs - 100_000 ||
+            (moved && kotlin.math.abs(endUs - lastEndUs) > 2_000_000)
+        if (jumped) {
+            loadedUs = 0
+            loadingMs = 0
+            arriving = false
+        } else if (!arriving) {
+            arriving = endUs > lastEndUs
+        } else if (loading) {
+            loadedUs += endUs - lastEndUs
+            loadingMs += elapsedMs
+            // Mostly the last half minute or so, so it follows the connection as it changes.
+            if (loadingMs > RATE_MEMORY_MS) {
+                loadedUs /= 2
+                loadingMs /= 2
+            }
+        }
+        lastAtMs = now
+        lastEndUs = endUs
+        lastPositionUs = positionUs
+        lastPeriod = periodUid
     }
 
     private fun isLive(parameters: LoadControl.Parameters): Boolean {
@@ -294,7 +363,10 @@ private class FilmLoadControl(private val inner: DefaultLoadControl, private val
         return timeline.getWindow(windowIndex, window).isLive()
     }
 
-    override fun shouldContinueLoading(parameters: LoadControl.Parameters) = inner.shouldContinueLoading(parameters)
+    override fun shouldContinueLoading(parameters: LoadControl.Parameters): Boolean {
+        measure(parameters)
+        return inner.shouldContinueLoading(parameters).also { loading = it }
+    }
 
     override fun shouldContinuePreloading(timeline: Timeline, mediaPeriodId: MediaSource.MediaPeriodId, bufferedDurationUs: Long) =
         inner.shouldContinuePreloading(timeline, mediaPeriodId, bufferedDurationUs)
@@ -319,6 +391,12 @@ private class FilmLoadControl(private val inner: DefaultLoadControl, private val
 
     private companion object {
         const val STALL_MEMORY_MS = 5 * 60_000L
+        const val START_US = 1_000_000L
+        // Loading time needed before the speed is trusted.
+        const val MEASURE_MS = 700L
+        const val RATE_MEMORY_MS = 30_000L
+        const val SMOOTH_US = 60_000_000L
+        const val MAX_CUSHION_US = 30_000_000L
     }
 }
 
