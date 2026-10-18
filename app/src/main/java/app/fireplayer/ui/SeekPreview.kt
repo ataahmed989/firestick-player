@@ -53,6 +53,7 @@ class SeekPreview(
     // moved on and the new picture is slow to come, the old one is darkened rather than passed off as the new.
     private var shownMs = 0L
     private var dimPending = false
+    private var dimmed = false
     private var jumpAt = 0L
     // The card is on screen with a picture from this round of skipping.
     private var shown = false
@@ -173,20 +174,27 @@ class SeekPreview(
 
     // Skipping often moves on before the picture for the last target arrives; that's fine for a moment.
     private fun dimLater() {
-        if (dimPending) return
+        if (dimPending || dimmed) return
         dimPending = true
         handler.postDelayed(dimRunnable, 350)
     }
 
     private val dimRunnable = Runnable {
         dimPending = false
-        if (active && shown && requestedMs != shownMs) dim.animate().alpha(0.6f).setDuration(160).start()
+        if (active && shown && requestedMs != shownMs) {
+            dimmed = true
+            dim.animate().alpha(0.6f).setDuration(160).start()
+        }
     }
 
     private fun undim() {
         handler.removeCallbacks(dimRunnable)
         dimPending = false
-        if (dim.alpha > 0f) dim.animate().alpha(0f).setDuration(120).start()
+        if (dimmed) {
+            dimmed = false
+            // Replaces a darkening that may have only just started.
+            dim.animate().alpha(0f).setDuration(120).start()
+        }
     }
 
     // After a seek the player reports ready once the new picture is out; give the view a frame to draw it.
@@ -230,9 +238,19 @@ class SeekPreview(
         if (!shown) {
             dim.animate().cancel()
             dim.alpha = 0f
+            dimmed = false
         }
-        undim()
-        if (requestedMs != shownMs) dimLater()
+        when {
+            requestedMs == shownMs -> undim()
+            // Once darkened, it stays dark until the picture for the newest target arrives.
+            dimmed -> Unit
+            // Only a little behind (holding a key on a quick source): another moment before darkening.
+            else -> {
+                handler.removeCallbacks(dimRunnable)
+                dimPending = false
+                dimLater()
+            }
+        }
         card.animate().cancel()
         if (!shown) {
             card.scaleX = 0.94f
