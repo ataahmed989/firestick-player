@@ -2,6 +2,7 @@ package app.fireplayer.ui
 
 import android.animation.ValueAnimator
 import android.content.Context
+import android.content.res.ColorStateList
 import android.graphics.Rect
 import android.graphics.Typeface
 import android.text.TextUtils
@@ -95,6 +96,37 @@ class CenterScrollView @JvmOverloads constructor(
     }
 }
 
+/**
+ * A row in a settings window or picker. Its text and icons are coloured from the row's own state:
+ * dark on the white selected row, blue for the current choice, light otherwise.
+ *
+ * The colours are set here rather than through duplicateParentState, which left the text of the
+ * selected row light, and so invisible on its white background.
+ */
+class RowLayout(context: Context, private val colors: ColorStateList?) : LinearLayout(context) {
+
+    override fun drawableStateChanged() {
+        super.drawableStateChanged()
+        recolor()
+    }
+
+    override fun onViewAdded(child: View) {
+        super.onViewAdded(child)
+        recolor()
+    }
+
+    private fun recolor() {
+        val list = colors ?: return
+        val color = list.getColorForState(drawableState, list.defaultColor)
+        for (i in 0 until childCount) {
+            when (val child = getChildAt(i)) {
+                is TextView -> if (child.currentTextColor != color) child.setTextColor(color)
+                is ImageView -> if (child.imageTintList?.defaultColor != color) child.imageTintList = ColorStateList.valueOf(color)
+            }
+        }
+    }
+}
+
 /** Shared look and D-pad behaviour for the rows in the settings windows and pickers. */
 class Rows(private val context: Context) {
 
@@ -104,7 +136,7 @@ class Rows(private val context: Context) {
 
     fun dp(value: Int) = (value * density).toInt()
 
-    fun base(): LinearLayout = LinearLayout(context).apply {
+    fun base(): LinearLayout = RowLayout(context, textColors).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
         isFocusable = true
@@ -117,7 +149,6 @@ class Rows(private val context: Context) {
     fun text(value: String) = TextView(context).apply {
         text = value
         typeface = font600
-        isDuplicateParentStateEnabled = true
         setTextColor(textColors)
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
         isSingleLine = true
@@ -126,7 +157,6 @@ class Rows(private val context: Context) {
 
     fun icon(res: Int, sizeDp: Int) = ImageView(context).apply {
         setImageResource(res)
-        isDuplicateParentStateEnabled = true
         imageTintList = textColors
         layoutParams = LinearLayout.LayoutParams(dp(sizeDp), dp(sizeDp)).apply { marginStart = dp(8) }
     }

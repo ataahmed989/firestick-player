@@ -2,12 +2,12 @@
 # A five-minute 720p MKV with English audio and English subtitles, for the screenshot run.
 set -e
 mkdir -p media
-cat > media/subs.srt <<'SRT'
-1
-00:00:01,000 --> 00:04:59,000
-This is how subtitles look in FirePlayer.
-They stay low and easy to read.
-SRT
+# A two-line subtitle every few seconds, like a real film.
+for i in $(seq 0 74); do
+  t=$((i * 4))
+  printf '%d\n00:%02d:%02d,500 --> 00:%02d:%02d,300\nThis is how subtitles look in FirePlayer.\nThey stay low and easy to read.\n\n' \
+    $((i + 1)) $((t / 60)) $((t % 60)) $(((t + 4) / 60)) $(((t + 4) % 60))
+done > media/subs.srt
 video="gradients=s=1280x720:r=24000/1001:speed=0.01:nb_colors=3:c0=0x0b1a33:c1=0x2f6fd6:c2=0x4a2a6a"
 # The time is printed on the picture, so the skip preview visibly shows a different moment.
 clock="drawtext=text='%{pts\\:hms}':fontsize=110:fontcolor=white@0.8:x=(w-tw)/2:y=(h-th)/2-40"

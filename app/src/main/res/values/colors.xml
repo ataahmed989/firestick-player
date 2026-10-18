@@ -7,7 +7,7 @@
     <color name="focus_fill">#FFF4F2EE</color>
     <color name="button_fill">#1FFFFFFF</color>
     <color name="row_fill">#E61A1E24</color>
-    <color name="panel_fill">#700B0E12</color>
+    <color name="panel_fill">#D60B0E12</color>
     <color name="panel_stroke">#1FFFFFFF</color>
     <color name="chip_fill">#26FFFFFF</color>
     <color name="tooltip_fill">#B3000000</color>

@@ -658,13 +658,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
      */
     private fun showTextCues() {
         // libass draws its own subtitles; picture subtitles are images. Example text would sit on top of them.
-        val otherShowing = lastPictureCues.isNotEmpty() || (assHandler != null && selectedFormat(C.TRACK_TYPE_TEXT)?.let {
-            it.sampleMimeType == MimeTypes.TEXT_SSA || it.codecs == MimeTypes.TEXT_SSA
-        } == true)
+        val otherShowing = lastPictureCues.isNotEmpty() || libassShowing()
         val preview = stylePreviewing && lastTextCues.isEmpty() && !otherShowing && player?.playWhenReady != true
         screenSubtitles.setCues(if (preview) styler.sample() else styler.normalize(lastTextCues))
         frameSubtitles.setCues(styler.pictures(lastPictureCues))
     }
+
+    private fun libassShowing(): Boolean = assHandler != null && selectedFormat(C.TRACK_TYPE_TEXT)?.let {
+        it.sampleMimeType == MimeTypes.TEXT_SSA || it.codecs == MimeTypes.TEXT_SSA
+    } == true
 
     override fun onPlayerError(error: PlaybackException) {
         val p = player ?: return
@@ -998,6 +1000,30 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         seekBubble.visibility = if (seeking || notice) View.VISIBLE else View.INVISIBLE
         handler.removeCallbacks(progressTick)
         if (bottomVisible) handler.post(progressTick)
+        liftSubtitles()
+    }
+
+    /**
+     * With the controls up, subtitles move above them instead of sitting behind the buttons, like Netflix.
+     * Subtitles drawn by libass stay where they are: their signs can be anywhere on the picture.
+     */
+    private fun liftSubtitles() {
+        if (controlsShown && (bottomBlock.height == 0 || root.height == 0)) {
+            // Shown for the first time: measure once it's laid out.
+            bottomBlock.post { if (controlsShown) liftSubtitles() }
+            return
+        }
+        var screenLift = 0f
+        var frameLift = 0f
+        if (controlsShown) {
+            val gap = 14f * resources.displayMetrics.density
+            val limit = bottomBlock.top + (chips.parent as View).top + chips.top - gap
+            screenLift = (root.height * (1f - styler.bottomFraction) - limit).coerceAtLeast(0f)
+            // Picture subtitles sit a little above the bottom edge of the picture.
+            if (!libassShowing()) frameLift = (videoFrame.bottom - 0.04f * videoFrame.height - limit).coerceAtLeast(0f)
+        }
+        screenSubtitles.animate().translationY(-screenLift).setDuration(200).start()
+        frameSubtitles.animate().translationY(-frameLift).setDuration(200).start()
     }
 
     private fun fade(view: View, show: Boolean) {
@@ -1077,7 +1103,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             start, text.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
         )
         timeElapsed.text = text
-        timeRemaining.text = "-" + formatTime((duration - position).coerceAtLeast(0), long)
+        timeRemaining.text = "−" + formatTime((duration - position).coerceAtLeast(0), long)
         if (seeking || notice) positionBubble()
     }
 

@@ -26,12 +26,6 @@
             android:layout_height="match_parent" />
     </androidx.media3.ui.AspectRatioFrameLayout>
 
-    <!-- Text subtitles are placed against the whole screen, so they sit low like Netflix even with black bars. -->
-    <androidx.media3.ui.SubtitleView
-        android:id="@+id/screen_subtitles"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent" />
-
     <ProgressBar
         android:id="@+id/buffering"
         android:layout_width="40dp"
@@ -55,6 +49,13 @@
         android:layout_gravity="bottom"
         android:background="@drawable/scrim_bottom"
         android:visibility="gone" />
+
+    <!-- Text subtitles are placed against the whole screen, so they sit low like Netflix even with black bars.
+         Above the shading, so they stay crisp when they move up over it with the controls. -->
+    <androidx.media3.ui.SubtitleView
+        android:id="@+id/screen_subtitles"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
 
     <LinearLayout
         android:id="@+id/top_bar"

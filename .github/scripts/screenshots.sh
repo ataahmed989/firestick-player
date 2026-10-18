@@ -32,7 +32,7 @@ movie "http://10.0.2.2:8000/movie.mkv" "EN - 4K UHD - Dune: Part Two (2024)"
 shot 04-playing 15
 # Skipping with the controls hidden: the bar comes up with a preview of where the jump lands.
 adb shell input keyevent KEYCODE_DPAD_RIGHT; sleep 0.3; adb shell input keyevent KEYCODE_DPAD_RIGHT
-shot 04b-skip-preview 0.6
+shot 04b-skip-preview 0.9
 sleep 3
 key KEYCODE_DPAD_UP
 shot 05-controls 1.5
