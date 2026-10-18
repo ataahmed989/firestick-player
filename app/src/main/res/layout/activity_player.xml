@@ -78,7 +78,7 @@
                 android:layout_height="wrap_content"
                 android:ellipsize="end"
                 android:fontFamily="@font/figtree_700"
-                android:singleLine="true"
+                android:maxLines="2"
                 android:textColor="@color/text"
                 android:textSize="21sp"
                 tools:text="Movie title (2024)" />
@@ -150,6 +150,7 @@
 
             <TextView
                 android:id="@+id/seek_bubble"
+                android:fontFeatureSettings="tnum"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_gravity="bottom|start"
@@ -175,6 +176,7 @@
 
             <TextView
                 android:id="@+id/time_elapsed"
+                android:fontFeatureSettings="tnum"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:fontFamily="@font/figtree_600"
@@ -192,6 +194,7 @@
 
             <TextView
                 android:id="@+id/time_remaining"
+                android:fontFeatureSettings="tnum"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:fontFamily="@font/figtree_600"

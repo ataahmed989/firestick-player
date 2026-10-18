@@ -6,11 +6,12 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 enum class SubtitleEdge(val label: String) {
-    DROP_SHADOW("Drop shadow"), OUTLINE("Outline"), NONE("None")
+    DROP_SHADOW("Soft shadow"), OUTLINE("Outline"), NONE("None")
 }
 
+/** NETFLIX uses the font sent from the phone when there is one, otherwise a built-in look-alike. */
 enum class SubtitleFont(val label: String) {
-    NETFLIX("Netflix-style sans"), FIGTREE("Figtree"), SYSTEM("System")
+    NETFLIX("Netflix style"), ARIAL("Arial style"), FIGTREE("Figtree"), SYSTEM("System")
 }
 
 /**
@@ -39,7 +40,7 @@ data class SubtitleStyle(
         const val NETFLIX_NAME = "Netflix"
         const val CUSTOM_NAME = "Custom"
 
-        /** White, soft drop shadow, Arial-metric font, low on the screen. */
+        /** White, soft drop shadow, Netflix-style font, low on the screen. */
         val NETFLIX = SubtitleStyle(
             name = NETFLIX_NAME,
             textSize = 0.050f,
@@ -50,7 +51,9 @@ data class SubtitleStyle(
             font = SubtitleFont.NETFLIX,
         )
 
-        val SIZES = listOf(0.040f, 0.045f, 0.050f, 0.055f, 0.060f, 0.068f, 0.076f)
+        val SIZES = listOf(
+            0.030f, 0.034f, 0.038f, 0.042f, 0.046f, 0.050f, 0.055f, 0.060f, 0.066f, 0.072f, 0.080f, 0.090f,
+        )
         val BOTTOMS = listOf(0.03f, 0.05f, 0.08f, 0.12f, 0.16f)
         val COLORS = listOf(
             Color.WHITE to "White",
@@ -116,7 +119,7 @@ class SubtitlePresets(private val prefs: Prefs) {
     fun saveActiveAs(name: String) {
         val clean = name.trim()
         if (clean.isEmpty()) return
-        if (clean ==SubtitleStyle.NETFLIX_NAME || clean == SubtitleStyle.CUSTOM_NAME) return
+        if (clean == SubtitleStyle.NETFLIX_NAME || clean == SubtitleStyle.CUSTOM_NAME) return
         val style = active().copy(name = clean)
         val list = saved().filterNot { it.name == clean } + style
         write(list)

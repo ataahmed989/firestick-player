@@ -75,6 +75,11 @@ class Prefs(context: Context) {
         get() = sp.getString("sub_custom", "") ?: ""
         set(v) = sp.edit().putString("sub_custom", v).apply()
 
+    /** Name of the subtitle font sent from the phone, or "" when there isn't one. */
+    var customFontName: String
+        get() = sp.getString("custom_font", "") ?: ""
+        set(v) = sp.edit().putString("custom_font", v).apply()
+
     var displayMode: Int
         get() = sp.getInt("display_mode", 0)
         set(v) = sp.edit().putInt("display_mode", v).apply()
