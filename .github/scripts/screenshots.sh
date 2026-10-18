@@ -5,10 +5,6 @@ PKG=app.fireplayer
 OUT=shots
 mkdir -p "$OUT"
 
-# The emulator reaches this machine at 10.0.2.2.
-(cd media && nohup python3 -m http.server 8000 > /tmp/http.log 2>&1 &)
-sleep 2
-
 shot() { sleep "${2:-2}"; adb exec-out screencap -p > "$OUT/$1.png"; }
 key() { for k in "$@"; do adb shell input keyevent "$k"; sleep 0.7; done; }
 movie() {
@@ -19,7 +15,7 @@ movie() {
   adb shell "am start -W -a android.intent.action.VIEW -d '$1' -t video/x-matroska -n $PKG/.PlayerActivity --es title '$2'"
 }
 
-adb install -r FirePlayer.apk
+adb install -r FirePlayer.apk || exit 1
 adb shell wm size
 
 # Home screen. This build is older than the latest release, so the update offer shows first.
@@ -34,11 +30,17 @@ key KEYCODE_BACK
 # Player.
 movie "http://10.0.2.2:8000/movie.mkv" "EN - 4K UHD - Dune: Part Two (2024)"
 shot 04-playing 15
+# Skipping with the controls hidden: the bar comes up with a preview of where the jump lands.
+adb shell input keyevent KEYCODE_DPAD_RIGHT; sleep 0.3; adb shell input keyevent KEYCODE_DPAD_RIGHT
+shot 04b-skip-preview 0.6
+sleep 3
 key KEYCODE_DPAD_UP
 shot 05-controls 1.5
-key KEYCODE_DPAD_UP KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT
-shot 06-seek-bar 0.3
-sleep 2
+key KEYCODE_DPAD_UP
+shot 06-seek-bar-selected 0.6
+adb shell input keyevent KEYCODE_DPAD_LEFT; sleep 0.3; adb shell input keyevent KEYCODE_DPAD_LEFT; sleep 0.3; adb shell input keyevent KEYCODE_DPAD_LEFT
+shot 06b-seek-back-preview 0.8
+sleep 3
 key KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN
 shot 07-more-row 1
 key KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_CENTER

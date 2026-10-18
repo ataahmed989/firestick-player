@@ -16,6 +16,8 @@ android {
         ndk {
             // Fire TV devices are ARM; dropping x86 keeps the APK small.
             abiFilters += listOf("armeabi-v7a", "arm64-v8a")
+            // The screenshot run's emulator is x86.
+            System.getenv("EXTRA_ABIS")?.let { abiFilters += it.split(',') }
         }
     }
 
