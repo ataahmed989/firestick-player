@@ -34,7 +34,10 @@ import java.util.concurrent.TimeUnit
 @OptIn(UnstableApi::class)
 class PictureText(private val onRead: () -> Unit) {
 
-    private class Job(val key: Long, val nv21: ByteArray, val width: Int, val height: Int)
+    private class Job(val key: Long, val nv21: ByteArray, val width: Int, val height: Int) {
+        // On screen now, so read first.
+        var due = false
+    }
 
     // Results by picture, the most recent few hundred. "" means the picture holds no text.
     private val results = object : LinkedHashMap<Long, String>(64, 0.75f, true) {
@@ -87,7 +90,24 @@ class PictureText(private val onRead: () -> Unit) {
             if (results.containsKey(key)) return
             if (!pending.add(key)) {
                 if (!soon) return
-                // Already queued further back: let the copy that's due go first; whichever runs first wins.
+                // Read ahead but not reached yet. Pictures are queued in the order they play, so the ones before
+                // it have gone by: drop those, and this one is next. (Not found: it's being read now, or already next.)
+                val passed = mutableListOf<Job>()
+                var target: Job? = null
+                for (job in jobs) {
+                    if (job.due) continue
+                    if (job.key == key) {
+                        target = job
+                        break
+                    }
+                    passed.add(job)
+                }
+                if (target != null && jobs.remove(target)) {
+                    for (job in passed) if (jobs.remove(job)) pending.remove(job.key)
+                    target.due = true
+                    jobs.offerFirst(target)
+                }
+                return
             } else if (!soon && pending.size > MAX_QUEUED) {
                 // Far ahead of playback after a jump: read it when it's due instead.
                 pending.remove(key)
@@ -95,7 +115,12 @@ class PictureText(private val onRead: () -> Unit) {
             }
         }
         val job = toJob(key, bitmap)
-        if (soon) jobs.offerFirst(job) else jobs.offerLast(job)
+        if (soon) {
+            job.due = true
+            jobs.offerFirst(job)
+        } else {
+            jobs.offerLast(job)
+        }
     }
 
     /** The text of [bitmap]: null while it hasn't been read, "" when it holds none. */
