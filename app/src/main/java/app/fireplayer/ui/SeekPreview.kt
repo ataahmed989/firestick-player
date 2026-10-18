@@ -31,6 +31,8 @@ class SeekPreview(
     private val time: TextView,
     private val format: (Long) -> String,
     private val create: () -> ExoPlayer,
+    /** Called when the card appears (true) and goes away (false), so subtitles can make room. */
+    private val onShowing: (Boolean) -> Unit,
 ) : Player.Listener {
 
     private val handler = Handler(Looper.getMainLooper())
@@ -38,6 +40,10 @@ class SeekPreview(
     private var itemKey: String? = null
     private var item: MediaItem? = null
     private var requestedMs = 0L
+    // The target of the last seek actually sent to the player, which the next picture belongs to.
+    private var issuedMs = 0L
+    // A newer target is waiting to be sent; pictures arriving meanwhile are for an older one.
+    private var seekPending = false
     private var jumpAt = 0L
     // The card is on screen with a picture from this round of skipping.
     private var shown = false
@@ -65,25 +71,25 @@ class SeekPreview(
         active = true
         requestedMs = targetMs
         this.jumpAt = jumpAt
+        seekPending = true
         handler.removeCallbacks(releaseRunnable)
         handler.removeCallbacks(seekRunnable)
-        // Quick presses add up; only the target where they settle is fetched.
+        handler.removeCallbacks(revealRunnable)
+        // Quick presses add up; only the target where they settle is fetched. The picture and time
+        // on show stay together until the new picture is ready.
         handler.postDelayed(seekRunnable, if (player == null) 0L else 140L)
-        time.text = format(targetMs)
-        // The picture on show is for an earlier target: soften it until the new one arrives.
-        // One left from an earlier round of skipping stays hidden until a fresh one is ready.
-        if (shown) card.animate().alpha(0.82f).setDuration(120).start()
     }
 
     /** Hides the preview; the player is let go a little later in case skipping resumes. */
     fun hide() {
         if (!active) return
         active = false
-        shown = false
+        seekPending = false
         handler.removeCallbacks(seekRunnable)
         handler.removeCallbacks(revealRunnable)
         card.animate().cancel()
         card.animate().alpha(0f).setDuration(140).start()
+        setShown(false)
         handler.removeCallbacks(releaseRunnable)
         handler.postDelayed(releaseRunnable, 8_000)
     }
@@ -97,9 +103,10 @@ class SeekPreview(
             it.release()
         }
         player = null
-        shown = false
+        seekPending = false
         card.animate().cancel()
         card.alpha = 0f
+        setShown(false)
     }
 
     /** Puts the card's centre over [centerX] and its bottom edge at [bottomY], both in the parent's coordinates. */
@@ -110,37 +117,50 @@ class SeekPreview(
         card.translationY = bottomY - card.height - card.top
     }
 
+    private fun setShown(value: Boolean) {
+        if (shown == value) return
+        shown = value
+        onShowing(value)
+    }
+
     private val seekRunnable = Runnable {
+        val target = requestedMs
         val current = player
-        val targetMs = requestedMs
-        if (current == null) {
-            val mediaItem = item ?: return@Runnable
-            val created = runCatching { create() }.getOrNull() ?: return@Runnable
-            player = created
-            created.addListener(this)
-            created.setVideoTextureView(texture)
-            created.setMediaItem(mediaItem, targetMs)
-            created.prepare()
+        if (current != null) {
+            current.seekTo(target)
         } else {
-            current.seekTo(targetMs)
+            val mediaItem = item ?: return@Runnable
+            var created: ExoPlayer? = null
+            try {
+                created = create()
+                created.addListener(this)
+                created.setVideoTextureView(texture)
+                created.setMediaItem(mediaItem, target)
+                created.prepare()
+                player = created
+            } catch (e: Exception) {
+                // A link the player can't open (it would fail for the film too): no previews for it.
+                created?.removeListener(this)
+                created?.release()
+                failedKey = itemKey
+                hide()
+                return@Runnable
+            }
         }
+        issuedMs = target
+        seekPending = false
     }
 
     private val releaseRunnable = Runnable { release() }
 
-    // The first frame after a seek is drawn just after the player says it's ready.
+    // After a seek the player reports ready once the new picture is out; give the view a frame to draw it.
     private val revealRunnable = Runnable { reveal() }
 
     override fun onPlaybackStateChanged(playbackState: Int) {
         if (playbackState == Player.STATE_READY) {
             handler.removeCallbacks(revealRunnable)
-            handler.postDelayed(revealRunnable, 60)
+            handler.postDelayed(revealRunnable, 40)
         }
-    }
-
-    override fun onRenderedFirstFrame() {
-        handler.removeCallbacks(revealRunnable)
-        reveal()
     }
 
     override fun onVideoSizeChanged(videoSize: VideoSize) {
@@ -157,17 +177,20 @@ class SeekPreview(
     }
 
     private fun reveal() {
-        if (!active || player == null) return
+        val p = player ?: return
+        // Not for an older target, nor while the player is still fetching the newest one.
+        if (!active || seekPending || p.playbackState != Player.STATE_READY) return
         // Popping up only to vanish with the jump a moment later would just flicker.
         if (!shown && SystemClock.uptimeMillis() > jumpAt - 300) return
+        time.text = format(issuedMs)
         card.animate().cancel()
         if (!shown) {
-            shown = true
             card.scaleX = 0.94f
             card.scaleY = 0.94f
             card.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(160).start()
+            setShown(true)
         } else {
-            card.animate().alpha(1f).setDuration(120).start()
+            card.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(120).start()
         }
     }
 }

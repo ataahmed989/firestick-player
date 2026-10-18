@@ -606,6 +606,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO && now != playingIndex) {
             entries.getOrNull(playingIndex)?.let { prefs.savePosition(it.key, 0L) }
         }
+        // A jump being lined up was for the video that just ended.
+        if (seeking) cancelSeek()
         playingIndex = now
         matchedFpsForIndex = -1
         measuredFps = 0f
@@ -650,6 +652,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         lastPictureCues = pictures
         lastTextCues = text
         showTextCues()
+        // New picture subtitles can be taller or sit elsewhere: move them clear of the controls at once.
+        if (controlsShown || seeking || notice) liftSubtitles(animate = false)
     }
 
     /**
@@ -760,6 +764,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             time = findViewById(R.id.preview_time),
             format = { formatTime(it, longTimes == true) },
             create = { PlayerFactory.buildPreview(this, headersFromIntent()) },
+            // Subtitles from where the film is now would sit under a picture of somewhere else; they step aside.
+            onShowing = { showing ->
+                val alpha = if (showing) 0f else 1f
+                screenSubtitles.animate().alpha(alpha).setDuration(150).start()
+                frameSubtitles.animate().alpha(alpha).setDuration(150).start()
+            },
         )
         seekRow = findViewById(R.id.seek_row)
         timeElapsed = findViewById(R.id.time_elapsed)
@@ -1003,27 +1013,84 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         liftSubtitles()
     }
 
+    private var screenLift = 0f
+    private var frameLift = 0f
+
     /**
-     * With the controls up, subtitles move above them instead of sitting behind the buttons, like Netflix.
+     * Subtitles move above the controls instead of sitting behind them, like Netflix: above the chips when
+     * the controls are up, and above the time bar when only it shows and they'd overlap it.
      * Subtitles drawn by libass stay where they are: their signs can be anywhere on the picture.
      */
-    private fun liftSubtitles() {
-        if (controlsShown && (bottomBlock.height == 0 || root.height == 0)) {
+    private fun liftSubtitles(animate: Boolean = true) {
+        val bottomVisible = controlsShown || seeking || notice
+        if (bottomVisible && (bottomBlock.height == 0 || root.height == 0)) {
             // Shown for the first time: measure once it's laid out.
-            bottomBlock.post { if (controlsShown) liftSubtitles() }
+            bottomBlock.post { liftSubtitles() }
             return
         }
-        var screenLift = 0f
-        var frameLift = 0f
-        if (controlsShown) {
-            val gap = 14f * resources.displayMetrics.density
-            val limit = bottomBlock.top + (chips.parent as View).top + chips.top - gap
-            screenLift = (root.height * (1f - styler.bottomFraction) - limit).coerceAtLeast(0f)
-            // Picture subtitles sit a little above the bottom edge of the picture.
-            if (!libassShowing()) frameLift = (videoFrame.bottom - 0.04f * videoFrame.height - limit).coerceAtLeast(0f)
+        var screen = 0f
+        var frame = 0f
+        if (bottomVisible) {
+            val density = resources.displayMetrics.density
+            // The lowest subtitles may reach: a little above the chips, or the "+4:00" card in their place.
+            val infoTop = if (seekBubble.visibility == View.VISIBLE) minOf(chips.top, seekBubble.top) else chips.top
+            val limit = bottomBlock.top + (chips.parent as View).top + infoTop - 14f * density
+            // With only the time bar showing, subtitles entirely below it can stay where they are.
+            val floor = if (controlsShown) Float.MAX_VALUE else bottomBlock.top + seekRow.bottom + 6f * density
+            val height = root.height.toFloat()
+            val textBottom = height * (1f - styler.bottomFraction)
+            // Two lines of text, which most subtitles are, so the lift doesn't change from line to line.
+            val textTop = textBottom - 2.4f * styler.textSizeFraction * height
+            screen = liftFor(textTop, textBottom, limit, floor)
+            if (!libassShowing()) frame = pictureLift(limit, floor)
         }
-        screenSubtitles.animate().translationY(-screenLift).setDuration(200).start()
-        frameSubtitles.animate().translationY(-frameLift).setDuration(200).start()
+        if (screen != screenLift) {
+            screenLift = screen
+            screenSubtitles.animate().translationY(-screen).setDuration(if (animate) 200 else 0).start()
+        }
+        if (frame != frameLift) {
+            frameLift = frame
+            frameSubtitles.animate().translationY(-frame).setDuration(if (animate) 200 else 0).start()
+        }
+    }
+
+    /** How far something spanning [top] to [bottom] on screen must move up to clear the controls between [limit] and [floor]. */
+    private fun liftFor(top: Float, bottom: Float, limit: Float, floor: Float): Float =
+        if (bottom > limit && top < floor) bottom - limit else 0f
+
+    /**
+     * How far picture subtitles must move up to clear the controls, in the picture's own units (Zoom scales it).
+     * Only the ones that would collide count, and nothing is pushed off the top of the screen.
+     */
+    private fun pictureLift(limit: Float, floor: Float): Float {
+        val w = videoFrame.width.toFloat()
+        val h = videoFrame.height.toFloat()
+        if (lastPictureCues.isEmpty() || w == 0f || h == 0f) return 0f
+        val scale = videoFrame.scaleY
+        val pivot = videoFrame.pivotY
+        fun onScreen(y: Float) = videoFrame.top + pivot + (y - pivot) * scale
+        var lift = 0f
+        var highest = Float.MAX_VALUE
+        for (cue in lastPictureCues) {
+            val bitmap = cue.bitmap ?: continue
+            if (cue.line == Cue.DIMEN_UNSET) continue
+            // Placed the way Media3 draws them: a box at a fraction of the picture, its height given or from the image's shape.
+            val boxHeight = when {
+                cue.bitmapHeight != Cue.DIMEN_UNSET -> cue.bitmapHeight * h
+                cue.size != Cue.DIMEN_UNSET && bitmap.width > 0 -> cue.size * w * bitmap.height / bitmap.width
+                else -> continue
+            }
+            val anchor = cue.line * h
+            val top = when (cue.lineAnchor) {
+                Cue.ANCHOR_TYPE_END -> anchor - boxHeight
+                Cue.ANCHOR_TYPE_MIDDLE -> anchor - boxHeight / 2f
+                else -> anchor
+            }
+            val screenTop = onScreen(top)
+            highest = minOf(highest, screenTop)
+            lift = maxOf(lift, liftFor(screenTop, onScreen(top + boxHeight), limit, floor))
+        }
+        return lift.coerceAtMost(highest.coerceAtLeast(0f)) / scale
     }
 
     private fun fade(view: View, show: Boolean) {
@@ -1569,15 +1636,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     private fun openSettingsPanel(from: View) {
         val passthrough = prefs.passthrough
-        hideControls()
         // Rebuild once the window closes if a playback setting changed.
-        panel.open("Settings", onClose = {
+        openPanel("Settings", from, onClosed = {
             if (prefs.passthrough != passthrough) rebuildPlayer()
             if (prefs.matchFrameRate) { matchedFpsForIndex = -1; matchFrameRate() } else frameRateMatcher.reset()
             refreshLabels()
-            showControls(from)
         }) { settingsPanels.renderSettings(this) }
-        focusSink.isFocusable = false
     }
 
     // Find subtitles (OpenSubtitles)

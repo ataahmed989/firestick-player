@@ -56,6 +56,9 @@ class SubtitleStyler(private val context: Context) {
     /** How far up from the bottom of the screen the subtitles sit, as a fraction of its height. */
     val bottomFraction: Float get() = style.bottom
 
+    /** The text size, as a fraction of the screen height. */
+    val textSizeFraction: Float get() = style.textSize
+
     fun apply(view: SubtitleView, style: SubtitleStyle) {
         this.style = style
         val typeface = when (style.font) {

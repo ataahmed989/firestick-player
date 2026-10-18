@@ -6,6 +6,12 @@ OUT=shots
 mkdir -p "$OUT"
 
 shot() { sleep "${2:-2}"; adb exec-out screencap -p > "$OUT/$1.png"; }
+# Presses keys and takes the screenshot on the device itself, so adb's own delays don't miss a short-lived screen.
+burst() {
+  local name=$1 wait=$2; shift 2
+  adb shell "input keyevent $*; sleep $wait; screencap -p /sdcard/burst.png"
+  adb pull /sdcard/burst.png "$OUT/$name.png"
+}
 key() { for k in "$@"; do adb shell input keyevent "$k"; sleep 0.7; done; }
 movie() {
   # Back closes whatever is open and leaves the player, which saves the position for the resume question.
@@ -31,18 +37,15 @@ key KEYCODE_BACK
 movie "http://10.0.2.2:8000/movie.mkv" "EN - 4K UHD - Dune: Part Two (2024)"
 shot 04-playing 15
 # Skipping with the controls hidden brings up the bar and the "+0:20" card.
-adb shell input keyevent KEYCODE_DPAD_RIGHT; sleep 0.3; adb shell input keyevent KEYCODE_DPAD_RIGHT
-shot 04b-skip 0.4
+burst 04b-skip 1.0 KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT
 sleep 4
 key KEYCODE_DPAD_UP
 shot 05-controls 1.5
 key KEYCODE_DPAD_UP
 shot 06-seek-bar-selected 0.6
 # Moving along the selected bar (it waits 2 s before jumping) shows a picture of where it would land.
-adb shell input keyevent KEYCODE_DPAD_LEFT; sleep 0.4; adb shell input keyevent KEYCODE_DPAD_LEFT
-shot 06b-seek-back-preview 1.0
-adb shell input keyevent KEYCODE_DPAD_RIGHT
-shot 06c-seek-preview-moved 1.0
+burst 06b-seek-back-preview 1.2 KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT
+burst 06c-seek-preview-moved 1.2 KEYCODE_DPAD_RIGHT
 sleep 3
 key KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN
 shot 07-more-row 1
