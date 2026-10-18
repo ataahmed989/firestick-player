@@ -174,32 +174,47 @@ class PictureText(private val onRead: () -> Unit) {
 
     /**
      * Turns the picture into dark text on white, the way text recognition reads best: bright letters become dark,
-     * and their dark outline and the see-through background both become white. Small (DVD) pictures are doubled.
+     * and their dark outline and the see-through background both become white. Two-line Blu-ray pictures are
+     * halved, which still leaves letters about 30 pixels tall and makes reading four times quicker; tiny ones are
+     * doubled.
      */
     private fun toJob(key: Long, bitmap: Bitmap): Job {
         val w = bitmap.width
         val h = bitmap.height
-        val scale = if (h < SMALL_HEIGHT) 2 else 1
-        val pad = PAD * scale
-        val outW = (w * scale + 2 * pad + 1) and 1.inv()
-        val outH = (h * scale + 2 * pad + 1) and 1.inv()
         val pixels = IntArray(w * h)
         bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
+        // Dark on white, before resizing: 255 where nothing is drawn.
+        val grey = IntArray(w * h)
+        for (i in pixels.indices) {
+            val p = pixels[i]
+            val a = p ushr 24
+            grey[i] = if (a == 0) 255 else {
+                val lum = (((p shr 16) and 0xFF) * 77 + ((p shr 8) and 0xFF) * 150 + (p and 0xFF) * 29) shr 8
+                255 - lum * a / 255
+            }
+        }
+        val halve = h > LARGE_HEIGHT
+        val double = h < SMALL_HEIGHT
+        val sw = if (halve) w / 2 else if (double) w * 2 else w
+        val sh = if (halve) h / 2 else if (double) h * 2 else h
+        val outW = (sw + 2 * PAD + 1) and 1.inv()
+        val outH = (sh + 2 * PAD + 1) and 1.inv()
         // NV21: a grey plane, then colour at half resolution (left neutral).
         val nv21 = ByteArray(outW * outH * 3 / 2)
         java.util.Arrays.fill(nv21, 0, outW * outH, 0xFF.toByte())
         java.util.Arrays.fill(nv21, outW * outH, nv21.size, 0x80.toByte())
-        for (y in 0 until h) {
-            for (x in 0 until w) {
-                val p = pixels[y * w + x]
-                val a = p ushr 24
-                if (a == 0) continue
-                val lum = (((p shr 16) and 0xFF) * 77 + ((p shr 8) and 0xFF) * 150 + (p and 0xFF) * 29) shr 8
-                val grey = (255 - lum * a / 255).toByte()
-                for (dy in 0 until scale) {
-                    val row = (pad + y * scale + dy) * outW + pad + x * scale
-                    for (dx in 0 until scale) nv21[row + dx] = grey
+        for (y in 0 until sh) {
+            val row = (PAD + y) * outW + PAD
+            for (x in 0 until sw) {
+                val value = when {
+                    halve -> {
+                        val i = 2 * y * w + 2 * x
+                        (grey[i] + grey[i + 1] + grey[i + w] + grey[i + w + 1]) / 4
+                    }
+                    double -> grey[(y / 2) * w + x / 2]
+                    else -> grey[y * w + x]
                 }
+                nv21[row + x] = value.toByte()
             }
         }
         return Job(key, nv21, outW, outH)
@@ -212,7 +227,8 @@ class PictureText(private val onRead: () -> Unit) {
             val client = recognizer
                 ?: TextRecognition.getClient(TextRecognizerOptions.Builder().setExecutor(recognition).build()).also { recognizer = it }
             val image = InputImage.fromByteArray(job.nv21, job.width, job.height, 0, InputImage.IMAGE_FORMAT_NV21)
-            val result = Tasks.await(client.process(image), 5, TimeUnit.SECONDS)
+            // Generous: a slow read still beats none, and it's kept for when the subtitle comes round again.
+            val result = Tasks.await(client.process(image), 30, TimeUnit.SECONDS)
             val lines = result.textBlocks.flatMap { it.lines }.mapNotNull { line ->
                 val box = line.boundingBox ?: return@mapNotNull null
                 box to line.text
@@ -258,7 +274,9 @@ class PictureText(private val onRead: () -> Unit) {
     companion object {
         private const val TAG = "FirePlayerOcr"
         private const val MAX_QUEUED = 30
-        private const val SMALL_HEIGHT = 120
+        // Blu-ray pictures of two lines are about 140 pixels tall, DVD ones about 80.
+        private const val LARGE_HEIGHT = 120
+        private const val SMALL_HEIGHT = 50
         private const val PAD = 16
 
         val PICTURE_FORMATS = setOf(MimeTypes.APPLICATION_PGS, MimeTypes.APPLICATION_VOBSUB, MimeTypes.APPLICATION_DVBSUBS)

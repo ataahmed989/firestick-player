@@ -94,6 +94,10 @@ shot 15-pgs-as-text-2 4
 shot 15-pgs-as-text-3 5
 shot 15-pgs-as-text-4 6
 shot 15-pgs-as-text-5 6
+# Paused on a subtitle: however slow the emulator reads, this one gets read and turns into text.
+key KEYCODE_MEDIA_PLAY_PAUSE
+shot 15-pgs-paused-read 15
+key KEYCODE_MEDIA_PLAY_PAUSE
 pid=$(adb shell pidof $PKG | tr -d '\r')
 adb logcat -d -v time ${pid:+--pid=$pid} | grep -E "Ocr|OCR|Subtitle|PGS|Pgs|ExoPlayerImpl|AndroidRuntime" | tail -300 > "$OUT/logcat-pgs.txt"
 
