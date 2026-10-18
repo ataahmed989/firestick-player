@@ -28,6 +28,7 @@ class SeekPreview(
     private val card: View,
     private val frame: AspectRatioFrameLayout,
     private val texture: TextureView,
+    private val dim: View,
     private val time: TextView,
     private val format: (Long) -> String,
     private val create: () -> ExoPlayer,
@@ -48,6 +49,10 @@ class SeekPreview(
     // Counts rounds of skipping, so a picture asked for in an earlier round isn't shown in this one.
     private var round = 0
     private var issuedRound = 0
+    // The target of the picture on show. The time under it is always the newest target, so when skipping has
+    // moved on and the new picture is slow to come, the old one is darkened rather than passed off as the new.
+    private var shownMs = 0L
+    private var dimPending = false
     private var jumpAt = 0L
     // The card is on screen with a picture from this round of skipping.
     private var shown = false
@@ -76,7 +81,11 @@ class SeekPreview(
         requestedMs = targetMs
         this.jumpAt = jumpAt
         handler.removeCallbacks(releaseRunnable)
-        // While a picture is on its way, the next seek waits for it. The picture and time on show stay together.
+        if (shown) {
+            time.text = format(targetMs)
+            if (targetMs == shownMs) undim() else dimLater()
+        }
+        // While a picture is on its way, the next seek waits for it.
         if (!inFlight) {
             handler.removeCallbacks(seekRunnable)
             handler.post(seekRunnable)
@@ -90,6 +99,8 @@ class SeekPreview(
         round++
         // A picture still on its way is let in (and not shown), so the next round's first seek isn't held up.
         handler.removeCallbacks(seekRunnable)
+        handler.removeCallbacks(dimRunnable)
+        dimPending = false
         card.animate().cancel()
         card.animate().alpha(0f).setDuration(140).start()
         setShown(false)
@@ -107,6 +118,8 @@ class SeekPreview(
         }
         player = null
         inFlight = false
+        handler.removeCallbacks(dimRunnable)
+        dimPending = false
         card.animate().cancel()
         card.alpha = 0f
         setShown(false)
@@ -158,6 +171,24 @@ class SeekPreview(
 
     private val releaseRunnable = Runnable { release() }
 
+    // Skipping often moves on before the picture for the last target arrives; that's fine for a moment.
+    private fun dimLater() {
+        if (dimPending) return
+        dimPending = true
+        handler.postDelayed(dimRunnable, 350)
+    }
+
+    private val dimRunnable = Runnable {
+        dimPending = false
+        if (active && shown && requestedMs != shownMs) dim.animate().alpha(0.6f).setDuration(160).start()
+    }
+
+    private fun undim() {
+        handler.removeCallbacks(dimRunnable)
+        dimPending = false
+        if (dim.alpha > 0f) dim.animate().alpha(0f).setDuration(120).start()
+    }
+
     // After a seek the player reports ready once the new picture is out; give the view a frame to draw it.
     private val revealRunnable = Runnable { reveal() }
 
@@ -165,7 +196,7 @@ class SeekPreview(
         // Ended: the target was past the last picture; there's nothing to show, but the next seek can go.
         if (playbackState == Player.STATE_READY || playbackState == Player.STATE_ENDED) {
             handler.removeCallbacks(revealRunnable)
-            // Once on screen, the time changes with the picture; a card fading in waits a frame for it.
+            // Once on screen, a new picture shows at once; a card fading in waits a frame for it.
             handler.postDelayed(revealRunnable, if (shown) 0L else 40L)
         }
     }
@@ -194,7 +225,14 @@ class SeekPreview(
         if (!active || issuedRound != round || state != Player.STATE_READY) return
         // Popping up only to vanish with the jump a moment later would just flicker.
         if (!shown && SystemClock.uptimeMillis() > jumpAt - 300) return
-        time.text = format(issuedMs)
+        shownMs = issuedMs
+        time.text = format(requestedMs)
+        if (!shown) {
+            dim.animate().cancel()
+            dim.alpha = 0f
+        }
+        undim()
+        if (requestedMs != shownMs) dimLater()
         card.animate().cancel()
         if (!shown) {
             card.scaleX = 0.94f

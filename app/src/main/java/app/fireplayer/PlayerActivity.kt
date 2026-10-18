@@ -785,6 +785,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             card = findViewById(R.id.preview_card),
             frame = findViewById(R.id.preview_frame),
             texture = findViewById(R.id.preview_texture),
+            dim = findViewById(R.id.preview_dim),
             time = findViewById(R.id.preview_time),
             format = { formatTime(it, longTimes == true) },
             create = { PlayerFactory.buildPreview(this, headersFromIntent()) },
