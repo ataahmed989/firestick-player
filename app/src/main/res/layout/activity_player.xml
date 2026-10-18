@@ -116,6 +116,8 @@
         android:layout_marginStart="42dp"
         android:layout_marginEnd="42dp"
         android:layout_marginBottom="20dp"
+        android:clipChildren="false"
+        android:clipToPadding="false"
         android:orientation="vertical"
         android:visibility="gone">
 
@@ -206,13 +208,19 @@
         <FrameLayout
             android:id="@+id/buttons_area"
             android:layout_width="match_parent"
-            android:layout_height="72dp"
-            android:layout_marginTop="3dp">
+            android:layout_height="84dp"
+            android:layout_marginTop="3dp"
+            android:clipChildren="false"
+            android:clipToPadding="false">
 
+            <!-- Rows don't clip, so selected buttons can grow without being cut off. -->
             <LinearLayout
                 android:id="@+id/main_row"
                 android:layout_width="match_parent"
                 android:layout_height="match_parent"
+                android:clipChildren="false"
+                android:clipToPadding="false"
+                android:paddingTop="3dp"
                 android:orientation="horizontal">
 
                 <ImageButton
@@ -351,7 +359,11 @@
                 android:id="@+id/more_row"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
+                android:layout_marginTop="10dp"
+                android:clipChildren="false"
+                android:clipToPadding="false"
+                android:paddingTop="3dp"
+                android:paddingBottom="3dp"
                 android:orientation="horizontal"
                 android:visibility="gone" />
 

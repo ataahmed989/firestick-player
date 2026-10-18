@@ -26,6 +26,10 @@ class SeekBarView @JvmOverloads constructor(
     private val barHeight = 4f * density
     private val thumbRadius = 6.5f * density
     private val focusedThumbRadius = 8.5f * density
+    private val ringGap = 2.5f * density
+    private val ringWidth = 2.5f * density
+    /** Room the selected thumb and its ring need, so they're never cut off at the ends or edges. */
+    private val outerRadius = focusedThumbRadius + ringGap + ringWidth / 2 + 1f * density
 
     private val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(0x38, 255, 255, 255) }
     private val bufferPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(0x66, 255, 255, 255) }
@@ -40,7 +44,7 @@ class SeekBarView @JvmOverloads constructor(
     private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = ContextCompat.getColor(context, R.color.accent)
         style = Paint.Style.STROKE
-        strokeWidth = 2.5f * density
+        strokeWidth = ringWidth
     }
     private val rect = RectF()
 
@@ -91,8 +95,8 @@ class SeekBarView @JvmOverloads constructor(
         return trackLeft() + trackWidth() * fraction(shown)
     }
 
-    private fun trackLeft() = focusedThumbRadius
-    private fun trackWidth() = (width - 2 * focusedThumbRadius).coerceAtLeast(0f)
+    private fun trackLeft() = outerRadius
+    private fun trackWidth() = (width - 2 * outerRadius).coerceAtLeast(0f)
 
     private fun fraction(ms: Long): Float = fraction(ms.toFloat())
 
@@ -105,7 +109,7 @@ class SeekBarView @JvmOverloads constructor(
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        val h = (focusedThumbRadius * 2 + 6 * density).toInt()
+        val h = Math.ceil((outerRadius * 2).toDouble()).toInt()
         setMeasuredDimension(getDefaultSize(suggestedMinimumWidth, widthMeasureSpec), h)
     }
 
@@ -138,7 +142,7 @@ class SeekBarView @JvmOverloads constructor(
 
         if (isFocused) {
             canvas.drawCircle(thumbX(), cy, focusedThumbRadius, thumbPaint)
-            canvas.drawCircle(thumbX(), cy, focusedThumbRadius + 2.5f * density, ringPaint)
+            canvas.drawCircle(thumbX(), cy, focusedThumbRadius + ringGap, ringPaint)
         } else {
             canvas.drawCircle(thumbX(), cy, thumbRadius, thumbPaint)
         }
