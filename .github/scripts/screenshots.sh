@@ -51,7 +51,12 @@ shot 06-seek-bar-selected 0.6
 # Moving along the selected bar (it waits 2 s before jumping) shows a picture of where it would land.
 burst 06b-seek-back-preview 6 KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT
 burst 06c-seek-preview-moved 4 KEYCODE_DPAD_RIGHT
-sleep 3
+# Paused, the emulator has time to spare for the preview's picture.
+key KEYCODE_MEDIA_PLAY_PAUSE
+burst 06d-paused-preview 8 KEYCODE_DPAD_LEFT
+adb logcat -d -v time | grep -E "ExoPlayerImpl|MediaCodec|CCodec|AndroidRuntime" | tail -300 > "$OUT/logcat-skip.txt"
+key KEYCODE_MEDIA_PLAY_PAUSE
+sleep 1
 key KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN
 shot 07-more-row 1
 key KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_CENTER
