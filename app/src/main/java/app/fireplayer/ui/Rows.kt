@@ -131,10 +131,20 @@ class Rows(private val context: Context) {
         layoutParams = LinearLayout.LayoutParams(dp(sizeDp), dp(sizeDp)).apply { marginStart = dp(8) }
     }
 
-    /** A label on the left, an optional value on the right, and an optional trailing icon. */
-    fun build(label: String, value: String?, trailingIcon: Int?): LinearLayout {
+    /**
+     * A label on the left, an optional value on the right, and an optional trailing icon.
+     * [labelLines] above 1 lets a long label (a subtitle file name) wrap instead of being cut short.
+     */
+    fun build(label: String, value: String?, trailingIcon: Int?, labelLines: Int = 1): LinearLayout {
         val row = base()
-        row.addView(text(label), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        val labelView = text(label).apply {
+            if (labelLines > 1) {
+                isSingleLine = false
+                maxLines = labelLines
+                setLineSpacing(1f * density, 1f)
+            }
+        }
+        row.addView(labelView, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         // A long value is shortened rather than pushing the label off the row.
         if (value != null) row.addView(text(value).apply { alpha = 0.85f; maxWidth = dp(118) })
         if (trailingIcon != null) row.addView(icon(trailingIcon, 15))

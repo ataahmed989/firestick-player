@@ -82,7 +82,7 @@ class FontImport(private val activity: Activity, private val prefs: Prefs, priva
         dialog.setContentView(box)
         dialog.window?.apply {
             setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-            setDimAmount(0.4f)
+            setDimAmount(0.25f)
             attributes = attributes.apply { width = rows.dp(420) }
         }
         dialog.setOnDismissListener { stop() }

@@ -83,7 +83,7 @@ class Updater(private val activity: Activity) {
             return
         }
         // A message with no answers; Back hides it and the download carries on.
-        val progress = FireDialog.ask(activity, "Downloading update…", emptyList())
+        val progress = FireDialog.ask(activity, "Downloading update…", emptyList(), busy = true)
         Thread {
             val result = runCatching { fetch(release.apkUrl) }
             handler.post {

@@ -398,25 +398,32 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="center"
-        android:background="@drawable/bg_panel"
+        android:background="@drawable/bg_popup"
         android:gravity="center_horizontal"
         android:orientation="vertical"
-        android:padding="18dp"
+        android:paddingStart="22dp"
+        android:paddingTop="16dp"
+        android:paddingEnd="22dp"
+        android:paddingBottom="14dp"
         android:visibility="gone">
 
         <TextView
             android:id="@+id/error_text"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:fontFamily="@font/figtree_600"
-            android:maxWidth="420dp"
+            android:fontFamily="@font/figtree_700"
+            android:gravity="center_horizontal"
+            android:lineSpacingExtra="2dp"
+            android:maxWidth="380dp"
             android:textColor="@color/text"
             android:textSize="15sp" />
 
         <TextView
+            android:id="@+id/error_hint"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="6dp"
+            android:gravity="center_horizontal"
             android:text="Press OK to try again"
             android:textColor="@color/text_muted"
             android:textSize="12sp" />

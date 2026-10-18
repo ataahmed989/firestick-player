@@ -77,7 +77,13 @@ class HomeActivity : AppCompatActivity() {
     }
 
     private fun openPanel(title: String, from: View, render: SidePanel.() -> Unit) {
-        panel.open(title, onClose = { from.requestFocus() }, render = render)
+        // The menu steps back while a window is open, so the window stands out against the plain background.
+        val column = findViewById<View>(R.id.home_column)
+        column.animate().alpha(0.35f).setDuration(160).start()
+        panel.open(title, onClose = {
+            column.animate().alpha(1f).setDuration(160).start()
+            from.requestFocus()
+        }, render = render)
     }
 
     private fun openLink() {

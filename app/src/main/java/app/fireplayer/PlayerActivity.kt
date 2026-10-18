@@ -141,6 +141,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private lateinit var subsLabel: TextView
     private lateinit var audioLabel: TextView
     private lateinit var errorBox: View
+    private lateinit var errorHint: TextView
     private lateinit var errorText: TextView
     private lateinit var focusSink: View
 
@@ -441,6 +442,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             // A kind of link the player has no module for (rtsp://) fails here instead of as a playback error.
             updateTitle()
             errorText.text = "FirePlayer can't open this kind of link."
+            errorHint.text = "Press Back to return"
             errorBox.visibility = View.VISIBLE
             return
         }
@@ -693,16 +695,33 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         buffering.visibility = View.GONE
         // The error box needs OK, so a settings window can't be left in front of it.
         if (panel.isOpen) panel.close()
-        errorText.text = when (error.errorCode) {
-            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
-            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT -> "Can't reach the video. Check your connection."
-            PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS -> "The server refused the video."
-            PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
-            PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED -> "This video format isn't supported on this device."
-            else -> "Playback stopped: ${error.errorCodeName}"
-        }
+        errorText.text = errorMessage(error, status)
+        // The number helps if the error has to be reported; the name of the code would be noise here.
+        errorHint.text = "Press OK to try again  ·  Error ${error.errorCode}"
         errorBox.visibility = View.VISIBLE
         hideControls()
+    }
+
+    private fun errorMessage(error: PlaybackException, status: Int?): String = when (error.errorCode) {
+        PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+        PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT -> "Can't reach the video. Check your connection."
+        PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS -> when (status) {
+            404, 410 -> "This video isn't on the server any more."
+            401, 403 -> "The server refused the video. Your account may be busy on another device."
+            else -> "The server refused the video."
+        }
+        PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND -> "The video file couldn't be found."
+        PlaybackException.ERROR_CODE_IO_NO_PERMISSION -> "FirePlayer isn't allowed to open this file."
+        PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED,
+        PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED -> "This video file looks damaged."
+        PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED,
+        PlaybackException.ERROR_CODE_PARSING_MANIFEST_UNSUPPORTED -> "This kind of video file isn't supported."
+        PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
+        PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED,
+        PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES -> "This video format isn't supported on this device."
+        PlaybackException.ERROR_CODE_AUDIO_TRACK_INIT_FAILED,
+        PlaybackException.ERROR_CODE_AUDIO_TRACK_WRITE_FAILED -> "The sound couldn't start. Try Surround passthrough Off in Settings."
+        else -> "The video stopped playing."
     }
 
     private val showBuffering = Runnable { buffering.visibility = View.VISIBLE }
@@ -747,6 +766,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         subsLabel = findViewById(R.id.subs_label)
         audioLabel = findViewById(R.id.audio_label)
         errorBox = findViewById(R.id.error_box)
+        errorHint = findViewById(R.id.error_hint)
         errorText = findViewById(R.id.error_text)
 
         // Holds focus while the controls are hidden.
@@ -887,7 +907,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private fun matchFrameRate() {
         val p = player ?: return
         if (!prefs.matchFrameRate || matchedFpsForIndex == p.currentMediaItemIndex) return
-        val fps = videoFps()
+        // Only the rate the file declares: a measured one arrives seconds into playback, too late to switch.
+        val fps = selectedFormat(C.TRACK_TYPE_VIDEO)?.frameRate ?: Format.NO_VALUE.toFloat()
         if (fps <= 0) return
         matchedFpsForIndex = p.currentMediaItemIndex
         val wasPlaying = p.playWhenReady
@@ -1524,7 +1545,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             findStatus?.let { message(it) }
             findResults.forEach { r ->
                 val lang = Locale.forLanguageTag(r.language).getDisplayLanguage(Locale.ENGLISH)
-                row(r.release, lang) { downloadSubtitle(r) }
+                row(r.release, lang, twoLines = true) { downloadSubtitle(r) }
             }
         }
     }

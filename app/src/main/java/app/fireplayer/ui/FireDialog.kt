@@ -3,6 +3,7 @@ package app.fireplayer.ui
 import android.app.Activity
 import android.app.Dialog
 import android.content.Context
+import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.text.InputType
@@ -16,6 +17,7 @@ import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.core.content.ContextCompat
 import androidx.core.content.res.ResourcesCompat
@@ -78,7 +80,8 @@ object FireDialog {
 
     /**
      * A question with a few answers, centred on screen, like "Resume from 12:34?". [focus] is the
-     * answer that starts selected. With no answers it's a plain message that Back closes.
+     * answer that starts selected. With no answers it's a plain message that Back closes;
+     * [busy] adds a moving bar under it, for work in progress such as a download.
      */
     fun ask(
         activity: Activity,
@@ -86,6 +89,7 @@ object FireDialog {
         answers: List<Pair<String, () -> Unit>>,
         onDismiss: (() -> Unit)? = null,
         focus: Int = 0,
+        busy: Boolean = false,
     ): Dialog? {
         if (gone(activity)) return null
         val rows = Rows(activity)
@@ -103,7 +107,21 @@ object FireDialog {
             row.setOnKeyListener { v, keyCode, event -> Rows.verticalNav(list, v, keyCode, event) }
             list.addView(row, rows.listParams())
         }
-        if (answers.isNotEmpty()) box.addView(list)
+        if (busy) {
+            val bar = ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal).apply {
+                isIndeterminate = true
+                indeterminateTintList = ColorStateList.valueOf(ContextCompat.getColor(activity, R.color.accent))
+            }
+            box.addView(bar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, rows.dp(4)).apply {
+                bottomMargin = rows.dp(4)
+            })
+        }
+        if (answers.isNotEmpty()) {
+            box.addView(list)
+        } else if (!busy) {
+            // A plain message: no gap left under the title for answers that aren't there.
+            (box.getChildAt(0).layoutParams as? ViewGroup.MarginLayoutParams)?.bottomMargin = rows.dp(2)
+        }
         dialog.setOnDismissListener { if (!answered) onDismiss?.invoke() }
         show(dialog, box, rows.dp(260)) {}
         list.getChildAt(focus.coerceIn(0, (answers.size - 1).coerceAtLeast(0)))?.requestFocus()

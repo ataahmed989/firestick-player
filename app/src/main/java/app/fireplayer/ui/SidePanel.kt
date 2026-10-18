@@ -129,9 +129,10 @@ class SidePanel(private val activity: Activity) {
         value: String? = null,
         checked: Boolean = false,
         enabled: Boolean = true,
+        twoLines: Boolean = false,
         onClick: () -> Unit,
     ): View {
-        val row = rows.build(label, value, if (checked) R.drawable.ic_check else null)
+        val row = rows.build(label, value, if (checked) R.drawable.ic_check else null, if (twoLines) 2 else 1)
         row.isSelected = checked
         if (enabled) {
             row.setOnClickListener { onClick() }
