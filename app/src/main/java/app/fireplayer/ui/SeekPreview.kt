@@ -12,6 +12,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 
@@ -240,13 +241,13 @@ class SeekPreview(
 
     override fun onPlayerError(error: PlaybackException) {
         // This video can't be previewed; leave skipping exactly as it was, and say why once.
-        val note = when (error.errorCode) {
-            // Refused, cut off or never answered: the film keeps the server to itself from now on.
-            in 2000..2999 -> {
+        val note = when {
+            // Turned away: the film keeps the server to itself from now on.
+            isRefusal(error.cause) -> {
                 refused = true
                 SERVER_NOTE
             }
-            in 4000..4999 -> "No skip preview for this video: the TV can't decode it twice at once"
+            error.errorCode in 4000..4999 -> "No skip preview for this video: the TV can't decode it twice at once"
             else -> "No skip preview for this video (error ${error.errorCode})"
         }
         failedKey = itemKey
@@ -295,7 +296,20 @@ class SeekPreview(
         }
     }
 
-    private companion object {
-        const val SERVER_NOTE = "Skip preview off: the server refused a second connection"
+    companion object {
+        private const val SERVER_NOTE = "Skip preview off: the server refused a second connection"
+
+        // What IPTV servers answer when an account already has its connections in use.
+        private val REFUSAL_CODES = setOf(401, 403, 429, 456, 458, 503, 509)
+
+        /** Whether [error] is the server saying no to a connection, rather than a slow or broken one. */
+        fun isRefusal(error: Throwable?): Boolean = when (error) {
+            is HttpDataSource.InvalidResponseCodeException -> error.responseCode in REFUSAL_CODES
+            // Hung up on as soon as it connected.
+            is HttpDataSource.HttpDataSourceException ->
+                error.type == HttpDataSource.HttpDataSourceException.TYPE_OPEN &&
+                    (error.cause is java.net.SocketException || error.cause is java.io.EOFException)
+            else -> false
+        }
     }
 }

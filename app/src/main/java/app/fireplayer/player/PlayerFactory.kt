@@ -147,7 +147,7 @@ object PlayerFactory {
 
         // As much of the film as memory allows, up to two minutes ahead, topped up all the time. High-quality
         // films fill it by size first; the stall-free stretch then depends on the connection, not a fixed
-        // half minute. The last 10 seconds stay too, so going back 10 s needs nothing from the server.
+        // half minute.
         val budget = (Runtime.getRuntime().maxMemory() * 0.6).toLong().coerceIn(64L shl 20, 400L shl 20).toInt()
         val loadControl = FilmLoadControl(
             DefaultLoadControl.Builder()
@@ -160,7 +160,8 @@ object PlayerFactory {
                 )
                 .setTargetBufferBytes(budget)
                 .setPrioritizeTimeOverSizeThresholds(false)
-                .setBackBuffer(10_000, /* retainBackBufferFromKeyframe = */ true)
+                // No back buffer: it would come out of the same memory, and a high-quality film needs all of it ahead.
+                .setBackBuffer(0, false)
                 .build(),
             budget,
         )
@@ -222,8 +223,12 @@ private class FilmLoadControl(private val inner: DefaultLoadControl, private val
     private val stalls = ArrayDeque<Long>()
     private var stallId = C.TIME_UNSET
 
+    private val window = Timeline.Window()
+    private val period = Timeline.Period()
+
     override fun shouldStartPlayback(parameters: LoadControl.Parameters): Boolean {
-        if (!parameters.rebuffering) return inner.shouldStartPlayback(parameters)
+        // Live channels can't build up a cushion (the stream only comes as fast as it plays), so they keep the usual rule.
+        if (!parameters.rebuffering || isLive(parameters)) return inner.shouldStartPlayback(parameters)
         val now = SystemClock.elapsedRealtime()
         if (parameters.lastRebufferRealtimeMs != stallId) {
             stallId = parameters.lastRebufferRealtimeMs
@@ -237,6 +242,14 @@ private class FilmLoadControl(private val inner: DefaultLoadControl, private val
         }
         // Memory full means nothing more can come before playing on.
         return parameters.bufferedDurationUs >= cushionUs || inner.allocator.totalBytesAllocated >= budgetBytes
+    }
+
+    private fun isLive(parameters: LoadControl.Parameters): Boolean {
+        if (parameters.targetLiveOffsetUs != C.TIME_UNSET) return true
+        val timeline = parameters.timeline
+        if (timeline.isEmpty) return false
+        val windowIndex = timeline.getPeriodByUid(parameters.mediaPeriodId.periodUid, period).windowIndex
+        return timeline.getWindow(windowIndex, window).isLive()
     }
 
     override fun shouldContinueLoading(parameters: LoadControl.Parameters) = inner.shouldContinueLoading(parameters)

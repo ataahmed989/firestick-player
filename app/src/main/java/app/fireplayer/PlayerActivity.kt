@@ -864,6 +864,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     // The film's connection failing just after the preview asked for video is the server allowing one connection
     // (or cutting the older one off). The film comes first: previews stop.
+    /**
+     * The server turning the film away just after the preview asked for video usually means it allows one
+     * connection at a time; previews then stop so the film keeps it. Only the film's own link counts (not a
+     * subtitle file), and only an answer that means "no" (not a hiccup the film retries past).
+     */
     private val filmLoadErrors = object : AnalyticsListener {
         override fun onLoadError(
             eventTime: AnalyticsListener.EventTime,
@@ -872,7 +877,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             error: IOException,
             wasCanceled: Boolean,
         ) {
-            if (mediaLoadData.trackType != C.TRACK_TYPE_TEXT && seekPreview.requestedWithin(8_000)) seekPreview.serverRefused()
+            val film = entries.getOrNull(playingIndex)?.uri ?: return
+            if (loadEventInfo.dataSpec.uri == film && SeekPreview.isRefusal(error) && seekPreview.requestedWithin(8_000)) {
+                seekPreview.serverRefused()
+            }
         }
     }
 
