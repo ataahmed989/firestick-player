@@ -18,6 +18,7 @@ import app.fireplayer.data.Prefs
 import app.fireplayer.subs.SubtitlePresets
 import app.fireplayer.ui.SettingsPanels
 import app.fireplayer.ui.SidePanel
+import app.fireplayer.update.Updater
 
 /** What opens from the Fire TV home screen: a link box and the same settings windows as the player. */
 class HomeActivity : AppCompatActivity() {
@@ -45,6 +46,9 @@ class HomeActivity : AppCompatActivity() {
             openPanel("Settings", from) { settingsPanels.renderSettings(this) }
         }
         first.requestFocus()
+
+        val updater = Updater(this)
+        updater.check { release -> release?.let { updater.offer(it) } }
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {

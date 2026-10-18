@@ -6,6 +6,7 @@ import app.fireplayer.subs.SubtitleEdge
 import app.fireplayer.subs.SubtitleFont
 import app.fireplayer.subs.SubtitlePresets
 import app.fireplayer.subs.SubtitleStyle
+import app.fireplayer.update.Updater
 import java.util.Locale
 
 /** The Settings and Subtitle style windows, shared by the player and the home screen. */
@@ -17,6 +18,9 @@ class SettingsPanels(
 
     /** Languages offered as defaults; English first. */
     private val languages = listOf("en", "", "ar", "es", "fr", "de", "it", "pt", "hi", "ur", "tr", "ja", "ko", "zh")
+
+    private val updater = Updater(activity)
+    private var updateStatus: String? = null
 
     fun languageName(code: String): String =
         if (code.isEmpty()) "Off" else Locale(code).getDisplayLanguage(Locale.ENGLISH)
@@ -67,6 +71,16 @@ class SettingsPanels(
         row("OpenSubtitles password", if (prefs.openSubtitlesPassword.isEmpty()) "Optional" else "Saved") {
             SidePanel.prompt(activity, "OpenSubtitles password", "", password = true) {
                 prefs.openSubtitlesPassword = it; refresh()
+            }
+        }
+
+        header("App")
+        row("Check for updates", updateStatus ?: "Version ${updater.installedName}") {
+            updateStatus = "Checking…"; refresh()
+            updater.check { release ->
+                updateStatus = if (release == null) "Up to date" else null
+                if (isOpen) refresh()
+                release?.let { updater.offer(it) }
             }
         }
     }
