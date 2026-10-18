@@ -11,6 +11,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
@@ -28,6 +29,7 @@ import androidx.media3.exoplayer.SeekParameters
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.SampleStream
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
+import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
 import androidx.media3.exoplayer.RenderersFactory
 import androidx.media3.exoplayer.audio.AudioCapabilities
 import androidx.media3.exoplayer.audio.AudioRendererEventListener
@@ -174,9 +176,12 @@ object PlayerFactory {
             .setVideoScalingMode(C.VIDEO_SCALING_MODE_SCALE_TO_FIT)
             // Keeps Wi-Fi at full speed while playing; left to itself it may save power and fall behind the film.
             .setWakeMode(C.WAKE_MODE_NETWORK)
+            // Jumps land on a keyframe up to 2 s before the time asked for (never after), so less video has to be
+            // downloaded and decoded before the picture moves.
+            .setSeekParameters(SeekParameters(2_000_000L, 0L))
 
         // Slow IPTV servers drop connections now and then; keep retrying before giving up.
-        val retryPolicy = DefaultLoadErrorHandlingPolicy(5)
+        val retryPolicy = FilmRetryPolicy()
 
         if (!useAss) {
             val parsers = pictureText.readAhead(DefaultSubtitleParserFactory())
@@ -211,6 +216,38 @@ object PlayerFactory {
         assSubtitleView.withAssSupport(assHandler)
         assHandler.init(player)
         return Built(player, assHandler)
+    }
+}
+
+/**
+ * The film's load retries. IPTV servers often refuse a reconnect (403 and the like) for a few seconds while the old
+ * connection still counts, so a refused load of the film is tried every second instead of at 0, 0, 1, 3, 6 and 10 s,
+ * within the same 10 s or so before the error reaches PlayerActivity. Everything else (timeouts, dropped connections,
+ * 400/401/404/410, HLS and DASH) keeps Media3's spacing and limit.
+ */
+@OptIn(UnstableApi::class)
+private class FilmRetryPolicy : DefaultLoadErrorHandlingPolicy(RETRIES) {
+    // Whether the latest load error was a refusal of the film. On the playback thread.
+    @Volatile private var refused = false
+
+    override fun getRetryDelayMsFor(loadErrorInfo: LoadErrorHandlingPolicy.LoadErrorInfo): Long {
+        val delay = super.getRetryDelayMsFor(loadErrorInfo)
+        val data = loadErrorInfo.mediaLoadData
+        // A progressive film's loads (the only ones that look at the limit again on every check) carry no track type
+        // or format.
+        val progressive = data.dataType == C.DATA_TYPE_MEDIA && data.trackType == C.TRACK_TYPE_UNKNOWN && data.trackFormat == null
+        val code = (loadErrorInfo.exception as? HttpDataSource.InvalidResponseCodeException)?.responseCode
+        refused = progressive && delay != C.TIME_UNSET && code != null && code !in PERMANENT
+        return if (refused && loadErrorInfo.errorCount <= REFUSED_RETRIES) minOf(delay, 1_000L) else delay
+    }
+
+    override fun getMinimumLoadableRetryCount(dataType: Int): Int = if (refused) REFUSED_RETRIES else RETRIES
+
+    private companion object {
+        const val RETRIES = 5
+        // Tries at 0, 0, 1, 2 ... 10 s: the 12th failure reaches PlayerActivity at about 10 s, as the 6th did before.
+        const val REFUSED_RETRIES = 11
+        val PERMANENT = setOf(400, 401, 404, 410)
     }
 }
 

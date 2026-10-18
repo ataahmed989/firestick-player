@@ -471,7 +471,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             val saved = prefs.savedPosition(entry.key)
             if (saved > 0) when (prefs.resume) {
                 Prefs.Resume.ALWAYS -> position = saved
-                Prefs.Resume.ASK -> askResume = true
+                // Loads from the saved spot while the question is up, so Resume starts at once.
+                Prefs.Resume.ASK -> {
+                    position = saved
+                    askResume = true
+                }
                 Prefs.Resume.NEVER -> Unit
             }
         }
@@ -556,20 +560,20 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             this,
             "Resume from ${formatTime(positionMs)}?",
             listOf<Pair<String, () -> Unit>>(
+                // The player is already waiting at the saved spot.
                 "Resume" to {
                     resumeDialogShowing = false
-                    player?.seekTo(positionMs)
                     player?.play()
                 },
                 "Start over" to {
                     resumeDialogShowing = false
+                    player?.seekTo(0)
                     player?.play()
                 },
             ),
             // Back means "never mind": carry on from where you were rather than losing the spot.
             onDismiss = {
                 resumeDialogShowing = false
-                player?.seekTo(positionMs)
                 player?.play()
             },
         )
