@@ -1,6 +1,7 @@
 package app.fireplayer.ui
 
 import android.app.Activity
+import android.text.InputType
 import android.util.TypedValue
 import android.view.KeyEvent
 import android.view.View
@@ -55,6 +56,8 @@ class SidePanel(private val activity: Activity) {
         val callback = onClose
         onClose = null
         callback?.invoke()
+        // Hiding the window briefly hands focus to the first row on screen; skip its fade so it doesn't flash.
+        activity.window.decorView.jumpDrawablesToCurrentState()
     }
 
     fun setTitle(text: String) {
@@ -77,7 +80,12 @@ class SidePanel(private val activity: Activity) {
         renderer?.invoke(this)
         scroll.scrollTo(0, y)
         val focusRows = focusables()
-        if (focusRows.isNotEmpty()) focusRows[focusIndex.coerceIn(0, focusRows.size - 1)].requestFocus()
+        if (focusRows.isNotEmpty()) {
+            val row = focusRows[focusIndex.coerceIn(0, focusRows.size - 1)]
+            row.requestFocus()
+            // The new row is already the selected one: show it white at once instead of fading in from dark.
+            row.jumpDrawablesToCurrentState()
+        }
         root.isFocusable = false
     }
 
@@ -170,7 +178,9 @@ class SidePanel(private val activity: Activity) {
 
     private fun add(row: View, extraKeys: ((Int, KeyEvent) -> Boolean)? = null) {
         row.setOnKeyListener { v, keyCode, event ->
-            extraKeys?.invoke(keyCode, event) == true || Rows.verticalNav(list, v, keyCode, event)
+            extraKeys?.invoke(keyCode, event) == true || Rows.verticalNav(list, v, keyCode, event) ||
+                // Left / right mean nothing on other rows; used up here so focus can't leave the window.
+                keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
         }
         list.addView(row, rows.listParams())
     }
@@ -182,7 +192,8 @@ class SidePanel(private val activity: Activity) {
             title: String,
             initial: String,
             password: Boolean = false,
+            inputType: Int = InputType.TYPE_CLASS_TEXT,
             onDone: (String) -> Unit,
-        ) = FireDialog.prompt(activity, title, initial, password, onDone)
+        ) = FireDialog.prompt(activity, title, initial, password, inputType, onDone)
     }
 }

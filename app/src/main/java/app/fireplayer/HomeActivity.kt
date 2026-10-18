@@ -3,6 +3,7 @@ package app.fireplayer
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.text.InputType
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
@@ -16,6 +17,8 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.res.ResourcesCompat
 import app.fireplayer.data.Prefs
 import app.fireplayer.subs.SubtitlePresets
+import app.fireplayer.ui.FireDialog
+import app.fireplayer.ui.Rows
 import app.fireplayer.ui.SettingsPanels
 import app.fireplayer.ui.SidePanel
 import app.fireplayer.update.Updater
@@ -78,11 +81,16 @@ class HomeActivity : AppCompatActivity() {
     }
 
     private fun openLink() {
-        SidePanel.prompt(this, "Video link", "") { text ->
+        SidePanel.prompt(this, "Video link", "", inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI) { text ->
             var link = text.trim()
             if (link.isEmpty()) return@prompt
             // "example.com/movie.mkv" typed without http:// still opens.
             if (!Regex("^[a-zA-Z][a-zA-Z0-9+.-]*://").containsMatchIn(link)) link = "http://$link"
+            val scheme = Uri.parse(link).scheme?.lowercase()
+            if (scheme !in PLAYABLE_SCHEMES) {
+                FireDialog.ask(this, "FirePlayer can't open $scheme:// links.", listOf<Pair<String, () -> Unit>>("OK" to {}))
+                return@prompt
+            }
             val intent = Intent(Intent.ACTION_VIEW, Uri.parse(link), this, PlayerActivity::class.java)
             startActivity(intent)
         }
@@ -116,11 +124,18 @@ class HomeActivity : AppCompatActivity() {
             isDuplicateParentStateEnabled = true
         })
         row.setOnClickListener { onClick(it) }
+        // Up from the top row goes to the bottom one and the other way round, like the settings lists.
+        row.setOnKeyListener { v, keyCode, event -> Rows.verticalNav(list, v, keyCode, event) }
         list.addView(
             row,
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
                 .apply { bottomMargin = (8 * density).toInt() },
         )
         return row
+    }
+
+    companion object {
+        /** Link types the player can open; others (rtsp://, rtmp://) would need extra modules. */
+        private val PLAYABLE_SCHEMES = setOf("http", "https", "file", "content")
     }
 }

@@ -37,6 +37,7 @@ class FontImport(private val activity: Activity, private val prefs: Prefs, priva
     @Volatile private var stopped = false
 
     fun show() {
+        if (activity.isFinishing || activity.isDestroyed) return
         val rows = Rows(activity)
         val dialog = Dialog(activity).apply { requestWindowFeature(Window.FEATURE_NO_TITLE) }
         val text = ContextCompat.getColor(activity, R.color.text)
@@ -290,6 +291,14 @@ class FontImport(private val activity: Activity, private val prefs: Prefs, priva
         private var running: ServerSocket? = null
 
         fun customFontFile(activity: android.content.Context) = File(File(activity.filesDir, "fonts"), "subtitle_font")
+
+        /** Closes the upload page, e.g. when the player closes while its window is still up. */
+        fun stopAll() {
+            synchronized(FontImport) {
+                runCatching { running?.close() }
+                running = null
+            }
+        }
 
         private val PAGE = """
 <!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">

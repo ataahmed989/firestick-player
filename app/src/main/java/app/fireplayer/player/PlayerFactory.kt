@@ -66,7 +66,8 @@ object PlayerFactory {
         val httpFactory = DefaultHttpDataSource.Factory()
             .setUserAgent(userAgent ?: "FirePlayer/1.0 (Linux; Android) ExoPlayer")
             .setAllowCrossProtocolRedirects(true)
-            .setConnectTimeoutMs(20_000)
+            // A server that doesn't answer in 12 s won't answer at 20; failing sooner lets the retries take over.
+            .setConnectTimeoutMs(12_000)
             .setReadTimeoutMs(30_000)
             .setDefaultRequestProperties(headers.filterKeys { !it.equals("User-Agent", true) })
         val dataSourceFactory: DataSource.Factory = DefaultDataSource.Factory(context, httpFactory)

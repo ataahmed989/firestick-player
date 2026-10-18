@@ -72,7 +72,8 @@ class SettingsPanels(
         }
 
         header("Subtitle font")
-        row("Send a font from your phone", importedFontName ?: "Built-in") {
+        message(importedFontName?.let { "Using $it from your phone." } ?: "Using the built-in font.")
+        row("Send a font from your phone") {
             FontImport(activity, prefs) {
                 onFontChanged()
                 if (isOpen) refresh()
@@ -108,7 +109,7 @@ class SettingsPanels(
         header("App")
         row("Check for updates", updateStatus ?: "Version ${updater.installedName}") {
             updateStatus = "Checking…"; refresh()
-            updater.check { release ->
+            updater.check(onFailed = { updateStatus = "Couldn't check"; if (isOpen) refresh() }) { release ->
                 updateStatus = if (release == null) "Up to date" else null
                 if (isOpen) refresh()
                 release?.let { updater.offer(it) }
@@ -196,11 +197,21 @@ class SettingsPanels(
         spacer(6)
         // Saving only makes sense once something has been changed.
         row("Save as preset", enabled = style.name == SubtitleStyle.CUSTOM_NAME && presets.customIsNew()) {
-            SidePanel.prompt(activity, "Preset name", "") { name ->
-                presets.saveActiveAs(name); onStyleChanged(); refresh()
-                // Saving swaps this row for "Delete"; start back at the top instead of on it.
-                focusRow(0)
+            fun askName(title: String) {
+                SidePanel.prompt(activity, title, "") { name ->
+                    val clean = name.trim()
+                    if (clean.isEmpty() || clean.equals(SubtitleStyle.NETFLIX_NAME, ignoreCase = true) ||
+                        clean.equals(SubtitleStyle.CUSTOM_NAME, ignoreCase = true)
+                    ) {
+                        askName("Pick another name")
+                        return@prompt
+                    }
+                    presets.saveActiveAs(clean); onStyleChanged(); refresh()
+                    // Saving swaps this row for "Delete"; start back at the top instead of on it.
+                    focusRow(0)
+                }
             }
+            askName("Preset name")
         }
         if (presets.isSaved(style.name)) {
             row("Delete \"${style.name}\"") {
@@ -211,6 +222,8 @@ class SettingsPanels(
                         "Delete" to { presets.delete(style.name); onStyleChanged(); refresh(); focusRow(0) },
                         "Keep it" to {},
                     ),
+                    // Starts on the safe answer, so a double press doesn't delete.
+                    focus = 1,
                 )
             }
         }

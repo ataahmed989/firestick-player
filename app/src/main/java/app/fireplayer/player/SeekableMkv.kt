@@ -3,6 +3,7 @@ package app.fireplayer.player
 import android.net.Uri
 import androidx.annotation.OptIn
 import androidx.media3.common.C
+import androidx.media3.common.Format
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.extractor.Extractor
 import androidx.media3.extractor.ExtractorInput
@@ -11,11 +12,15 @@ import androidx.media3.extractor.ExtractorsFactory
 import androidx.media3.extractor.PositionHolder
 import androidx.media3.extractor.SeekMap
 import androidx.media3.extractor.SeekPoint
+import androidx.media3.extractor.TrackOutput
 import androidx.media3.extractor.mkv.MatroskaExtractor
 import java.io.EOFException
 
 /**
- * Makes MKV files without a seek index (no Cues, as some recorders and editors such as VideoRedo
+ * Passes on each MKV's frame rate (from the video track's DefaultDuration), which Media3 leaves out,
+ * so the TV can switch to the film's rate before playback starts.
+ *
+ * Also makes MKV files without a seek index (no Cues, as some recorders and editors such as VideoRedo
  * write them) skippable. Media3 plays such files but refuses to seek in them. This wraps every
  * Matroska extractor; when it reports an unseekable file of known length and duration, a jump is
  * found by reading cluster timestamps at a few points in the file and narrowing in on the target.
@@ -53,8 +58,23 @@ private class SeekableMkvExtractor(private val inner: Extractor) : Extractor by 
     private var search: Search? = null
     private val buffer = ByteArray(CHUNK + TAIL)
 
+    /** From the video track's DefaultDuration; 0 when the file doesn't say. */
+    private var videoFrameRate = 0f
+
     override fun init(output: ExtractorOutput) {
         inner.init(object : ExtractorOutput by output {
+            override fun track(id: Int, type: Int): TrackOutput {
+                val track = output.track(id, type)
+                if (type != C.TRACK_TYPE_VIDEO) return track
+                return object : TrackOutput by track {
+                    override fun format(format: Format) {
+                        val fps = videoFrameRate
+                        val missing = format.frameRate <= 0f && fps > 0f
+                        track.format(if (missing) format.buildUpon().setFrameRate(fps).build() else format)
+                    }
+                }
+            }
+
             override fun seekMap(seekMap: SeekMap) {
                 val position = input?.position ?: -1L
                 val usable = !seekMap.isSeekable && seekMap.durationUs != C.TIME_UNSET && length > 0 && position > 0
@@ -77,7 +97,7 @@ private class SeekableMkvExtractor(private val inner: Extractor) : Extractor by 
         if (input.length != C.LENGTH_UNSET.toLong()) length = input.length
         if (!headerScanned && input.position == 0L) {
             headerScanned = true
-            readTimescale(input)
+            readHeader(input)
         }
         search?.let { return it.step(input, seekPosition) }
         return inner.read(input, seekPosition)
@@ -125,7 +145,13 @@ private class SeekableMkvExtractor(private val inner: Extractor) : Extractor by 
 
             steps++
             val probe = input.position
-            val clusters = scan(input, targetUs, stopAfterFirst = false)
+            var clusters = scan(input, targetUs, stopAfterFirst = false)
+            // Nothing found means the probe is inside one huge cluster (high-bitrate files), which says
+            // nothing about where the target is: keep reading forward until a cluster turns up.
+            while (clusters.isEmpty() && steps < MAX_STEPS && input.position < minOf(hiPos, length)) {
+                steps++
+                clusters = scan(input, targetUs, stopAfterFirst = false)
+            }
             val before = clusters.lastOrNull { it.timeUs <= targetUs }
             val after = clusters.firstOrNull { it.timeUs > targetUs }
             if (before != null && before.position > loPos) {
@@ -243,9 +269,12 @@ private class SeekableMkvExtractor(private val inner: Extractor) : Extractor by 
         return timeUs.takeIf { it >= 0 && it <= fileDurationUs + 600_000_000L }
     }
 
-    /** Finds the TimecodeScale (units of cluster timestamps) in the header; most files use 1 ms. */
-    private fun readTimescale(input: ExtractorInput) {
-        val size = if (length > 0) minOf(65_536L, length).toInt() else 4_096
+    /**
+     * Reads the TimecodeScale (units of cluster timestamps; most files use 1 ms) and the video frame
+     * rate from the start of the file.
+     */
+    private fun readHeader(input: ExtractorInput) {
+        val size = if (length > 0) minOf(65_536L, length).toInt() else 65_536
         val header = ByteArray(size)
         val ok = try {
             input.peekFully(header, 0, size, true)
@@ -255,6 +284,7 @@ private class SeekableMkvExtractor(private val inner: Extractor) : Extractor by 
             input.resetPeekPosition()
         }
         if (!ok) return
+        runCatching { readFrameRate(header, size) }
         for (i in 0 until size - 5) {
             if (header[i] == 0x2A.toByte() && header[i + 1] == 0xD7.toByte() && header[i + 2] == 0xB1.toByte()) {
                 if (vintLength(header[i + 3]) != 1) continue
@@ -265,6 +295,57 @@ private class SeekableMkvExtractor(private val inner: Extractor) : Extractor by 
                 if (value > 0) timescaleNs = value
                 return
             }
+        }
+    }
+
+    private fun readFrameRate(h: ByteArray, size: Int) {
+        forEachElement(h, 0, size) { id, start, end ->
+            if (id == ID_SEGMENT) forEachElement(h, start, end) { id2, start2, end2 ->
+                if (id2 == ID_TRACKS) forEachElement(h, start2, end2) { id3, start3, end3 ->
+                    if (id3 == ID_TRACK_ENTRY && videoFrameRate == 0f) readTrackEntry(h, start3, end3)
+                }
+            }
+        }
+    }
+
+    private fun readTrackEntry(h: ByteArray, start: Int, end: Int) {
+        var video = false
+        var frameNs = 0L
+        forEachElement(h, start, end) { id, s, e ->
+            when (id) {
+                ID_TRACK_TYPE -> video = uint(h, s, e) == 1L
+                ID_DEFAULT_DURATION -> frameNs = uint(h, s, e)
+            }
+        }
+        // 8 to 250 fps; anything else is a bad value.
+        if (video && frameNs in 4_000_000L..125_000_000L) videoFrameRate = 1e9f / frameNs
+    }
+
+    private fun uint(b: ByteArray, start: Int, end: Int): Long {
+        if (end - start !in 1..8) return 0L
+        var value = 0L
+        for (i in start until end) value = (value shl 8) or (b[i].toLong() and 0xFF)
+        return value
+    }
+
+    /** Calls [block] with the ID and data range of each EBML element between [from] and [to]. */
+    private fun forEachElement(b: ByteArray, from: Int, to: Int, block: (id: Long, start: Int, end: Int) -> Unit) {
+        var i = from
+        while (i < to) {
+            val idLength = vintLength(b[i])
+            if (idLength !in 1..4 || i + idLength >= to) return
+            var id = 0L
+            for (k in 0 until idLength) id = (id shl 8) or (b[i + k].toLong() and 0xFF)
+            i += idLength
+            val sizeLength = vintLength(b[i])
+            if (sizeLength !in 1..8 || i + sizeLength > to) return
+            var size = (b[i].toLong() and 0xFF) and (0xFF shr sizeLength).toLong()
+            for (k in 1 until sizeLength) size = (size shl 8) or (b[i + k].toLong() and 0xFF)
+            i += sizeLength
+            // Unknown sizes, and elements cut off by the end of what was read, run to [to].
+            val end = if (size > to - i) to else i + size.toInt()
+            block(id, i, end)
+            i = end
         }
     }
 
@@ -287,5 +368,10 @@ private class SeekableMkvExtractor(private val inner: Extractor) : Extractor by 
         /** Landing up to this far before the target is fine: the player decodes forward to it. */
         private const val TOLERANCE_US = 2_500_000L
         private const val BACKOFF_US = 1_500_000L
+        private const val ID_SEGMENT = 0x18538067L
+        private const val ID_TRACKS = 0x1654AE6BL
+        private const val ID_TRACK_ENTRY = 0xAEL
+        private const val ID_TRACK_TYPE = 0x83L
+        private const val ID_DEFAULT_DURATION = 0x23E383L
     }
 }

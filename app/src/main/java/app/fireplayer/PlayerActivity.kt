@@ -48,6 +48,7 @@ import app.fireplayer.player.FpsMeter
 import app.fireplayer.player.FrameRateMatcher
 import app.fireplayer.player.PlayerFactory
 import app.fireplayer.player.TitleInfo
+import app.fireplayer.subs.FontImport
 import app.fireplayer.subs.OpenSubtitles
 import app.fireplayer.subs.SubtitlePresets
 import app.fireplayer.subs.SubtitleStyler
@@ -158,6 +159,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private var controlsShown = false
     private var moreShown = false
     private var completed = false
+    /** The item playing before the latest switch, so a finished episode's resume point can be cleared. */
+    private var playingIndex = 0
+    /** Whether the current player was built with libass ("Keep embedded styling" on). */
+    private var builtWithAss = false
     private var matchedFpsForIndex = -1
     private var displayMode = 0
 
@@ -174,14 +179,16 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     // Frame rate worked out from the frames, for streams that don't say
     private var measuredFps = 0f
+    // Only for the chip: by the time it's measured the video is playing, and switching the TV's
+    // refresh rate then would blank the picture mid-scene. MKVs get their rate before the first frame.
     private val fpsMeter = FpsMeter { fps ->
         measuredFps = fps
         updateChips()
-        matchFrameRate()
     }
 
     // Network hiccups are retried quietly before an error is shown
     private var retries = 0
+    private var firstErrorAt = 0L
     private var retryPending = false
     private val retryRunnable = Runnable {
         retryPending = false
@@ -251,6 +258,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         super.onDestroy()
         frameRateMatcher.reset()
         io.shutdownNow()
+        handler.removeCallbacksAndMessages(null)
+        FontImport.stopAll()
     }
 
     // ---------------------------------------------------------------------
@@ -400,6 +409,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         )
         val p = built.player
         player = p
+        builtWithAss = prefs.keepAssStyling
         assHandler = built.assHandler
         p.setVideoSurfaceView(surfaceView)
         p.addListener(this)
@@ -422,9 +432,18 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
                 Prefs.Resume.NEVER -> Unit
             }
         }
+        playingIndex = index
         // TIME_UNSET starts VOD at the beginning and live at the live edge.
-        p.setMediaItems(items, index, position)
-        p.prepare()
+        try {
+            p.setMediaItems(items, index, position)
+            p.prepare()
+        } catch (e: RuntimeException) {
+            // A kind of link the player has no module for (rtsp://) fails here instead of as a playback error.
+            updateTitle()
+            errorText.text = "FirePlayer can't open this kind of link."
+            errorBox.visibility = View.VISIBLE
+            return
+        }
         if (askResume) {
             p.playWhenReady = false
             askToResume(prefs.savedPosition(entry.key))
@@ -434,6 +453,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         updateTitle()
         updatePlayButton()
         refreshLabels()
+        // A rebuilt player has no subtitles yet; puts the style example back if its window is open.
+        showTextCues()
     }
 
     private fun defaultTrackParams(base: TrackSelectionParameters): TrackSelectionParameters {
@@ -524,9 +545,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             result.putExtra("position", p.currentPosition.toInt())
             result.putExtra("duration", p.duration.coerceAtLeast(0).toInt())
         }
+        savePosition()
+        // Silence at once; the player itself is released only after TiviMate is back on screen.
+        p?.pause()
         result.putExtra("end_by", if (completed) "playback_completion" else "user")
         setResult(RESULT_OK, result)
-        savePosition()
         // Straight back to the app that opened us, without a lingering empty task.
         if (isTaskRoot) finishAndRemoveTask() else finish()
         @Suppress("DEPRECATION")
@@ -573,6 +596,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     }
 
     override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+        val now = player?.currentMediaItemIndex ?: playingIndex
+        // An episode that played to the end starts from the top next time.
+        if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO && now != playingIndex) {
+            entries.getOrNull(playingIndex)?.let { prefs.savePosition(it.key, 0L) }
+        }
+        playingIndex = now
         matchedFpsForIndex = -1
         measuredFps = 0f
         fpsMeter.reset()
@@ -599,6 +628,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         refreshLabels()
         updateChips()
         matchFrameRate()
+        // "Keep embedded styling" was switched before an ASS track showed up (still loading, or added later).
+        if (builtWithAss != prefs.keepAssStyling && hasSsaTrack()) {
+            handler.removeCallbacks(rebuildForAss)
+            handler.post(rebuildForAss)
+        }
     }
 
     override fun onVideoSizeChanged(videoSize: VideoSize) {
@@ -637,16 +671,21 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         // Dropped connections and slow servers (common right after a jump) are retried quietly,
         // waiting a little longer each time, before an error is shown.
         val status = (error.cause as? HttpDataSource.InvalidResponseCodeException)?.responseCode
-        // 4xx answers (missing, forbidden) won't change on a retry, except timeouts and rate limits.
-        val permanent = status != null && status in 400..499 && status != 408 && status != 429
+        // A missing video won't come back. Other refusals are retried: IPTV servers often answer 403
+        // for a few seconds after a jump, while the old connection still counts against the limit.
+        val permanent = status == 404 || status == 410
         val network = error.errorCode in 2000..2999 && error.errorCode !in NOT_RETRIED && !permanent
-        if (network && retries < MAX_RETRIES) {
+        val now = SystemClock.elapsedRealtime()
+        if (retries == 0) firstErrorAt = now
+        // Quiet retries stop after a while, so a server that's down shows an error instead of a spinner forever.
+        if (network && retries < MAX_RETRIES && now - firstErrorAt < RETRY_WINDOW_MS) {
             retries++
             retryPending = true
             handler.removeCallbacks(showBuffering)
             buffering.visibility = View.VISIBLE
             handler.removeCallbacks(retryRunnable)
-            handler.postDelayed(retryRunnable, 1_000L * retries)
+            val step = if (status != null && status in 400..499) 3_000L else 1_000L
+            handler.postDelayed(retryRunnable, step * retries)
             return
         }
         retries = 0
@@ -720,7 +759,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
         btnPlay.setOnClickListener { togglePlay() }
         btnRestart.setOnClickListener { player?.seekTo(0); player?.play() }
-        btnNext.setOnClickListener { player?.seekToNextMediaItem() }
+        btnNext.setOnClickListener { savePosition(); player?.seekToNextMediaItem() }
         btnSubs.setOnClickListener { openSubtitlesPanel(btnSubs) }
         btnAudio.setOnClickListener { openAudioPanel(btnAudio) }
         focusEffect(btnPlay, 1.08f)
@@ -861,6 +900,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     }
 
     private val resumeAfterSwitch = Runnable { player?.play() }
+
+    private val rebuildForAss = Runnable {
+        if (player != null && builtWithAss != prefs.keepAssStyling) rebuildPlayer()
+    }
 
     // ---------------------------------------------------------------------
     // Controls
@@ -1153,7 +1196,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
                 }
                 return true
             }
-            KeyEvent.KEYCODE_MEDIA_NEXT -> { player?.seekToNextMediaItem(); return true }
+            KeyEvent.KEYCODE_MEDIA_NEXT -> { savePosition(); player?.seekToNextMediaItem(); return true }
         }
 
         if (panel.isOpen) {
@@ -1176,7 +1219,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
         val isOk = code == KeyEvent.KEYCODE_DPAD_CENTER || code == KeyEvent.KEYCODE_ENTER ||
             code == KeyEvent.KEYCODE_NUMPAD_ENTER
-        if (errorBox.visibility == View.VISIBLE && isOk) {
+        // OK on the error tries again, unless the controls are up and another button is chosen (Settings, Subtitles).
+        if (errorBox.visibility == View.VISIBLE && isOk && (!controlsShown || currentFocus === btnPlay)) {
             errorBox.visibility = View.GONE
             retries = 0
             player?.prepare()
@@ -1401,7 +1445,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
                 onAssChanged = {
                     applySubtitleStyle()
                     // Only ASS/SSA switches between libass and plain text; other subtitles just restyle.
-                    if (hasSsaTrack()) rebuildPlayer()
+                    // Tracks not known yet (still loading) are checked again in onTracksChanged.
+                    if (prefs.keepAssStyling != builtWithAss && hasSsaTrack()) rebuildPlayer()
                 },
             )
         }
@@ -1493,6 +1538,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         io.execute {
             val result = runCatching { openSubtitles.search(query, language, entry.info.season, entry.info.episode) }
             handler.post {
+                if (isFinishing || player == null) return@post
                 result.onSuccess {
                     findResults = it.take(30)
                     findStatus = if (it.isEmpty()) "Nothing found. Try a shorter name." else null
@@ -1509,6 +1555,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         io.execute {
             val result = runCatching { openSubtitles.download(r, dir) }
             handler.post {
+                if (isFinishing || player == null) return@post
                 result.onSuccess { file ->
                     findStatus = null
                     addExternalSubtitle(Uri.fromFile(file), r.language)
@@ -1578,6 +1625,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         val EXT_ID = Regex("^(\\d+:)?$EXT_PREFIX\\d+$")
 
         const val MAX_RETRIES = 4
+        const val RETRY_WINDOW_MS = 75_000L
         /** File missing, no permission and cleartext blocked won't fix themselves. */
         val NOT_RETRIED = setOf(
             PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND,

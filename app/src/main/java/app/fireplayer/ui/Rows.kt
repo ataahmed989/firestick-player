@@ -1,5 +1,6 @@
 package app.fireplayer.ui
 
+import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Rect
 import android.graphics.Typeface
@@ -11,6 +12,7 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewTreeObserver
+import android.view.animation.DecelerateInterpolator
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -29,13 +31,38 @@ class CenterScrollView @JvmOverloads constructor(
 ) : ScrollView(context, attrs) {
 
     private val rect = Rect()
+    private var glide: ValueAnimator? = null
+
+    /** The tallest the list may grow, in pixels; 0 means no limit. */
+    var maxHeight = 0
 
     // We do our own scrolling in requestChildFocus.
     override fun computeScrollDeltaToGetChildRectOnScreen(rect: Rect): Int = 0
 
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        var heightSpec = heightMeasureSpec
+        if (maxHeight > 0) {
+            val available = MeasureSpec.getSize(heightMeasureSpec)
+            val limit = if (MeasureSpec.getMode(heightMeasureSpec) == MeasureSpec.UNSPECIFIED) maxHeight else minOf(maxHeight, available)
+            heightSpec = MeasureSpec.makeMeasureSpec(limit, MeasureSpec.AT_MOST)
+        }
+        super.onMeasure(widthMeasureSpec, heightSpec)
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        // A new height moves the middle, so put the focused row back in it.
+        findFocus()?.takeIf { it !== this }?.let { center(it, animate = false) }
+    }
+
     override fun requestChildFocus(child: View?, focused: View?) {
         super.requestChildFocus(child, focused)
         if (focused != null) center(focused, animate = true)
+    }
+
+    override fun onDetachedFromWindow() {
+        glide?.cancel()
+        super.onDetachedFromWindow()
     }
 
     fun center(view: View, animate: Boolean) {
@@ -50,8 +77,21 @@ class CenterScrollView @JvmOverloads constructor(
         }
         view.getDrawingRect(rect)
         offsetDescendantRectToMyCoords(view, rect)
-        val target = (rect.centerY() - height / 2).coerceAtLeast(0)
-        if (animate) smoothScrollTo(0, target) else scrollTo(0, target)
+        val content = getChildAt(0)?.height ?: 0
+        val maxScroll = (content - (height - paddingTop - paddingBottom)).coerceAtLeast(0)
+        val target = (rect.centerY() - height / 2).coerceIn(0, maxScroll)
+        glide?.cancel()
+        if (!animate || target == scrollY) {
+            scrollTo(0, target)
+            return
+        }
+        // Our own glide: ScrollView's smooth scroll jumps instead when presses come quickly.
+        glide = ValueAnimator.ofInt(scrollY, target).apply {
+            duration = 180
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { scrollTo(0, it.animatedValue as Int) }
+            start()
+        }
     }
 }
 
@@ -95,7 +135,8 @@ class Rows(private val context: Context) {
     fun build(label: String, value: String?, trailingIcon: Int?): LinearLayout {
         val row = base()
         row.addView(text(label), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        if (value != null) row.addView(text(value).apply { alpha = 0.85f })
+        // A long value is shortened rather than pushing the label off the row.
+        if (value != null) row.addView(text(value).apply { alpha = 0.85f; maxWidth = dp(118) })
         if (trailingIcon != null) row.addView(icon(trailingIcon, 15))
         return row
     }

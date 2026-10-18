@@ -7,9 +7,9 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
-import androidx.appcompat.app.AlertDialog
 import androidx.core.content.FileProvider
 import androidx.core.content.pm.PackageInfoCompat
+import app.fireplayer.ui.FireDialog
 import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
@@ -28,22 +28,33 @@ class Updater(private val activity: Activity) {
     val installedName: String
         get() = activity.packageManager.getPackageInfo(activity.packageName, 0).versionName ?: ""
 
-    /** Looks for a newer release off the main thread; [onResult] gets it, or null if there's none. */
-    fun check(onResult: (Release?) -> Unit) {
+    /**
+     * Looks for a newer release off the main thread; [onResult] gets it, or null if there's none.
+     * [onFailed] runs when GitHub couldn't be reached.
+     */
+    fun check(onFailed: () -> Unit = {}, onResult: (Release?) -> Unit) {
         Thread {
-            val newer = runCatching { latest() }.getOrNull()?.takeIf { it.versionCode > installedCode() }
-            handler.post { onResult(newer) }
+            val latest = runCatching { latest() }
+            handler.post {
+                if (gone()) return@post
+                latest.fold({ onResult(it.takeIf { release -> release.versionCode > installedCode() }) }, { onFailed() })
+            }
         }.start()
     }
 
     fun offer(release: Release) {
-        if (activity.isFinishing) return
-        AlertDialog.Builder(activity)
-            .setTitle("Update available")
-            .setMessage("FirePlayer ${release.name} is ready to install.")
-            .setPositiveButton("Update") { _, _ -> download(release) }
-            .setNegativeButton("Later", null)
-            .show()
+        if (gone()) return
+        FireDialog.ask(
+            activity,
+            "FirePlayer ${release.name} is ready to install.",
+            listOf<Pair<String, () -> Unit>>("Update" to { download(release) }, "Later" to {}),
+        )
+    }
+
+    private fun gone() = activity.isFinishing || activity.isDestroyed
+
+    private fun tell(message: String) {
+        FireDialog.ask(activity, message, listOf<Pair<String, () -> Unit>>("OK" to {}))
     }
 
     private fun latest(): Release {
@@ -71,21 +82,14 @@ class Updater(private val activity: Activity) {
             askForInstallPermission()
             return
         }
-        val progress = AlertDialog.Builder(activity)
-            .setMessage("Downloading update…")
-            .setCancelable(false)
-            .show()
+        // A message with no answers; Back hides it and the download carries on.
+        val progress = FireDialog.ask(activity, "Downloading update…", emptyList())
         Thread {
             val result = runCatching { fetch(release.apkUrl) }
             handler.post {
-                progress.dismiss()
-                result.onSuccess { install(it) }.onFailure {
-                    if (!activity.isFinishing) {
-                        AlertDialog.Builder(activity)
-                            .setMessage("The update couldn't be downloaded. Try again later.")
-                            .setPositiveButton("OK", null)
-                            .show()
-                    }
+                if (progress?.isShowing == true && !activity.isDestroyed) runCatching { progress.dismiss() }
+                result.onSuccess { runCatching { install(it) } }.onFailure {
+                    if (!gone()) tell("The update couldn't be downloaded. Try again later.")
                 }
             }
         }.start()
@@ -117,23 +121,23 @@ class Updater(private val activity: Activity) {
     }
 
     private fun askForInstallPermission() {
-        AlertDialog.Builder(activity)
-            .setMessage("Allow FirePlayer to install updates, then choose Update again.")
-            .setPositiveButton("Open settings") { _, _ ->
-                val opened = runCatching {
-                    activity.startActivity(
-                        Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${activity.packageName}")),
-                    )
-                }.isSuccess
-                if (!opened) {
-                    AlertDialog.Builder(activity)
-                        .setMessage("On your Fire TV open Settings, My Fire TV, Developer options, Install unknown apps, and turn on FirePlayer.")
-                        .setPositiveButton("OK", null)
-                        .show()
-                }
-            }
-            .setNegativeButton("Later", null)
-            .show()
+        FireDialog.ask(
+            activity,
+            "Allow FirePlayer to install updates, then choose Update again.",
+            listOf<Pair<String, () -> Unit>>(
+                "Open settings" to {
+                    val opened = runCatching {
+                        activity.startActivity(
+                            Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${activity.packageName}")),
+                        )
+                    }.isSuccess
+                    if (!opened) {
+                        tell("On your Fire TV open Settings, My Fire TV, Developer options, Install unknown apps, and turn on FirePlayer.")
+                    }
+                },
+                "Later" to {},
+            ),
+        )
     }
 
     companion object {
