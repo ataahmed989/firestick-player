@@ -20,7 +20,7 @@ class OpenSubtitles(private val prefs: Prefs) {
     fun search(query: String, language: String, season: Int?, episode: Int?): List<Result> {
         val params = buildString {
             append("query=").append(enc(query))
-            if (language.isNotEmpty()) append("&languages=").append(enc(language))
+            if (language.isNotEmpty()) append("&languages=").append(enc(siteLanguages(language)))
             if (season != null) append("&season_number=").append(season)
             if (episode != null) append("&episode_number=").append(episode)
         }
@@ -38,6 +38,13 @@ class OpenSubtitles(private val prefs: Prefs) {
             )
         }
         return out.sortedByDescending { it.downloads }
+    }
+
+    /** The site splits a few languages by region. */
+    private fun siteLanguages(code: String): String = when (code) {
+        "pt" -> "pt-br,pt-pt"
+        "zh" -> "zh-cn,zh-tw"
+        else -> code
     }
 
     /** Downloads the subtitle file into [dir] and returns it. */

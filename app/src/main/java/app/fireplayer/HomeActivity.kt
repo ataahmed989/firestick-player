@@ -79,8 +79,10 @@ class HomeActivity : AppCompatActivity() {
 
     private fun openLink() {
         SidePanel.prompt(this, "Video link", "") { text ->
-            val link = text.trim()
+            var link = text.trim()
             if (link.isEmpty()) return@prompt
+            // "example.com/movie.mkv" typed without http:// still opens.
+            if (!Regex("^[a-zA-Z][a-zA-Z0-9+.-]*://").containsMatchIn(link)) link = "http://$link"
             val intent = Intent(Intent.ACTION_VIEW, Uri.parse(link), this, PlayerActivity::class.java)
             startActivity(intent)
         }

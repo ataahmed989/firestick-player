@@ -1,13 +1,18 @@
 package app.fireplayer.ui
 
 import android.app.Activity
+import android.view.View
+import android.view.ViewGroup
 import app.fireplayer.data.Prefs
+import app.fireplayer.subs.FontImport
+import app.fireplayer.subs.ShadowStrength
 import app.fireplayer.subs.SubtitleEdge
 import app.fireplayer.subs.SubtitleFont
 import app.fireplayer.subs.SubtitlePresets
 import app.fireplayer.subs.SubtitleStyle
 import app.fireplayer.update.Updater
 import java.util.Locale
+import kotlin.math.roundToInt
 
 /** The Settings and Subtitle style windows, shared by the player and the home screen. */
 class SettingsPanels(
@@ -16,36 +21,46 @@ class SettingsPanels(
     private val presets: SubtitlePresets,
 ) {
 
-    /** Languages offered as defaults; English first. */
-    private val languages = listOf("en", "", "ar", "es", "fr", "de", "it", "pt", "hi", "ur", "tr", "ja", "ko", "zh")
-
     private val updater = Updater(activity)
     private var updateStatus: String? = null
+
+    /** Called after a font arrives from the phone (or is removed), so the subtitles can switch to it. */
+    var onFontChanged: () -> Unit = {}
+
+    /** Languages offered as defaults; English first. */
+    private val languages = listOf("en", "ar", "es", "fr", "de", "it", "pt", "hi", "ur", "tr", "ja", "ko", "zh")
 
     fun languageName(code: String): String =
         if (code.isEmpty()) "Off" else Locale(code).getDisplayLanguage(Locale.ENGLISH)
 
+    private val importedFontName: String?
+        get() = prefs.customFontName.takeIf { it.isNotEmpty() && FontImport.customFontFile(activity).exists() }
+
     fun renderSettings(panel: SidePanel) = with(panel) {
         header("Skipping")
-        row("D-pad left / right", formatStep(prefs.dpadStepSec)) {
-            prefs.dpadStepSec = next(listOf(5, 10, 15, 30), prefs.dpadStepSec); refresh()
+        val dpadSteps = listOf(5, 10, 15, 20, 30, 60)
+        choice("D-pad left / right", dpadSteps.map { formatStep(it) }, dpadSteps.indexOf(prefs.dpadStepSec)) {
+            prefs.dpadStepSec = dpadSteps[it]
         }
-        row("Rewind / fast-forward", formatStep(prefs.ffStepSec)) {
-            prefs.ffStepSec = next(listOf(30, 60, 120, 300, 600), prefs.ffStepSec); refresh()
+        val ffSteps = listOf(15, 30, 60, 120, 300, 600)
+        choice("Rewind / fast-forward", ffSteps.map { formatStep(it) }, ffSteps.indexOf(prefs.ffStepSec)) {
+            prefs.ffStepSec = ffSteps[it]
         }
         row("Hold to speed up", onOff(prefs.holdSpeedUp)) {
             prefs.holdSpeedUp = !prefs.holdSpeedUp; refresh()
         }
 
         header("Defaults")
-        row("Subtitle language", languageName(prefs.subtitleLanguage)) {
-            prefs.subtitleLanguage = next(languages, prefs.subtitleLanguage); refresh()
+        val subLanguages = languages + ""
+        choice("Subtitle language", subLanguages.map { languageName(it) }, subLanguages.indexOf(prefs.subtitleLanguage)) {
+            prefs.subtitleLanguage = subLanguages[it]
         }
-        row("Audio language", languageName(prefs.audioLanguage)) {
-            prefs.audioLanguage = next(languages.filter { it.isNotEmpty() }, prefs.audioLanguage); refresh()
+        choice("Audio language", languages.map { languageName(it) }, languages.indexOf(prefs.audioLanguage)) {
+            prefs.audioLanguage = languages[it]
         }
-        row("Resume where I left off", prefs.resume.label) {
-            prefs.resume = next(Prefs.Resume.entries, prefs.resume); refresh()
+        val resumes = Prefs.Resume.entries
+        choice("Resume where I left off", resumes.map { it.label }, resumes.indexOf(prefs.resume)) {
+            prefs.resume = resumes[it]
         }
 
         header("Playback")
@@ -54,6 +69,22 @@ class SettingsPanels(
         }
         row("Surround passthrough", onOff(prefs.passthrough)) {
             prefs.passthrough = !prefs.passthrough; refresh()
+        }
+
+        header("Subtitle font")
+        row("Send a font from your phone", importedFontName ?: "Built-in") {
+            FontImport(activity, prefs) {
+                onFontChanged()
+                if (isOpen) refresh()
+            }.show()
+        }
+        if (importedFontName != null) {
+            row("Go back to the built-in font") {
+                FontImport.customFontFile(activity).delete()
+                prefs.customFontName = ""
+                onFontChanged()
+                refresh()
+            }
         }
 
         header("Online subtitles")
@@ -95,44 +126,71 @@ class SettingsPanels(
         onAssChanged: () -> Unit,
     ) = with(panel) {
         val style = presets.active()
-        val names = presets.all().map { it.name }
+        val all = presets.all()
 
-        row("Preset", style.name) {
-            presets.setActive(next(names, style.name)); onStyleChanged(); refresh()
+        choice("Preset", all.map { it.name }, all.indexOfFirst { it.name == style.name }) {
+            presets.setActive(all[it].name); onStyleChanged()
         }
-        row("Size", "${(style.textSize / SubtitleStyle.NETFLIX.textSize * 100).toInt()}%") {
-            presets.editActive { it.copy(textSize = next(SubtitleStyle.SIZES, nearest(SubtitleStyle.SIZES, it.textSize))) }
-            onStyleChanged(); refresh()
+        val sizes = SubtitleStyle.SIZES
+        choice("Size", sizes.map { sizeLabel(it) }, sizes.indexOf(nearest(sizes, style.textSize))) { i ->
+            presets.editActive { it.copy(textSize = sizes[i]) }; onStyleChanged()
         }
-        row("Color", SubtitleStyle.colorLabel(style.color)) {
-            val colors = SubtitleStyle.COLORS.map { it.first }
-            presets.editActive { it.copy(color = next(colors, it.color)) }
-            onStyleChanged(); refresh()
+        val colors = SubtitleStyle.COLORS
+        choice("Color", colors.map { it.second }, colors.indexOfFirst { it.first == style.color }) { i ->
+            presets.editActive { it.copy(color = colors[i].first) }; onStyleChanged()
         }
-        row("Edge", style.edge.label) {
-            presets.editActive { it.copy(edge = next(SubtitleEdge.entries, it.edge)) }
-            onStyleChanged(); refresh()
+        val edges = SubtitleEdge.entries
+        choice("Edge", edges.map { it.label }, edges.indexOf(style.edge)) { i ->
+            presets.editActive { it.copy(edge = edges[i]) }; onStyleChanged()
+        }
+        if (style.edge == SubtitleEdge.DROP_SHADOW) {
+            val strengths = ShadowStrength.entries
+            choice("Shadow strength", strengths.map { it.label }, strengths.indexOf(style.shadow)) { i ->
+                presets.editActive { it.copy(shadow = strengths[i]) }; onStyleChanged()
+            }.indent()
         }
         row("Background box", onOff(style.box)) {
             presets.editActive { it.copy(box = !it.box) }
             onStyleChanged(); refresh()
         }
-        row("Position", positionLabel(style.bottom)) {
-            presets.editActive { it.copy(bottom = next(SubtitleStyle.BOTTOMS, nearest(SubtitleStyle.BOTTOMS, it.bottom))) }
-            onStyleChanged(); refresh()
+        if (style.box) {
+            val opacities = SubtitleStyle.BOX_OPACITIES
+            choice(
+                "Background opacity",
+                opacities.map { "${(it * 100).roundToInt()}%" },
+                opacities.indexOf(nearest(opacities, style.boxOpacity)),
+            ) { i ->
+                presets.editActive { it.copy(boxOpacity = opacities[i]) }; onStyleChanged()
+            }.indent()
+            val boxColors = SubtitleStyle.BOX_COLORS
+            choice("Background color", boxColors.map { it.second }, boxColors.indexOfFirst { it.first == style.boxColor }) { i ->
+                presets.editActive { it.copy(boxColor = boxColors[i].first) }; onStyleChanged()
+            }.indent()
+            row("Rounded corners", onOff(style.boxRounded)) {
+                presets.editActive { it.copy(boxRounded = !it.boxRounded) }
+                onStyleChanged(); refresh()
+            }.indent()
         }
-        row("Font", style.font.label) {
-            presets.editActive { it.copy(font = next(SubtitleFont.entries, it.font)) }
-            onStyleChanged(); refresh()
+        val bottoms = SubtitleStyle.BOTTOMS
+        choice("Position", bottoms.map { positionLabel(it) }, bottoms.indexOf(nearest(bottoms, style.bottom))) { i ->
+            presets.editActive { it.copy(bottom = bottoms[i]) }; onStyleChanged()
         }
-        row("Keep ASS styling", onOff(prefs.keepAssStyling)) {
+        val fonts = SubtitleFont.entries
+        choice("Font", fonts.map { fontLabel(it) }, fonts.indexOf(style.font)) { i ->
+            presets.editActive { it.copy(font = fonts[i]) }; onStyleChanged()
+        }
+        row("Keep embedded styling", onOff(prefs.keepAssStyling)) {
             prefs.keepAssStyling = !prefs.keepAssStyling; onAssChanged(); refresh()
         }
+        message(
+            if (prefs.keepAssStyling) "Subtitles that come with their own colors and fonts keep them."
+            else "Your style is used for every subtitle, whatever the file says.",
+        )
 
         spacer(6)
-        row("Save as preset") {
-            val suggested = if (presets.isSaved(style.name)) style.name else ""
-            SidePanel.prompt(activity, "Preset name", suggested) { name ->
+        // Saving only makes sense once something has been changed.
+        row("Save as preset", enabled = style.name == SubtitleStyle.CUSTOM_NAME) {
+            SidePanel.prompt(activity, "Preset name", "") { name ->
                 presets.saveActiveAs(name); onStyleChanged(); refresh()
             }
         }
@@ -141,10 +199,20 @@ class SettingsPanels(
                 presets.delete(style.name); onStyleChanged(); refresh()
             }
         }
-        row("Reset to Netflix") {
+        row("Reset to Netflix", enabled = style.name != SubtitleStyle.NETFLIX_NAME) {
             presets.setActive(SubtitleStyle.NETFLIX_NAME); onStyleChanged(); refresh()
         }
     }
+
+    /** Nests an option under the setting that turns it on. */
+    private fun View.indent(): View = apply {
+        (layoutParams as? ViewGroup.MarginLayoutParams)?.marginStart = (14 * activity.resources.displayMetrics.density).toInt()
+    }
+
+    private fun fontLabel(font: SubtitleFont): String =
+        if (font == SubtitleFont.NETFLIX) importedFontName ?: font.label else font.label
+
+    private fun sizeLabel(size: Float) = "${(size / SubtitleStyle.NETFLIX.textSize * 100).toInt()}%"
 
     private fun positionLabel(bottom: Float): String = when (nearest(SubtitleStyle.BOTTOMS, bottom)) {
         SubtitleStyle.BOTTOMS[0] -> "Lowest"
@@ -159,11 +227,6 @@ class SettingsPanels(
 
         fun formatStep(sec: Int): String =
             if (sec < 60) "$sec s" else "${sec / 60}:${"%02d".format(sec % 60)}"
-
-        fun <T> next(options: List<T>, current: T): T {
-            val i = options.indexOf(current)
-            return options[(i + 1).mod(options.size)]
-        }
 
         fun nearest(options: List<Float>, value: Float): Float =
             options.minByOrNull { kotlin.math.abs(it - value) } ?: value

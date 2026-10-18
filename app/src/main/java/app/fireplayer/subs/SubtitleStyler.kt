@@ -1,7 +1,10 @@
 package app.fireplayer.subs
 
 import android.content.Context
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.RectF
 import android.graphics.Typeface
 import android.text.Layout
 import android.text.SpannableStringBuilder
@@ -10,6 +13,7 @@ import android.text.TextPaint
 import android.text.style.BackgroundColorSpan
 import android.text.style.CharacterStyle
 import android.text.style.ForegroundColorSpan
+import android.text.style.LineBackgroundSpan
 import android.text.style.TypefaceSpan
 import android.text.style.UpdateAppearance
 import androidx.annotation.OptIn
@@ -29,6 +33,9 @@ class SubtitleStyler(private val context: Context) {
     private val figtreeFont: Typeface? = ResourcesCompat.getFont(context, R.font.figtree_600)
     private var importedFont: Typeface? = null
     private var style: SubtitleStyle = SubtitleStyle.NETFLIX
+
+    /** "Keep embedded styling": when on, colours from the subtitle file are kept. */
+    var keepEmbedded: Boolean = false
 
     init {
         reloadImportedFont()
@@ -52,10 +59,11 @@ class SubtitleStyler(private val context: Context) {
         }
         // The soft shadow is drawn by [SoftShadowSpan] instead: the built-in one is a heavy 2dp block.
         val edgeType = if (style.edge == SubtitleEdge.OUTLINE) CaptionStyleCompat.EDGE_TYPE_OUTLINE else CaptionStyleCompat.EDGE_TYPE_NONE
+        // The background box is drawn by [BoxSpan], which pads it evenly around each line.
         view.setStyle(
             CaptionStyleCompat(
                 style.color,
-                if (style.box) Color.argb(0xB3, 0, 0, 0) else Color.TRANSPARENT,
+                Color.TRANSPARENT,
                 Color.TRANSPARENT,
                 edgeType,
                 Color.argb(0xE6, 0, 0, 0),
@@ -80,12 +88,20 @@ class SubtitleStyler(private val context: Context) {
             if (i > 0) text.append('\n')
             text.append(cue.text ?: "")
         }
-        // Drop colours, boxes and font faces from the file so the chosen style wins.
+        // Unless embedded styling is kept, drop colours, boxes and font faces from the file so the chosen style wins.
         for (span in text.getSpans(0, text.length, Any::class.java)) {
-            if (span is ForegroundColorSpan || span is BackgroundColorSpan || span is TypefaceSpan) text.removeSpan(span)
+            val colour = span is ForegroundColorSpan || span is BackgroundColorSpan
+            if (span is TypefaceSpan || (colour && !keepEmbedded)) text.removeSpan(span)
         }
         if (style.edge == SubtitleEdge.DROP_SHADOW) {
-            text.setSpan(SoftShadowSpan(), 0, text.length, Spanned.SPAN_INCLUSIVE_INCLUSIVE)
+            text.setSpan(SoftShadowSpan(style.shadow), 0, text.length, Spanned.SPAN_INCLUSIVE_INCLUSIVE)
+        }
+        if (style.box) {
+            val color = (style.boxColor and 0x00FFFFFF) or ((style.boxOpacity * 255).toInt() shl 24)
+            text.setSpan(
+                BoxSpan(color, style.boxRounded, drawWithOutline = style.edge == SubtitleEdge.OUTLINE),
+                0, text.length, Spanned.SPAN_INCLUSIVE_INCLUSIVE,
+            )
         }
         val cue = cues[0].buildUpon()
             .setText(text)
@@ -109,10 +125,45 @@ class SubtitleStyler(private val context: Context) {
     )
 
     /** A soft shadow that scales with the text, close to Netflix's subtitles on TV. */
-    private class SoftShadowSpan : CharacterStyle(), UpdateAppearance {
+    private class SoftShadowSpan(private val strength: ShadowStrength) : CharacterStyle(), UpdateAppearance {
         override fun updateDrawState(tp: TextPaint) {
             val size = tp.textSize
-            tp.setShadowLayer(size * 0.07f, size * 0.03f, size * 0.03f, Color.argb(0xCC, 0, 0, 0))
+            tp.setShadowLayer(size * strength.radius, size * strength.offset, size * strength.offset, Color.argb(strength.alpha, 0, 0, 0))
+        }
+    }
+
+    /**
+     * A box behind each line that hugs the text: a little room on the sides and above and below
+     * the block, and none between lines, so stacked lines read as one shape.
+     */
+    private class BoxSpan(color: Int, private val rounded: Boolean, private val drawWithOutline: Boolean) : LineBackgroundSpan {
+        private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = color }
+        private val rect = RectF()
+
+        override fun drawBackground(
+            canvas: Canvas, paint: Paint, left: Int, right: Int, top: Int, baseline: Int, bottom: Int,
+            text: CharSequence, start: Int, end: Int, lineNumber: Int,
+        ) {
+            // With an outline the text is drawn twice: first the outline (stroked), then the fill.
+            // The box goes under the outline, so it is drawn in that first pass only.
+            val outlinePass = paint.style != Paint.Style.FILL
+            if (outlinePass != drawWithOutline) return
+            var lineEnd = end
+            while (lineEnd > start && text[lineEnd - 1].isWhitespace()) lineEnd--
+            if (lineEnd <= start) return
+            val size = paint.textSize
+            val width = paint.measureText(text, start, lineEnd)
+            val centre = (left + right) / 2f
+            val padX = size * 0.30f
+            val padY = size * 0.06f
+            rect.set(
+                centre - width / 2 - padX,
+                top - if (lineNumber == 0) padY else 0f,
+                centre + width / 2 + padX,
+                bottom + if (end >= text.length) padY else 0f,
+            )
+            val radius = if (rounded) size * 0.16f else 0f
+            canvas.drawRoundRect(rect, radius, radius, fill)
         }
     }
 }

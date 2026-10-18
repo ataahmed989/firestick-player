@@ -12,7 +12,12 @@ import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.ForwardingRenderer
+import androidx.media3.common.Format
 import androidx.media3.exoplayer.Renderer
+import androidx.media3.exoplayer.RendererConfiguration
+import androidx.media3.exoplayer.source.MediaSource
+import androidx.media3.exoplayer.source.SampleStream
+import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.exoplayer.RenderersFactory
 import androidx.media3.exoplayer.audio.AudioCapabilities
 import androidx.media3.exoplayer.audio.AudioRendererEventListener
@@ -56,12 +61,14 @@ object PlayerFactory {
         assSubtitleView: SubtitleView,
         headers: Map<String, String>,
     ): Built {
+        // IPTV providers often require the User-Agent TiviMate passes along, so it must win over ours.
+        val userAgent = headers.entries.firstOrNull { it.key.equals("User-Agent", true) }?.value
         val httpFactory = DefaultHttpDataSource.Factory()
-            .setUserAgent("FirePlayer/1.0 (Linux; Android) ExoPlayer")
+            .setUserAgent(userAgent ?: "FirePlayer/1.0 (Linux; Android) ExoPlayer")
             .setAllowCrossProtocolRedirects(true)
-            .setConnectTimeoutMs(15_000)
-            .setReadTimeoutMs(20_000)
-            .setDefaultRequestProperties(headers)
+            .setConnectTimeoutMs(20_000)
+            .setReadTimeoutMs(30_000)
+            .setDefaultRequestProperties(headers.filterKeys { !it.equals("User-Agent", true) })
         val dataSourceFactory: DataSource.Factory = DefaultDataSource.Factory(context, httpFactory)
 
         val extractors = DefaultExtractorsFactory()
@@ -75,8 +82,9 @@ object PlayerFactory {
             .setBufferDurationsMs(
                 /* minBufferMs = */ 30_000,
                 /* maxBufferMs = */ 60_000,
-                /* bufferForPlaybackMs = */ 1_500,
-                /* bufferForPlaybackAfterRebufferMs = */ 4_000,
+                // A little more up front after a start or skip means fewer stalls right after it.
+                /* bufferForPlaybackMs = */ 2_500,
+                /* bufferForPlaybackAfterRebufferMs = */ 5_000,
             )
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
@@ -88,8 +96,12 @@ object PlayerFactory {
             .setHandleAudioBecomingNoisy(true)
             .setVideoScalingMode(C.VIDEO_SCALING_MODE_SCALE_TO_FIT)
 
+        // Slow IPTV servers drop connections now and then; keep retrying before giving up.
+        val retryPolicy = DefaultLoadErrorHandlingPolicy(8)
+
         if (!useAss) {
             val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory, extractors)
+                .setLoadErrorHandlingPolicy(retryPolicy)
             val player = builder
                 .setMediaSourceFactory(mediaSourceFactory)
                 .setRenderersFactory(DelayRenderersFactory(baseRenderers, delays))
@@ -108,6 +120,7 @@ object PlayerFactory {
             extractors.withAssMkvSupport(parserFactory, assHandler),
         )
         mediaSourceFactory.setSubtitleParserFactory(parserFactory)
+        mediaSourceFactory.setLoadErrorHandlingPolicy(retryPolicy)
         val player = builder
             .setMediaSourceFactory(mediaSourceFactory)
             .setRenderersFactory(DelayRenderersFactory(baseRenderers.withAssSupport(assHandler), delays))
@@ -132,8 +145,10 @@ private class TvRenderersFactory(
         if (passthrough) {
             return super.buildAudioSink(context, enableFloatOutput, enableAudioTrackPlaybackParams)
         }
+        // Without a context the sink uses these fixed capabilities instead of what the TV reports,
+        // so surround formats get decoded to PCM rather than passed through.
         @Suppress("DEPRECATION")
-        return DefaultAudioSink.Builder(context)
+        return DefaultAudioSink.Builder()
             .setAudioCapabilities(AudioCapabilities.DEFAULT_AUDIO_CAPABILITIES)
             .setEnableFloatOutput(enableFloatOutput)
             .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
@@ -166,7 +181,8 @@ private class DelayRenderersFactory(
     ).map { wrap(it) }.toTypedArray()
 
     private fun wrap(renderer: Renderer): Renderer = when {
-        renderer is AssRenderer || renderer.trackType == C.TRACK_TYPE_TEXT ->
+        renderer is AssRenderer -> AssOffsetRenderer(renderer, delays)
+        renderer.trackType == C.TRACK_TYPE_TEXT ->
             OffsetRenderer(renderer) { -delays.subtitleUs }
         renderer.trackType == C.TRACK_TYPE_VIDEO ->
             OffsetRenderer(renderer) { delays.audioUs }
@@ -181,5 +197,60 @@ private class OffsetRenderer(
 ) : ForwardingRenderer(renderer) {
     override fun render(positionUs: Long, elapsedRealtimeUs: Long) {
         super.render(positionUs + offsetUs(), elapsedRealtimeUs)
+    }
+}
+
+/**
+ * libass reads the clock assuming the first item's renderer offset. When the next file in a
+ * playlist starts, the offset changes, so translate the position back to that first offset.
+ */
+@OptIn(UnstableApi::class)
+private class AssOffsetRenderer(
+    renderer: Renderer,
+    private val delays: Delays,
+) : ForwardingRenderer(renderer) {
+
+    private var offsetUs = INITIAL_OFFSET_US
+    private var pendingOffsetUs = C.TIME_UNSET
+    private var pendingStartUs = 0L
+
+    override fun enable(
+        configuration: RendererConfiguration,
+        formats: Array<out Format>,
+        stream: SampleStream,
+        positionUs: Long,
+        joining: Boolean,
+        mayRenderStartOfStream: Boolean,
+        startPositionUs: Long,
+        offsetUs: Long,
+        mediaPeriodId: MediaSource.MediaPeriodId,
+    ) {
+        this.offsetUs = offsetUs
+        pendingOffsetUs = C.TIME_UNSET
+        super.enable(configuration, formats, stream, positionUs, joining, mayRenderStartOfStream, startPositionUs, offsetUs, mediaPeriodId)
+    }
+
+    override fun replaceStream(
+        formats: Array<out Format>,
+        stream: SampleStream,
+        startPositionUs: Long,
+        offsetUs: Long,
+        mediaPeriodId: MediaSource.MediaPeriodId,
+    ) {
+        pendingOffsetUs = offsetUs
+        pendingStartUs = startPositionUs
+        super.replaceStream(formats, stream, startPositionUs, offsetUs, mediaPeriodId)
+    }
+
+    override fun render(positionUs: Long, elapsedRealtimeUs: Long) {
+        if (pendingOffsetUs != C.TIME_UNSET && positionUs >= pendingStartUs) {
+            offsetUs = pendingOffsetUs
+            pendingOffsetUs = C.TIME_UNSET
+        }
+        super.render(positionUs - offsetUs + INITIAL_OFFSET_US - delays.subtitleUs, elapsedRealtimeUs)
+    }
+
+    private companion object {
+        const val INITIAL_OFFSET_US = 1_000_000_000_000L
     }
 }

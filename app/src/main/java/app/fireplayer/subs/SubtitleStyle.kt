@@ -9,6 +9,10 @@ enum class SubtitleEdge(val label: String) {
     DROP_SHADOW("Soft shadow"), OUTLINE("Outline"), NONE("None")
 }
 
+enum class ShadowStrength(val label: String, val radius: Float, val offset: Float, val alpha: Int) {
+    LIGHT("Light", 0.05f, 0.02f, 0x99), MEDIUM("Medium", 0.07f, 0.03f, 0xCC), STRONG("Strong", 0.10f, 0.04f, 0xFF)
+}
+
 /** NETFLIX uses the font sent from the phone when there is one, otherwise a built-in look-alike. */
 enum class SubtitleFont(val label: String) {
     NETFLIX("Netflix style"), ARIAL("Arial style"), FIGTREE("Figtree"), SYSTEM("System")
@@ -26,6 +30,12 @@ data class SubtitleStyle(
     val box: Boolean,
     val bottom: Float,
     val font: SubtitleFont,
+    /** Only used when [box] is on. */
+    val boxOpacity: Float = 0.6f,
+    val boxColor: Int = Color.BLACK,
+    val boxRounded: Boolean = true,
+    /** Only used with the soft shadow edge. */
+    val shadow: ShadowStrength = ShadowStrength.MEDIUM,
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("name", name)
@@ -35,6 +45,10 @@ data class SubtitleStyle(
         .put("box", box)
         .put("bottom", bottom.toDouble())
         .put("font", font.name)
+        .put("boxOpacity", boxOpacity.toDouble())
+        .put("boxColor", boxColor)
+        .put("boxRounded", boxRounded)
+        .put("shadow", shadow.name)
 
     companion object {
         const val NETFLIX_NAME = "Netflix"
@@ -55,6 +69,12 @@ data class SubtitleStyle(
             0.030f, 0.034f, 0.038f, 0.042f, 0.046f, 0.050f, 0.055f, 0.060f, 0.066f, 0.072f, 0.080f, 0.090f,
         )
         val BOTTOMS = listOf(0.03f, 0.05f, 0.08f, 0.12f, 0.16f)
+        val BOX_OPACITIES = listOf(0.25f, 0.4f, 0.5f, 0.6f, 0.75f, 0.9f, 1f)
+        val BOX_COLORS = listOf(
+            Color.BLACK to "Black",
+            Color.rgb(0x2A, 0x2D, 0x33) to "Charcoal",
+            Color.rgb(0x0B, 0x1A, 0x33) to "Midnight blue",
+        )
         val COLORS = listOf(
             Color.WHITE to "White",
             Color.rgb(0xFF, 0xE4, 0x5C) to "Yellow",
@@ -72,6 +92,11 @@ data class SubtitleStyle(
             bottom = o.optDouble("bottom", NETFLIX.bottom.toDouble()).toFloat(),
             font = runCatching { SubtitleFont.valueOf(o.optString("font")) }
                 .getOrDefault(SubtitleFont.NETFLIX),
+            boxOpacity = o.optDouble("boxOpacity", 0.6).toFloat(),
+            boxColor = o.optInt("boxColor", Color.BLACK),
+            boxRounded = o.optBoolean("boxRounded", true),
+            shadow = runCatching { ShadowStrength.valueOf(o.optString("shadow")) }
+                .getOrDefault(ShadowStrength.MEDIUM),
         )
 
         fun colorLabel(color: Int): String =

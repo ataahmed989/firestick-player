@@ -45,7 +45,10 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("passthrough", true)
         set(v) = sp.edit().putBoolean("passthrough", v).apply()
 
-    /** Render ASS/SSA with libass (positions, fonts, effects) instead of as plain text. */
+    /**
+     * "Keep embedded styling": ASS/SSA is drawn with libass (positions, fonts, effects) and other
+     * subtitles keep their own colours. Off, the chosen preset always wins.
+     */
     var keepAssStyling: Boolean
         get() = sp.getBoolean("keep_ass", true)
         set(v) = sp.edit().putBoolean("keep_ass", v).apply()
@@ -75,11 +78,6 @@ class Prefs(context: Context) {
         get() = sp.getString("sub_custom", "") ?: ""
         set(v) = sp.edit().putString("sub_custom", v).apply()
 
-    /** Name of the subtitle font sent from the phone, or "" when there isn't one. */
-    var customFontName: String
-        get() = sp.getString("custom_font", "") ?: ""
-        set(v) = sp.edit().putString("custom_font", v).apply()
-
     var displayMode: Int
         get() = sp.getInt("display_mode", 0)
         set(v) = sp.edit().putInt("display_mode", v).apply()
@@ -92,4 +90,9 @@ class Prefs(context: Context) {
         if (positionMs <= 0L) editor.remove("pos:$key") else editor.putLong("pos:$key", positionMs)
         editor.apply()
     }
+
+    /** Name of the subtitle font sent from the phone, or "" when there isn't one. */
+    var customFontName: String
+        get() = sp.getString("custom_font", "") ?: ""
+        set(v) = sp.edit().putString("custom_font", v).apply()
 }

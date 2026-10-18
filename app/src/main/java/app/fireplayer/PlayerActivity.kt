@@ -10,6 +10,7 @@ import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.format.DateFormat
 import android.text.style.ForegroundColorSpan
+import android.view.Gravity
 import android.view.KeyEvent
 import android.view.LayoutInflater
 import android.view.SurfaceView
@@ -21,7 +22,6 @@ import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.annotation.OptIn
-import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.media3.common.C
@@ -34,6 +34,7 @@ import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.TrackSelectionParameters
 import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
+import androidx.media3.common.text.Cue
 import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
@@ -41,12 +42,14 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.SubtitleView
 import app.fireplayer.data.Prefs
 import app.fireplayer.player.Delays
+import app.fireplayer.player.FpsMeter
 import app.fireplayer.player.FrameRateMatcher
 import app.fireplayer.player.PlayerFactory
 import app.fireplayer.player.TitleInfo
 import app.fireplayer.subs.OpenSubtitles
 import app.fireplayer.subs.SubtitlePresets
 import app.fireplayer.subs.SubtitleStyler
+import app.fireplayer.ui.FireDialog
 import app.fireplayer.ui.SeekBarView
 import app.fireplayer.ui.SettingsPanels
 import app.fireplayer.ui.SidePanel
@@ -56,6 +59,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executors
 import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.roundToInt
 
 @OptIn(UnstableApi::class)
@@ -65,6 +69,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private class Entry(
         val uri: Uri,
         val rawTitle: String?,
+        val mimeType: String? = null,
         val subtitles: MutableList<MediaItem.SubtitleConfiguration> = mutableListOf(),
     ) {
         val info: TitleInfo by lazy { TitleInfo.parse(rawTitle, uri) }
@@ -153,7 +158,6 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private var completed = false
     private var matchedFpsForIndex = -1
     private var displayMode = 0
-    private var speed = 1f
 
     // Seeking
     private var seeking = false
@@ -165,6 +169,29 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     // Sleep timer
     private var sleepEndsAt = 0L
     private var sleepAtEnd = false
+
+    // Frame rate worked out from the frames, for streams that don't say
+    private var measuredFps = 0f
+    private val fpsMeter = FpsMeter { fps ->
+        measuredFps = fps
+        updateChips()
+        matchFrameRate()
+    }
+
+    // Network hiccups are retried quietly before an error is shown
+    private var retries = 0
+    private val retryRunnable = Runnable { player?.prepare() }
+
+    private var resumeDialogShowing = false
+    private var pendingAudioId: String? = null
+    private var notice = false
+
+    // Subtitle style preview
+    private var lastTextCues: List<Cue> = emptyList()
+    private var stylePreviewing = false
+
+    // Time labels keep a fixed width so the bar never changes length
+    private var longTimes: Boolean? = null
 
     // ---------------------------------------------------------------------
     // Lifecycle
@@ -178,6 +205,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         settingsPanels = SettingsPanels(this, prefs, presets)
         frameRateMatcher = FrameRateMatcher(this)
         openSubtitles = OpenSubtitles(prefs)
+        @Suppress("DEPRECATION")
+        overridePendingTransition(android.R.anim.fade_in, 0)
+        settingsPanels.onFontChanged = {
+            styler.reloadImportedFont()
+            applySubtitleStyle()
+        }
         bindViews()
         panel = SidePanel(this)
         buildMoreRow()
@@ -193,11 +226,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     override fun onStart() {
         super.onStart()
         if (entries.isNotEmpty() && player == null) initPlayer()
+        updateOverlay()
         handler.post(clockTick)
     }
 
     override fun onStop() {
         super.onStop()
+        commitSeek()
         savePosition()
         releasePlayer()
         handler.removeCallbacksAndMessages(null)
@@ -221,14 +256,20 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         @Suppress("DEPRECATION")
         val list = extras?.getParcelableArray("video_list")?.mapNotNull { it as? Uri }
         val names = extras?.getStringArray("video_list.name")
+        val type = intent.type
         if (!list.isNullOrEmpty()) {
             list.forEachIndexed { i, uri -> entries += Entry(uri, names?.getOrNull(i)) }
-            startIndex = list.indexOf(data).coerceAtLeast(0)
-            if (title != null && list.indexOf(data) >= 0) {
-                entries[startIndex] = Entry(data, title)
+            val index = list.indexOf(data)
+            if (index >= 0) {
+                startIndex = index
+                entries[index] = Entry(data, title ?: names?.getOrNull(index), type)
+            } else {
+                // The video itself isn't in the list it came with; play it first.
+                entries.add(0, Entry(data, title, type))
+                startIndex = 0
             }
         } else {
-            entries += Entry(data, title)
+            entries += Entry(data, title, type)
             entries.addAll(siblingFiles(data))
         }
 
@@ -237,13 +278,26 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         val subs = extras?.getParcelableArray("subs")?.mapNotNull { it as? Uri }.orEmpty()
         val subNames = extras?.getStringArray("subs.name")
         subs.forEachIndexed { i, uri ->
-            entries[startIndex].subtitles += subtitleConfig(uri, subNames?.getOrNull(i), null)
+            val name = subNames?.getOrNull(i)
+            entries[startIndex].subtitles += subtitleConfig(uri, name, guessLanguage(name))
         }
         entries.forEach { it.subtitles += localSubtitles(it.uri) }
 
-        val position = extras?.getInt("position", 0) ?: 0
-        if (position > 0) startPositionMs = position.toLong()
+        // Some apps send the position as an Int, others as a Long.
+        @Suppress("DEPRECATION")
+        val position = (extras?.get("position") as? Number)?.toLong() ?: 0L
+        if (position > 0) startPositionMs = position
         return true
+    }
+
+    /** "English", "English (SDH)", "eng" or "en" → "en", so named subtitles sort and label properly. */
+    private fun guessLanguage(name: String?): String? {
+        val clean = name?.trim()?.lowercase() ?: return null
+        if (clean.length in 2..3 && clean.all { it.isLetter() }) return clean
+        return Locale.getISOLanguages().firstOrNull { code ->
+            val display = Locale(code).getDisplayLanguage(Locale.ENGLISH).lowercase()
+            display.length >= 4 && Regex("\\b${Regex.escape(display)}\\b").containsMatchIn(clean)
+        }
     }
 
     /** For local files, the following files in the same folder become "next episode". */
@@ -288,7 +342,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             .setMimeType(mime)
             .setLanguage(language)
             .setLabel(label)
-            .setId("ext$externalCounter")
+            .setId("$EXT_PREFIX$externalCounter")
             .build()
     }
 
@@ -309,8 +363,17 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             .setMediaId(entry.key)
             .setSubtitleConfigurations(entry.subtitles.toList())
         val path = entry.uri.path?.lowercase().orEmpty()
-        if (path.endsWith(".m3u8")) builder.setMimeType(MimeTypes.APPLICATION_M3U8)
-        if (path.endsWith(".mpd")) builder.setMimeType(MimeTypes.APPLICATION_MPD)
+        // Links without an extension rely on the type the launching app told us.
+        val mime = when {
+            path.endsWith(".m3u8") -> MimeTypes.APPLICATION_M3U8
+            path.endsWith(".mpd") -> MimeTypes.APPLICATION_MPD
+            else -> when (entry.mimeType?.lowercase()) {
+                "application/x-mpegurl", "application/vnd.apple.mpegurl", "audio/x-mpegurl" -> MimeTypes.APPLICATION_M3U8
+                "application/dash+xml" -> MimeTypes.APPLICATION_MPD
+                else -> null
+            }
+        }
+        if (mime != null) builder.setMimeType(mime)
         return builder.build()
     }
 
@@ -331,7 +394,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         assHandler = built.assHandler
         p.setVideoSurfaceView(surfaceView)
         p.addListener(this)
-        p.setPlaybackSpeed(speed)
+        p.setVideoFrameMetadataListener(fpsMeter)
+        fpsMeter.reset()
+        p.pauseAtEndOfMediaItems = sleepAtEnd
         p.trackSelectionParameters = savedTrackParams ?: defaultTrackParams(p.trackSelectionParameters)
 
         val items = entries.map { mediaItem(it) }
@@ -348,7 +413,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
                 Prefs.Resume.NEVER -> Unit
             }
         }
-        p.setMediaItems(items, index, if (position == C.TIME_UNSET) 0L else position)
+        // TIME_UNSET starts VOD at the beginning and live at the live edge.
+        p.setMediaItems(items, index, position)
         p.prepare()
         if (askResume) {
             p.playWhenReady = false
@@ -375,7 +441,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private fun captureState() {
         val p = player ?: return
         startIndex = p.currentMediaItemIndex
-        startPositionMs = p.currentPosition
+        startPositionMs = if (p.isCurrentMediaItemLive) C.TIME_UNSET else p.currentPosition
         savedTrackParams = p.trackSelectionParameters
         savedPlayWhenReady = p.playWhenReady
     }
@@ -401,23 +467,31 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     }
 
     private fun askToResume(positionMs: Long) {
-        var chosen = false
-        AlertDialog.Builder(this)
-            .setMessage("Resume from ${formatTime(positionMs)}?")
-            .setPositiveButton("Resume") { _, _ ->
-                chosen = true
-                player?.seekTo(positionMs)
+        resumeDialogShowing = true
+        FireDialog.ask(
+            this,
+            "Resume from ${formatTime(positionMs)}?",
+            listOf<Pair<String, () -> Unit>>(
+                "Resume" to {
+                    resumeDialogShowing = false
+                    player?.seekTo(positionMs)
+                    player?.play()
+                },
+                "Start over" to {
+                    resumeDialogShowing = false
+                    player?.play()
+                },
+            ),
+            onDismiss = {
+                resumeDialogShowing = false
                 player?.play()
-            }
-            .setNegativeButton("Start over") { _, _ ->
-                chosen = true
-                player?.play()
-            }
-            .setOnDismissListener { if (!chosen) player?.play() }
-            .show()
+            },
+        )
     }
 
     private fun savePosition() {
+        // Until the question is answered, the old resume point still stands.
+        if (resumeDialogShowing) return
         val p = player ?: return
         val entry = entries.getOrNull(p.currentMediaItemIndex) ?: return
         val pos = p.currentPosition
@@ -437,7 +511,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         result.putExtra("end_by", if (completed) "playback_completion" else "user")
         setResult(RESULT_OK, result)
         savePosition()
-        finish()
+        // Straight back to the app that opened us, without a lingering empty task.
+        if (isTaskRoot) finishAndRemoveTask() else finish()
+        @Suppress("DEPRECATION")
+        overridePendingTransition(0, android.R.anim.fade_out)
     }
 
     // ---------------------------------------------------------------------
@@ -450,7 +527,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         } else {
             buffering.visibility = View.GONE
         }
-        if (state == Player.STATE_READY) errorBox.visibility = View.GONE
+        if (state == Player.STATE_READY) {
+            errorBox.visibility = View.GONE
+            retries = 0
+        }
         if (state == Player.STATE_ENDED) {
             completed = true
             prefs.savePosition(entries.getOrNull(player?.currentMediaItemIndex ?: 0)?.key ?: "", 0L)
@@ -461,6 +541,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     override fun onIsPlayingChanged(isPlaying: Boolean) {
         updatePlayButton()
+        if (stylePreviewing) showTextCues()
         root.keepScreenOn = isPlaying
         if (isPlaying) scheduleHide() else handler.removeCallbacks(hideControlsRunnable)
     }
@@ -473,18 +554,26 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
         matchedFpsForIndex = -1
+        measuredFps = 0f
+        fpsMeter.reset()
         updateTitle()
         refreshLabels()
     }
 
     override fun onTracksChanged(tracks: Tracks) {
         pendingExternalSubId?.let { id ->
-            val option = trackOptions(C.TRACK_TYPE_TEXT).firstOrNull {
-                it.group.getTrackFormat(it.trackIndex).id?.contains(id) == true
-            }
+            val option = trackOptions(C.TRACK_TYPE_TEXT).firstOrNull { sameId(it, id) }
             if (option != null) {
                 pendingExternalSubId = null
                 selectTrack(option)
+            }
+        }
+        // Adding a subtitle reloads the video; stay on the audio track that was playing.
+        pendingAudioId?.let { id ->
+            val option = trackOptions(C.TRACK_TYPE_AUDIO).firstOrNull { sameId(it, id) }
+            if (option != null) {
+                pendingAudioId = null
+                if (!option.selected) selectTrack(option)
             }
         }
         refreshLabels()
@@ -500,7 +589,17 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     override fun onCues(cueGroup: CueGroup) {
         val (pictures, text) = cueGroup.cues.partition { it.bitmap != null }
         frameSubtitles.setCues(pictures)
-        screenSubtitles.setCues(text.map { styler.normalize(it) })
+        lastTextCues = text
+        showTextCues()
+    }
+
+    /**
+     * Draws the current subtitles in the chosen style. While the Subtitle style window is open
+     * and the video is paused with nothing on screen, example text shows the style instead.
+     */
+    private fun showTextCues() {
+        val preview = stylePreviewing && lastTextCues.isEmpty() && player?.isPlaying != true
+        screenSubtitles.setCues(if (preview) styler.sample() else styler.normalize(lastTextCues))
     }
 
     override fun onPlayerError(error: PlaybackException) {
@@ -510,6 +609,18 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             p.prepare()
             return
         }
+        // Dropped connections and slow servers (common right after a jump) are retried quietly,
+        // waiting a little longer each time, before an error is shown.
+        val network = error.errorCode in 2000..2999 && error.errorCode !in NOT_RETRIED
+        if (network && retries < MAX_RETRIES) {
+            retries++
+            handler.removeCallbacks(showBuffering)
+            buffering.visibility = View.VISIBLE
+            handler.removeCallbacks(retryRunnable)
+            handler.postDelayed(retryRunnable, 1_000L * retries)
+            return
+        }
+        retries = 0
         buffering.visibility = View.GONE
         errorText.text = when (error.errorCode) {
             PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
@@ -580,13 +691,21 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         btnNext.setOnClickListener { player?.seekToNextMediaItem() }
         btnSubs.setOnClickListener { openSubtitlesPanel(btnSubs) }
         btnAudio.setOnClickListener { openAudioPanel(btnAudio) }
-        tooltipOnFocus(btnRestart, findViewById(R.id.restart_tooltip))
-        tooltipOnFocus(btnNext, findViewById(R.id.next_tooltip))
+        focusEffect(btnPlay, 1.08f)
+        focusEffect(btnRestart, 1.08f, findViewById(R.id.restart_tooltip))
+        focusEffect(btnNext, 1.08f, findViewById(R.id.next_tooltip))
+        focusEffect(btnSubs, 1.04f)
+        focusEffect(btnAudio, 1.04f)
+        seekBar.onThumbMoved = { placeBubble() }
+        timeRemaining.gravity = Gravity.END or Gravity.CENTER_VERTICAL
     }
 
-    private fun tooltipOnFocus(button: View, tooltip: View) {
-        button.setOnFocusChangeListener { _, hasFocus ->
-            tooltip.visibility = if (hasFocus) View.VISIBLE else View.INVISIBLE
+    /** Selected buttons grow slightly, so moving around feels smooth rather than jumpy. */
+    private fun focusEffect(button: View, scale: Float, tooltip: View? = null) {
+        button.setOnFocusChangeListener { v, hasFocus ->
+            val s = if (hasFocus) scale else 1f
+            v.animate().scaleX(s).scaleY(s).setDuration(140).start()
+            tooltip?.visibility = if (hasFocus) View.VISIBLE else View.INVISIBLE
         }
     }
 
@@ -597,6 +716,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             v.contentDescription = label
             val value = v.findViewById<TextView>(R.id.more_value)
             v.setOnClickListener { open(v) }
+            focusEffect(v, 1.06f)
             moreRow.addView(v)
             moreItems[key] = MoreItem(v, value) { open(v) }
         }
@@ -606,7 +726,6 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         add("audio", R.drawable.ic_audio, "Audio") { openAudioPanel(it) }
         add("audioDelay", R.drawable.ic_audio_delay, "Audio delay") { openAudioDelayPanel(it) }
         add("display", R.drawable.ic_display, "Display size") { openDisplayPanel(it) }
-        add("speed", R.drawable.ic_speed, "Speed") { openSpeedPanel(it) }
         add("find", R.drawable.ic_search, "Find subtitles") { openFindPanel(it) }
         add("sleep", R.drawable.ic_sleep, "Sleep timer") { openSleepPanel(it) }
         add("settings", R.drawable.ic_settings, "Settings") { openSettingsPanel(it) }
@@ -636,7 +755,6 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         moreItems["audio"]?.value?.text = audio
         moreItems["audioDelay"]?.value?.text = formatDelay(delays.audioUs)
         moreItems["display"]?.value?.text = DISPLAY_MODES[displayMode]
-        moreItems["speed"]?.value?.text = formatSpeed(speed)
         moreItems["find"]?.value?.text = "Search"
         moreItems["sleep"]?.value?.text = sleepLabel()
         moreItems["settings"]?.value?.text = "Settings"
@@ -649,8 +767,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         val w = p.videoSize.width.takeIf { it > 0 } ?: video?.width ?: 0
         val h = p.videoSize.height.takeIf { it > 0 } ?: video?.height ?: 0
         setChip(chipResolution, if (w > 0 && h > 0) "$w×$h" else null)
-        val fps = video?.frameRate ?: Format.NO_VALUE.toFloat()
-        setChip(chipFps, if (fps > 0) "${fps.roundToInt()} FPS" else null)
+        val fps = videoFps()
+        setChip(chipFps, if (fps > 0) fpsLabel(fps) else null)
         val channels = audio?.channelCount ?: Format.NO_VALUE
         setChip(
             chipAudio,
@@ -679,19 +797,36 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         return null
     }
 
+    /** The frame rate the video says it has, or the one measured from its frames. */
+    private fun videoFps(): Float {
+        val declared = selectedFormat(C.TRACK_TYPE_VIDEO)?.frameRate ?: Format.NO_VALUE.toFloat()
+        return if (declared > 0) declared else measuredFps
+    }
+
+    private fun fpsLabel(fps: Float): String {
+        val standard = STANDARD_FPS.minByOrNull { abs(it - fps) }
+        val value = if (standard != null && abs(standard - fps) < 0.05f) standard else fps
+        val text = if (abs(value - value.roundToInt()) < 0.001f) value.roundToInt().toString()
+            else "%.3f".format(Locale.US, value).trimEnd('0')
+        return "$text FPS"
+    }
+
     private fun matchFrameRate() {
         val p = player ?: return
         if (!prefs.matchFrameRate || matchedFpsForIndex == p.currentMediaItemIndex) return
-        val fps = selectedFormat(C.TRACK_TYPE_VIDEO)?.frameRate ?: return
+        val fps = videoFps()
         if (fps <= 0) return
         matchedFpsForIndex = p.currentMediaItemIndex
         val wasPlaying = p.playWhenReady
         if (frameRateMatcher.match(fps) && wasPlaying) {
             // The TV blanks for a moment while it switches; don't play through it.
             p.pause()
-            handler.postDelayed({ player?.play() }, 2_000)
+            handler.removeCallbacks(resumeAfterSwitch)
+            handler.postDelayed(resumeAfterSwitch, 2_000)
         }
     }
+
+    private val resumeAfterSwitch = Runnable { player?.play() }
 
     // ---------------------------------------------------------------------
     // Controls
@@ -743,17 +878,30 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     /** Which parts of the overlay show: everything, just the time bar while seeking, or nothing. */
     private fun updateOverlay() {
-        val bottomVisible = controlsShown || seeking
-        scrimTop.visibility = if (controlsShown) View.VISIBLE else View.GONE
-        topBar.visibility = if (controlsShown) View.VISIBLE else View.GONE
-        scrimBottom.visibility = if (bottomVisible) View.VISIBLE else View.GONE
-        bottomBlock.visibility = if (bottomVisible) View.VISIBLE else View.GONE
+        val bottomVisible = controlsShown || seeking || notice
+        fade(scrimTop, controlsShown)
+        fade(topBar, controlsShown)
+        fade(scrimBottom, bottomVisible)
+        fade(bottomBlock, bottomVisible)
         // While seeking without controls, keep the same layout so the bar doesn't move.
         buttonsArea.visibility = if (controlsShown) View.VISIBLE else View.INVISIBLE
-        chips.visibility = if (controlsShown && !seeking) View.VISIBLE else View.INVISIBLE
-        seekBubble.visibility = if (seeking) View.VISIBLE else View.INVISIBLE
+        chips.visibility = if (controlsShown && !seeking && !notice) View.VISIBLE else View.INVISIBLE
+        seekBubble.visibility = if (seeking || notice) View.VISIBLE else View.INVISIBLE
         handler.removeCallbacks(progressTick)
         if (bottomVisible) handler.post(progressTick)
+    }
+
+    private fun fade(view: View, show: Boolean) {
+        view.animate().cancel()
+        if (show) {
+            if (view.visibility != View.VISIBLE) {
+                view.alpha = 0f
+                view.visibility = View.VISIBLE
+            }
+            view.animate().alpha(1f).setDuration(160).start()
+        } else if (view.visibility == View.VISIBLE) {
+            view.animate().alpha(0f).setDuration(160).withEndAction { view.visibility = View.GONE }.start()
+        }
     }
 
     private val hideControlsRunnable = Runnable {
@@ -768,7 +916,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private val progressTick = object : Runnable {
         override fun run() {
             updateProgress()
-            handler.postDelayed(this, 500)
+            handler.postDelayed(this, 250)
         }
     }
 
@@ -781,7 +929,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
                 finishWithResult()
                 return
             }
-            handler.postDelayed(this, 15_000)
+            if (sleepEndsAt > 0) refreshLabels()
+            // Tick on the minute so the clock and sleep countdown change on time.
+            val toNextMinute = 60_000 - System.currentTimeMillis() % 60_000
+            handler.postDelayed(this, toNextMinute.coerceIn(500, 15_000))
         }
     }
 
@@ -806,8 +957,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         seekBar.bufferedMs = p.bufferedPosition
         seekBar.targetMs = if (seeking) position else null
 
-        val total = formatTime(duration)
-        val text = SpannableStringBuilder(formatTime(position)).append("  /  ")
+        val long = duration >= 3_600_000
+        fixTimeWidths(long)
+        val total = formatTime(duration, long)
+        val text = SpannableStringBuilder(formatTime(position, long)).append("  /  ")
         val start = text.length - 4
         text.append(total)
         text.setSpan(
@@ -815,12 +968,26 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             start, text.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
         )
         timeElapsed.text = text
-        timeRemaining.text = "-" + formatTime((duration - position).coerceAtLeast(0))
-        if (seeking) positionBubble()
+        timeRemaining.text = "-" + formatTime((duration - position).coerceAtLeast(0), long)
+        if (seeking || notice) positionBubble()
+    }
+
+    /** Sizes the time labels for the longest time they can show, so the bar keeps its length. */
+    private fun fixTimeWidths(long: Boolean) {
+        if (longTimes == long) return
+        longTimes = long
+        val paint = timeElapsed.paint
+        val widest = "0123456789".maxByOrNull { paint.measureText(it.toString()) } ?: '0'
+        val time = (if (long) "0:00:00" else "00:00").replace('0', widest)
+        fun width(view: TextView, sample: String) =
+            ceil(view.paint.measureText(sample)).toInt() + view.paddingLeft + view.paddingRight + 2
+        timeElapsed.minWidth = width(timeElapsed, "$time  /  $time")
+        timeRemaining.minWidth = width(timeRemaining, "-$time")
     }
 
     private fun togglePlay() {
         val p = player ?: return
+        handler.removeCallbacks(resumeAfterSwitch)
         if (p.playbackState == Player.STATE_ENDED) p.seekTo(0)
         p.playWhenReady = !p.playWhenReady
         updatePlayButton()
@@ -831,7 +998,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     private fun nudge(stepSec: Int, direction: Int, event: KeyEvent) {
         val p = player ?: return
-        if (p.isCurrentMediaItemLive || p.duration == C.TIME_UNSET) return
+        if (p.isCurrentMediaItemLive) return
+        if (!p.isCurrentMediaItemSeekable) {
+            if (event.repeatCount == 0) showNotice("Can't skip in this video")
+            return
+        }
         val now = event.eventTime
         if (event.repeatCount > 0 && now - lastNudgeTime < 150) return
         lastNudgeTime = now
@@ -848,15 +1019,37 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             else -> 1
         }
         seekOffsetMs += direction * stepSec * 1000L * multiplier
-        // Don't let the offset run past either end.
-        seekOffsetMs = seekOffsetMs.coerceIn(-seekBaseMs, (p.duration - seekBaseMs - 1_000).coerceAtLeast(0))
+        // Don't let the offset run past either end (the end may be unknown).
+        val maxOffset = if (p.duration == C.TIME_UNSET) Long.MAX_VALUE / 4 else (p.duration - seekBaseMs - 1_000).coerceAtLeast(0)
+        seekOffsetMs = seekOffsetMs.coerceIn(-seekBaseMs, maxOffset)
+        clearNotice()
         val sign = if (seekOffsetMs < 0) "−" else "+"
         seekBubble.text = sign + formatTime(abs(seekOffsetMs))
         updateOverlay()
         updateProgress()
         handler.removeCallbacks(commitSeekRunnable)
-        handler.postDelayed(commitSeekRunnable, 900)
+        // On the selected time bar there's more time to keep going; OK jumps at once.
+        handler.postDelayed(commitSeekRunnable, if (seekBar.isFocused) 1_500L else 900L)
         if (controlsShown) scheduleHide()
+    }
+
+    /** A short message in the seek card, such as "Can't skip in this video". */
+    private fun showNotice(text: String) {
+        notice = true
+        seekBubble.text = text
+        updateOverlay()
+        positionBubble()
+        handler.removeCallbacks(clearNoticeRunnable)
+        handler.postDelayed(clearNoticeRunnable, 1_800)
+    }
+
+    private val clearNoticeRunnable = Runnable { clearNotice() }
+
+    private fun clearNotice() {
+        if (!notice) return
+        notice = false
+        handler.removeCallbacks(clearNoticeRunnable)
+        updateOverlay()
     }
 
     private fun seekTarget(): Long = (seekBaseMs + seekOffsetMs).coerceAtLeast(0)
@@ -881,11 +1074,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     /** Keeps the "+4:00" card centred over the thumb on the time bar. */
     private fun positionBubble() {
-        seekBubble.post {
-            val layer = seekBubble.parent as View
-            val x = seekRow.left + seekBar.left + seekBar.thumbX() - seekBubble.width / 2f
-            seekBubble.translationX = x.coerceIn(0f, (layer.width - seekBubble.width).toFloat().coerceAtLeast(0f))
-        }
+        seekBubble.post { placeBubble() }
+    }
+
+    private fun placeBubble() {
+        val layer = seekBubble.parent as View
+        val x = seekRow.left + seekBar.left + seekBar.thumbX() - seekBubble.width / 2f
+        seekBubble.translationX = x.coerceIn(0f, (layer.width - seekBubble.width).toFloat().coerceAtLeast(0f))
     }
 
     // ---------------------------------------------------------------------
@@ -901,12 +1096,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             return super.dispatchKeyEvent(event)
         }
         if (event.action != KeyEvent.ACTION_DOWN) return super.dispatchKeyEvent(event)
+        // Holding Back shouldn't close one thing after another.
+        if (code == KeyEvent.KEYCODE_BACK && event.repeatCount > 0) return true
 
         when (code) {
             KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> { if (!panel.isOpen) nudge(prefs.ffStepSec, 1, event); return true }
             KeyEvent.KEYCODE_MEDIA_REWIND -> { if (!panel.isOpen) nudge(prefs.ffStepSec, -1, event); return true }
             KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_MEDIA_PLAY, KeyEvent.KEYCODE_MEDIA_PAUSE -> {
                 if (event.repeatCount == 0) {
+                    handler.removeCallbacks(resumeAfterSwitch)
                     when (code) {
                         KeyEvent.KEYCODE_MEDIA_PLAY -> player?.play()
                         KeyEvent.KEYCODE_MEDIA_PAUSE -> player?.pause()
@@ -938,6 +1136,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             code == KeyEvent.KEYCODE_NUMPAD_ENTER
         if (errorBox.visibility == View.VISIBLE && isOk) {
             errorBox.visibility = View.GONE
+            retries = 0
             player?.prepare()
             player?.play()
             return true
@@ -970,10 +1169,23 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
         // Controls are showing.
         scheduleHide()
+        if (seekBar.isFocused) {
+            // The selected time bar: left / right move along it, OK jumps, down goes back to the buttons.
+            when (code) {
+                KeyEvent.KEYCODE_DPAD_LEFT -> { nudge(prefs.dpadStepSec, -1, event); return true }
+                KeyEvent.KEYCODE_DPAD_RIGHT -> { nudge(prefs.dpadStepSec, 1, event); return true }
+                KeyEvent.KEYCODE_DPAD_UP -> return true
+                KeyEvent.KEYCODE_DPAD_DOWN -> { btnPlay.requestFocus(); return true }
+            }
+            if (isOk) {
+                if (event.repeatCount == 0) togglePlay()
+                return true
+            }
+        }
         when (code) {
             KeyEvent.KEYCODE_BACK -> {
                 consumeBackUp = true
-                hideControls()
+                if (seeking) cancelSeek() else hideControls()
                 return true
             }
             KeyEvent.KEYCODE_DPAD_DOWN -> {
@@ -981,7 +1193,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
                 return true
             }
             KeyEvent.KEYCODE_DPAD_UP -> {
-                if (moreShown) showMainRow()
+                when {
+                    moreShown -> showMainRow()
+                    player?.let { !it.isCurrentMediaItemLive && it.duration != C.TIME_UNSET } == true -> seekBar.requestFocus()
+                }
                 return true
             }
         }
@@ -991,9 +1206,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     // ---------------------------------------------------------------------
     // Settings windows
 
-    private fun openPanel(title: String, from: View, render: SidePanel.() -> Unit) {
+    private fun openPanel(title: String, from: View, onClosed: () -> Unit = {}, render: SidePanel.() -> Unit) {
         hideControls()
-        panel.open(title, onClose = { showControls(from) }, render = render)
+        panel.open(title, onClose = { onClosed(); showControls(from) }, render = render)
     }
 
     private fun trackOptions(type: Int): List<TrackOption> {
@@ -1005,7 +1220,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             for (i in 0 until g.length) {
                 if (!g.isTrackSupported(i, true)) continue
                 val f = g.getTrackFormat(i)
-                raw += TrackOption(g, i, trackLabel(f, type), f.id?.contains("ext") == true, g.isTrackSelected(i))
+                raw += TrackOption(g, i, trackLabel(f, type), f.id?.matches(EXT_ID) == true, g.isTrackSelected(i))
             }
         }
         // English (or the chosen default language) first, then the rest in file order.
@@ -1036,11 +1251,17 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         if (type == C.TRACK_TYPE_TEXT && extras.isEmpty()) {
             // Labels like "Signs & Songs" help tell two English tracks apart.
             val label = f.label
-            if (label != null && !label.equals(name, true) && label.length <= 24 && !label.contains("ext")) {
+            if (label != null && !label.equals(name, true) && label.length <= 24) {
                 extras += label
             }
         }
         return if (extras.isEmpty()) name else "$name (${extras.joinToString(", ")})"
+    }
+
+    /** Track ids gain a "0:" style prefix when subtitles are added, so compare without it. */
+    private fun sameId(o: TrackOption, id: String): Boolean {
+        val trackId = o.group.getTrackFormat(o.trackIndex).id ?: return false
+        return trackId.substringAfter(':') == id.substringAfter(':')
     }
 
     private fun selectTrack(o: TrackOption) {
@@ -1099,7 +1320,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         }
         spacer(6)
         stepper("Delay", formatDelay(delays.audioUs)) { dir ->
-            delays.audioUs += dir * 50_000L
+            delays.audioUs = (delays.audioUs + dir * 50_000L).coerceIn(MIN_AUDIO_DELAY_US, MAX_AUDIO_DELAY_US)
             refreshLabels()
         }
     }
@@ -1107,18 +1328,23 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private fun openAudioDelayPanel(from: View) = openPanel("Audio delay", from) {
         message("Left makes the sound earlier, right makes it later.")
         stepper("Delay", formatDelay(delays.audioUs)) { dir ->
-            delays.audioUs += dir * 50_000L
+            delays.audioUs = (delays.audioUs + dir * 50_000L).coerceIn(MIN_AUDIO_DELAY_US, MAX_AUDIO_DELAY_US)
             refreshLabels()
         }
         row("Reset") { delays.audioUs = 0; refreshLabels(); refresh() }
     }
 
-    private fun openStylePanel(from: View) = openPanel("Subtitle style", from) {
-        settingsPanels.renderSubtitleStyle(
-            this,
-            onStyleChanged = { applySubtitleStyle(); refreshLabels() },
-            onAssChanged = { rebuildPlayer() },
-        )
+    private fun openStylePanel(from: View) {
+        // Changes show on the subtitles as they're made; paused, example text stands in.
+        stylePreviewing = true
+        showTextCues()
+        openPanel("Subtitle style", from, onClosed = { stylePreviewing = false; showTextCues() }) {
+            settingsPanels.renderSubtitleStyle(
+                this,
+                onStyleChanged = { applySubtitleStyle(); refreshLabels() },
+                onAssChanged = { applySubtitleStyle(); rebuildPlayer() },
+            )
+        }
     }
 
     private fun openDisplayPanel(from: View) = openPanel("Display size", from) {
@@ -1127,17 +1353,6 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
                 displayMode = i
                 prefs.displayMode = i
                 applyDisplayMode()
-                refreshLabels()
-                refresh()
-            }
-        }
-    }
-
-    private fun openSpeedPanel(from: View) = openPanel("Speed", from) {
-        SPEEDS.forEach { s ->
-            row(formatSpeed(s), checked = s == speed) {
-                speed = s
-                player?.setPlaybackSpeed(s)
                 refreshLabels()
                 refresh()
             }
@@ -1253,6 +1468,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         val config = subtitleConfig(uri, null, language)
         entry.subtitles += config
         pendingExternalSubId = config.id
+        pendingAudioId = selectedFormat(C.TRACK_TYPE_AUDIO)?.id
         captureState()
         p.setMediaItems(entries.map { mediaItem(it) }, index, startPositionMs)
         p.prepare()
@@ -1262,7 +1478,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     // Subtitle look and display size
 
     private fun applySubtitleStyle() {
+        styler.keepEmbedded = prefs.keepAssStyling
         styler.apply(screenSubtitles, presets.active())
+        showTextCues()
     }
 
     private fun applyDisplayMode() {
@@ -1293,22 +1511,34 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         val VIDEO_EXTENSIONS = setOf("mkv", "mp4", "m4v", "avi", "mov", "ts", "m2ts", "webm", "wmv", "flv", "mpg", "mpeg")
         val SUBTITLE_EXTENSIONS = setOf("srt", "ass", "ssa", "vtt", "ttml", "dfxp")
         val DISPLAY_MODES = listOf("Normal", "Fill screen", "Zoom", "Stretch", "16:9", "4:3", "21:9")
-        val SPEEDS = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f)
+        val STANDARD_FPS = listOf(23.976f, 24f, 25f, 29.97f, 30f, 47.952f, 48f, 50f, 59.94f, 60f, 100f, 119.88f, 120f)
 
-        fun formatTime(ms: Long): String {
+        const val EXT_PREFIX = "ext"
+        /** Subtitles we added ourselves ("ext3", or "1:ext3" once merged into the video). */
+        val EXT_ID = Regex("^(\\d+:)?$EXT_PREFIX\\d+$")
+
+        const val MAX_RETRIES = 6
+        /** File missing, no permission and cleartext blocked won't fix themselves. */
+        val NOT_RETRIED = setOf(
+            PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND,
+            PlaybackException.ERROR_CODE_IO_NO_PERMISSION,
+            PlaybackException.ERROR_CODE_IO_CLEARTEXT_NOT_PERMITTED,
+        )
+        const val MIN_AUDIO_DELAY_US = -2_000_000L
+        const val MAX_AUDIO_DELAY_US = 450_000L
+
+        /** [long] keeps the hours ("0:05:12") so every time on an hour-plus video has the same shape. */
+        fun formatTime(ms: Long, long: Boolean = false): String {
             val total = (ms / 1000).coerceAtLeast(0)
             val h = total / 3600
             val m = (total % 3600) / 60
             val s = total % 60
-            return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
+            return if (h > 0 || long) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
         }
 
         fun formatDelay(us: Long): String {
             val ms = us / 1000
             return if (ms == 0L) "0 ms" else (if (ms > 0) "+" else "−") + "${abs(ms)} ms"
         }
-
-        fun formatSpeed(s: Float): String =
-            (if (s == s.toInt().toFloat()) s.toInt().toString() else s.toString()) + "×"
     }
 }
