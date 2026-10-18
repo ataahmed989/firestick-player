@@ -12,6 +12,9 @@ sleep 2
 shot() { sleep "${2:-2}"; adb exec-out screencap -p > "$OUT/$1.png"; }
 key() { for k in "$@"; do adb shell input keyevent "$k"; sleep 0.7; done; }
 movie() {
+  # Back closes whatever is open and leaves the player, which saves the position for the resume question.
+  key KEYCODE_BACK KEYCODE_BACK
+  sleep 2
   adb shell am force-stop $PKG
   adb shell "am start -W -a android.intent.action.VIEW -d '$1' -t video/x-matroska -n $PKG/.PlayerActivity --es title '$2'"
 }
