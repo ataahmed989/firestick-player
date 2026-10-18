@@ -73,6 +73,34 @@ key KEYCODE_BACK
 key KEYCODE_MEDIA_PLAY_PAUSE
 shot 12-paused 1.5
 
+# Picture (Blu-ray PGS) subtitles: first as the disc draws them, then, with "Keep embedded styling" off, read as
+# text and shown in the chosen style. The setting is saved, so it stays off for the rest of the run; the resume
+# question and the error below show no subtitles, so they look the same either way.
+movie "http://10.0.2.2:8000/movie-pgs.mkv" "EN - Blade Runner 2049 (2017)"
+shot 15a-pgs-picture 15
+# The icon row, across to Subtitle style (Subtitles, Subtitle delay, Subtitle style).
+key KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN
+key KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_CENTER
+sleep 1
+# Down from Preset past Size, Color, Edge, Shadow strength, Background box, Position and Font, then OK to turn it off.
+key KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN
+key KEYCODE_DPAD_CENTER
+shot 15b-pgs-styling-off 1.5
+# Back closes the window, Back again hides the controls. Turning it off rebuilds the player, so give it a moment.
+key KEYCODE_BACK KEYCODE_BACK
+# The emulator takes a while to load text recognition the first time, so these spread over half a minute.
+shot 15-pgs-as-text-1 5
+shot 15-pgs-as-text-2 4
+shot 15-pgs-as-text-3 5
+shot 15-pgs-as-text-4 6
+shot 15-pgs-as-text-5 6
+# Paused on a subtitle: however slow the emulator reads, this one gets read and turns into text.
+key KEYCODE_MEDIA_PLAY_PAUSE
+shot 15-pgs-paused-read 15
+key KEYCODE_MEDIA_PLAY_PAUSE
+pid=$(adb shell pidof $PKG | tr -d '\r')
+adb logcat -d -v time ${pid:+--pid=$pid} | grep -E "Ocr|OCR|Subtitle|PGS|Pgs|ExoPlayerImpl|AndroidRuntime" | tail -300 > "$OUT/logcat-pgs.txt"
+
 # Coming back to the same film asks where to start.
 movie "http://10.0.2.2:8000/movie.mkv" "EN - 4K UHD - Dune: Part Two (2024)"
 shot 13-resume 6

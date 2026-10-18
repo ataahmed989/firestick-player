@@ -37,6 +37,11 @@ class SettingsPanels(
         get() = prefs.customFontName.takeIf { it.isNotEmpty() && FontImport.customFontFile(activity).exists() }
 
     fun renderSettings(panel: SidePanel) = with(panel) {
+        header("Remote")
+        choice("Menu button opens", listOf("Settings", "Subtitle style"), if (prefs.menuOpensStyle) 1 else 0) {
+            prefs.menuOpensStyle = it == 1
+        }
+
         header("Skipping")
         val dpadSteps = listOf(5, 10, 15, 20, 30, 60)
         choice("D-pad left / right", dpadSteps.map { formatStep(it) }, dpadSteps.indexOf(prefs.dpadStepSec)) {

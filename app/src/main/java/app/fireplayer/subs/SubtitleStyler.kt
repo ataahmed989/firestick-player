@@ -14,10 +14,9 @@ import android.text.Layout
 import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.TextPaint
-import android.text.style.BackgroundColorSpan
 import android.text.style.CharacterStyle
-import android.text.style.ForegroundColorSpan
 import android.text.style.LineBackgroundSpan
+import android.text.style.StyleSpan
 import android.text.style.TypefaceSpan
 import android.text.style.UpdateAppearance
 import androidx.annotation.OptIn
@@ -97,16 +96,32 @@ class SubtitleStyler(private val context: Context) {
      * so overlapping lines stack instead of drawing over each other.
      */
     fun normalize(cues: List<Cue>): List<Cue> {
-        if (cues.isEmpty()) return emptyList()
+        // ASS shapes (a logo, a box behind a sign) come through as their drawing commands; they're not text.
+        val shown = cues.filter { cue -> cue.text?.let { !DRAWING.matches(it) } ?: false }
+        if (shown.isEmpty()) return emptyList()
         val text = SpannableStringBuilder()
-        cues.forEachIndexed { i, cue ->
+        shown.forEachIndexed { i, cue ->
             if (i > 0) text.append('\n')
             text.append(cue.text ?: "")
         }
-        // Unless embedded styling is kept, drop colours, boxes and font faces from the file so the chosen style wins.
+        // Font faces always go. Unless embedded styling is kept, so does everything else the file sets (colours,
+        // boxes, bold, underline, sizes) so the chosen style wins and only the words stay, slanted where the file
+        // has italics.
         for (span in text.getSpans(0, text.length, Any::class.java)) {
-            val colour = span is ForegroundColorSpan || span is BackgroundColorSpan
-            if (span is TypefaceSpan || (colour && !keepEmbedded)) text.removeSpan(span)
+            when {
+                span is TypefaceSpan -> text.removeSpan(span)
+                keepEmbedded -> Unit
+                span is StyleSpan && (span.style and Typeface.ITALIC) != 0 -> {
+                    if (span.style != Typeface.ITALIC) {
+                        val start = text.getSpanStart(span)
+                        val end = text.getSpanEnd(span)
+                        val flags = text.getSpanFlags(span)
+                        text.removeSpan(span)
+                        text.setSpan(StyleSpan(Typeface.ITALIC), start, end, flags)
+                    }
+                }
+                else -> text.removeSpan(span)
+            }
         }
         if (style.edge == SubtitleEdge.DROP_SHADOW) {
             text.setSpan(SoftShadowSpan(style.shadow), 0, text.length, Spanned.SPAN_INCLUSIVE_INCLUSIVE)
@@ -118,7 +133,7 @@ class SubtitleStyler(private val context: Context) {
                 0, text.length, Spanned.SPAN_INCLUSIVE_INCLUSIVE,
             )
         }
-        val cue = cues[0].buildUpon()
+        val cue = shown[0].buildUpon()
             .setText(text)
             .setLine(Cue.DIMEN_UNSET, Cue.LINE_TYPE_FRACTION)
             .setLineAnchor(Cue.TYPE_UNSET)
@@ -236,3 +251,6 @@ class SubtitleStyler(private val context: Context) {
         }
     }
 }
+
+/** Text that is only ASS vector drawing commands ("m 0 0 l 100 0 100 40 0 40"). */
+private val DRAWING = Regex("""\s*m\s+-?\d+(\.\d+)?\s+-?\d+(\.\d+)?(\s+([mnlbspc]|-?\d+(\.\d+)?))*\s*""")

@@ -12,6 +12,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 
@@ -19,9 +20,10 @@ import androidx.media3.ui.AspectRatioFrameLayout
  * The picture above the time bar while skipping: a still from where the jump will land.
  *
  * A second, video-only player seeks to the keyframe nearest each new target and shows it. It starts
- * on the first press and is released a few seconds after the last, so its connection to the server
- * isn't kept open. If it can't play the video (an old server, a busy decoder), previews quietly stop
- * for that video and skipping works as before.
+ * on the first press and is released a little after the last; its connection closes as soon as each
+ * picture is loaded. If it can't play the video, previews stop for that video with a short note saying
+ * why, and skipping works as before. A server that refuses the second connection (many IPTV accounts
+ * allow one at a time) turns previews off until the player is closed, so the film keeps its connection.
  */
 @OptIn(UnstableApi::class)
 class SeekPreview(
@@ -34,6 +36,8 @@ class SeekPreview(
     private val create: () -> ExoPlayer,
     /** Called when the card appears (true) and goes away (false), so subtitles can make room. */
     private val onShowing: (Boolean) -> Unit,
+    /** Called once when previews stop, with a short note saying why. */
+    private val onFailed: (String) -> Unit,
 ) : Player.Listener {
 
     private val handler = Handler(Looper.getMainLooper())
@@ -58,6 +62,10 @@ class SeekPreview(
     // The card is on screen with a picture from this round of skipping.
     private var shown = false
     private var failedKey: String? = null
+    // The server wouldn't serve the preview alongside the film.
+    private var refused = false
+    // When the preview last asked the server for something (SystemClock.uptimeMillis).
+    private var lastRequestAt = 0L
     private var active = false
 
     init {
@@ -72,7 +80,7 @@ class SeekPreview(
      * player will jump there (SystemClock.uptimeMillis); a picture that arrives just before that isn't shown.
      */
     fun update(key: String, mediaItem: MediaItem, targetMs: Long, jumpAt: Long) {
-        if (key == failedKey) return
+        if (key == failedKey || refused) return
         if (key != itemKey) {
             release()
             itemKey = key
@@ -106,7 +114,22 @@ class SeekPreview(
         card.animate().alpha(0f).setDuration(140).start()
         setShown(false)
         handler.removeCallbacks(releaseRunnable)
-        handler.postDelayed(releaseRunnable, 8_000)
+        handler.postDelayed(releaseRunnable, 15_000)
+    }
+
+    /** False once previews have stopped for [key] (or for every video, when the server refused). */
+    fun canPreview(key: String): Boolean = key != failedKey && !refused
+
+    /** Whether the preview asked the server for video within the last [ms]; a server may still count that connection. */
+    fun requestedWithin(ms: Long): Boolean = SystemClock.uptimeMillis() - lastRequestAt < ms
+
+    /** The film lost its connection while the preview had one: the server only allows one, so the film gets it. */
+    fun serverRefused() {
+        if (refused) return
+        refused = true
+        hide()
+        release()
+        onFailed(SERVER_NOTE)
     }
 
     fun release() {
@@ -168,6 +191,7 @@ class SeekPreview(
         issuedMs = target
         issuedRound = round
         inFlight = true
+        lastRequestAt = SystemClock.uptimeMillis()
     }
 
     private val releaseRunnable = Runnable { release() }
@@ -216,10 +240,20 @@ class SeekPreview(
     }
 
     override fun onPlayerError(error: PlaybackException) {
-        // This video can't be previewed; leave skipping exactly as it was.
+        // This video can't be previewed; leave skipping exactly as it was, and say why once.
+        val note = when {
+            // Turned away: the film keeps the server to itself from now on.
+            isRefusal(error.cause) -> {
+                refused = true
+                SERVER_NOTE
+            }
+            error.errorCode in 4000..4999 -> "No skip preview for this video: the TV can't decode it twice at once"
+            else -> "No skip preview for this video (error ${error.errorCode})"
+        }
         failedKey = itemKey
         hide()
         release()
+        onFailed(note)
     }
 
     private fun reveal() {
@@ -259,6 +293,23 @@ class SeekPreview(
             setShown(true)
         } else {
             card.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(120).start()
+        }
+    }
+
+    companion object {
+        private const val SERVER_NOTE = "Skip preview off: the server refused a second connection"
+
+        // What IPTV servers answer when an account already has its connections in use.
+        private val REFUSAL_CODES = setOf(401, 403, 429, 456, 458, 503, 509)
+
+        /** Whether [error] is the server saying no to a connection, rather than a slow or broken one. */
+        fun isRefusal(error: Throwable?): Boolean = when (error) {
+            is HttpDataSource.InvalidResponseCodeException -> error.responseCode in REFUSAL_CODES
+            // Hung up on as soon as it connected.
+            is HttpDataSource.HttpDataSourceException ->
+                error.type == HttpDataSource.HttpDataSourceException.TYPE_OPEN &&
+                    (error.cause is java.net.SocketException || error.cause is java.io.EOFException)
+            else -> false
         }
     }
 }

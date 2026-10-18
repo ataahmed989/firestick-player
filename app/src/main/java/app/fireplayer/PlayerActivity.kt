@@ -45,6 +45,9 @@ import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.analytics.AnalyticsListener
+import androidx.media3.exoplayer.source.LoadEventInfo
+import androidx.media3.exoplayer.source.MediaLoadData
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.SubtitleView
 import app.fireplayer.data.Prefs
@@ -55,6 +58,7 @@ import app.fireplayer.player.PlayerFactory
 import app.fireplayer.player.TitleInfo
 import app.fireplayer.subs.FontImport
 import app.fireplayer.subs.OpenSubtitles
+import app.fireplayer.subs.PictureText
 import app.fireplayer.subs.SubtitlePresets
 import app.fireplayer.subs.SubtitleStyler
 import app.fireplayer.ui.FireDialog
@@ -64,6 +68,7 @@ import app.fireplayer.ui.SettingsPanels
 import app.fireplayer.ui.SidePanel
 import io.github.peerless2012.ass.media.AssHandler
 import java.io.File
+import java.io.IOException
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executors
@@ -98,6 +103,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private lateinit var prefs: Prefs
     private lateinit var presets: SubtitlePresets
     private lateinit var styler: SubtitleStyler
+    private lateinit var pictureText: PictureText
     private lateinit var settingsPanels: SettingsPanels
     private lateinit var panel: SidePanel
     private lateinit var frameRateMatcher: FrameRateMatcher
@@ -198,19 +204,43 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private var retries = 0
     private var firstErrorAt = 0L
     private var retryPending = false
-    private val retryRunnable = Runnable {
-        retryPending = false
-        player?.prepare()
+    private val retryRunnable = object : Runnable {
+        override fun run() {
+            // A refresh-rate switch that began after this was scheduled (the next video's) has to settle first.
+            val settle = displaySwitchAt + DISPLAY_SETTLE_MS - SystemClock.elapsedRealtime()
+            if (settle > 0) {
+                handler.postDelayed(this, settle)
+                return
+            }
+            retryPending = false
+            player?.prepare()
+        }
     }
+    // Sound or a decoder the device couldn't start, counted apart: these can fail again right after
+    // playback resumes, so only half a minute of playing (or another video) gives them back.
+    private var deviceRetries = 0
+    private var firstDeviceErrorAt = 0L
+    private val deviceRetriesBack = Runnable { deviceRetries = 0 }
+    // When the TV was last asked to change refresh rate; its sound output drops out while it switches.
+    private var displaySwitchAt = 0L
 
     private var resumeDialogShowing = false
     private var pendingAudioId: String? = null
     private var notice = false
+    private var pendingNotice: String? = null
 
     // Subtitle style preview
     private var lastTextCues: List<Cue> = emptyList()
     private var lastPictureCues: List<Cue> = emptyList()
     private var stylePreviewing = false
+
+    // What's on screen: picture subtitles that were read as text count as text.
+    private var shownTextCues: List<Cue> = emptyList()
+    private var shownPictureCues: List<Cue> = emptyList()
+    // Pictures being read now that they're due (not read ahead in time), and until when they stay hidden for it.
+    private var readingPictures: List<Cue>? = null
+    private var readingUntil = 0L
+    private val readingTimeout = Runnable { showCues() }
 
     // Time labels keep a fixed width so the bar never changes length
     private var longTimes: Boolean? = null
@@ -224,6 +254,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         prefs = Prefs(this)
         presets = SubtitlePresets(prefs)
         styler = SubtitleStyler(this)
+        pictureText = PictureText { handler.post { if (readingPictures != null) showCues() } }
         settingsPanels = SettingsPanels(this, prefs, presets)
         frameRateMatcher = FrameRateMatcher(this)
         openSubtitles = OpenSubtitles(prefs)
@@ -266,6 +297,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     override fun onDestroy() {
         super.onDestroy()
         frameRateMatcher.reset()
+        pictureText.release()
         io.shutdownNow()
         handler.removeCallbacksAndMessages(null)
         FontImport.stopAll()
@@ -415,6 +447,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             useAss = prefs.keepAssStyling,
             assSubtitleView = frameSubtitles,
             headers = headersFromIntent(),
+            pictureText = pictureText,
         )
         val p = built.player
         player = p
@@ -422,6 +455,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         assHandler = built.assHandler
         p.setVideoSurfaceView(surfaceView)
         p.addListener(this)
+        p.addAnalyticsListener(filmLoadErrors)
         p.setVideoFrameMetadataListener(fpsMeter)
         fpsMeter.reset()
         p.pauseAtEndOfMediaItems = sleepAtEnd
@@ -437,11 +471,16 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             val saved = prefs.savedPosition(entry.key)
             if (saved > 0) when (prefs.resume) {
                 Prefs.Resume.ALWAYS -> position = saved
-                Prefs.Resume.ASK -> askResume = true
+                // Loads from the saved spot while the question is up, so Resume starts at once.
+                Prefs.Resume.ASK -> {
+                    position = saved
+                    askResume = true
+                }
                 Prefs.Resume.NEVER -> Unit
             }
         }
         playingIndex = index
+        deviceRetries = 0
         // TIME_UNSET starts VOD at the beginning and live at the live edge.
         try {
             p.setMediaItems(items, index, position)
@@ -497,6 +536,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         // The old player can't clear its last line any more, so do it here.
         lastTextCues = emptyList()
         lastPictureCues = emptyList()
+        shownTextCues = emptyList()
+        shownPictureCues = emptyList()
+        readingPictures = null
+        handler.removeCallbacks(readingTimeout)
         screenSubtitles.setCues(emptyList())
         frameSubtitles.setCues(emptyList())
         // The ASS overlay view belongs to the old handler.
@@ -517,20 +560,20 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             this,
             "Resume from ${formatTime(positionMs)}?",
             listOf<Pair<String, () -> Unit>>(
+                // The player is already waiting at the saved spot.
                 "Resume" to {
                     resumeDialogShowing = false
-                    player?.seekTo(positionMs)
                     player?.play()
                 },
                 "Start over" to {
                     resumeDialogShowing = false
+                    player?.seekTo(0)
                     player?.play()
                 },
             ),
             // Back means "never mind": carry on from where you were rather than losing the spot.
             onDismiss = {
                 resumeDialogShowing = false
-                player?.seekTo(positionMs)
                 player?.play()
             },
         )
@@ -580,6 +623,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             errorBox.visibility = View.GONE
             retries = 0
             retryPending = false
+            handler.removeCallbacks(deviceRetriesBack)
+            handler.postDelayed(deviceRetriesBack, DEVICE_RETRY_WINDOW_MS / 2)
         }
         if (state == Player.STATE_ENDED && seeking && seekOffsetMs < 0) {
             // The film ended while a jump back in it was being lined up: make that jump instead of closing.
@@ -632,8 +677,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         }
         // Any other jump being lined up was for the video that was playing, not this one.
         if (seeking) cancelSeek()
+        if (now != playingIndex) pictureText.discardAhead()
         playingIndex = now
         matchedFpsForIndex = -1
+        deviceRetries = 0
         measuredFps = 0f
         fpsMeter.reset()
         updateTitle()
@@ -659,8 +706,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         refreshLabels()
         updateChips()
         matchFrameRate()
+        updatePictureReading()
         // "Keep embedded styling" was switched before an ASS track showed up (still loading, or added later).
-        if (builtWithAss != prefs.keepAssStyling && hasSsaTrack()) {
+        if (stylingNeedsRebuild()) {
             handler.removeCallbacks(rebuildForAss)
             handler.post(rebuildForAss)
         }
@@ -675,9 +723,21 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         val (pictures, text) = cueGroup.cues.partition { it.bitmap != null }
         lastPictureCues = pictures
         lastTextCues = text
+        showCues()
+    }
+
+    /** Shows what changed on screen: a new subtitle, or a picture subtitle that was read (or wasn't, in time). */
+    private fun showCues() {
         showTextCues()
-        // A new subtitle can have more lines, or (a picture) sit elsewhere: move it clear of the controls at once.
+        // It can have more lines, or (a picture) sit elsewhere: move it clear of the controls at once.
         if (controlsShown || seeking || notice) liftSubtitles(animate = false)
+    }
+
+    override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+        // Going back reloads the film from there (nothing behind is kept), so what was lined up to read is stale.
+        if (reason == Player.DISCONTINUITY_REASON_SEEK && newPosition.positionMs < oldPosition.positionMs) {
+            pictureText.discardAhead()
+        }
     }
 
     /**
@@ -685,11 +745,51 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
      * and the video is paused with nothing on screen, example text shows the style instead.
      */
     private fun showTextCues() {
+        readPictures()
         // libass draws its own subtitles; picture subtitles are images. Example text would sit on top of them.
         val otherShowing = lastPictureCues.isNotEmpty() || libassShowing()
-        val preview = stylePreviewing && lastTextCues.isEmpty() && !otherShowing && player?.playWhenReady != true
-        screenSubtitles.setCues(if (preview) styler.sample() else styler.normalize(lastTextCues))
-        frameSubtitles.setCues(styler.pictures(lastPictureCues))
+        val text = styler.normalize(shownTextCues)
+        val preview = stylePreviewing && text.isEmpty() && !otherShowing && player?.playWhenReady != true
+        screenSubtitles.setCues(if (preview) styler.sample() else text)
+        frameSubtitles.setCues(styler.pictures(shownPictureCues))
+    }
+
+    /**
+     * Picture subtitles (Blu-ray, DVD) are drawn as text in the chosen style when the file's own styling is off,
+     * using their text as read by [PictureText]. Most are read ahead; one that isn't is kept back for a moment
+     * while it's read, then shown as it is if that takes too long. Pictures with no text in them stay pictures.
+     */
+    private fun readPictures() {
+        shownTextCues = lastTextCues
+        shownPictureCues = lastPictureCues
+        val language = selectedFormat(C.TRACK_TYPE_TEXT)?.language
+        if (lastPictureCues.isEmpty() || styler.keepEmbedded || !pictureText.canRead(language)) {
+            readingPictures = null
+            return
+        }
+        val texts = lastPictureCues.map { cue -> cue.bitmap?.let { pictureText.textOf(it) } }
+        if (texts.any { it == null }) {
+            val now = SystemClock.uptimeMillis()
+            if (readingPictures !== lastPictureCues) {
+                readingPictures = lastPictureCues
+                readingUntil = now + PICTURE_READ_WAIT_MS
+                for (cue in lastPictureCues) cue.bitmap?.let { pictureText.prepare(it, language, soon = true) }
+                handler.removeCallbacks(readingTimeout)
+                handler.postDelayed(readingTimeout, PICTURE_READ_WAIT_MS)
+            }
+            // Kept back while it's read; after that it shows as a picture until (and unless) its text arrives.
+            if (now < readingUntil) shownPictureCues = emptyList()
+            return
+        }
+        readingPictures = null
+        handler.removeCallbacks(readingTimeout)
+        // Top to bottom, as they sit on screen.
+        val read = lastPictureCues.indices.filter { texts[it]!!.isNotEmpty() }
+            .sortedBy { lastPictureCues[it].line.takeIf { line -> line != Cue.DIMEN_UNSET } ?: 0f }
+        if (read.isEmpty()) return
+        val text = read.joinToString("\n") { texts[it]!! }
+        shownTextCues = lastTextCues + Cue.Builder().setText(text).build()
+        shownPictureCues = lastPictureCues.filterIndexed { i, _ -> texts[i]!!.isEmpty() }
     }
 
     private fun libassShowing(): Boolean = assHandler != null && selectedFormat(C.TRACK_TYPE_TEXT)?.let {
@@ -703,6 +803,22 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             p.prepare()
             return
         }
+        val now = SystemClock.elapsedRealtime()
+        // Sound or a decoder that won't start is usually the TV still switching refresh rate, or the app
+        // that opened us not having let go of it yet. The player only waits a fifth of a second for it;
+        // starting again a moment later works.
+        val device = error.errorCode == PlaybackException.ERROR_CODE_DECODER_INIT_FAILED || error.errorCode in 5000..5999
+        handler.removeCallbacks(deviceRetriesBack)
+        if (device) {
+            if (deviceRetries == 0) firstDeviceErrorAt = now
+            // Like the network retries, these stop after a while, so a failure that keeps coming back ends in an error.
+            if (deviceRetries < MAX_DEVICE_RETRIES && now - firstDeviceErrorAt < DEVICE_RETRY_WINDOW_MS) {
+                deviceRetries++
+                // Not before a refresh-rate switch has settled, or it fails the same way.
+                retryQuietly(maxOf(1_000L * deviceRetries, displaySwitchAt + DISPLAY_SETTLE_MS - now))
+                return
+            }
+        }
         // Dropped connections and slow servers (common right after a jump) are retried quietly,
         // waiting a little longer each time, before an error is shown.
         val status = (error.cause as? HttpDataSource.InvalidResponseCodeException)?.responseCode
@@ -710,20 +826,16 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         // for a few seconds after a jump, while the old connection still counts against the limit.
         val permanent = status == 404 || status == 410
         val network = error.errorCode in 2000..2999 && error.errorCode !in NOT_RETRIED && !permanent
-        val now = SystemClock.elapsedRealtime()
         if (retries == 0) firstErrorAt = now
         // Quiet retries stop after a while, so a server that's down shows an error instead of a spinner forever.
         if (network && retries < MAX_RETRIES && now - firstErrorAt < RETRY_WINDOW_MS) {
             retries++
-            retryPending = true
-            handler.removeCallbacks(showBuffering)
-            buffering.visibility = View.VISIBLE
-            handler.removeCallbacks(retryRunnable)
             val step = if (status != null && status in 400..499) 3_000L else 1_000L
-            handler.postDelayed(retryRunnable, step * retries)
+            retryQuietly(step * retries)
             return
         }
         retries = 0
+        deviceRetries = 0
         retryPending = false
         buffering.visibility = View.GONE
         // The error box needs OK, so a settings window can't be left in front of it.
@@ -733,6 +845,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         errorHint.text = "Press OK to try again  ·  Error ${error.errorCode}"
         errorBox.visibility = View.VISIBLE
         hideControls()
+    }
+
+    /** Tries again after [delayMs] with the spinner up instead of an error. */
+    private fun retryQuietly(delayMs: Long) {
+        retryPending = true
+        handler.removeCallbacks(showBuffering)
+        buffering.visibility = View.VISIBLE
+        handler.removeCallbacks(retryRunnable)
+        handler.postDelayed(retryRunnable, delayMs)
     }
 
     private fun errorMessage(error: PlaybackException, status: Int?): String = when (error.errorCode) {
@@ -758,6 +879,28 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     }
 
     private val showBuffering = Runnable { buffering.visibility = View.VISIBLE }
+
+    // The film's connection failing just after the preview asked for video is the server allowing one connection
+    // (or cutting the older one off). The film comes first: previews stop.
+    /**
+     * The server turning the film away just after the preview asked for video usually means it allows one
+     * connection at a time; previews then stop so the film keeps it. Only the film's own link counts (not a
+     * subtitle file), and only an answer that means "no" (not a hiccup the film retries past).
+     */
+    private val filmLoadErrors = object : AnalyticsListener {
+        override fun onLoadError(
+            eventTime: AnalyticsListener.EventTime,
+            loadEventInfo: LoadEventInfo,
+            mediaLoadData: MediaLoadData,
+            error: IOException,
+            wasCanceled: Boolean,
+        ) {
+            val film = entries.getOrNull(playingIndex)?.uri ?: return
+            if (loadEventInfo.dataSpec.uri == film && SeekPreview.isRefusal(error) && seekPreview.requestedWithin(8_000)) {
+                seekPreview.serverRefused()
+            }
+        }
+    }
 
     // ---------------------------------------------------------------------
     // Views
@@ -795,6 +938,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
                 screenSubtitles.animate().alpha(alpha).setDuration(150).start()
                 frameSubtitles.animate().alpha(alpha).setDuration(150).start()
             },
+            // Mid-skip the card shows the "+4:00"; the note waits for the jump.
+            onFailed = { note -> if (seeking) pendingNotice = note else showNotice(note, NOTE_MS) },
         )
         seekRow = findViewById(R.id.seek_row)
         timeElapsed = findViewById(R.id.time_elapsed)
@@ -960,7 +1105,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         if (fps <= 0) return
         matchedFpsForIndex = p.currentMediaItemIndex
         val wasPlaying = p.playWhenReady
-        if (frameRateMatcher.match(fps) && wasPlaying) {
+        val switching = frameRateMatcher.match(fps)
+        if (switching) displaySwitchAt = SystemClock.elapsedRealtime()
+        if (switching && wasPlaying) {
             // The TV blanks for a moment while it switches; don't play through it.
             p.pause()
             handler.removeCallbacks(resumeAfterSwitch)
@@ -1082,7 +1229,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     /** How many rows the subtitles showing now take on screen, wrapped the way the subtitle view wraps them. */
     private fun subtitleRows(textSize: Float): Int {
-        val cues = styler.normalize(lastTextCues)
+        val cues = styler.normalize(shownTextCues)
         if (cues.isEmpty()) return 0
         val paint = TextPaint(Paint.ANTI_ALIAS_FLAG)
         paint.textSize = textSize
@@ -1114,13 +1261,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private fun pictureLift(limit: Float, floor: Float): Float {
         val w = videoFrame.width.toFloat()
         val h = videoFrame.height.toFloat()
-        if (lastPictureCues.isEmpty() || w == 0f || h == 0f) return 0f
+        if (shownPictureCues.isEmpty() || w == 0f || h == 0f) return 0f
         val scale = videoFrame.scaleY
         val pivot = videoFrame.pivotY
         fun onScreen(y: Float) = videoFrame.top + pivot + (y - pivot) * scale
         var lift = 0f
         var highest = Float.MAX_VALUE
-        for (cue in lastPictureCues) {
+        for (cue in shownPictureCues) {
             val bitmap = cue.bitmap ?: continue
             if (cue.line == Cue.DIMEN_UNSET) continue
             // Placed the way Media3 draws them: a box at a fraction of the picture, its height given or from the image's shape.
@@ -1281,19 +1428,18 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         clearNotice()
         val sign = if (seekOffsetMs < 0) "−" else "+"
         seekBubble.text = sign + formatTime(abs(seekOffsetMs))
-        val previews = prefs.seekPreviews
+        val entry = entries.getOrNull(p.currentMediaItemIndex)
+        val previews = prefs.seekPreviews && entry != null && seekPreview.canPreview(entry.key)
         // On the selected time bar there's more time to keep going; OK jumps at once.
         // With the preview on, a little longer, so there's time to see where you'd land.
         val delay = when {
             seekBar.isFocused -> if (previews) 2_000L else 1_500L
             else -> if (previews) 1_400L else 900L
         }
-        if (previews) {
-            entries.getOrNull(p.currentMediaItemIndex)?.let { entry ->
-                // Video only: the preview needs no subtitles.
-                val item = mediaItem(entry).buildUpon().setSubtitleConfigurations(emptyList()).build()
-                seekPreview.update(entry.key, item, seekTarget(), SystemClock.uptimeMillis() + delay)
-            }
+        if (previews && entry != null) {
+            // Video only: the preview needs no subtitles.
+            val item = mediaItem(entry).buildUpon().setSubtitleConfigurations(emptyList()).build()
+            seekPreview.update(entry.key, item, seekTarget(), SystemClock.uptimeMillis() + delay)
         }
         updateOverlay()
         updateProgress()
@@ -1303,13 +1449,19 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     }
 
     /** A short message in the seek card, such as "Can't skip in this video". */
-    private fun showNotice(text: String) {
+    private fun showNotice(text: String, durationMs: Long = 1_800) {
         notice = true
         seekBubble.text = text
         updateOverlay()
         positionBubble()
         handler.removeCallbacks(clearNoticeRunnable)
-        handler.postDelayed(clearNoticeRunnable, 1_800)
+        handler.postDelayed(clearNoticeRunnable, durationMs)
+    }
+
+    private fun showPendingNotice() {
+        val note = pendingNotice ?: return
+        pendingNotice = null
+        showNotice(note, NOTE_MS)
     }
 
     private val clearNoticeRunnable = Runnable { clearNotice() }
@@ -1327,12 +1479,20 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     private fun commitSeek() {
         if (!seeking) return
+        // Presses that cancel out: nothing to jump to (a seek to here would still land on an earlier keyframe).
+        if (seekOffsetMs == 0L) {
+            cancelSeek()
+            return
+        }
         seekPreview.hide()
         handler.removeCallbacks(commitSeekRunnable)
+        // Past what's loaded: the film loads again from there, so what was lined up to read is stale.
+        if (seekTarget() > (player?.bufferedPosition ?: 0L)) pictureText.discardAhead()
         player?.seekTo(seekTarget())
         seeking = false
         updateOverlay()
         updateProgress()
+        showPendingNotice()
     }
 
     private fun cancelSeek() {
@@ -1341,6 +1501,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         seeking = false
         updateOverlay()
         updateProgress()
+        showPendingNotice()
     }
 
     /** Keeps the "+4:00" card centred over the thumb on the time bar. */
@@ -1391,6 +1552,19 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
                 return true
             }
             KeyEvent.KEYCODE_MEDIA_NEXT -> { savePosition(); player?.seekToNextMediaItem(); return true }
+            // The menu button (three lines) goes straight to Settings or Subtitle style, as chosen in Settings;
+            // pressed again, it closes the window.
+            KeyEvent.KEYCODE_MENU -> {
+                if (event.repeatCount == 0) {
+                    if (panel.isOpen) {
+                        panel.close()
+                    } else {
+                        if (seeking) commitSeek()
+                        moreItems[if (prefs.menuOpensStyle) "style" else "settings"]?.open?.invoke()
+                    }
+                }
+                return true
+            }
         }
 
         if (panel.isOpen) {
@@ -1417,6 +1591,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         if (errorBox.visibility == View.VISIBLE && isOk && (!controlsShown || currentFocus === btnPlay)) {
             errorBox.visibility = View.GONE
             retries = 0
+            deviceRetries = 0
             player?.prepare()
             player?.play()
             return true
@@ -1430,7 +1605,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             when (code) {
                 KeyEvent.KEYCODE_DPAD_LEFT -> { nudge(prefs.dpadStepSec, -1, event); return true }
                 KeyEvent.KEYCODE_DPAD_RIGHT -> { nudge(prefs.dpadStepSec, 1, event); return true }
-                KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_MENU -> {
+                KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN -> {
                     if (event.repeatCount == 0) showControls()
                     return true
                 }
@@ -1551,12 +1726,22 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         return trackId == id || trackId.endsWith(":$id") || id.endsWith(":$trackId")
     }
 
-    private fun hasSsaTrack(): Boolean = player?.currentTracks?.groups?.any { g ->
+    private fun hasSsaTrack(): Boolean = hasTextTrack { mime -> mime == MimeTypes.TEXT_SSA }
+
+    private fun hasTextTrack(matches: (String?) -> Boolean): Boolean = player?.currentTracks?.groups?.any { g ->
         g.type == C.TRACK_TYPE_TEXT && (0 until g.length).any { i ->
             val f = g.getTrackFormat(i)
-            f.sampleMimeType == MimeTypes.TEXT_SSA || f.codecs == MimeTypes.TEXT_SSA || f.containerMimeType == MimeTypes.TEXT_SSA
+            matches(f.sampleMimeType) || matches(f.codecs) || matches(f.containerMimeType)
         }
     } == true
+
+    /**
+     * Whether "Keep embedded styling" changed in a way the current player can't follow: ASS/SSA switches between
+     * libass and plain text, and the picture subtitles being shown are only read as text (ahead of time) by a player
+     * without libass.
+     */
+    private fun stylingNeedsRebuild(): Boolean = prefs.keepAssStyling != builtWithAss &&
+        (hasSsaTrack() || (!prefs.keepAssStyling && readablePictureTrack() != null))
 
     private fun selectTrack(o: TrackOption) {
         val p = player ?: return
@@ -1643,7 +1828,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
                     applySubtitleStyle()
                     // Only ASS/SSA switches between libass and plain text; other subtitles just restyle.
                     // Tracks not known yet (still loading) are checked again in onTracksChanged.
-                    if (prefs.keepAssStyling != builtWithAss && hasSsaTrack()) rebuildPlayer()
+                    if (stylingNeedsRebuild()) rebuildPlayer()
                 },
             )
         }
@@ -1782,7 +1967,21 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private fun applySubtitleStyle() {
         styler.keepEmbedded = prefs.keepAssStyling
         styler.apply(screenSubtitles, presets.active())
+        updatePictureReading()
         showTextCues()
+    }
+
+    /** The picture subtitle track that's shown as text, if any: the only one worth reading ahead. */
+    private fun readablePictureTrack(): Format? = selectedFormat(C.TRACK_TYPE_TEXT)?.takeIf { f ->
+        isPictureFormat(f) && pictureText.canRead(f.language)
+    }
+
+    private fun isPictureFormat(f: Format): Boolean =
+        listOf(f.sampleMimeType, f.codecs, f.containerMimeType).any { it in PictureText.PICTURE_FORMATS }
+
+    private fun updatePictureReading() {
+        if (!::pictureText.isInitialized) return
+        pictureText.showTrack(if (styler.keepEmbedded) null else readablePictureTrack()?.id)
     }
 
     private fun applyDisplayMode() {
@@ -1818,8 +2017,16 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         /** Subtitles we added ourselves ("ext3", or "1:ext3" once merged into the video). */
         val EXT_ID = Regex("^(\\d+:)?$EXT_PREFIX\\d+$")
 
+        /** How long a note about previews stays up. */
+        const val NOTE_MS = 4_000L
+        /** How long a picture subtitle that wasn't read ahead is kept back while it's read. */
+        const val PICTURE_READ_WAIT_MS = 700L
         const val MAX_RETRIES = 4
         const val RETRY_WINDOW_MS = 75_000L
+        const val MAX_DEVICE_RETRIES = 3
+        const val DEVICE_RETRY_WINDOW_MS = 60_000L
+        /** How long after a refresh-rate switch the TV's sound output may still be coming back. */
+        const val DISPLAY_SETTLE_MS = 3_000L
         /** File missing, no permission and cleartext blocked won't fix themselves. */
         val NOT_RETRIED = setOf(
             PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND,

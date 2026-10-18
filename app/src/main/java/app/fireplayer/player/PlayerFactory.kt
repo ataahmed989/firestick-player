@@ -2,15 +2,25 @@ package app.fireplayer.player
 
 import android.content.Context
 import android.os.Handler
+import android.os.SystemClock
 import androidx.annotation.OptIn
 import androidx.media3.common.C
+import androidx.media3.common.MimeTypes
+import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.LoadControl
+import androidx.media3.exoplayer.analytics.PlayerId
+import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
+import androidx.media3.exoplayer.source.TrackGroupArray
+import androidx.media3.exoplayer.trackselection.ExoTrackSelection
+import androidx.media3.exoplayer.upstream.Allocator
 import androidx.media3.exoplayer.ForwardingRenderer
 import androidx.media3.common.Format
 import androidx.media3.exoplayer.Renderer
@@ -19,6 +29,7 @@ import androidx.media3.exoplayer.SeekParameters
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.SampleStream
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
+import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
 import androidx.media3.exoplayer.RenderersFactory
 import androidx.media3.exoplayer.audio.AudioCapabilities
 import androidx.media3.exoplayer.audio.AudioRendererEventListener
@@ -29,7 +40,9 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.text.TextOutput
 import androidx.media3.exoplayer.video.VideoRendererEventListener
 import androidx.media3.extractor.DefaultExtractorsFactory
+import androidx.media3.extractor.text.DefaultSubtitleParserFactory
 import androidx.media3.ui.SubtitleView
+import app.fireplayer.subs.PictureText
 import io.github.peerless2012.ass.media.AssHandler
 import io.github.peerless2012.ass.media.AssHandlerConfig
 import io.github.peerless2012.ass.media.kt.withAssMkvSupport
@@ -48,6 +61,17 @@ class Delays {
 object PlayerFactory {
 
     class Built(val player: ExoPlayer, val assHandler: AssHandler?)
+
+    /**
+     * Decoders for the skip preview. Its picture is decoded while the film plays, so 4K-class formats only get a
+     * hardware decoder: decoding them on the processor would take it from the film and make it stutter.
+     */
+    private val PREVIEW_DECODERS = MediaCodecSelector { mimeType, secure, tunneling ->
+        val all = MediaCodecSelector.DEFAULT.getDecoderInfos(mimeType, secure, tunneling)
+        if (mimeType in HEAVY_VIDEO) all.filter { it.hardwareAccelerated } else all
+    }
+
+    private val HEAVY_VIDEO = setOf(MimeTypes.VIDEO_H265, MimeTypes.VIDEO_DOLBY_VISION, MimeTypes.VIDEO_VP9, MimeTypes.VIDEO_AV1)
 
     private fun dataSourceFactory(context: Context, headers: Map<String, String>): DataSource.Factory {
         // IPTV providers often require the User-Agent TiviMate passes along, so it must win over ours.
@@ -68,15 +92,23 @@ object PlayerFactory {
      */
     fun buildPreview(context: Context, headers: Map<String, String>): ExoPlayer {
         val extractors = SeekableMkvExtractorsFactory(DefaultExtractorsFactory().setConstantBitrateSeekingEnabled(true))
-        val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory(context, headers), extractors)
+        val upstream = dataSourceFactory(context, headers)
+        // Its connection closes as soon as a picture is loaded, so the film can have the server to itself.
+        val dataSources = DataSource.Factory { IdleCloseDataSource(upstream.createDataSource(), 400) }
+        val mediaSourceFactory = DefaultMediaSourceFactory(dataSources, extractors)
             .setLoadErrorHandlingPolicy(DefaultLoadErrorHandlingPolicy(1))
         val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(500, 1_500, 100, 100)
+            // The keyframe and a few frames after it. Every extra second is megabytes of a high-quality
+            // film that the film itself is waiting for.
+            .setBufferDurationsMs(300, 600, 100, 100)
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
+        val renderers = DefaultRenderersFactory(context)
+            .setEnableDecoderFallback(true)
+            .setMediaCodecSelector(PREVIEW_DECODERS)
         val player = ExoPlayer.Builder(context)
             .setMediaSourceFactory(mediaSourceFactory)
-            .setRenderersFactory(DefaultRenderersFactory(context).setEnableDecoderFallback(true))
+            .setRenderersFactory(renderers)
             .setLoadControl(loadControl)
             .build()
         player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
@@ -103,6 +135,8 @@ object PlayerFactory {
         useAss: Boolean,
         assSubtitleView: SubtitleView,
         headers: Map<String, String>,
+        /** Reads picture subtitles as text while they load (see [PictureText]); only used without libass. */
+        pictureText: PictureText,
     ): Built {
         val dataSourceFactory = dataSourceFactory(context, headers)
 
@@ -113,16 +147,28 @@ object PlayerFactory {
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
             .setEnableDecoderFallback(true)
 
-        val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(
-                /* minBufferMs = */ 30_000,
-                /* maxBufferMs = */ 60_000,
-                // Start quickly after a skip; after a stall, build a bigger cushion so it doesn't repeat.
-                /* bufferForPlaybackMs = */ 1_000,
-                /* bufferForPlaybackAfterRebufferMs = */ 4_000,
-            )
-            .setPrioritizeTimeOverSizeThresholds(true)
-            .build()
+        // As much of the film as memory allows, up to two minutes ahead, topped up all the time. High-quality
+        // films fill it by size first; the stall-free stretch then depends on the connection, not a fixed
+        // half minute.
+        val budget = (Runtime.getRuntime().maxMemory() * 0.6).toLong().coerceIn(64L shl 20, 400L shl 20).toInt()
+        val loadControl = FilmLoadControl(
+            DefaultLoadControl.Builder()
+                .setBufferDurationsMs(
+                    /* minBufferMs = */ 120_000,
+                    /* maxBufferMs = */ 120_000,
+                    // Start quickly after a skip; after a stall, FilmLoadControl decides.
+                    /* bufferForPlaybackMs = */ 1_000,
+                    /* bufferForPlaybackAfterRebufferMs = */ 4_000,
+                )
+                .setTargetBufferBytes(budget)
+                .setPrioritizeTimeOverSizeThresholds(false)
+                // Nothing behind is kept (it would come out of the same memory, and a high-quality film needs all of
+                // it ahead) except the keyframe the picture is decoded from, without which a skip inside the buffer
+                // would find no keyframe to start from and load everything again.
+                .setBackBuffer(0, /* retainBackBufferFromKeyframe = */ true)
+                .build(),
+            budget,
+        )
 
         val builder = ExoPlayer.Builder(context)
             .setLoadControl(loadControl)
@@ -130,13 +176,22 @@ object PlayerFactory {
             .setSeekForwardIncrementMs(10_000)
             .setHandleAudioBecomingNoisy(true)
             .setVideoScalingMode(C.VIDEO_SCALING_MODE_SCALE_TO_FIT)
+            // Keeps Wi-Fi at full speed while playing; left to itself it may save power and fall behind the film.
+            .setWakeMode(C.WAKE_MODE_NETWORK)
+            // Jumps land on a keyframe up to 2 s before the time asked for (never after; 2 s before when there's none
+            // in between), so less video has to be downloaded and decoded before the picture moves.
+            .setSeekParameters(SeekParameters(2_000_000L, 0L))
 
         // Slow IPTV servers drop connections now and then; keep retrying before giving up.
-        val retryPolicy = DefaultLoadErrorHandlingPolicy(5)
+        val retryPolicy = FilmRetryPolicy()
 
         if (!useAss) {
+            val parsers = pictureText.readAhead(DefaultSubtitleParserFactory())
+            // Set on the extractors themselves too: the MKV wrapper doesn't pass this setting on to them.
+            extractors.setSubtitleParserFactory(parsers)
             val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory, SeekableMkvExtractorsFactory(extractors))
                 .setLoadErrorHandlingPolicy(retryPolicy)
+                .setSubtitleParserFactory(parsers)
             val player = builder
                 .setMediaSourceFactory(mediaSourceFactory)
                 .setRenderersFactory(DelayRenderersFactory(baseRenderers, delays))
@@ -163,6 +218,107 @@ object PlayerFactory {
         assSubtitleView.withAssSupport(assHandler)
         assHandler.init(player)
         return Built(player, assHandler)
+    }
+}
+
+/**
+ * The film's load retries. IPTV servers often refuse a reconnect (403 and the like) for a few seconds while the old
+ * connection still counts, so a refused load of the film is tried every second instead of at 0, 0, 1, 3, 6 and 10 s,
+ * within the same 10 s or so before the error reaches PlayerActivity. Everything else (timeouts, dropped connections,
+ * 400/401/404/410, HLS and DASH) keeps Media3's spacing and limit.
+ */
+@OptIn(UnstableApi::class)
+private class FilmRetryPolicy : DefaultLoadErrorHandlingPolicy(RETRIES) {
+    // Whether the latest load error was a refusal of the film. On the playback thread.
+    @Volatile private var refused = false
+
+    override fun getRetryDelayMsFor(loadErrorInfo: LoadErrorHandlingPolicy.LoadErrorInfo): Long {
+        val delay = super.getRetryDelayMsFor(loadErrorInfo)
+        val data = loadErrorInfo.mediaLoadData
+        // A progressive film's loads (the only ones that look at the limit again on every check) carry no track type
+        // or format.
+        val progressive = data.dataType == C.DATA_TYPE_MEDIA && data.trackType == C.TRACK_TYPE_UNKNOWN && data.trackFormat == null
+        val code = (loadErrorInfo.exception as? HttpDataSource.InvalidResponseCodeException)?.responseCode
+        refused = progressive && delay != C.TIME_UNSET && code != null && code !in PERMANENT
+        return if (refused && loadErrorInfo.errorCount <= REFUSED_RETRIES) minOf(delay, 1_000L) else delay
+    }
+
+    override fun getMinimumLoadableRetryCount(dataType: Int): Int = if (refused) REFUSED_RETRIES else RETRIES
+
+    private companion object {
+        const val RETRIES = 5
+        // Tries at 0, 0, 1, 2 ... 10 s: the 12th failure reaches PlayerActivity at about 10 s, as the 6th did before.
+        const val REFUSED_RETRIES = 11
+        val PERMANENT = setOf(400, 401, 404, 410)
+    }
+}
+
+/**
+ * The film's buffer rules (see [PlayerFactory.build]). After a stall it waits for 4 seconds of video; when stalls
+ * keep coming (a film the connection can only just keep up with) it waits for 10, then 20, so playback stops now
+ * and then for a little longer instead of every few seconds.
+ */
+@OptIn(UnstableApi::class)
+private class FilmLoadControl(private val inner: DefaultLoadControl, private val budgetBytes: Int) : LoadControl {
+
+    // When recent stalls began (elapsedRealtime), on the playback thread only.
+    private val stalls = ArrayDeque<Long>()
+    private var stallId = C.TIME_UNSET
+
+    private val window = Timeline.Window()
+    private val period = Timeline.Period()
+
+    override fun shouldStartPlayback(parameters: LoadControl.Parameters): Boolean {
+        // Live channels can't build up a cushion (the stream only comes as fast as it plays), so they keep the usual rule.
+        if (!parameters.rebuffering || isLive(parameters)) return inner.shouldStartPlayback(parameters)
+        val now = SystemClock.elapsedRealtime()
+        if (parameters.lastRebufferRealtimeMs != stallId) {
+            stallId = parameters.lastRebufferRealtimeMs
+            stalls.addLast(now)
+        }
+        while (stalls.isNotEmpty() && now - stalls.first() > STALL_MEMORY_MS) stalls.removeFirst()
+        val cushionUs = when (stalls.size) {
+            0, 1 -> 4_000_000L
+            2 -> 10_000_000L
+            else -> 20_000_000L
+        }
+        // Memory full means nothing more can come before playing on.
+        return parameters.bufferedDurationUs >= cushionUs || inner.allocator.totalBytesAllocated >= budgetBytes
+    }
+
+    private fun isLive(parameters: LoadControl.Parameters): Boolean {
+        if (parameters.targetLiveOffsetUs != C.TIME_UNSET) return true
+        val timeline = parameters.timeline
+        if (timeline.isEmpty) return false
+        val windowIndex = timeline.getPeriodByUid(parameters.mediaPeriodId.periodUid, period).windowIndex
+        return timeline.getWindow(windowIndex, window).isLive()
+    }
+
+    override fun shouldContinueLoading(parameters: LoadControl.Parameters) = inner.shouldContinueLoading(parameters)
+
+    override fun shouldContinuePreloading(timeline: Timeline, mediaPeriodId: MediaSource.MediaPeriodId, bufferedDurationUs: Long) =
+        inner.shouldContinuePreloading(timeline, mediaPeriodId, bufferedDurationUs)
+
+    override fun onPrepared(playerId: PlayerId) = inner.onPrepared(playerId)
+
+    override fun onTracksSelected(
+        parameters: LoadControl.Parameters,
+        trackGroups: TrackGroupArray,
+        trackSelections: Array<ExoTrackSelection?>,
+    ) = inner.onTracksSelected(parameters, trackGroups, trackSelections)
+
+    override fun onStopped(playerId: PlayerId) = inner.onStopped(playerId)
+
+    override fun onReleased(playerId: PlayerId) = inner.onReleased(playerId)
+
+    override fun getAllocator(): Allocator = inner.allocator
+
+    override fun getBackBufferDurationUs(playerId: PlayerId) = inner.getBackBufferDurationUs(playerId)
+
+    override fun retainBackBufferFromKeyframe(playerId: PlayerId) = inner.retainBackBufferFromKeyframe(playerId)
+
+    private companion object {
+        const val STALL_MEMORY_MS = 5 * 60_000L
     }
 }
 
