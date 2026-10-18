@@ -29,8 +29,9 @@ python3 -c 'import PIL' 2>/dev/null \
   || python3 -m pip install --quiet --user --break-system-packages pillow \
   || sudo apt-get install -y -qq python3-pil \
   || true
+# -copyts: otherwise ffmpeg moves the subtitles to start at 0, half a second early.
 python3 "$(dirname "$0")/make-pgs.py" media/pgs.sup \
-  && ffmpeg -loglevel error -y -i media/movie.mkv -i media/pgs.sup -map 0:v -map 0:a -map 1:s -c copy \
+  && ffmpeg -loglevel error -y -copyts -i media/movie.mkv -i media/pgs.sup -map 0:v -map 0:a -map 1:s -c copy \
     -metadata:s:s:0 language=eng -disposition:s:0 default media/movie-pgs.mkv \
   || echo "Couldn't make media/movie-pgs.mkv; the PGS screenshots will show an error instead."
 ls -la media

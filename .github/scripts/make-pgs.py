@@ -181,17 +181,18 @@ def main():
         w, h = indices.size
         x, y = (PLANE_W - w) // 2, PLANE_H - BOTTOM_MARGIN - h
         data = rle(indices)
-        # Decoding starts a little early so the picture is ready on time (DTS ≤ PTS, as on discs).
-        decode = 90000 * w * h // 16_000_000 + 1                   # 16 MB/s object decoding
+        # Decoding starts early enough to be done on time (DTS ≤ PTS, as on discs): the plane is cleared,
+        # then the picture decoded, and it's shown at `start`.
         clear = 90000 * PLANE_W * PLANE_H // 32_000_000 + 1         # 32 MB/s plane clearing
+        decode = 90000 * w * h // 16_000_000 + 1                   # 16 MB/s object decoding
         dts = start - clear - decode
         # Show: PCS (epoch start), WDS, PDS, ODS, END.
         out += segment(PCS, pcs(number, EPOCH_START, [(0, 0, x, y)]), start, dts)
         out += segment(WDS, wds(x, y, w, h), dts + clear, dts)
         out += segment(PDS, pds(palette), dts, dts)
         for piece in ods_pieces(w, h, data):
-            out += segment(ODS, piece, dts + clear + decode, dts + clear)
-        out += segment(END, b"", dts + clear + decode, dts + clear + decode)
+            out += segment(ODS, piece, start, dts + clear)
+        out += segment(END, b"", start, start)
         number += 1
         # Clear: PCS with no objects, the same window, END.
         out += segment(PCS, pcs(number, NORMAL, []), end, end - clear)
