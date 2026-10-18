@@ -47,7 +47,7 @@ private class SeekableMkvExtractor(private val inner: Extractor) : Extractor by 
 
     /** Set once we've stood in for Media3's "can't seek" answer. */
     private var active = false
-    private var durationUs = C.TIME_UNSET
+    private var fileDurationUs = C.TIME_UNSET
     private var dataStart = 0L
     private var first: Cluster? = null
     private var search: Search? = null
@@ -57,15 +57,16 @@ private class SeekableMkvExtractor(private val inner: Extractor) : Extractor by 
         inner.init(object : ExtractorOutput by output {
             override fun seekMap(seekMap: SeekMap) {
                 val position = input?.position ?: -1L
-                val usable = !seekMap.isSeekable && seekMap.durationUs != C.TIME_UNSET &&
-                    length > 0 && position in 1 until length / 2
+                val usable = !seekMap.isSeekable && seekMap.durationUs != C.TIME_UNSET && length > 0 && position > 0
                 if (!usable) {
                     output.seekMap(seekMap)
                     return
                 }
                 active = true
-                durationUs = seekMap.durationUs
-                dataStart = position
+                fileDurationUs = seekMap.durationUs
+                // Normally this is the first cluster. If Media3 gave up after reading a broken index at the
+                // end of the file, the clusters are found by scanning from the start instead.
+                dataStart = if (position < length / 2) position else 0L
                 output.seekMap(EstimatedSeekMap())
             }
         })
@@ -89,10 +90,10 @@ private class SeekableMkvExtractor(private val inner: Extractor) : Extractor by 
 
     /** Points the player at a rough spot; [Search] then finds the exact cluster. */
     private inner class EstimatedSeekMap : SeekMap {
-        override fun isSeekable() = true
-        override fun getDurationUs() = durationUs
+        override fun isSeekable(): Boolean = true
+        override fun getDurationUs(): Long = fileDurationUs
         override fun getSeekPoints(timeUs: Long): SeekMap.SeekPoints {
-            val fraction = if (durationUs > 0) timeUs.toDouble() / durationUs else 0.0
+            val fraction = if (fileDurationUs > 0) timeUs.toDouble() / fileDurationUs else 0.0
             val estimate = dataStart + (fraction.coerceIn(0.0, 1.0) * (length - dataStart)).toLong()
             return SeekMap.SeekPoints(SeekPoint(timeUs, estimate.coerceIn(dataStart, length - 1)))
         }
@@ -102,7 +103,7 @@ private class SeekableMkvExtractor(private val inner: Extractor) : Extractor by 
         private var loPos = -1L
         private var loTime = 0L
         private var hiPos = length
-        private var hiTime = durationUs
+        private var hiTime = fileDurationUs
         private var steps = 0
 
         fun step(input: ExtractorInput, holder: PositionHolder): Int {
@@ -239,7 +240,7 @@ private class SeekableMkvExtractor(private val inner: Extractor) : Extractor by 
         var raw = 0L
         repeat(count) { raw = (raw shl 8) or (b[j + it].toLong() and 0xFF) }
         val timeUs = raw * timescaleNs / 1000
-        return timeUs.takeIf { it >= 0 && it <= durationUs + 600_000_000L }
+        return timeUs.takeIf { it >= 0 && it <= fileDurationUs + 600_000_000L }
     }
 
     /** Finds the TimecodeScale (units of cluster timestamps) in the header; most files use 1 ms. */
