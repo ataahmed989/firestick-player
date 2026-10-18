@@ -1166,22 +1166,22 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         val sign = if (seekOffsetMs < 0) "−" else "+"
         seekBubble.text = sign + formatTime(abs(seekOffsetMs))
         val previews = prefs.seekPreviews
-        if (previews) {
-            entries.getOrNull(p.currentMediaItemIndex)?.let { entry ->
-                // Video only: the preview needs no subtitles.
-                val item = mediaItem(entry).buildUpon().setSubtitleConfigurations(emptyList()).build()
-                seekPreview.update(entry.key, item, seekTarget())
-            }
-        }
-        updateOverlay()
-        updateProgress()
-        handler.removeCallbacks(commitSeekRunnable)
         // On the selected time bar there's more time to keep going; OK jumps at once.
         // With the preview on, a little longer, so there's time to see where you'd land.
         val delay = when {
             seekBar.isFocused -> if (previews) 2_000L else 1_500L
             else -> if (previews) 1_400L else 900L
         }
+        if (previews) {
+            entries.getOrNull(p.currentMediaItemIndex)?.let { entry ->
+                // Video only: the preview needs no subtitles.
+                val item = mediaItem(entry).buildUpon().setSubtitleConfigurations(emptyList()).build()
+                seekPreview.update(entry.key, item, seekTarget(), SystemClock.uptimeMillis() + delay)
+            }
+        }
+        updateOverlay()
+        updateProgress()
+        handler.removeCallbacks(commitSeekRunnable)
         handler.postDelayed(commitSeekRunnable, delay)
         if (controlsShown) scheduleHide()
     }
@@ -1372,7 +1372,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     private fun openPanel(title: String, from: View, onClosed: () -> Unit = {}, render: SidePanel.() -> Unit) {
         hideControls()
-        panel.open(title, onClose = { onClosed(); showControls(from) }, render = render)
+        // Subtitles move into the part of the screen the window doesn't cover, instead of running under it.
+        screenSubtitles.setPadding(0, 0, panel.root.layoutParams.width + (18 * resources.displayMetrics.density).toInt(), 0)
+        panel.open(title, onClose = {
+            screenSubtitles.setPadding(0, 0, 0, 0)
+            onClosed()
+            showControls(from)
+        }, render = render)
         focusSink.isFocusable = false
     }
 
@@ -1509,12 +1515,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private fun openStylePanel(from: View) {
         // Changes show on the subtitles as they're made; paused, example text stands in.
         stylePreviewing = true
-        // Centre the subtitles in the part of the screen the window doesn't cover.
-        screenSubtitles.setPadding(0, 0, panel.root.layoutParams.width + (18 * resources.displayMetrics.density).toInt(), 0)
         showTextCues()
         openPanel("Subtitle style", from, onClosed = {
             stylePreviewing = false
-            screenSubtitles.setPadding(0, 0, 0, 0)
             showTextCues()
         }) {
             settingsPanels.renderSubtitleStyle(

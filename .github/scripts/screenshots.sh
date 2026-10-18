@@ -30,16 +30,19 @@ key KEYCODE_BACK
 # Player.
 movie "http://10.0.2.2:8000/movie.mkv" "EN - 4K UHD - Dune: Part Two (2024)"
 shot 04-playing 15
-# Skipping with the controls hidden: the bar comes up with a preview of where the jump lands.
+# Skipping with the controls hidden brings up the bar and the "+0:20" card.
 adb shell input keyevent KEYCODE_DPAD_RIGHT; sleep 0.3; adb shell input keyevent KEYCODE_DPAD_RIGHT
-shot 04b-skip-preview 0.9
-sleep 3
+shot 04b-skip 0.4
+sleep 4
 key KEYCODE_DPAD_UP
 shot 05-controls 1.5
 key KEYCODE_DPAD_UP
 shot 06-seek-bar-selected 0.6
-adb shell input keyevent KEYCODE_DPAD_LEFT; sleep 0.3; adb shell input keyevent KEYCODE_DPAD_LEFT; sleep 0.3; adb shell input keyevent KEYCODE_DPAD_LEFT
-shot 06b-seek-back-preview 0.8
+# Moving along the selected bar (it waits 2 s before jumping) shows a picture of where it would land.
+adb shell input keyevent KEYCODE_DPAD_LEFT; sleep 0.4; adb shell input keyevent KEYCODE_DPAD_LEFT
+shot 06b-seek-back-preview 1.0
+adb shell input keyevent KEYCODE_DPAD_RIGHT
+shot 06c-seek-preview-moved 1.0
 sleep 3
 key KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN
 shot 07-more-row 1
@@ -65,5 +68,7 @@ shot 13-resume 6
 movie "http://10.0.2.2:8000/missing.mkv" "EN - The Batman (2022)"
 shot 14-error 12
 
-adb logcat -d -t 400 | grep -iE "fireplayer|exoplayer|AndroidRuntime" | tail -120 > "$OUT/logcat.txt"
+pid=$(adb shell pidof $PKG | tr -d '\r')
+adb logcat -d -v time ${pid:+--pid=$pid} | tail -400 > "$OUT/logcat.txt"
+adb logcat -d -v time -b crash | tail -100 >> "$OUT/logcat.txt"
 ls -la "$OUT"

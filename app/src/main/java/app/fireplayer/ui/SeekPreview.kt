@@ -2,6 +2,7 @@ package app.fireplayer.ui
 
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.TextureView
 import android.view.View
 import android.widget.TextView
@@ -37,6 +38,7 @@ class SeekPreview(
     private var itemKey: String? = null
     private var item: MediaItem? = null
     private var requestedMs = 0L
+    private var jumpAt = 0L
     // The card is on screen with a picture from this round of skipping.
     private var shown = false
     private var failedKey: String? = null
@@ -49,8 +51,11 @@ class SeekPreview(
         card.alpha = 0f
     }
 
-    /** Shows (or moves) the preview for a new jump target in the video [key]. */
-    fun update(key: String, mediaItem: MediaItem, targetMs: Long) {
+    /**
+     * Shows (or moves) the preview for a new jump target in the video [key]. [jumpAt] is when the
+     * player will jump there (SystemClock.uptimeMillis); a picture that arrives just before that isn't shown.
+     */
+    fun update(key: String, mediaItem: MediaItem, targetMs: Long, jumpAt: Long) {
         if (key == failedKey) return
         if (key != itemKey) {
             release()
@@ -59,6 +64,7 @@ class SeekPreview(
         }
         active = true
         requestedMs = targetMs
+        this.jumpAt = jumpAt
         handler.removeCallbacks(releaseRunnable)
         handler.removeCallbacks(seekRunnable)
         // Quick presses add up; only the target where they settle is fetched.
@@ -152,6 +158,8 @@ class SeekPreview(
 
     private fun reveal() {
         if (!active || player == null) return
+        // Popping up only to vanish with the jump a moment later would just flicker.
+        if (!shown && SystemClock.uptimeMillis() > jumpAt - 300) return
         card.animate().cancel()
         if (!shown) {
             shown = true
