@@ -37,6 +37,11 @@ class Prefs(context: Context) {
             .getOrDefault(Resume.ASK)
         set(v) = sp.edit().putString("resume", v.name).apply()
 
+    /** A picture of where a jump will land, shown above the time bar while skipping. */
+    var seekPreviews: Boolean
+        get() = sp.getBoolean("seek_previews", true)
+        set(v) = sp.edit().putBoolean("seek_previews", v).apply()
+
     var matchFrameRate: Boolean
         get() = sp.getBoolean("match_frame_rate", true)
         set(v) = sp.edit().putBoolean("match_frame_rate", v).apply()

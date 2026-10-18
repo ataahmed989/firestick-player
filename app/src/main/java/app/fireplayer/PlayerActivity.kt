@@ -1,13 +1,18 @@
 package app.fireplayer
 
 import android.content.Intent
+import android.graphics.Paint
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.text.Layout
 import android.text.SpannableStringBuilder
 import android.text.Spanned
+import android.text.StaticLayout
+import android.text.TextPaint
 import android.text.format.DateFormat
 import android.text.style.ForegroundColorSpan
 import android.view.Gravity
@@ -54,6 +59,7 @@ import app.fireplayer.subs.SubtitlePresets
 import app.fireplayer.subs.SubtitleStyler
 import app.fireplayer.ui.FireDialog
 import app.fireplayer.ui.SeekBarView
+import app.fireplayer.ui.SeekPreview
 import app.fireplayer.ui.SettingsPanels
 import app.fireplayer.ui.SidePanel
 import io.github.peerless2012.ass.media.AssHandler
@@ -123,6 +129,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private lateinit var chipFps: TextView
     private lateinit var chipAudio: TextView
     private lateinit var seekBubble: TextView
+    private lateinit var seekPreview: SeekPreview
     private lateinit var seekRow: View
     private lateinit var timeElapsed: TextView
     private lateinit var seekBar: SeekBarView
@@ -248,6 +255,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     override fun onStop() {
         super.onStop()
         commitSeek()
+        seekPreview.release()
         notice = false
         retryPending = false
         savePosition()
@@ -573,6 +581,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             retries = 0
             retryPending = false
         }
+        if (state == Player.STATE_ENDED && seeking && seekOffsetMs < 0) {
+            // The film ended while a jump back in it was being lined up: make that jump instead of closing.
+            commitSeek()
+            return
+        }
         if (state == Player.STATE_ENDED) {
             completed = true
             prefs.savePosition(entries.getOrNull(player?.currentMediaItemIndex ?: 0)?.key ?: "", 0L)
@@ -588,6 +601,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     }
 
     override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+        if (sleepAtEnd && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM && seeking && seekOffsetMs < 0) {
+            // Same for a jump back right at the end with sleep set for the end of the video: it still stops there later.
+            commitSeek()
+            player?.play()
+            return
+        }
         if (sleepAtEnd && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM) {
             completed = true
             entries.getOrNull(player?.currentMediaItemIndex ?: -1)?.let { prefs.savePosition(it.key, 0L) }
@@ -599,10 +618,20 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
         val now = player?.currentMediaItemIndex ?: playingIndex
+        if (seeking && reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO && now != playingIndex && seekOffsetMs < 0) {
+            // The episode ended while a jump back in it was being lined up: make that jump instead of moving on.
+            val target = seekTarget()
+            val previous = playingIndex
+            cancelSeek()
+            player?.seekTo(previous, target)
+            return
+        }
         // An episode that played to the end starts from the top next time.
         if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO && now != playingIndex) {
             entries.getOrNull(playingIndex)?.let { prefs.savePosition(it.key, 0L) }
         }
+        // Any other jump being lined up was for the video that was playing, not this one.
+        if (seeking) cancelSeek()
         playingIndex = now
         matchedFpsForIndex = -1
         measuredFps = 0f
@@ -647,6 +676,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         lastPictureCues = pictures
         lastTextCues = text
         showTextCues()
+        // A new subtitle can have more lines, or (a picture) sit elsewhere: move it clear of the controls at once.
+        if (controlsShown || seeking || notice) liftSubtitles(animate = false)
     }
 
     /**
@@ -655,13 +686,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
      */
     private fun showTextCues() {
         // libass draws its own subtitles; picture subtitles are images. Example text would sit on top of them.
-        val otherShowing = lastPictureCues.isNotEmpty() || (assHandler != null && selectedFormat(C.TRACK_TYPE_TEXT)?.let {
-            it.sampleMimeType == MimeTypes.TEXT_SSA || it.codecs == MimeTypes.TEXT_SSA
-        } == true)
+        val otherShowing = lastPictureCues.isNotEmpty() || libassShowing()
         val preview = stylePreviewing && lastTextCues.isEmpty() && !otherShowing && player?.playWhenReady != true
         screenSubtitles.setCues(if (preview) styler.sample() else styler.normalize(lastTextCues))
         frameSubtitles.setCues(styler.pictures(lastPictureCues))
     }
+
+    private fun libassShowing(): Boolean = assHandler != null && selectedFormat(C.TRACK_TYPE_TEXT)?.let {
+        it.sampleMimeType == MimeTypes.TEXT_SSA || it.codecs == MimeTypes.TEXT_SSA
+    } == true
 
     override fun onPlayerError(error: PlaybackException) {
         val p = player ?: return
@@ -748,6 +781,21 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         chipFps = findViewById(R.id.chip_fps)
         chipAudio = findViewById(R.id.chip_audio)
         seekBubble = findViewById(R.id.seek_bubble)
+        seekPreview = SeekPreview(
+            card = findViewById(R.id.preview_card),
+            frame = findViewById(R.id.preview_frame),
+            texture = findViewById(R.id.preview_texture),
+            dim = findViewById(R.id.preview_dim),
+            time = findViewById(R.id.preview_time),
+            format = { formatTime(it, longTimes == true) },
+            create = { PlayerFactory.buildPreview(this, headersFromIntent()) },
+            // Subtitles from where the film is now would sit under a picture of somewhere else; they step aside.
+            onShowing = { showing ->
+                val alpha = if (showing) 0f else 1f
+                screenSubtitles.animate().alpha(alpha).setDuration(150).start()
+                frameSubtitles.animate().alpha(alpha).setDuration(150).start()
+            },
+        )
         seekRow = findViewById(R.id.seek_row)
         timeElapsed = findViewById(R.id.time_elapsed)
         seekBar = findViewById(R.id.seek_bar)
@@ -987,6 +1035,111 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         seekBubble.visibility = if (seeking || notice) View.VISIBLE else View.INVISIBLE
         handler.removeCallbacks(progressTick)
         if (bottomVisible) handler.post(progressTick)
+        liftSubtitles()
+    }
+
+    private var screenLift = 0f
+    private var frameLift = 0f
+
+    /**
+     * Subtitles move above the controls instead of sitting behind them, like Netflix: above the chips when
+     * the controls are up, and above the time bar when only it shows and they'd overlap it.
+     * Subtitles drawn by libass stay where they are: their signs can be anywhere on the picture.
+     */
+    private fun liftSubtitles(animate: Boolean = true) {
+        val bottomVisible = controlsShown || seeking || notice
+        if (bottomVisible && (bottomBlock.height == 0 || root.height == 0)) {
+            // Shown for the first time: measure once it's laid out.
+            bottomBlock.post { liftSubtitles() }
+            return
+        }
+        var screen = 0f
+        var frame = 0f
+        if (bottomVisible) {
+            val density = resources.displayMetrics.density
+            // The lowest subtitles may reach: a little above the chips, or the "+4:00" card in their place.
+            val infoTop = if (seekBubble.visibility == View.VISIBLE) minOf(chips.top, seekBubble.top) else chips.top
+            val limit = bottomBlock.top + (chips.parent as View).top + infoTop - 14f * density
+            // With only the time bar showing, subtitles entirely below it can stay where they are.
+            val floor = if (controlsShown) Float.MAX_VALUE else bottomBlock.top + seekRow.bottom + 6f * density
+            val height = root.height.toFloat()
+            val textBottom = height * (1f - styler.bottomFraction)
+            // The rows showing now; a new subtitle is placed again as it appears (see onCues).
+            val textSize = styler.textSizeFraction * height
+            val textTop = textBottom - (subtitleRows(textSize) * 1.21f + 0.25f) * textSize
+            screen = liftFor(textTop, textBottom, limit, floor)
+            if (!libassShowing()) frame = pictureLift(limit, floor)
+        }
+        if (screen != screenLift) {
+            screenLift = screen
+            screenSubtitles.animate().translationY(-screen).setDuration(if (animate) 200 else 0).start()
+        }
+        if (frame != frameLift) {
+            frameLift = frame
+            frameSubtitles.animate().translationY(-frame).setDuration(if (animate) 200 else 0).start()
+        }
+    }
+
+    /** How many rows the subtitles showing now take on screen, wrapped the way the subtitle view wraps them. */
+    private fun subtitleRows(textSize: Float): Int {
+        val cues = styler.normalize(lastTextCues)
+        if (cues.isEmpty()) return 0
+        val paint = TextPaint(Paint.ANTI_ALIAS_FLAG)
+        paint.textSize = textSize
+        paint.typeface = styler.typeface
+        // Media3 keeps an eighth of the text size clear on each side.
+        val inset = 2 * (textSize * 0.125f + 0.5f).toInt()
+        val width = (screenSubtitles.width - screenSubtitles.paddingLeft - screenSubtitles.paddingRight - inset).coerceAtLeast(1)
+        var rows = 0
+        for (cue in cues) {
+            val text = cue.text ?: continue
+            rows += if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                StaticLayout.Builder.obtain(text, 0, text.length, paint, width).setIncludePad(true).build().lineCount
+            } else {
+                @Suppress("DEPRECATION")
+                StaticLayout(text, paint, width, Layout.Alignment.ALIGN_CENTER, 1f, 0f, true).lineCount
+            }
+        }
+        return rows
+    }
+
+    /** How far something spanning [top] to [bottom] on screen must move up to clear the controls between [limit] and [floor]. */
+    private fun liftFor(top: Float, bottom: Float, limit: Float, floor: Float): Float =
+        if (bottom > limit && top < floor) bottom - limit else 0f
+
+    /**
+     * How far picture subtitles must move up to clear the controls, in the picture's own units (Zoom scales it).
+     * Only the ones that would collide count, and nothing is pushed off the top of the screen.
+     */
+    private fun pictureLift(limit: Float, floor: Float): Float {
+        val w = videoFrame.width.toFloat()
+        val h = videoFrame.height.toFloat()
+        if (lastPictureCues.isEmpty() || w == 0f || h == 0f) return 0f
+        val scale = videoFrame.scaleY
+        val pivot = videoFrame.pivotY
+        fun onScreen(y: Float) = videoFrame.top + pivot + (y - pivot) * scale
+        var lift = 0f
+        var highest = Float.MAX_VALUE
+        for (cue in lastPictureCues) {
+            val bitmap = cue.bitmap ?: continue
+            if (cue.line == Cue.DIMEN_UNSET) continue
+            // Placed the way Media3 draws them: a box at a fraction of the picture, its height given or from the image's shape.
+            val boxHeight = when {
+                cue.bitmapHeight != Cue.DIMEN_UNSET -> cue.bitmapHeight * h
+                cue.size != Cue.DIMEN_UNSET && bitmap.width > 0 -> cue.size * w * bitmap.height / bitmap.width
+                else -> continue
+            }
+            val anchor = cue.line * h
+            val top = when (cue.lineAnchor) {
+                Cue.ANCHOR_TYPE_END -> anchor - boxHeight
+                Cue.ANCHOR_TYPE_MIDDLE -> anchor - boxHeight / 2f
+                else -> anchor
+            }
+            val screenTop = onScreen(top)
+            highest = minOf(highest, screenTop)
+            lift = maxOf(lift, liftFor(screenTop, onScreen(top + boxHeight), limit, floor))
+        }
+        return lift.coerceAtMost(highest.coerceAtLeast(0f)) / scale
     }
 
     private fun fade(view: View, show: Boolean) {
@@ -1066,7 +1219,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             start, text.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
         )
         timeElapsed.text = text
-        timeRemaining.text = "-" + formatTime((duration - position).coerceAtLeast(0), long)
+        timeRemaining.text = "−" + formatTime((duration - position).coerceAtLeast(0), long)
         if (seeking || notice) positionBubble()
     }
 
@@ -1128,11 +1281,24 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         clearNotice()
         val sign = if (seekOffsetMs < 0) "−" else "+"
         seekBubble.text = sign + formatTime(abs(seekOffsetMs))
+        val previews = prefs.seekPreviews
+        // On the selected time bar there's more time to keep going; OK jumps at once.
+        // With the preview on, a little longer, so there's time to see where you'd land.
+        val delay = when {
+            seekBar.isFocused -> if (previews) 2_000L else 1_500L
+            else -> if (previews) 1_400L else 900L
+        }
+        if (previews) {
+            entries.getOrNull(p.currentMediaItemIndex)?.let { entry ->
+                // Video only: the preview needs no subtitles.
+                val item = mediaItem(entry).buildUpon().setSubtitleConfigurations(emptyList()).build()
+                seekPreview.update(entry.key, item, seekTarget(), SystemClock.uptimeMillis() + delay)
+            }
+        }
         updateOverlay()
         updateProgress()
         handler.removeCallbacks(commitSeekRunnable)
-        // On the selected time bar there's more time to keep going; OK jumps at once.
-        handler.postDelayed(commitSeekRunnable, if (seekBar.isFocused) 1_500L else 900L)
+        handler.postDelayed(commitSeekRunnable, delay)
         if (controlsShown) scheduleHide()
     }
 
@@ -1161,6 +1327,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     private fun commitSeek() {
         if (!seeking) return
+        seekPreview.hide()
         handler.removeCallbacks(commitSeekRunnable)
         player?.seekTo(seekTarget())
         seeking = false
@@ -1169,6 +1336,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     }
 
     private fun cancelSeek() {
+        seekPreview.hide()
         handler.removeCallbacks(commitSeekRunnable)
         seeking = false
         updateOverlay()
@@ -1184,6 +1352,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         val layer = seekBubble.parent as View
         val x = seekRow.left + seekBar.left + seekBar.thumbX() - seekBubble.width / 2f
         seekBubble.translationX = x.coerceIn(0f, (layer.width - seekBubble.width).toFloat().coerceAtLeast(0f))
+        // The preview sits just above the "+4:00" card, over the same spot on the bar.
+        val thumbX = bottomBlock.left + seekRow.left + seekBar.left + seekBar.thumbX()
+        val bubbleTop = bottomBlock.top + layer.top + seekBubble.top
+        val margin = 24f * resources.displayMetrics.density
+        seekPreview.place(thumbX, bubbleTop - 8f * resources.displayMetrics.density, margin, root.width - margin)
     }
 
     // ---------------------------------------------------------------------
@@ -1315,7 +1488,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     private fun openPanel(title: String, from: View, onClosed: () -> Unit = {}, render: SidePanel.() -> Unit) {
         hideControls()
-        panel.open(title, onClose = { onClosed(); showControls(from) }, render = render)
+        // Subtitles move into the part of the screen the window doesn't cover, instead of running under it.
+        screenSubtitles.setPadding(0, 0, panel.root.layoutParams.width + (18 * resources.displayMetrics.density).toInt(), 0)
+        panel.open(title, onClose = {
+            screenSubtitles.setPadding(0, 0, 0, 0)
+            onClosed()
+            showControls(from)
+        }, render = render)
         focusSink.isFocusable = false
     }
 
@@ -1452,12 +1631,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private fun openStylePanel(from: View) {
         // Changes show on the subtitles as they're made; paused, example text stands in.
         stylePreviewing = true
-        // Centre the subtitles in the part of the screen the window doesn't cover.
-        screenSubtitles.setPadding(0, 0, panel.root.layoutParams.width + (18 * resources.displayMetrics.density).toInt(), 0)
         showTextCues()
         openPanel("Subtitle style", from, onClosed = {
             stylePreviewing = false
-            screenSubtitles.setPadding(0, 0, 0, 0)
             showTextCues()
         }) {
             settingsPanels.renderSubtitleStyle(
@@ -1509,15 +1685,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     private fun openSettingsPanel(from: View) {
         val passthrough = prefs.passthrough
-        hideControls()
         // Rebuild once the window closes if a playback setting changed.
-        panel.open("Settings", onClose = {
+        openPanel("Settings", from, onClosed = {
             if (prefs.passthrough != passthrough) rebuildPlayer()
             if (prefs.matchFrameRate) { matchedFpsForIndex = -1; matchFrameRate() } else frameRateMatcher.reset()
             refreshLabels()
-            showControls(from)
         }) { settingsPanels.renderSettings(this) }
-        focusSink.isFocusable = false
     }
 
     // Find subtitles (OpenSubtitles)

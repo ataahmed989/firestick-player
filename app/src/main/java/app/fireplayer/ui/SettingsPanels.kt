@@ -49,6 +49,10 @@ class SettingsPanels(
         row("Hold to speed up", onOff(prefs.holdSpeedUp)) {
             prefs.holdSpeedUp = !prefs.holdSpeedUp; refresh()
         }
+        row("Preview while skipping", onOff(prefs.seekPreviews)) {
+            prefs.seekPreviews = !prefs.seekPreviews; refresh()
+        }
+        if (prefs.seekPreviews) message("Uses a second connection to the server. Turn it off if your IPTV plan allows only one.")
 
         header("Defaults")
         val subLanguages = languages + ""
@@ -234,7 +238,14 @@ class SettingsPanels(
 
     /** Nests an option under the setting that turns it on. */
     private fun View.indent(): View = apply {
-        (layoutParams as? ViewGroup.MarginLayoutParams)?.marginStart = (14 * activity.resources.displayMetrics.density).toInt()
+        val inset = (14 * activity.resources.displayMetrics.density).toInt()
+        // The left margin too: a start margin alone is applied only after the row is measured,
+        // so the row kept its full width, moved right and lost the end of its value.
+        (layoutParams as? ViewGroup.MarginLayoutParams)?.let {
+            it.marginStart = inset
+            it.leftMargin = inset
+            layoutParams = it
+        }
     }
 
     private fun fontLabel(font: SubtitleFont): String =

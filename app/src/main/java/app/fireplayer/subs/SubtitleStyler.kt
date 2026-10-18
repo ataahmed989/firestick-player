@@ -53,6 +53,16 @@ class SubtitleStyler(private val context: Context) {
 
     val hasImportedFont: Boolean get() = importedFont != null
 
+    /** How far up from the bottom of the screen the subtitles sit, as a fraction of its height. */
+    val bottomFraction: Float get() = style.bottom
+
+    /** The text size, as a fraction of the screen height. */
+    val textSizeFraction: Float get() = style.textSize
+
+    /** The typeface subtitles are drawn in. */
+    var typeface: Typeface = Typeface.DEFAULT
+        private set
+
     fun apply(view: SubtitleView, style: SubtitleStyle) {
         this.style = style
         val typeface = when (style.font) {
@@ -61,6 +71,7 @@ class SubtitleStyler(private val context: Context) {
             SubtitleFont.FIGTREE -> figtreeFont
             SubtitleFont.SYSTEM -> Typeface.DEFAULT
         }
+        this.typeface = typeface ?: Typeface.DEFAULT
         // The soft shadow is drawn by [SoftShadowSpan] instead: the built-in one is a heavy 2dp block.
         val edgeType = if (style.edge == SubtitleEdge.OUTLINE) CaptionStyleCompat.EDGE_TYPE_OUTLINE else CaptionStyleCompat.EDGE_TYPE_NONE
         // The background box is drawn by [BoxSpan], which pads it evenly around each line.
