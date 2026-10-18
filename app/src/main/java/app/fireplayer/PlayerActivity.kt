@@ -602,11 +602,19 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
         val now = player?.currentMediaItemIndex ?: playingIndex
+        if (seeking && reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO && now != playingIndex && seekOffsetMs < 0) {
+            // The episode ended while a jump back in it was being lined up: make that jump instead of moving on.
+            val target = seekTarget()
+            val previous = playingIndex
+            cancelSeek()
+            player?.seekTo(previous, target)
+            return
+        }
         // An episode that played to the end starts from the top next time.
         if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO && now != playingIndex) {
             entries.getOrNull(playingIndex)?.let { prefs.savePosition(it.key, 0L) }
         }
-        // A jump being lined up was for the video that just ended.
+        // Any other jump being lined up was for the video that was playing, not this one.
         if (seeking) cancelSeek()
         playingIndex = now
         matchedFpsForIndex = -1
@@ -1041,7 +1049,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             val textBottom = height * (1f - styler.bottomFraction)
             // The lines showing now; a new subtitle is placed again as it appears (see onCues).
             val lines = lastTextCues.sumOf { cue -> (cue.text?.count { it == '\n' } ?: 0) + 1 }
-            val textTop = textBottom - lines * 1.2f * styler.textSizeFraction * height
+            val textTop = textBottom - (lines * 1.2f + 0.2f) * styler.textSizeFraction * height
             screen = liftFor(textTop, textBottom, limit, floor)
             if (!libassShowing()) frame = pictureLift(limit, floor)
         }

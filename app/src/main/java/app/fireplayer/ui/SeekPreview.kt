@@ -165,7 +165,8 @@ class SeekPreview(
         // Ended: the target was past the last picture; there's nothing to show, but the next seek can go.
         if (playbackState == Player.STATE_READY || playbackState == Player.STATE_ENDED) {
             handler.removeCallbacks(revealRunnable)
-            handler.postDelayed(revealRunnable, 40)
+            // Once on screen, the time changes with the picture; a card fading in waits a frame for it.
+            handler.postDelayed(revealRunnable, if (shown) 0L else 40L)
         }
     }
 
