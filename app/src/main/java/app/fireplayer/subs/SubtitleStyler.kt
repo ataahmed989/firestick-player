@@ -134,7 +134,7 @@ class SubtitleStyler(private val context: Context) {
 
     /**
      * A box behind each line that hugs the text: a little room on the sides and above and below
-     * the block, and none between lines, so stacked lines read as one shape.
+     * the block, and no gap between lines, so stacked lines read as one shape.
      */
     private class BoxSpan(color: Int, private val rounded: Boolean, private val drawWithOutline: Boolean) : LineBackgroundSpan {
         private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = color }
@@ -154,13 +154,17 @@ class SubtitleStyler(private val context: Context) {
             val size = paint.textSize
             val width = paint.measureText(text, start, lineEnd)
             val centre = (left + right) / 2f
-            val padX = size * 0.30f
-            val padY = size * 0.06f
+            val padX = size * 0.20f
+            val padY = size * 0.07f
+            // The outer edges follow the letters (capital height and descenders), not the font's
+            // generous line box; between lines the box stays joined so there are no gaps.
+            val first = lineNumber == 0
+            val last = end >= text.length
             rect.set(
                 centre - width / 2 - padX,
-                top - if (lineNumber == 0) padY else 0f,
+                if (first) baseline - size * 0.78f - padY else top.toFloat(),
                 centre + width / 2 + padX,
-                bottom + if (end >= text.length) padY else 0f,
+                if (last) baseline + size * 0.24f + padY else bottom.toFloat(),
             )
             val radius = if (rounded) size * 0.16f else 0f
             canvas.drawRoundRect(rect, radius, radius, fill)
