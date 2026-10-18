@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# A five-minute 720p MKV with English audio and English subtitles, for the screenshot run.
+# A five-minute 720p MKV with English audio and English subtitles, for the screenshot run,
+# and movie-pgs.mkv: the same film with picture (PGS) subtitles instead.
 set -e
 mkdir -p media
 # A two-line subtitle every few seconds, like a real film.
@@ -20,4 +21,16 @@ ffmpeg -loglevel error -y -f lavfi -i "$video,$clock" -f lavfi -i "sine=frequenc
 || ffmpeg -loglevel error -y -f lavfi -i "testsrc2=s=1280x720:r=24000/1001" -f lavfi -i "sine=frequency=220:sample_rate=48000" -i media/subs.srt \
   -t 300 -map 0:v -map 1:a -map 2:s -c:v libx264 -preset veryfast -pix_fmt yuv420p -g 48 \
   -c:a aac -ac 2 -c:s srt -metadata:s:a:0 language=eng -metadata:s:s:0 language=eng media/movie.mkv
+
+# The same film with one picture-based (Blu-ray PGS) subtitle track instead, at the same times as the SRT.
+# Not having it only costs the PGS screenshots, so a failure here doesn't stop the run.
+python3 -c 'import PIL' 2>/dev/null \
+  || python3 -m pip install --quiet pillow \
+  || python3 -m pip install --quiet --user --break-system-packages pillow \
+  || sudo apt-get install -y -qq python3-pil \
+  || true
+python3 "$(dirname "$0")/make-pgs.py" media/pgs.sup \
+  && ffmpeg -loglevel error -y -i media/movie.mkv -i media/pgs.sup -map 0:v -map 0:a -map 1:s -c copy \
+    -metadata:s:s:0 language=eng -disposition:s:0 default media/movie-pgs.mkv \
+  || echo "Couldn't make media/movie-pgs.mkv; the PGS screenshots will show an error instead."
 ls -la media
