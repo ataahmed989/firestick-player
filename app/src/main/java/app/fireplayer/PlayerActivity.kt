@@ -45,6 +45,9 @@ import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.analytics.AnalyticsListener
+import androidx.media3.exoplayer.source.LoadEventInfo
+import androidx.media3.exoplayer.source.MediaLoadData
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.SubtitleView
 import app.fireplayer.data.Prefs
@@ -64,6 +67,7 @@ import app.fireplayer.ui.SettingsPanels
 import app.fireplayer.ui.SidePanel
 import io.github.peerless2012.ass.media.AssHandler
 import java.io.File
+import java.io.IOException
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executors
@@ -212,6 +216,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private var resumeDialogShowing = false
     private var pendingAudioId: String? = null
     private var notice = false
+    private var pendingNotice: String? = null
 
     // Subtitle style preview
     private var lastTextCues: List<Cue> = emptyList()
@@ -428,6 +433,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         assHandler = built.assHandler
         p.setVideoSurfaceView(surfaceView)
         p.addListener(this)
+        p.addAnalyticsListener(filmLoadErrors)
         p.setVideoFrameMetadataListener(fpsMeter)
         fpsMeter.reset()
         p.pauseAtEndOfMediaItems = sleepAtEnd
@@ -785,6 +791,20 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     private val showBuffering = Runnable { buffering.visibility = View.VISIBLE }
 
+    // The film's connection failing just after the preview asked for video is the server allowing one connection
+    // (or cutting the older one off). The film comes first: previews stop.
+    private val filmLoadErrors = object : AnalyticsListener {
+        override fun onLoadError(
+            eventTime: AnalyticsListener.EventTime,
+            loadEventInfo: LoadEventInfo,
+            mediaLoadData: MediaLoadData,
+            error: IOException,
+            wasCanceled: Boolean,
+        ) {
+            if (mediaLoadData.trackType != C.TRACK_TYPE_TEXT && seekPreview.requestedWithin(8_000)) seekPreview.serverRefused()
+        }
+    }
+
     // ---------------------------------------------------------------------
     // Views
 
@@ -821,6 +841,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
                 screenSubtitles.animate().alpha(alpha).setDuration(150).start()
                 frameSubtitles.animate().alpha(alpha).setDuration(150).start()
             },
+            // Mid-skip the card shows the "+4:00"; the note waits for the jump.
+            onFailed = { note -> if (seeking) pendingNotice = note else showNotice(note, NOTE_MS) },
         )
         seekRow = findViewById(R.id.seek_row)
         timeElapsed = findViewById(R.id.time_elapsed)
@@ -1309,19 +1331,18 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         clearNotice()
         val sign = if (seekOffsetMs < 0) "−" else "+"
         seekBubble.text = sign + formatTime(abs(seekOffsetMs))
-        val previews = prefs.seekPreviews
+        val entry = entries.getOrNull(p.currentMediaItemIndex)
+        val previews = prefs.seekPreviews && entry != null && seekPreview.canPreview(entry.key)
         // On the selected time bar there's more time to keep going; OK jumps at once.
         // With the preview on, a little longer, so there's time to see where you'd land.
         val delay = when {
             seekBar.isFocused -> if (previews) 2_000L else 1_500L
             else -> if (previews) 1_400L else 900L
         }
-        if (previews) {
-            entries.getOrNull(p.currentMediaItemIndex)?.let { entry ->
-                // Video only: the preview needs no subtitles.
-                val item = mediaItem(entry).buildUpon().setSubtitleConfigurations(emptyList()).build()
-                seekPreview.update(entry.key, item, seekTarget(), SystemClock.uptimeMillis() + delay)
-            }
+        if (previews && entry != null) {
+            // Video only: the preview needs no subtitles.
+            val item = mediaItem(entry).buildUpon().setSubtitleConfigurations(emptyList()).build()
+            seekPreview.update(entry.key, item, seekTarget(), SystemClock.uptimeMillis() + delay)
         }
         updateOverlay()
         updateProgress()
@@ -1331,13 +1352,19 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     }
 
     /** A short message in the seek card, such as "Can't skip in this video". */
-    private fun showNotice(text: String) {
+    private fun showNotice(text: String, durationMs: Long = 1_800) {
         notice = true
         seekBubble.text = text
         updateOverlay()
         positionBubble()
         handler.removeCallbacks(clearNoticeRunnable)
-        handler.postDelayed(clearNoticeRunnable, 1_800)
+        handler.postDelayed(clearNoticeRunnable, durationMs)
+    }
+
+    private fun showPendingNotice() {
+        val note = pendingNotice ?: return
+        pendingNotice = null
+        showNotice(note, NOTE_MS)
     }
 
     private val clearNoticeRunnable = Runnable { clearNotice() }
@@ -1361,6 +1388,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         seeking = false
         updateOverlay()
         updateProgress()
+        showPendingNotice()
     }
 
     private fun cancelSeek() {
@@ -1369,6 +1397,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         seeking = false
         updateOverlay()
         updateProgress()
+        showPendingNotice()
     }
 
     /** Keeps the "+4:00" card centred over the thumb on the time bar. */
@@ -1847,6 +1876,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         /** Subtitles we added ourselves ("ext3", or "1:ext3" once merged into the video). */
         val EXT_ID = Regex("^(\\d+:)?$EXT_PREFIX\\d+$")
 
+        /** How long a note about previews stays up. */
+        const val NOTE_MS = 4_000L
         const val MAX_RETRIES = 4
         const val RETRY_WINDOW_MS = 75_000L
         const val MAX_DEVICE_RETRIES = 3
