@@ -202,6 +202,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         retryPending = false
         player?.prepare()
     }
+    // Sound or a decoder the device couldn't start, counted apart: these can fail again right after
+    // playback resumes, so a working start doesn't reset them.
+    private var deviceRetries = 0
+    private var firstDeviceErrorAt = 0L
+    // When the TV was last asked to change refresh rate; its sound output drops out while it switches.
+    private var displaySwitchAt = 0L
 
     private var resumeDialogShowing = false
     private var pendingAudioId: String? = null
@@ -703,6 +709,21 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             p.prepare()
             return
         }
+        val now = SystemClock.elapsedRealtime()
+        // Sound or a decoder that won't start is usually the TV still switching refresh rate, or the app
+        // that opened us not having let go of it yet. The player only waits a fifth of a second for it;
+        // starting again a moment later works.
+        val device = error.errorCode == PlaybackException.ERROR_CODE_DECODER_INIT_FAILED || error.errorCode in 5000..5999
+        if (device) {
+            if (now - firstDeviceErrorAt > DEVICE_RETRY_WINDOW_MS) deviceRetries = 0
+            if (deviceRetries == 0) firstDeviceErrorAt = now
+            if (deviceRetries < MAX_DEVICE_RETRIES) {
+                deviceRetries++
+                // Not before a refresh-rate switch has settled, or it fails the same way.
+                retryQuietly(maxOf(1_000L * deviceRetries, displaySwitchAt + DISPLAY_SETTLE_MS - now))
+                return
+            }
+        }
         // Dropped connections and slow servers (common right after a jump) are retried quietly,
         // waiting a little longer each time, before an error is shown.
         val status = (error.cause as? HttpDataSource.InvalidResponseCodeException)?.responseCode
@@ -710,20 +731,16 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         // for a few seconds after a jump, while the old connection still counts against the limit.
         val permanent = status == 404 || status == 410
         val network = error.errorCode in 2000..2999 && error.errorCode !in NOT_RETRIED && !permanent
-        val now = SystemClock.elapsedRealtime()
         if (retries == 0) firstErrorAt = now
         // Quiet retries stop after a while, so a server that's down shows an error instead of a spinner forever.
         if (network && retries < MAX_RETRIES && now - firstErrorAt < RETRY_WINDOW_MS) {
             retries++
-            retryPending = true
-            handler.removeCallbacks(showBuffering)
-            buffering.visibility = View.VISIBLE
-            handler.removeCallbacks(retryRunnable)
             val step = if (status != null && status in 400..499) 3_000L else 1_000L
-            handler.postDelayed(retryRunnable, step * retries)
+            retryQuietly(step * retries)
             return
         }
         retries = 0
+        deviceRetries = 0
         retryPending = false
         buffering.visibility = View.GONE
         // The error box needs OK, so a settings window can't be left in front of it.
@@ -733,6 +750,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         errorHint.text = "Press OK to try again  ·  Error ${error.errorCode}"
         errorBox.visibility = View.VISIBLE
         hideControls()
+    }
+
+    /** Tries again after [delayMs] with the spinner up instead of an error. */
+    private fun retryQuietly(delayMs: Long) {
+        retryPending = true
+        handler.removeCallbacks(showBuffering)
+        buffering.visibility = View.VISIBLE
+        handler.removeCallbacks(retryRunnable)
+        handler.postDelayed(retryRunnable, delayMs)
     }
 
     private fun errorMessage(error: PlaybackException, status: Int?): String = when (error.errorCode) {
@@ -960,7 +986,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         if (fps <= 0) return
         matchedFpsForIndex = p.currentMediaItemIndex
         val wasPlaying = p.playWhenReady
-        if (frameRateMatcher.match(fps) && wasPlaying) {
+        val switching = frameRateMatcher.match(fps)
+        if (switching) displaySwitchAt = SystemClock.elapsedRealtime()
+        if (switching && wasPlaying) {
             // The TV blanks for a moment while it switches; don't play through it.
             p.pause()
             handler.removeCallbacks(resumeAfterSwitch)
@@ -1417,6 +1445,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         if (errorBox.visibility == View.VISIBLE && isOk && (!controlsShown || currentFocus === btnPlay)) {
             errorBox.visibility = View.GONE
             retries = 0
+            deviceRetries = 0
             player?.prepare()
             player?.play()
             return true
@@ -1820,6 +1849,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
         const val MAX_RETRIES = 4
         const val RETRY_WINDOW_MS = 75_000L
+        const val MAX_DEVICE_RETRIES = 3
+        const val DEVICE_RETRY_WINDOW_MS = 60_000L
+        /** How long after a refresh-rate switch the TV's sound output may still be coming back. */
+        const val DISPLAY_SETTLE_MS = 3_000L
         /** File missing, no permission and cleartext blocked won't fix themselves. */
         val NOT_RETRIED = setOf(
             PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND,
