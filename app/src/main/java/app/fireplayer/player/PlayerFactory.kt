@@ -57,10 +57,17 @@ class Delays {
     @Volatile var audioUs: Long = 0L
 }
 
+/**
+ * How far along the wait before the film plays (or plays on) is, for the spinner. [fraction] is the share already
+ * loaded, [slowLine] means the film arrives slower than it plays, and [atMs] (elapsedRealtime) is when this was worked
+ * out: one more than a moment old is from an earlier wait.
+ */
+class BufferWait(val fraction: Float, val slowLine: Boolean, val atMs: Long)
+
 @OptIn(UnstableApi::class)
 object PlayerFactory {
 
-    class Built(val player: ExoPlayer, val assHandler: AssHandler?)
+    class Built(val player: ExoPlayer, val assHandler: AssHandler?, val bufferWait: () -> BufferWait?)
 
     /**
      * Decoders for the skip preview. Its picture is decoded while the film plays, so 4K-class formats only get a
@@ -196,7 +203,7 @@ object PlayerFactory {
                 .setMediaSourceFactory(mediaSourceFactory)
                 .setRenderersFactory(DelayRenderersFactory(baseRenderers, delays))
                 .build()
-            return Built(player, null)
+            return Built(player, null) { loadControl.wait }
         }
 
         // Same wiring as ass-media's buildWithAssSupport, plus our delay wrapper.
@@ -217,7 +224,7 @@ object PlayerFactory {
             .build()
         assSubtitleView.withAssSupport(assHandler)
         assHandler.init(player)
-        return Built(player, assHandler)
+        return Built(player, assHandler) { loadControl.wait }
     }
 }
 
@@ -284,6 +291,10 @@ private class FilmLoadControl(private val inner: DefaultLoadControl, private val
     // Film has started arriving since the last jump; the wait for the connection before that doesn't count.
     private var arriving = false
 
+    /** The latest wait before playing, read by the spinner on the main thread. */
+    @Volatile var wait: BufferWait? = null
+        private set
+
     override fun shouldStartPlayback(parameters: LoadControl.Parameters): Boolean {
         // Live channels can't build up a cushion (the stream only comes as fast as it plays), so they keep the usual rule.
         if (isLive(parameters)) return inner.shouldStartPlayback(parameters)
@@ -292,23 +303,27 @@ private class FilmLoadControl(private val inner: DefaultLoadControl, private val
         if (inner.allocator.totalBytesAllocated >= budgetBytes) return true
         val buffered = parameters.bufferedDurationUs
         val rate = fillRate()
-        if (!parameters.rebuffering) {
-            // Starting, or after a jump: a second's worth, once it's clear how fast the rest is coming (or plenty).
-            if (rate == null) return buffered >= 10_000_000L
-            return buffered >= maxOf(START_US, cushionFor(rate))
-        }
         val now = SystemClock.elapsedRealtime()
-        if (parameters.lastRebufferRealtimeMs != stallId) {
-            stallId = parameters.lastRebufferRealtimeMs
-            stalls.addLast(now)
+        val neededUs = if (!parameters.rebuffering) {
+            // Starting, or after a jump: a second's worth, once it's clear how fast the rest is coming (or plenty).
+            if (rate == null) 10_000_000L else maxOf(START_US, cushionFor(rate))
+        } else {
+            if (parameters.lastRebufferRealtimeMs != stallId) {
+                stallId = parameters.lastRebufferRealtimeMs
+                stalls.addLast(now)
+            }
+            while (stalls.isNotEmpty() && now - stalls.first() > STALL_MEMORY_MS) stalls.removeFirst()
+            val afterStallUs = when (stalls.size) {
+                0, 1 -> 4_000_000L
+                2 -> 10_000_000L
+                else -> 20_000_000L
+            }
+            maxOf(afterStallUs, rate?.let { cushionFor(it) } ?: 0L)
         }
-        while (stalls.isNotEmpty() && now - stalls.first() > STALL_MEMORY_MS) stalls.removeFirst()
-        val afterStallUs = when (stalls.size) {
-            0, 1 -> 4_000_000L
-            2 -> 10_000_000L
-            else -> 20_000_000L
-        }
-        return buffered >= maxOf(afterStallUs, rate?.let { cushionFor(it) } ?: 0L)
+        // Whichever comes first ends the wait: enough film, or full memory.
+        val fraction = maxOf(buffered.toFloat() / neededUs, inner.allocator.totalBytesAllocated.toFloat() / budgetBytes)
+        wait = BufferWait(fraction.coerceIn(0f, 1f), rate != null && rate < 1f, now)
+        return buffered >= neededUs
     }
 
     /** Seconds of film arriving per second of loading, once there's enough to tell; null before that. */
