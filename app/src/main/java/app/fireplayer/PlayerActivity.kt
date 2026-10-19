@@ -51,6 +51,7 @@ import androidx.media3.exoplayer.source.MediaLoadData
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.SubtitleView
 import app.fireplayer.data.Prefs
+import app.fireplayer.player.BufferWait
 import app.fireplayer.player.Delays
 import app.fireplayer.player.FpsMeter
 import app.fireplayer.player.FrameRateMatcher
@@ -115,6 +116,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     private var player: ExoPlayer? = null
     private var assHandler: AssHandler? = null
+    private var bufferWait: () -> BufferWait? = { null }
 
     // Views
     private lateinit var root: ViewGroup
@@ -123,6 +125,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private lateinit var frameSubtitles: SubtitleView
     private lateinit var screenSubtitles: SubtitleView
     private lateinit var buffering: ProgressBar
+    private lateinit var bufferingInfo: TextView
     private lateinit var scrimTop: View
     private lateinit var scrimBottom: View
     private lateinit var topBar: View
@@ -453,6 +456,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         player = p
         builtWithAss = prefs.keepAssStyling
         assHandler = built.assHandler
+        bufferWait = built.bufferWait
         p.setVideoSurfaceView(surfaceView)
         p.addListener(this)
         p.addAnalyticsListener(filmLoadErrors)
@@ -617,7 +621,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         if (state == Player.STATE_BUFFERING) {
             handler.postDelayed(showBuffering, 400)
         } else if (!(state == Player.STATE_IDLE && retryPending)) {
-            buffering.visibility = View.GONE
+            hideBuffering()
         }
         if (state == Player.STATE_READY) {
             errorBox.visibility = View.GONE
@@ -837,7 +841,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         retries = 0
         deviceRetries = 0
         retryPending = false
-        buffering.visibility = View.GONE
+        hideBuffering()
         // The error box needs OK, so a settings window can't be left in front of it.
         if (panel.isOpen) panel.close()
         errorText.text = errorMessage(error, status)
@@ -878,7 +882,38 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         else -> "The video stopped playing."
     }
 
-    private val showBuffering = Runnable { buffering.visibility = View.VISIBLE }
+    private val showBuffering = Runnable {
+        buffering.visibility = View.VISIBLE
+        handler.removeCallbacks(updateBufferingInfo)
+        handler.post(updateBufferingInfo)
+    }
+
+    private fun hideBuffering() {
+        buffering.visibility = View.GONE
+        bufferingInfo.visibility = View.GONE
+        handler.removeCallbacks(updateBufferingInfo)
+    }
+
+    /**
+     * While the film is loading before it plays, how much of the wait is done, and when the connection brings the film
+     * slower than it plays, that this is why the wait is long. Nothing while it's still opening the file or retrying.
+     */
+    private val updateBufferingInfo = object : Runnable {
+        override fun run() {
+            if (buffering.visibility != View.VISIBLE) {
+                bufferingInfo.visibility = View.GONE
+                return
+            }
+            val wait = bufferWait()
+            val current = !retryPending && wait != null && SystemClock.elapsedRealtime() - wait.atMs < 1_000
+            if (current && wait != null) {
+                val percent = (wait.fraction * 100).toInt().coerceAtMost(99)
+                bufferingInfo.text = if (wait.slowLine) "$percent%\nConnection slower than this film" else "$percent%"
+            }
+            bufferingInfo.visibility = if (current) View.VISIBLE else View.GONE
+            handler.postDelayed(this, 250)
+        }
+    }
 
     // The film's connection failing just after the preview asked for video is the server allowing one connection
     // (or cutting the older one off). The film comes first: previews stop.
@@ -912,6 +947,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         frameSubtitles = findViewById(R.id.frame_subtitles)
         screenSubtitles = findViewById(R.id.screen_subtitles)
         buffering = findViewById(R.id.buffering)
+        bufferingInfo = findViewById(R.id.buffering_info)
         scrimTop = findViewById(R.id.scrim_top)
         scrimBottom = findViewById(R.id.scrim_bottom)
         topBar = findViewById(R.id.top_bar)

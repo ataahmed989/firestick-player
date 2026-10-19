@@ -34,6 +34,21 @@
         android:indeterminateTint="@color/accent"
         android:visibility="gone" />
 
+    <!-- Under the spinner: how much of the wait is done, and why it's long when the connection is slower than the film. -->
+    <TextView
+        android:id="@+id/buffering_info"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:layout_marginTop="56dp"
+        android:gravity="center_horizontal"
+        android:lineSpacingExtra="2dp"
+        android:shadowColor="#CC000000"
+        android:shadowRadius="4"
+        android:textColor="@color/text"
+        android:textSize="13sp"
+        android:visibility="gone" />
+
     <View
         android:id="@+id/scrim_top"
         android:layout_width="match_parent"
