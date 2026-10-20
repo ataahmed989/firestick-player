@@ -90,7 +90,7 @@ object PlayerFactory {
             .setConnectTimeoutMs(12_000)
             .setReadTimeoutMs(30_000)
             .setDefaultRequestProperties(headers.filterKeys { !it.equals("User-Agent", true) })
-        return DefaultDataSource.Factory(context, httpFactory)
+        return DefaultDataSource.Factory(context, RedirectMemoryDataSource.Factory(httpFactory))
     }
 
     /**
