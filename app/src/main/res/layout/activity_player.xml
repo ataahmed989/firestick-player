@@ -289,21 +289,35 @@
                     android:orientation="vertical"
                     android:visibility="gone">
 
-                    <ImageButton
+                    <LinearLayout
                         android:id="@+id/btn_next"
-                        android:layout_width="39dp"
+                        android:layout_width="wrap_content"
                         android:layout_height="39dp"
-                        android:background="@drawable/bg_circle"
+                        android:background="@drawable/bg_pill"
                         android:contentDescription="Next episode"
-                        android:padding="11dp"
-                        android:scaleType="fitCenter"
-                        android:src="@drawable/ic_next"
-                        android:tint="@color/sel_on_button" />
+                        android:focusable="true"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal"
+                        android:paddingStart="12dp"
+                        android:paddingEnd="14dp">
 
-                    <TextView
-                        android:id="@+id/next_tooltip"
-                        style="@style/Tooltip"
-                        android:text="Next episode" />
+                        <ImageView
+                            android:layout_width="15dp"
+                            android:layout_height="15dp"
+                            android:duplicateParentState="true"
+                            android:src="@drawable/ic_next"
+                            android:tint="@color/sel_on_button" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="6dp"
+                            android:duplicateParentState="true"
+                            android:fontFamily="@font/figtree_600"
+                            android:text="Next episode"
+                            android:textColor="@color/sel_on_button"
+                            android:textSize="13sp" />
+                    </LinearLayout>
                 </LinearLayout>
 
                 <View

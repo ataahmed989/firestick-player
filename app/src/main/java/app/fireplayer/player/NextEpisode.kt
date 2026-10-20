@@ -38,15 +38,21 @@ class NextEpisode(context: Context, private val headers: Map<String, String>) {
     /** Null when the link isn't a provider's episode link, or the next one can't be found (or there is none). */
     fun find(uri: Uri, show: String): Found? {
         val link = parse(uri) ?: return null
+        status = "Looking up the episode after this one…"
         val known = prefs.getString(seriesKey(link, link.episodeId), null)
         if (known != null) {
             val episodes = episodes(link, known)
             if (episodes != null && episodes.any { it.id == link.episodeId }) return after(link, show, episodes)
         }
         val wanted = normalize(show)
-        if (wanted.isEmpty()) return null
+        if (wanted.isEmpty()) {
+            status = "This episode came without the show's name, so its next episode can't be looked up."
+            return null
+        }
+        var answered = false
         for (fresh in listOf(false, true)) {
-            val shows = shows(link, fresh) ?: return null
+            val shows = shows(link, fresh) ?: break
+            answered = true
             for (seriesId in candidates(shows, wanted)) {
                 val episodes = episodes(link, seriesId) ?: continue
                 if (episodes.none { it.id == link.episodeId }) continue
@@ -55,12 +61,18 @@ class NextEpisode(context: Context, private val headers: Map<String, String>) {
             }
             // An old copy of the list may not have this show yet; a fresh one is fetched once.
         }
-        Log.i(TAG, "No show named \"$show\" holds episode ${link.episodeId}")
+        status = if (answered) "Couldn't find \"$show\" in your provider's list of shows."
+        else "Your provider didn't answer when asked for its list of shows."
+        Log.i(TAG, "No next episode for \"$show\" (${link.episodeId}): $status")
         return null
     }
 
     private fun after(link: Link, show: String, episodes: List<Episode>): Found? {
-        val next = episodes.getOrNull(episodes.indexOfFirst { it.id == link.episodeId } + 1) ?: return null
+        val next = episodes.getOrNull(episodes.indexOfFirst { it.id == link.episodeId } + 1)
+        if (next == null) {
+            status = "This is the last episode your provider has."
+            return null
+        }
         val uri = Uri.Builder().scheme(link.scheme).encodedAuthority(link.authority)
             .appendPath("series").appendPath(link.user).appendPath(link.password)
             .appendPath("${next.id}.${next.extension}")
@@ -68,6 +80,7 @@ class NextEpisode(context: Context, private val headers: Map<String, String>) {
         // Names usually read "Show - S01E03 - Title"; otherwise one is made up in that shape.
         val named = TitleInfo.parse(next.title, null).episode != null
         val title = if (named) next.title else "$show S%02dE%02d %s".format(next.season, next.number, next.title).trim()
+        status = "Found the next episode: season ${next.season}, episode ${next.number}."
         return Found(uri, title)
     }
 
@@ -230,6 +243,9 @@ class NextEpisode(context: Context, private val headers: Map<String, String>) {
         private const val MAX_REMEMBERED = 500
         private const val REMEMBER_AHEAD = 5
         private val startedAt = System.currentTimeMillis()
+
+        /** How the last look-up went, for Settings; null when there was nothing to look up. */
+        @Volatile var status: String? = null
 
         /** Whether [uri] is a provider's episode link the next episode can be found from. */
         fun canFind(uri: Uri): Boolean = parse(uri) != null

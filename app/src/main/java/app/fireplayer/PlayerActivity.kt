@@ -350,6 +350,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             entries += Entry(data, title, type)
             entries.addAll(siblingFiles(data))
             findsNextEpisode = entries.size == 1 && NextEpisode.canFind(data)
+            NextEpisode.status = if (findsNextEpisode || entries.size > 1) null
+            else "This video's link doesn't carry your provider's login, so the next episode can't be looked up."
         }
 
         // Subtitles handed to us.
@@ -1044,7 +1046,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         btnAudio.setOnClickListener { openAudioPanel(btnAudio) }
         focusEffect(btnPlay, 1.08f)
         focusEffect(btnRestart, 1.08f, findViewById(R.id.restart_tooltip))
-        focusEffect(btnNext, 1.08f, findViewById(R.id.next_tooltip))
+        focusEffect(btnNext, 1.04f)
         focusEffect(btnSubs, 1.04f)
         focusEffect(btnAudio, 1.04f)
         seekBar.onThumbMoved = { placeBubble() }
