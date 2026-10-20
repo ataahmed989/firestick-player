@@ -4,6 +4,7 @@ import android.app.Activity
 import android.view.View
 import android.view.ViewGroup
 import app.fireplayer.data.Prefs
+import app.fireplayer.player.NextEpisode
 import app.fireplayer.subs.FontImport
 import app.fireplayer.subs.ShadowStrength
 import app.fireplayer.subs.SubtitleEdge
@@ -76,6 +77,7 @@ class SettingsPanels(
         row("Play next episode", onOff(prefs.playNextEpisode)) {
             prefs.playNextEpisode = !prefs.playNextEpisode; refresh()
         }
+        if (prefs.playNextEpisode) NextEpisode.status?.let { message(it) }
         row("Match frame rate", onOff(prefs.matchFrameRate)) {
             prefs.matchFrameRate = !prefs.matchFrameRate; refresh()
         }

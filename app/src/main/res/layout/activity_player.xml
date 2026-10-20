@@ -461,6 +461,69 @@
             tools:text="1:12:48" />
     </FrameLayout>
 
+    <!-- Netflix-style end of an episode: what's next, then Watch credits and Next episode (counting down). -->
+    <LinearLayout
+        android:id="@+id/post_play"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|end"
+        android:layout_marginEnd="56dp"
+        android:layout_marginBottom="48dp"
+        android:clipChildren="false"
+        android:clipToPadding="false"
+        android:gravity="end"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/post_play_next"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp"
+            android:ellipsize="end"
+            android:fontFamily="@font/figtree_500"
+            android:maxWidth="420dp"
+            android:maxLines="1"
+            android:shadowColor="#CC000000"
+            android:shadowRadius="6"
+            android:textColor="@color/text"
+            android:textSize="14sp" />
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:clipChildren="false"
+            android:orientation="horizontal">
+
+            <app.fireplayer.ui.CountdownPill
+                android:id="@+id/post_play_credits"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="@font/figtree_700"
+                android:paddingStart="22dp"
+                android:paddingTop="11dp"
+                android:paddingEnd="22dp"
+                android:paddingBottom="11dp"
+                android:text="Watch credits"
+                android:textSize="16sp" />
+
+            <app.fireplayer.ui.CountdownPill
+                android:id="@+id/post_play_go"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="14dp"
+                android:drawableStart="@drawable/ic_play"
+                android:drawablePadding="8dp"
+                android:fontFamily="@font/figtree_700"
+                android:paddingStart="18dp"
+                android:paddingTop="11dp"
+                android:paddingEnd="22dp"
+                android:paddingBottom="11dp"
+                android:text="Next episode"
+                android:textSize="16sp" />
+        </LinearLayout>
+    </LinearLayout>
+
     <LinearLayout
         android:id="@+id/error_box"
         android:layout_width="wrap_content"

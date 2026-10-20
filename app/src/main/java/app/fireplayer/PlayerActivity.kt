@@ -63,6 +63,7 @@ import app.fireplayer.subs.OpenSubtitles
 import app.fireplayer.subs.PictureText
 import app.fireplayer.subs.SubtitlePresets
 import app.fireplayer.subs.SubtitleStyler
+import app.fireplayer.ui.CountdownPill
 import app.fireplayer.ui.FireDialog
 import app.fireplayer.ui.SeekBarView
 import app.fireplayer.ui.SeekPreview
@@ -88,6 +89,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         val rawTitle: String?,
         val mimeType: String? = null,
         val subtitles: MutableList<MediaItem.SubtitleConfiguration> = mutableListOf(),
+        /** The next episode of a show, found with the provider: gets the end-of-episode card. */
+        val nextEpisode: Boolean = false,
     ) {
         val info: TitleInfo by lazy { TitleInfo.parse(rawTitle, uri) }
         val key: String get() = uri.toString()
@@ -127,6 +130,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private lateinit var frameSubtitles: SubtitleView
     private lateinit var screenSubtitles: SubtitleView
     private lateinit var buffering: ProgressBar
+    private lateinit var postPlay: View
+    private lateinit var postPlayNext: TextView
+    private lateinit var postPlayCredits: CountdownPill
+    private lateinit var postPlayGo: CountdownPill
+    // The episode whose end card was put away (Watch credits, or Back), so it doesn't come straight back.
+    private var postPlayDismissedFor = -1
     private lateinit var bufferingInfo: TextView
     private lateinit var scrimTop: View
     private lateinit var scrimBottom: View
@@ -290,6 +299,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         if (entries.isNotEmpty() && player == null) initPlayer()
         updateOverlay()
         handler.post(clockTick)
+        handler.post(postPlayTick)
     }
 
     override fun onStop() {
@@ -340,6 +350,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             entries += Entry(data, title, type)
             entries.addAll(siblingFiles(data))
             findsNextEpisode = entries.size == 1 && NextEpisode.canFind(data)
+            NextEpisode.status = if (findsNextEpisode || entries.size > 1) null
+            else "This video's link doesn't carry your provider's login, so the next episode can't be looked up."
         }
 
         // Subtitles handed to us.
@@ -964,6 +976,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         frameSubtitles = findViewById(R.id.frame_subtitles)
         screenSubtitles = findViewById(R.id.screen_subtitles)
         buffering = findViewById(R.id.buffering)
+        postPlay = findViewById(R.id.post_play)
+        postPlayNext = findViewById(R.id.post_play_next)
+        postPlayCredits = findViewById(R.id.post_play_credits)
+        postPlayGo = findViewById(R.id.post_play_go)
         bufferingInfo = findViewById(R.id.buffering_info)
         scrimTop = findViewById(R.id.scrim_top)
         scrimBottom = findViewById(R.id.scrim_bottom)
@@ -1085,12 +1101,69 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
                 val playing = player ?: return@post
                 // Still the end of the list (nothing was added meanwhile).
                 if (entries.lastOrNull()?.key != last.key) return@post
-                val next = Entry(found.uri, found.title, last.mimeType)
+                val next = Entry(found.uri, found.title, last.mimeType, nextEpisode = true)
                 entries += next
                 playing.addMediaItem(mediaItem(next))
                 updateTitle()
             }
         }
+    }
+
+    /** Checks the end card five times a second, while the player screen is up. */
+    private val postPlayTick = object : Runnable {
+        override fun run() {
+            updatePostPlay()
+            handler.postDelayed(this, 200)
+        }
+    }
+
+    /**
+     * The end of an episode, Netflix-style: when a show has a next episode, a card comes up [POST_PLAY_LEAD_MS] before
+     * the end (where the credits usually roll), and Next episode fills up over [POST_PLAY_COUNT_MS] of playing, then
+     * starts it. Paused, the count waits too. Watch credits puts the card away; the next episode then starts at the end.
+     */
+    private fun updatePostPlay() {
+        val p = player
+        val index = p?.currentMediaItemIndex ?: -1
+        val next = entries.getOrNull(index + 1)
+        val duration = p?.duration ?: C.TIME_UNSET
+        val position = p?.currentPosition ?: 0L
+        val showAt = duration - POST_PLAY_LEAD_MS
+        // Going back out of the credits brings the card back when they come again.
+        if (postPlayDismissedFor == index && position < showAt - 5_000) postPlayDismissedFor = -1
+        val due = p != null && next?.nextEpisode == true && duration != C.TIME_UNSET && duration > 3 * POST_PLAY_LEAD_MS &&
+            !p.isCurrentMediaItemLive && position >= showAt && postPlayDismissedFor != index && !seeking && !controlsShown &&
+            !panel.isOpen && errorBox.visibility != View.VISIBLE && !resumeDialogShowing
+        if (!due || p == null || next == null) {
+            if (postPlay.visibility == View.VISIBLE) hidePostPlay()
+            return
+        }
+        if (postPlay.visibility != View.VISIBLE) {
+            postPlayNext.text = "Next · " + (next.info.subtitle ?: next.info.title)
+            postPlayGo.counting = true
+            postPlay.visibility = View.VISIBLE
+            postPlayGo.requestFocus()
+        }
+        postPlayGo.progress = (position - showAt).toFloat() / POST_PLAY_COUNT_MS
+        if (position >= showAt + POST_PLAY_COUNT_MS && p.playWhenReady) playNextEpisode()
+    }
+
+    private fun hidePostPlay() {
+        postPlay.visibility = View.GONE
+        postPlayGo.progress = 0f
+    }
+
+    private fun dismissPostPlay() {
+        postPlayDismissedFor = player?.currentMediaItemIndex ?: -1
+        hidePostPlay()
+    }
+
+    private fun playNextEpisode() {
+        val p = player ?: return
+        hidePostPlay()
+        // This one was watched to the credits: next time it starts from the top.
+        entries.getOrNull(p.currentMediaItemIndex)?.let { prefs.savePosition(it.key, 0L) }
+        p.seekToNextMediaItem()
     }
 
     private fun updateTitle() {
@@ -1678,6 +1751,31 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             commitSeek()
             return true
         }
+        if (postPlay.visibility == View.VISIBLE) {
+            when (code) {
+                KeyEvent.KEYCODE_DPAD_LEFT -> { postPlayCredits.requestFocus(); return true }
+                KeyEvent.KEYCODE_DPAD_RIGHT -> { postPlayGo.requestFocus(); return true }
+                KeyEvent.KEYCODE_BACK -> {
+                    consumeBackUp = true
+                    dismissPostPlay()
+                    return true
+                }
+                KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN -> {
+                    // The controls take over; the card comes back when they go.
+                    if (event.repeatCount == 0) {
+                        hidePostPlay()
+                        showControls()
+                    }
+                    return true
+                }
+            }
+            if (isOk) {
+                if (event.repeatCount == 0) {
+                    if (postPlayCredits.isFocused) dismissPostPlay() else playNextEpisode()
+                }
+                return true
+            }
+        }
 
         if (!controlsShown) {
             when (code) {
@@ -2095,6 +2193,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         /** Subtitles we added ourselves ("ext3", or "1:ext3" once merged into the video). */
         val EXT_ID = Regex("^(\\d+:)?$EXT_PREFIX\\d+$")
 
+        /** How long before the end of an episode its end card comes up, and how long it counts down. */
+        const val POST_PLAY_LEAD_MS = 20_000L
+        const val POST_PLAY_COUNT_MS = 10_000L
         /** How long a note about previews stays up. */
         const val NOTE_MS = 4_000L
         /** How long a picture subtitle that wasn't read ahead is kept back while it's read. */
