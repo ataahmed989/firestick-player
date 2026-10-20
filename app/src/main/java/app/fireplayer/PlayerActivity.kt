@@ -60,6 +60,7 @@ import app.fireplayer.player.PlayerFactory
 import app.fireplayer.player.TitleInfo
 import app.fireplayer.subs.FontImport
 import app.fireplayer.subs.OpenSubtitles
+import app.fireplayer.subs.Tmdb
 import app.fireplayer.subs.PictureText
 import app.fireplayer.subs.SubtitlePresets
 import app.fireplayer.subs.SubtitleStyler
@@ -92,7 +93,17 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         /** The next episode of a show, found with the provider: gets the end-of-episode card. */
         val nextEpisode: Boolean = false,
     ) {
-        val info: TitleInfo by lazy { TitleInfo.parse(rawTitle, uri) }
+        /** The provider's name for the show, for an episode that came named only by its number ("S01E03"). */
+        var showName: String? = null
+            set(value) {
+                field = value
+                parsed = null
+            }
+        private var parsed: TitleInfo? = null
+        val info: TitleInfo
+            get() = parsed ?: TitleInfo.parse(rawTitle, uri).let { base ->
+                showName?.takeIf { !base.named }?.let { base.withShow(it) } ?: base
+            }.also { parsed = it }
         val key: String get() = uri.toString()
     }
 
@@ -114,6 +125,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private lateinit var panel: SidePanel
     private lateinit var frameRateMatcher: FrameRateMatcher
     private lateinit var openSubtitles: OpenSubtitles
+    private lateinit var tmdb: Tmdb
 
     private val handler = Handler(Looper.getMainLooper())
     private val io = Executors.newSingleThreadExecutor()
@@ -279,6 +291,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         settingsPanels = SettingsPanels(this, prefs, presets)
         frameRateMatcher = FrameRateMatcher(this)
         openSubtitles = OpenSubtitles(prefs)
+        tmdb = Tmdb(prefs)
         @Suppress("DEPRECATION")
         overridePendingTransition(android.R.anim.fade_in, 0)
         settingsPanels.onFontChanged = {
@@ -354,6 +367,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             entries += Entry(data, title, type)
             entries.addAll(siblingFiles(data))
             findsNextEpisode = entries.size == 1 && NextEpisode.canFind(data)
+            // Named only by its number: the show's name, if this show was found before, goes up at once.
+            if (findsNextEpisode && !entries[0].info.named) {
+                NextEpisode.rememberedShow(this, data)?.let { entries[0].showName = it }
+            }
             NextEpisode.status = if (!findsNextEpisode && entries.size == 1 && NextEpisode.isEpisodeLink(data)) {
                 "This episode's link isn't in the usual shape for your provider, so the next one can't be looked up."
             } else null
@@ -1093,26 +1110,38 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     }
 
     /**
-     * Once the last episode in the list is playing, asks the provider in the background which episode comes after it,
-     * and adds it, so it plays at the end and Next appears. Nothing touches the network before the picture is up.
+     * Once the last episode in the list is playing, asks the provider in the background which show it belongs to and
+     * which episode comes after it, and adds that, so it plays at the end and Next appears. An episode named only by
+     * its number gets its show's name on screen too. Nothing touches the network before the picture is up.
      */
     private fun findNextEpisode() {
         val p = player ?: return
-        if (!findsNextEpisode || !prefs.playNextEpisode || p.currentMediaItemIndex != entries.lastIndex) return
-        val last = entries.last()
+        val last = entries.lastOrNull() ?: return
+        val needed = prefs.playNextEpisode || !last.info.named
+        if (!findsNextEpisode || !needed || p.currentMediaItemIndex != entries.lastIndex) return
         if (nextLookedUpFor == last.key) return
         nextLookedUpFor = last.key
         val finder = NextEpisode(applicationContext, headersFromIntent())
+        val rawTitle = last.rawTitle
+        val show = last.info.title
         thread(name = "FirePlayerNext", isDaemon = true, priority = Thread.MIN_PRIORITY) {
-            val found = runCatching { finder.find(last.uri, last.rawTitle, last.info.title) }.getOrNull() ?: return@thread
+            val found = runCatching { finder.find(last.uri, rawTitle, show) }.getOrNull() ?: return@thread
             handler.post {
                 val playing = player ?: return@post
+                if (!last.info.named) {
+                    val before = last.info.searchQuery
+                    last.showName = found.showName
+                    // A subtitle search still set to the number goes by the show's name now.
+                    if (findFor == last.key && findQuery == before) findQuery = last.info.searchQuery
+                    updateTitle()
+                }
+                val next = found.next ?: return@post
                 // Still the end of the list (nothing was added meanwhile), and still wanted.
                 if (entries.lastOrNull()?.key != last.key || !prefs.playNextEpisode) return@post
                 // Its link ends in its own file type, so the type this one came with is left out.
-                val next = Entry(found.uri, found.title, null, nextEpisode = true)
-                entries += next
-                playing.addMediaItem(mediaItem(next))
+                val entry = Entry(next.uri, next.title, null, nextEpisode = true)
+                entries += entry
+                playing.addMediaItem(mediaItem(entry))
                 updateTitle()
             }
         }
@@ -1195,6 +1224,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private fun nextEpisodeSwitched() {
         val p = player ?: return
         if (prefs.playNextEpisode) {
+            // Looked up only for the show's name while it was off; this time the next episode is kept.
+            nextLookedUpFor = null
             findNextEpisode()
             return
         }
@@ -2103,10 +2134,27 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private var findResults: List<OpenSubtitles.Result> = emptyList()
     private var findStatus: String? = null
     private var findQuery: String? = null
+    // The video the search is set up for, and for a show, which episode.
+    private var findFor: String? = null
+    private var findIsShow = false
+    private var findSeason = 1
+    private var findEpisode = 1
+    // What TMDB made of the name, shown above the results.
+    private var findMatch: String? = null
 
     private fun openFindPanel(from: View) {
         val entry = entries.getOrNull(player?.currentMediaItemIndex ?: 0) ?: return
-        if (findQuery == null) findQuery = entry.info.searchQuery
+        if (findFor != entry.key) {
+            // Another video (the next episode, say): start again from its own name and number.
+            findFor = entry.key
+            findQuery = entry.info.searchQuery
+            findIsShow = entry.info.episode != null || NextEpisode.isEpisodeLink(entry.uri)
+            findSeason = entry.info.season ?: 1
+            findEpisode = entry.info.episode ?: 1
+            findResults = emptyList()
+            findStatus = null
+            findMatch = null
+        }
         openPanel("Find subtitles", from) {
             if (!openSubtitles.isConfigured) {
                 message("Add your free OpenSubtitles API key in Settings to search for subtitles.")
@@ -2119,28 +2167,66 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
                     refresh()
                 }
             }
+            if (findIsShow) {
+                stepper("Season", findSeason.toString()) { findSeason = (findSeason + it).coerceIn(0, 99) }
+                stepper("Episode", findEpisode.toString()) { findEpisode = (findEpisode + it).coerceIn(0, 999) }
+            }
+            val languages = SEARCH_LANGUAGES
+            choice("Language", languages.map { settingsPanels.languageName(it) }, languages.indexOf(searchLanguage())) {
+                prefs.subtitleSearchLanguage = languages[it]
+            }
             row("Search") { runSearch(entry) }
+            findMatch?.let { message(it) }
             findStatus?.let { message(it) }
             findResults.forEach { r ->
                 val lang = Locale.forLanguageTag(r.language).getDisplayLanguage(Locale.ENGLISH)
-                row(r.release, lang, twoLines = true) { downloadSubtitle(r) }
+                row(r.release, listOfNotNull(lang, r.episode).joinToString(" · "), twoLines = true) { downloadSubtitle(r) }
             }
         }
     }
 
+    /** English or Arabic: the last one chosen, else the default subtitle language when it's one of them. */
+    private fun searchLanguage(): String =
+        prefs.subtitleSearchLanguage.ifEmpty { prefs.subtitleLanguage }.takeIf { it in SEARCH_LANGUAGES } ?: "en"
+
     private fun runSearch(entry: Entry) {
-        val query = findQuery.orEmpty()
-        val language = prefs.subtitleLanguage.ifEmpty { "en" }
+        val query = findQuery.orEmpty().trim()
+        if (query.isEmpty()) {
+            findStatus = "Type the name of the film or show to search for."
+            panel.refresh()
+            return
+        }
+        val language = searchLanguage()
+        val show = findIsShow
+        val season = findSeason.takeIf { show }
+        val episode = findEpisode.takeIf { show }
+        // The year tells a film from its remake, while the name is still the one the video came with.
+        val year = if (query == entry.info.searchQuery) {
+            YEAR_IN_TITLE.find(entry.info.title)?.groupValues?.get(1)?.toIntOrNull()
+        } else null
         findStatus = "Searching…"
         findResults = emptyList()
+        findMatch = null
         panel.refresh()
         io.execute {
-            val result = runCatching { openSubtitles.search(query, language, entry.info.season, entry.info.episode) }
+            // With a TMDB key, the search asks for the exact film or show instead of anything with that name.
+            val match = if (tmdb.isConfigured) runCatching { tmdb.find(query, year, show) } else null
+            val found = match?.getOrNull()
+            val result = runCatching { openSubtitles.search(query, language, season, episode, found?.id, show) }
             handler.post {
                 if (isFinishing || player == null) return@post
+                findMatch = when {
+                    match == null -> null
+                    found != null -> "Matched on TMDB: ${found.label}"
+                    match.isFailure -> "Couldn't ask TMDB (check its key in Settings), so the search went by name."
+                    else -> "Not found on TMDB, so the search went by name."
+                }
                 result.onSuccess {
                     findResults = it.take(30)
-                    findStatus = if (it.isEmpty()) "Nothing found. Try a shorter name." else null
+                    findStatus = if (it.isNotEmpty()) null else {
+                        val what = if (show) "season $season, episode $episode" else "this film"
+                        "Nothing found in ${settingsPanels.languageName(language)} for $what. Check the name and numbers."
+                    }
                 }.onFailure { findStatus = it.message ?: "Search failed." }
                 if (panel.isOpen) panel.refresh()
             }
@@ -2238,6 +2324,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         val EXT_ID = Regex("^(\\d+:)?$EXT_PREFIX\\d+$")
 
         /** How long before the end of an episode its end card comes up, and how long it counts down. */
+        // The languages the subtitle search offers.
+        val SEARCH_LANGUAGES = listOf("en", "ar")
+        val YEAR_IN_TITLE = Regex("""\(((?:19|20)\d{2})\)""")
         const val POST_PLAY_LEAD_MS = 20_000L
         const val POST_PLAY_COUNT_MS = 10_000L
         /** How long a note about previews stays up. */

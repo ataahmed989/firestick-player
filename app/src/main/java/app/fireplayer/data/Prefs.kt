@@ -80,6 +80,16 @@ class Prefs(context: Context) {
         get() = sp.getString("os_pass", "") ?: ""
         set(v) = sp.edit().putString("os_pass", v).apply()
 
+    /** The user's own TMDB key (the short API key or the long read access token), "" for none. */
+    var tmdbApiKey: String
+        get() = sp.getString("tmdb_key", "") ?: ""
+        set(v) = sp.edit().putString("tmdb_key", v.trim()).apply()
+
+    /** The language Find subtitles searches in; "" until one is picked, then the default subtitle language is used. */
+    var subtitleSearchLanguage: String
+        get() = sp.getString("sub_search_lang", "") ?: ""
+        set(v) = sp.edit().putString("sub_search_lang", v).apply()
+
     // Subtitle style presets, kept as JSON (see SubtitleStyle).
     var subtitlePresetsJson: String
         get() = sp.getString("sub_presets", "[]") ?: "[]"

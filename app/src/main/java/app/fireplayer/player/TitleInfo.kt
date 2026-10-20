@@ -12,7 +12,15 @@ data class TitleInfo(
     val searchQuery: String,
     val season: Int?,
     val episode: Int?,
+    /** False for an episode whose name is only its number ("S01E03 - Pilot"): [title] then isn't the show's name. */
+    val named: Boolean = true,
 ) {
+    /** This episode under the show's name, as the provider lists the show ("EN - Breaking Bad (2008)"). */
+    fun withShow(show: String): TitleInfo {
+        val s = parse(show, null)
+        return copy(title = s.title, searchQuery = s.searchQuery, named = true)
+    }
+
     companion object {
         private val episodeRegex = Regex("""(?i)\bS(\d{1,2})\s*[ ._-]?\s*E(\d{1,3})\b""")
         private val altEpisodeRegex = Regex("""(?i)\b(\d{1,2})x(\d{2,3})\b""")
@@ -64,7 +72,7 @@ data class TitleInfo(
                     if (after.isNotEmpty()) append(" · ").append(after)
                 }
                 val showTitle = show.ifEmpty { clean(junk.replace(name, "")).ifEmpty { name } }
-                return TitleInfo(showTitle, sub, stripYear(showTitle), season, episode)
+                return TitleInfo(showTitle, sub, stripYear(showTitle), season, episode, named = show.isNotEmpty())
             }
 
             // In a proper title ("Blade Runner 2049") a bare number isn't a year; only "(2017)" is.
