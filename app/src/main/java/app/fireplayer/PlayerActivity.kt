@@ -55,6 +55,7 @@ import app.fireplayer.player.BufferWait
 import app.fireplayer.player.Delays
 import app.fireplayer.player.FpsMeter
 import app.fireplayer.player.FrameRateMatcher
+import app.fireplayer.player.NextEpisode
 import app.fireplayer.player.PlayerFactory
 import app.fireplayer.player.TitleInfo
 import app.fireplayer.subs.FontImport
@@ -73,6 +74,7 @@ import java.io.IOException
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executors
+import kotlin.concurrent.thread
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.roundToInt
@@ -166,6 +168,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     // Playlist
     private val entries = ArrayList<Entry>()
     private var startIndex = 0
+    // Whether the next episode is looked up with the provider (only when the opening app sent one episode), and the
+    // episode it was last looked up for.
+    private var findsNextEpisode = false
+    private var nextLookedUpFor: String? = null
     private var startPositionMs = C.TIME_UNSET
     private var savedTrackParams: TrackSelectionParameters? = null
     private var savedPlayWhenReady = true
@@ -333,6 +339,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         } else {
             entries += Entry(data, title, type)
             entries.addAll(siblingFiles(data))
+            findsNextEpisode = entries.size == 1 && NextEpisode.canFind(data)
         }
 
         // Subtitles handed to us.
@@ -633,6 +640,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             hideBuffering()
         }
         if (state == Player.STATE_READY) {
+            findNextEpisode()
             errorBox.visibility = View.GONE
             retries = 0
             retryPending = false
@@ -1058,6 +1066,31 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         add("find", R.drawable.ic_search, "Find subtitles") { openFindPanel(it) }
         add("sleep", R.drawable.ic_sleep, "Sleep timer") { openSleepPanel(it) }
         add("settings", R.drawable.ic_settings, "Settings") { openSettingsPanel(it) }
+    }
+
+    /**
+     * Once the last episode in the list is playing, asks the provider in the background which episode comes after it,
+     * and adds it, so it plays at the end and Next appears. Nothing touches the network before the picture is up.
+     */
+    private fun findNextEpisode() {
+        val p = player ?: return
+        if (!findsNextEpisode || !prefs.playNextEpisode || p.currentMediaItemIndex != entries.lastIndex) return
+        val last = entries.last()
+        if (nextLookedUpFor == last.key) return
+        nextLookedUpFor = last.key
+        val finder = NextEpisode(applicationContext, headersFromIntent())
+        thread(name = "FirePlayerNext", isDaemon = true, priority = Thread.MIN_PRIORITY) {
+            val found = runCatching { finder.find(last.uri, last.info.title) }.getOrNull() ?: return@thread
+            handler.post {
+                val playing = player ?: return@post
+                // Still the end of the list (nothing was added meanwhile).
+                if (entries.lastOrNull()?.key != last.key) return@post
+                val next = Entry(found.uri, found.title, last.mimeType)
+                entries += next
+                playing.addMediaItem(mediaItem(next))
+                updateTitle()
+            }
+        }
     }
 
     private fun updateTitle() {

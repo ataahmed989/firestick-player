@@ -47,6 +47,11 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("seek_previews", true)
         set(v) = sp.edit().putBoolean("seek_previews", v).apply()
 
+    /** Finds the episode after the one TiviMate opened, from the provider, and plays it next. */
+    var playNextEpisode: Boolean
+        get() = sp.getBoolean("play_next_episode", true)
+        set(v) = sp.edit().putBoolean("play_next_episode", v).apply()
+
     var matchFrameRate: Boolean
         get() = sp.getBoolean("match_frame_rate", true)
         set(v) = sp.edit().putBoolean("match_frame_rate", v).apply()
