@@ -277,8 +277,9 @@ private class FilmRetryPolicy(private val serverSwitch: ServerSwitch) : DefaultL
         unanswered = progressive && error is HttpDataSource.HttpDataSourceException &&
             error.type == HttpDataSource.HttpDataSourceException.TYPE_OPEN && error.cause is java.net.SocketTimeoutException
         if (progressive) serverSwitch.loadFailed(refused)
-        // Gone from the server: the error shows at once instead of after 10 s of asking again.
-        if (progressive && (code == 404 || code == 410)) return C.TIME_UNSET
+        // Gone from the server: the error shows at once instead of after 10 s of asking again. Not for a live channel
+        // (no known end), whose server may answer 404 for a moment while its source restarts.
+        if (progressive && (code == 404 || code == 410) && data.mediaEndTimeMs != C.TIME_UNSET) return C.TIME_UNSET
         return if (refused && loadErrorInfo.errorCount <= REFUSED_RETRIES) minOf(delay, 1_000L) else delay
     }
 
@@ -297,11 +298,37 @@ private class FilmRetryPolicy(private val serverSwitch: ServerSwitch) : DefaultL
     }
 }
 
-/** The skip preview's buffer rules, which load nothing while [allowLoading] says no. */
+/**
+ * The skip preview's buffer rules, which load nothing while [allowLoading] says no. Every method is passed on by hand:
+ * Kotlin's `by` skips the interface's Java default methods, which then throw.
+ */
 @OptIn(UnstableApi::class)
-private class GatedLoadControl(private val inner: LoadControl, private val allowLoading: () -> Boolean) : LoadControl by inner {
+private class GatedLoadControl(private val inner: LoadControl, private val allowLoading: () -> Boolean) : LoadControl {
     override fun shouldContinueLoading(parameters: LoadControl.Parameters): Boolean =
         allowLoading() && inner.shouldContinueLoading(parameters)
+
+    override fun shouldStartPlayback(parameters: LoadControl.Parameters) = inner.shouldStartPlayback(parameters)
+
+    override fun shouldContinuePreloading(timeline: Timeline, mediaPeriodId: MediaSource.MediaPeriodId, bufferedDurationUs: Long) =
+        inner.shouldContinuePreloading(timeline, mediaPeriodId, bufferedDurationUs)
+
+    override fun onPrepared(playerId: PlayerId) = inner.onPrepared(playerId)
+
+    override fun onTracksSelected(
+        parameters: LoadControl.Parameters,
+        trackGroups: TrackGroupArray,
+        trackSelections: Array<ExoTrackSelection?>,
+    ) = inner.onTracksSelected(parameters, trackGroups, trackSelections)
+
+    override fun onStopped(playerId: PlayerId) = inner.onStopped(playerId)
+
+    override fun onReleased(playerId: PlayerId) = inner.onReleased(playerId)
+
+    override fun getAllocator(): Allocator = inner.allocator
+
+    override fun getBackBufferDurationUs(playerId: PlayerId) = inner.getBackBufferDurationUs(playerId)
+
+    override fun retainBackBufferFromKeyframe(playerId: PlayerId) = inner.retainBackBufferFromKeyframe(playerId)
 }
 
 /**

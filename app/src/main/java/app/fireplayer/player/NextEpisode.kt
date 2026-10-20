@@ -180,6 +180,13 @@ class NextEpisode(context: Context, private val headers: Map<String, String>) {
             if (series.episodes.any { it.id == link.episodeId }) return byTime[mid] to series
             val after = cameIn.lowerEntry(target)?.value ?: 0L
             val before = cameIn.higherEntry(target)?.value ?: Long.MAX_VALUE
+            if (after == 0L && before == Long.MAX_VALUE) {
+                // No episode's time known (the provider doesn't say when they came in): go by episode numbers, which
+                // grow as episodes are added.
+                val latest = series.episodes.mapNotNull { it.id.toLongOrNull() }.maxOrNull()
+                if (latest == null || latest < target) lo = mid + 1 else hi = mid - 1
+                continue
+            }
             val time = byTime[mid].modified
             when {
                 time <= after -> lo = mid + 1

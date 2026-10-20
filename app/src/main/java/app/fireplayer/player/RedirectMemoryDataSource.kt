@@ -63,7 +63,8 @@ class RedirectMemoryDataSource(
 
     private fun openRemembering(dataSpec: DataSpec): Long {
         val link = dataSpec.uri.toString()
-        val sent = remembered[link]
+        // An address that already turned the preview away isn't tried by it again (until the film is sent elsewhere).
+        val sent = remembered[link]?.takeUnless { readOnly && previewSkips[link] == it.uri }
         if (sent != null) {
             try {
                 val length = upstream.open(dataSpec.withUri(sent.uri))
@@ -79,7 +80,11 @@ class RedirectMemoryDataSource(
                 val cancelled = cause is InterruptedIOException && cause !is SocketTimeoutException
                 if (cancelled || DataSourceException.isCausedByPositionOutOfRange(e)) throw e
                 upstream.close()
-                if (readOnly) return upstream.open(dataSpec)
+                if (readOnly) {
+                    if (previewSkips.size >= MAX_REMEMBERED) previewSkips.clear()
+                    previewSkips[link] = sent.uri
+                    return upstream.open(dataSpec)
+                }
                 remembered.remove(link)
                 // Once could be the server turning away a reconnect for a moment; twice, the address only works once.
                 if (!sent.reused) misses[link] = (misses[link] ?: 0) + 1
@@ -146,6 +151,8 @@ class RedirectMemoryDataSource(
         private val remembered = ConcurrentHashMap<String, Sent>()
         // How often in a row a link's new address failed the first time it was reused.
         private val misses = ConcurrentHashMap<String, Int>()
+        // Remembered addresses that turned the skip preview away; it goes through the provider for those.
+        private val previewSkips = ConcurrentHashMap<String, Uri>()
         private const val MAX_MISSES = 2
         private const val MAX_REMEMBERED = 200
         private const val MIN_READ_BEFORE_MOVE = 256 * 1024
