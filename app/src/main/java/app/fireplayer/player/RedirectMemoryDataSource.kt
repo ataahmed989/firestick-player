@@ -8,6 +8,7 @@ import androidx.media3.datasource.DataSourceException
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.TransferListener
+import java.io.IOException
 import java.io.InterruptedIOException
 import java.util.concurrent.ConcurrentHashMap
 
@@ -19,16 +20,33 @@ import java.util.concurrent.ConcurrentHashMap
  * index at the end, then back to the start), and every skip one more, so each would also wait on the login server.
  * If the remembered address stops working (it often carries a pass that expires), the original link is used again;
  * a link whose new address keeps failing the first time it's reused is asked every time, as before.
+ *
+ * When the film keeps arriving slower than it plays, [ServerSwitch] has its connection break off and start again
+ * through the provider, which may send it to a less busy server.
  */
 @OptIn(UnstableApi::class)
-class RedirectMemoryDataSource(private val upstream: DataSource) : DataSource {
+class RedirectMemoryDataSource(
+    private val upstream: DataSource,
+    private val serverSwitch: ServerSwitch?,
+) : DataSource {
 
     /** Where a link was last sent, and whether going there directly has worked yet. */
     private class Sent(val uri: Uri, val reused: Boolean)
 
+    // The link being read, while it's read from a server the provider sent us on to.
+    private var redirectedLink: String? = null
+
     override fun addTransferListener(transferListener: TransferListener) = upstream.addTransferListener(transferListener)
 
     override fun open(dataSpec: DataSpec): Long {
+        redirectedLink = null
+        val length = openRemembering(dataSpec)
+        if (upstream.uri != dataSpec.uri) redirectedLink = dataSpec.uri.toString()
+        serverSwitch?.possible = redirectedLink != null
+        return length
+    }
+
+    private fun openRemembering(dataSpec: DataSpec): Long {
         val link = dataSpec.uri.toString()
         val sent = remembered[link]
         if (sent != null) {
@@ -58,16 +76,29 @@ class RedirectMemoryDataSource(private val upstream: DataSource) : DataSource {
         return length
     }
 
-    override fun read(buffer: ByteArray, offset: Int, length: Int): Int = upstream.read(buffer, offset, length)
+    override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+        val link = redirectedLink
+        // The film is coming too slowly from this server: forget it and break off, and the player reconnects where it
+        // left off, through the provider again, which may send it somewhere quicker.
+        if (link != null && serverSwitch?.take() == true) {
+            remembered.remove(link)
+            throw IOException("Moving to another of the provider's servers")
+        }
+        return upstream.read(buffer, offset, length)
+    }
 
     override fun getUri(): Uri? = upstream.uri
 
     override fun getResponseHeaders(): Map<String, List<String>> = upstream.responseHeaders
 
-    override fun close() = upstream.close()
+    override fun close() {
+        redirectedLink = null
+        upstream.close()
+    }
 
-    class Factory(private val upstream: DataSource.Factory) : DataSource.Factory {
-        override fun createDataSource(): DataSource = RedirectMemoryDataSource(upstream.createDataSource())
+    /** [serverSwitch] only for the film's own connection. */
+    class Factory(private val upstream: DataSource.Factory, private val serverSwitch: ServerSwitch?) : DataSource.Factory {
+        override fun createDataSource(): DataSource = RedirectMemoryDataSource(upstream.createDataSource(), serverSwitch)
     }
 
     private companion object {
