@@ -10,6 +10,7 @@ import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.TransferListener
 import java.io.IOException
 import java.io.InterruptedIOException
+import java.net.SocketTimeoutException
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -35,14 +36,22 @@ class RedirectMemoryDataSource(
 
     // The link being read, while it's read from a server the provider sent us on to.
     private var redirectedLink: String? = null
+    // How much has come since this connection opened.
+    private var readSinceOpen = 0L
 
     override fun addTransferListener(transferListener: TransferListener) = upstream.addTransferListener(transferListener)
 
     override fun open(dataSpec: DataSpec): Long {
         redirectedLink = null
+        readSinceOpen = 0
+        // A move asked for between connections: this one simply goes through the provider, nothing to break off.
+        if (serverSwitch?.take() == true) remembered.remove(dataSpec.uri.toString())
         val length = openRemembering(dataSpec)
-        if (upstream.uri != dataSpec.uri) redirectedLink = dataSpec.uri.toString()
-        serverSwitch?.possible = redirectedLink != null
+        if (upstream.uri != dataSpec.uri) {
+            redirectedLink = dataSpec.uri.toString()
+            // Subtitles opened with the film come straight from their own server; they don't say the film can't move.
+            serverSwitch?.possible = true
+        }
         return length
     }
 
@@ -58,8 +67,11 @@ class RedirectMemoryDataSource(
                 }
                 return length
             } catch (e: HttpDataSource.HttpDataSourceException) {
-                // Cancelled, or asking for more than the file has: the original link would do no better.
-                if (e.cause is InterruptedIOException || DataSourceException.isCausedByPositionOutOfRange(e)) throw e
+                // Cancelled, or asking for more than the file has: the original link would do no better. A server that
+                // doesn't answer in time is different: that's what going back to the provider is for.
+                val cause = e.cause
+                val cancelled = cause is InterruptedIOException && cause !is SocketTimeoutException
+                if (cancelled || DataSourceException.isCausedByPositionOutOfRange(e)) throw e
                 upstream.close()
                 remembered.remove(link)
                 // Once could be the server turning away a reconnect for a moment; twice, the address only works once.
@@ -79,12 +91,15 @@ class RedirectMemoryDataSource(
     override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
         val link = redirectedLink
         // The film is coming too slowly from this server: forget it and break off, and the player reconnects where it
-        // left off, through the provider again, which may send it somewhere quicker.
-        if (link != null && serverSwitch?.take() == true) {
+        // left off, through the provider again, which may send it somewhere quicker. Only once this connection has
+        // brought something, so the player counts it as a hiccup on the way rather than a link that keeps failing.
+        if (link != null && readSinceOpen >= MIN_READ_BEFORE_MOVE && serverSwitch?.take() == true) {
             remembered.remove(link)
             throw IOException("Moving to another of the provider's servers")
         }
-        return upstream.read(buffer, offset, length)
+        val read = upstream.read(buffer, offset, length)
+        if (read > 0) readSinceOpen += read
+        return read
     }
 
     override fun getUri(): Uri? = upstream.uri
@@ -108,5 +123,6 @@ class RedirectMemoryDataSource(
         val misses = ConcurrentHashMap<String, Int>()
         const val MAX_MISSES = 2
         const val MAX_REMEMBERED = 200
+        const val MIN_READ_BEFORE_MOVE = 256 * 1024
     }
 }

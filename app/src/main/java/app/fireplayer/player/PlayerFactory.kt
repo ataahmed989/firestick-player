@@ -444,7 +444,7 @@ private class FilmLoadControl(
 class ServerSwitch {
     /** Whether the film came through a redirect, so the provider has other servers it could send us to instead. */
     @Volatile var possible = false
-    @Volatile private var wanted = false
+    private val wanted = java.util.concurrent.atomic.AtomicBoolean(false)
     private var count = 0
     private var lastAt = 0L
 
@@ -454,16 +454,12 @@ class ServerSwitch {
         if (!possible || count >= MAX_SWITCHES || (count > 0 && now - lastAt < GAP_MS)) return false
         count++
         lastAt = now
-        wanted = true
+        wanted.set(true)
         return true
     }
 
     /** On the loading thread: whether a move was asked for (only one connection gets to act on it). */
-    fun take(): Boolean {
-        if (!wanted) return false
-        wanted = false
-        return true
-    }
+    fun take(): Boolean = wanted.getAndSet(false)
 
     private companion object {
         const val MAX_SWITCHES = 3

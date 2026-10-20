@@ -11,6 +11,8 @@ import java.io.File
 import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.text.Normalizer
+import java.util.Locale
 
 /**
  * Finds the episode after the one playing. TiviMate hands over one episode at a time, but its link
@@ -26,25 +28,43 @@ class NextEpisode(context: Context, private val headers: Map<String, String>) {
 
     class Found(val uri: Uri, val title: String)
 
-    private class Link(val scheme: String, val authority: String, val user: String, val password: String, val episodeId: String) {
+    private class Link(
+        val uri: Uri,
+        val scheme: String,
+        val authority: String,
+        val user: String,
+        val password: String,
+        val episodeId: String,
+    ) {
         val base get() = "$scheme://$authority"
     }
 
     private class Episode(val id: String, val extension: String, val season: Int, val number: Int, val title: String)
 
+    private class Show(val id: String, val name: String, val title: String)
+
+    /** A name ready to compare: squeezed down to its letters and digits, and as its words. */
+    private class Name(val squeezed: String, val words: Set<String>)
+
     private val prefs = context.getSharedPreferences("next_episode", Context.MODE_PRIVATE)
     private val cacheDir = context.cacheDir
 
-    /** Null when the link isn't a provider's episode link, or the next one can't be found (or there is none). */
-    fun find(uri: Uri, show: String): Found? {
+    /**
+     * Null when the link isn't a provider's episode link, or the next one can't be found (or there is none). [rawTitle]
+     * is the name the episode came with, [show] the show's name as read from it.
+     */
+    fun find(uri: Uri, rawTitle: String?, show: String): Found? {
         val link = parse(uri) ?: return null
         status = "Looking up the episode after this one…"
         val known = prefs.getString(seriesKey(link, link.episodeId), null)
         if (known != null) {
             val episodes = episodes(link, known)
-            if (episodes != null && episodes.any { it.id == link.episodeId }) return after(link, show, episodes)
+            if (episodes != null && episodes.any { it.id == link.episodeId }) {
+                remember(link, known, episodes)
+                return after(link, show, episodes)
+            }
         }
-        val wanted = normalize(show)
+        val wanted = wantedNames(rawTitle, show)
         if (wanted.isEmpty()) {
             status = "This episode came without the show's name, so its next episode can't be looked up."
             return null
@@ -63,7 +83,7 @@ class NextEpisode(context: Context, private val headers: Map<String, String>) {
         }
         status = if (answered) "Couldn't find \"$show\" in your provider's list of shows."
         else "Your provider didn't answer when asked for its list of shows."
-        Log.i(TAG, "No next episode for \"$show\" (${link.episodeId}): $status")
+        Log.i(TAG, "No next episode for \"$rawTitle\" (${link.episodeId}): $status")
         return null
     }
 
@@ -73,13 +93,13 @@ class NextEpisode(context: Context, private val headers: Map<String, String>) {
             status = "This is the last episode your provider has."
             return null
         }
-        val uri = Uri.Builder().scheme(link.scheme).encodedAuthority(link.authority)
-            .appendPath("series").appendPath(link.user).appendPath(link.password)
-            .appendPath("${next.id}.${next.extension}")
-            .build()
+        // The same link with the next episode's file at the end, the login exactly as it came.
+        val folder = link.uri.encodedPath.orEmpty().substringBeforeLast('/')
+        val uri = link.uri.buildUpon().encodedPath("$folder/${Uri.encode(next.id)}.${Uri.encode(next.extension)}").build()
         // Names usually read "Show - S01E03 - Title"; otherwise one is made up in that shape.
         val named = TitleInfo.parse(next.title, null).episode != null
-        val title = if (named) next.title else "$show S%02dE%02d %s".format(next.season, next.number, next.title).trim()
+        val title = if (named) next.title
+        else String.format(Locale.ROOT, "%s S%02dE%02d %s", show, next.season, next.number, next.title).trim()
         status = "Found the next episode: season ${next.season}, episode ${next.number}."
         return Found(uri, title)
     }
@@ -98,29 +118,33 @@ class NextEpisode(context: Context, private val headers: Map<String, String>) {
             is JSONObject -> all.keys().forEach { key -> seasons += (key.toIntOrNull() ?: 0) to all.opt(key) }
             is JSONArray -> for (i in 0 until all.length()) seasons += i to all.opt(i)
         }
-        val fallbackExtension = "mkv"
         return seasons.sortedBy { it.first }.flatMap { (season, list) ->
-            // A season with one episode can come as that episode on its own.
-            val items = when (list) {
-                is JSONArray -> (0 until list.length()).mapNotNull { list.optJSONObject(it) }
-                is JSONObject -> listOf(list)
-                else -> emptyList()
-            }
-            items.mapIndexedNotNull { i, e ->
-                val id = e.optString("id").takeIf { it.isNotEmpty() } ?: return@mapIndexedNotNull null
+            seasonItems(list).mapIndexedNotNull { i, e ->
+                val id = e.str("id") ?: return@mapIndexedNotNull null
                 Episode(
                     id = id,
-                    extension = e.optString("container_extension").ifEmpty { fallbackExtension },
-                    season = e.optString("season").toIntOrNull() ?: season,
-                    number = e.optString("episode_num").toIntOrNull() ?: (i + 1),
-                    title = e.optString("title"),
+                    extension = e.str("container_extension") ?: "mkv",
+                    season = e.str("season")?.toIntOrNull() ?: season,
+                    number = e.str("episode_num")?.toIntOrNull() ?: (i + 1),
+                    title = e.str("title").orEmpty(),
                 )
-            }
+            }.sortedBy { it.number }
         }
     }
 
-    /** The provider's shows as (id, name), from a copy kept for a day unless [fresh]. */
-    private fun shows(link: Link, fresh: Boolean): List<Pair<String, String>>? {
+    /** A season's episodes, which come as a list, as episodes keyed "0", "1"…, or (just one) as that episode. */
+    private fun seasonItems(list: Any?): List<JSONObject> = when (list) {
+        is JSONArray -> (0 until list.length()).mapNotNull { list.optJSONObject(it) }
+        is JSONObject -> if (list.has("id")) listOf(list)
+        else list.keys().asSequence().toList().sortedBy { it.toIntOrNull() ?: Int.MAX_VALUE }.mapNotNull { list.optJSONObject(it) }
+        else -> emptyList()
+    }
+
+    /** The text at [key], or null when it's missing, empty or JSON's null (which optString would turn into "null"). */
+    private fun JSONObject.str(key: String): String? = if (isNull(key)) null else optString(key).takeIf { it.isNotEmpty() }
+
+    /** The provider's shows, from a copy kept for a day unless [fresh]. */
+    private fun shows(link: Link, fresh: Boolean): List<Show>? {
         val file = File(cacheDir, "shows-${(link.base + "|" + link.user).hashCode().toUInt()}.tsv")
         val young = file.exists() && System.currentTimeMillis() - file.lastModified() < SHOWS_FOR_MS
         if (!fresh && young) {
@@ -129,21 +153,24 @@ class NextEpisode(context: Context, private val headers: Map<String, String>) {
         // A copy just fetched won't be any different.
         if (fresh && young && file.lastModified() > startedAt) return null
         val shows = fetchShows(link) ?: return null
-        runCatching { file.writeText(shows.joinToString("\n") { "${it.first}\t${it.second}" }) }
+        runCatching { file.writeText(shows.joinToString("\n") { "${it.id}\t${it.name}\t${it.title}" }) }
         return shows
     }
 
-    private fun readShows(file: File): List<Pair<String, String>>? = runCatching {
-        file.readLines().mapNotNull { line -> line.split('\t', limit = 2).takeIf { it.size == 2 }?.let { it[0] to it[1] } }
+    private fun readShows(file: File): List<Show>? = runCatching {
+        file.readLines().mapNotNull { line ->
+            val parts = line.split('\t', limit = 3)
+            if (parts.size < 2) null else Show(parts[0], parts[1], parts.getOrElse(2) { "" })
+        }
     }.getOrNull()
 
-    /** The list can run to tens of megabytes, so only the id and name of each show are kept as it's read. */
-    private fun fetchShows(link: Link): List<Pair<String, String>>? = open(api(link, "get_series"))?.use { stream ->
+    /** The list can run to tens of megabytes, so only the id and names of each show are kept as it's read. */
+    private fun fetchShows(link: Link): List<Show>? = open(api(link, "get_series"))?.use { stream ->
         runCatching {
             val reader = JsonReader(stream.reader(Charsets.UTF_8))
             // A login the provider turns down comes back as an object instead of a list.
             if (reader.peek() != JsonToken.BEGIN_ARRAY) return@runCatching null
-            val shows = mutableListOf<Pair<String, String>>()
+            val shows = mutableListOf<Show>()
             reader.beginArray()
             while (reader.hasNext()) {
                 var id: String? = null
@@ -162,29 +189,56 @@ class NextEpisode(context: Context, private val headers: Map<String, String>) {
                     }
                 }
                 reader.endObject()
-                val shown = title?.takeIf { it.isNotBlank() } ?: name
-                if (id != null && shown != null) shows += id to shown.replace('\t', ' ').replace('\n', ' ')
+                // Some providers fill "title" with a cleaner name than "name"; both are kept to compare with.
+                val clean = { s: String? -> s.orEmpty().replace('\t', ' ').replace('\n', ' ').trim() }
+                if (id != null && (!name.isNullOrBlank() || !title.isNullOrBlank())) shows += Show(id, clean(name), clean(title))
             }
-            shows.distinctBy { it.first }
+            shows.distinctBy { it.id }
         }.getOrNull()
     }
 
-    /** The shows whose names match, best first: the same name, then one name inside the other. */
-    private fun candidates(shows: List<Pair<String, String>>, wanted: String): List<String> {
-        val scored = shows.mapNotNull { (id, name) ->
-            val have = normalize(name)
-            when {
-                have.isEmpty() -> null
-                have == wanted -> id to 0
-                have.length >= 3 && (have in wanted || wanted in have) -> id to 1
-                else -> null
-            }
+    /**
+     * The shows whose names match, best first: the same name, then one name's words all in the other's ("The Office"
+     * and "The Office (US)"), then one name inside the other, then names sharing most of their words. Any of them is
+     * only taken once this very episode is found in it, so a few close ones are worth asking about.
+     */
+    private fun candidates(shows: List<Show>, wanted: List<Name>): List<String> {
+        val scored = shows.mapNotNull { show ->
+            val names = listOfNotNull(nameOf(show.name), show.title.takeIf { it != show.name }?.let { nameOf(it) })
+            val best = names.maxOfOrNull { have -> wanted.maxOf { score(it, have) } } ?: 0f
+            if (best > 0f) show to best else null
         }
-        return scored.sortedBy { it.second }.map { it.first }.distinct().take(MAX_CANDIDATES)
+        val picked = scored.sortedByDescending { it.second }.map { it.first }.distinctBy { it.id }.take(MAX_CANDIDATES)
+        Log.i(TAG, "Shows that may hold this episode: " + picked.joinToString { "\"${it.title.ifEmpty { it.name }}\"" })
+        return picked.map { it.id }
+    }
+
+    private fun score(wanted: Name, have: Name): Float {
+        if (have.squeezed == wanted.squeezed) return 4f
+        val (fewer, more) = if (have.words.size <= wanted.words.size) have.words to wanted.words else wanted.words to have.words
+        if (fewer.isNotEmpty() && more.containsAll(fewer)) return 3f + fewer.size.toFloat() / more.size
+        val (shorter, longer) = if (have.squeezed.length <= wanted.squeezed.length) have.squeezed to wanted.squeezed
+        else wanted.squeezed to have.squeezed
+        if (shorter.length >= 4 && shorter in longer) return 2f + shorter.length.toFloat() / longer.length
+        val common = wanted.words.count { it in have.words }
+        val shared = 2f * common / (wanted.words.size + have.words.size).coerceAtLeast(1)
+        return if (shared >= 0.5f) shared else 0f
+    }
+
+    /** The ways [rawTitle] may give its show's name: as read for the screen, cut before the episode, or its first part. */
+    private fun wantedNames(rawTitle: String?, show: String): List<Name> {
+        val extra = mutableListOf<String>()
+        if (!rawTitle.isNullOrBlank()) {
+            EPISODE_MARK.find(rawTitle)?.let { extra += rawTitle.substring(0, it.range.first) }
+            extra += rawTitle.split(" - ", " – ", " | ").first()
+        }
+        val names = listOfNotNull(nameOf(show)) + extra.mapNotNull { nameOf(it) }.filter { it.squeezed.length >= 4 }
+        return names.distinctBy { it.squeezed }
     }
 
     /** Only this episode and the next few, so the next ones need just the one small request. */
     private fun remember(link: Link, seriesId: String, episodes: List<Episode>) {
+        // Clearing them all now and then keeps it small; a show is found again by name when it's needed.
         if (prefs.all.size > MAX_REMEMBERED) prefs.edit().clear().apply()
         val at = episodes.indexOfFirst { it.id == link.episodeId }.coerceAtLeast(0)
         val edit = prefs.edit()
@@ -239,7 +293,7 @@ class NextEpisode(context: Context, private val headers: Map<String, String>) {
         private const val TAG = "FirePlayerNext"
         private const val SHOWS_FOR_MS = 24 * 60 * 60_000L
         private const val MAX_INFO_BYTES = 8 shl 20
-        private const val MAX_CANDIDATES = 3
+        private const val MAX_CANDIDATES = 8
         private const val MAX_REMEMBERED = 500
         private const val REMEMBER_AHEAD = 5
         private val startedAt = System.currentTimeMillis()
@@ -250,6 +304,9 @@ class NextEpisode(context: Context, private val headers: Map<String, String>) {
         /** Whether [uri] is a provider's episode link the next episode can be found from. */
         fun canFind(uri: Uri): Boolean = parse(uri) != null
 
+        /** Whether [uri] looks like a provider's episode at all ("…/series/…"). */
+        fun isEpisodeLink(uri: Uri): Boolean = uri.pathSegments.any { it.equals("series", true) }
+
         private fun parse(uri: Uri): Link? {
             val scheme = uri.scheme?.lowercase()
             if (scheme != "http" && scheme != "https") return null
@@ -258,11 +315,34 @@ class NextEpisode(context: Context, private val headers: Map<String, String>) {
             if (parts.size != 4 || !parts[0].equals("series", true)) return null
             val episodeId = parts[3].substringBeforeLast('.').takeIf { id -> id.isNotEmpty() && id.all { it.isDigit() } }
                 ?: return null
-            return Link(scheme, authority, parts[1], parts[2], episodeId)
+            return Link(uri, scheme, authority, parts[1], parts[2], episodeId)
         }
 
-        /** Lower case letters and digits only, without the provider's tags or the year, so names compare. */
-        fun normalize(name: String): String =
-            TitleInfo.parse(name, null).searchQuery.lowercase().filter { it.isLetterOrDigit() }
+        // Where an episode's own part of a name starts: "S01E03", "S1 EP3", "1x03", "Season 1", "Episode 3".
+        private val EPISODE_MARK =
+            Regex("""(?i)\b(S\d{1,2}\s*[ ._-]?\s*EP?\s*\d{1,3}|\d{1,2}x\d{2,3}|Season\s*\d{1,2}|Series\s*\d{1,2}|Episode\s*\d{1,3}|EP\s*\d{1,3}|S\d{1,2})\b""")
+        private val ACCENTS = Regex("""\p{Mn}+""")
+        private val YEAR = Regex("""(19|20)\d{2}""")
+        private val SMALL_WORDS = setOf("the", "a", "an", "and", "of")
+
+        /**
+         * Without the provider's tags, the year, accents and punctuation, so "EN - Grey's Anatomy (2005)" and
+         * "Greys Anatomy" compare as the same, and "&" reads as "and".
+         */
+        private fun nameOf(text: String): Name? {
+            val plain = Normalizer.normalize(TitleInfo.parse(text, null).searchQuery, Normalizer.Form.NFD)
+                .replace(ACCENTS, "")
+                .lowercase()
+                .replace("&", " and ")
+                .replace("'", "").replace("’", "")
+                .map { if (it.isLetterOrDigit()) it else ' ' }
+                .joinToString("")
+            val words = plain.split(' ').filter { it.isNotEmpty() }
+            val squeezed = words.joinToString("")
+            if (squeezed.isEmpty()) return null
+            // Single letters ("House M.D.") say little about which show it is; the squeezed name still has them.
+            val telling = words.filter { (it.length > 1 || it[0].isDigit()) && it !in SMALL_WORDS && !YEAR.matches(it) }
+            return Name(squeezed, telling.toSet())
+        }
     }
 }
