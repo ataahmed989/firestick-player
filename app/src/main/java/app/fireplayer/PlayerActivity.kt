@@ -208,8 +208,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private var lookupInFlight = false
     // When a look-up was asked for that waits for the film to be well ahead (elapsedRealtime; 0 when none waits).
     private var lookupWantedAt = 0L
-    // Times this video's connection was dropped just after the skip preview connected.
+    // Times this video's connection was dropped just after the skip preview connected, and when that last happened.
     private var previewCutOffs = 0
+    private var lastPreviewCutOffAt = 0L
     // The sound and subtitles picked by hand, to pick the same kind again in the next episode.
     private val trackWishes = HashMap<Int, TrackWish>()
     private var reapplyWishes = false
@@ -901,6 +902,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     }
 
     override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+        // A jump while already waiting is a new wait (the state doesn't change), so the percentage starts again.
+        if (reason == Player.DISCONTINUITY_REASON_SEEK) shownPercent = 0
         // Going back reloads the film from there (nothing behind is kept), so what was lined up to read is stale.
         if (reason == Player.DISCONTINUITY_REASON_SEEK && newPosition.positionMs < oldPosition.positionMs) {
             pictureText.discardAhead()
@@ -1001,8 +1004,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         }
         // Quiet retries stop after a while, so a server that's down shows an error instead of a spinner forever. One
         // more try is only made if it would end inside that time, guessing it takes as long as the last one did.
+        // The first error is always tried again: the wait before it may have been mostly film arriving, slowly.
         val nextRoundEndsAt = now + (now - roundStartedAt)
-        if (network && retries < MAX_RETRIES && nextRoundEndsAt - firstErrorAt < RETRY_WINDOW_MS) {
+        if (network && retries < MAX_RETRIES && (retries == 0 || nextRoundEndsAt - firstErrorAt < RETRY_WINDOW_MS)) {
             retries++
             val step = if (status != null && status in 400..499) 3_000L else 1_000L
             retryQuietly(step * retries)
@@ -1108,8 +1112,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             val refused = SeekPreview.isRefusal(error) && seekPreview.requestedWithin(8_000)
             // A server that cuts the older connection off when another opens: a working film connection dropped just
             // as the preview connected. Twice, so one ordinary drop doesn't end previews.
-            val cutOff = SeekPreview.isCutOff(error) && IdleCloseDataSource.openedWithin(SeekPreview.CUT_OFF_MS) &&
-                ++previewCutOffs >= 2
+            var cutOff = false
+            if (SeekPreview.isCutOff(error) && IdleCloseDataSource.openedWithin(SeekPreview.CUT_OFF_MS)) {
+                val now = SystemClock.elapsedRealtime()
+                // Twice close together, not two chance drops far apart.
+                if (now - lastPreviewCutOffAt > CUT_OFF_PAIR_MS) previewCutOffs = 0
+                lastPreviewCutOffAt = now
+                cutOff = ++previewCutOffs >= 2
+            }
             if (refused || cutOff) seekPreview.serverRefused()
         }
     }
@@ -2213,12 +2223,17 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         for ((type, wish) in trackWishes) {
             val same = trackOptions(type).filter { it.group.getTrackFormat(it.trackIndex).language == wish.language }
             fun format(o: TrackOption) = o.group.getTrackFormat(o.trackIndex)
-            val pick = same.firstOrNull { format(it).label == wish.label }
-                ?: same.firstOrNull {
-                    format(it).roleFlags == wish.roleFlags &&
-                        (format(it).selectionFlags and C.SELECTION_FLAG_FORCED != 0) == wish.forced
-                }
-                ?: same.firstOrNull { type != C.TRACK_TYPE_AUDIO || format(it).channelCount == wish.channels }
+            // The same kind (forced or full subtitles, commentary or main sound) matters more than the name, which
+            // tracks often don't have or share.
+            fun kind(o: TrackOption) = format(o).roleFlags == wish.roleFlags &&
+                (format(o).selectionFlags and C.SELECTION_FLAG_FORCED != 0) == wish.forced
+            fun channels(o: TrackOption) = type != C.TRACK_TYPE_AUDIO || format(o).channelCount == wish.channels
+            fun named(o: TrackOption) = wish.label != null && format(o).label == wish.label
+            val pick = same.firstOrNull { named(it) && kind(it) && channels(it) }
+                ?: same.firstOrNull { named(it) && kind(it) }
+                ?: same.firstOrNull { kind(it) && channels(it) }
+                ?: same.firstOrNull { kind(it) }
+                ?: same.firstOrNull { channels(it) }
                 ?: same.firstOrNull()
             if (pick != null && !pick.selected) selectTrack(pick)
         }
@@ -2571,6 +2586,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         const val LOOKUP_BEFORE_END_MS = 4 * 60_000L
         // The least the film keeps behind where it is (on TVs with little memory); a jump back further loads again.
         const val KEPT_BEHIND_MS = 5_000L
+        // Two film drops just after the preview connected, this close together, mean the server cuts one off.
+        const val CUT_OFF_PAIR_MS = 60_000L
         const val POST_PLAY_COUNT_MS = 10_000L
         /** How long a note about previews stays up. */
         const val NOTE_MS = 4_000L

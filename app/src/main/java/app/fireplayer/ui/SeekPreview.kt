@@ -7,11 +7,13 @@ import android.view.TextureView
 import android.view.View
 import android.widget.TextView
 import androidx.annotation.OptIn
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.common.util.Util
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
@@ -93,6 +95,8 @@ class SeekPreview(
             item = mediaItem
         }
         active = true
+        // A seek still on its way from before a jump (its player not let go yet) may load again.
+        if (inFlight) loadingAllowed = true
         requestedMs = targetMs
         this.jumpAt = jumpAt
         handler.removeCallbacks(releaseRunnable)
@@ -118,7 +122,13 @@ class SeekPreview(
         if (filmReloads) {
             loadingAllowed = false
             if (inFlight) {
-                release()
+                // Right after the film's jump has gone out (releasing waits on the preview's player), unless skipping
+                // has started again by then.
+                handler.removeCallbacks(seekRunnable)
+                handler.post(releaseIfIdle)
+                card.animate().cancel()
+                card.alpha = 0f
+                setShown(false)
                 return
             }
         }
@@ -219,6 +229,8 @@ class SeekPreview(
 
     private val releaseRunnable = Runnable { release() }
 
+    private val releaseIfIdle = Runnable { if (!active) release() }
+
     // Skipping often moves on before the picture for the last target arrives; that's fine for a moment.
     private fun dimLater() {
         if (dimPending || dimmed) return
@@ -264,9 +276,13 @@ class SeekPreview(
 
     override fun onPlayerError(error: PlaybackException) {
         // This video can't be previewed; leave skipping exactly as it was, and say why once.
+        // HLS and DASH films open a part every few seconds, so "the film just connected" says nothing there.
+        val progressive = item?.localConfiguration
+            ?.let { Util.inferContentTypeForUriAndMimeType(it.uri, it.mimeType) == C.CONTENT_TYPE_OTHER } == true
         val note = when {
             // Turned away, or cut off for the film's new connection: the film keeps the server to itself from now on.
-            isRefusal(error.cause) || (isCutOff(error.cause) && RedirectMemoryDataSource.filmOpenedWithin(CUT_OFF_MS)) -> {
+            isRefusal(error.cause) ||
+                (progressive && isCutOff(error.cause) && RedirectMemoryDataSource.filmOpenedWithin(CUT_OFF_MS)) -> {
                 refused = true
                 SERVER_NOTE
             }
