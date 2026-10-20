@@ -170,11 +170,12 @@ class NextEpisode(context: Context, private val headers: Map<String, String>) {
         return scored.sortedBy { it.second }.map { it.first }.distinct().take(MAX_CANDIDATES)
     }
 
+    /** Only this episode and the next few, so the next ones need just the one small request. */
     private fun remember(link: Link, seriesId: String, episodes: List<Episode>) {
-        // Kept small: a few shows' worth.
         if (prefs.all.size > MAX_REMEMBERED) prefs.edit().clear().apply()
+        val at = episodes.indexOfFirst { it.id == link.episodeId }.coerceAtLeast(0)
         val edit = prefs.edit()
-        episodes.forEach { edit.putString(seriesKey(link, it.id), seriesId) }
+        episodes.subList(at, minOf(episodes.size, at + 1 + REMEMBER_AHEAD)).forEach { edit.putString(seriesKey(link, it.id), seriesId) }
         edit.apply()
     }
 
@@ -226,7 +227,8 @@ class NextEpisode(context: Context, private val headers: Map<String, String>) {
         private const val SHOWS_FOR_MS = 24 * 60 * 60_000L
         private const val MAX_INFO_BYTES = 8 shl 20
         private const val MAX_CANDIDATES = 3
-        private const val MAX_REMEMBERED = 5_000
+        private const val MAX_REMEMBERED = 500
+        private const val REMEMBER_AHEAD = 5
         private val startedAt = System.currentTimeMillis()
 
         /** Whether [uri] is a provider's episode link the next episode can be found from. */
