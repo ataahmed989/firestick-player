@@ -11,8 +11,10 @@ import app.fireplayer.subs.SubtitleEdge
 import app.fireplayer.subs.SubtitleFont
 import app.fireplayer.subs.SubtitlePresets
 import app.fireplayer.subs.SubtitleStyle
+import app.fireplayer.subs.Tmdb
 import app.fireplayer.update.Updater
 import java.util.Locale
+import kotlin.concurrent.thread
 import kotlin.math.roundToInt
 
 /** The Settings and Subtitle style windows, shared by the player and the home screen. */
@@ -24,6 +26,9 @@ class SettingsPanels(
 
     private val updater = Updater(activity)
     private var updateStatus: String? = null
+    // How the last TMDB key check went: the row's value, and what TMDB said when it said no.
+    private var tmdbStatus: String? = null
+    private var tmdbProblem: String? = null
 
     /** Called after a font arrives from the phone (or is removed), so the subtitles can switch to it. */
     var onFontChanged: () -> Unit = {}
@@ -119,6 +124,26 @@ class SettingsPanels(
                 prefs.openSubtitlesPassword = it; refresh()
             }
         }
+        message("Optional free key from themoviedb.org (Settings, API). Lets the search find subtitles for the exact film or episode.")
+        row("TMDB API key", tmdbStatus ?: if (prefs.tmdbApiKey.isEmpty()) "Optional" else "Saved") {
+            SidePanel.prompt(activity, "TMDB API key or read access token", prefs.tmdbApiKey) { key ->
+                prefs.tmdbApiKey = key
+                tmdbProblem = null
+                tmdbStatus = if (prefs.tmdbApiKey.isEmpty()) null else "Checking…"
+                refresh()
+                if (prefs.tmdbApiKey.isNotEmpty()) {
+                    thread(name = "FirePlayerTmdb", isDaemon = true) {
+                        val problem = Tmdb(prefs).check()
+                        activity.runOnUiThread {
+                            tmdbStatus = if (problem == null) "Works" else "Not accepted"
+                            tmdbProblem = problem
+                            if (isOpen) refresh()
+                        }
+                    }
+                }
+            }
+        }
+        tmdbProblem?.let { message("$it.") }
 
         header("App")
         row("Check for updates", updateStatus ?: "Version ${updater.installedName}") {
