@@ -45,6 +45,7 @@ import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.SeekParameters
 import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.source.LoadEventInfo
 import androidx.media3.exoplayer.source.MediaLoadData
@@ -55,8 +56,10 @@ import app.fireplayer.player.BufferWait
 import app.fireplayer.player.Delays
 import app.fireplayer.player.FpsMeter
 import app.fireplayer.player.FrameRateMatcher
+import app.fireplayer.player.IdleCloseDataSource
 import app.fireplayer.player.NextEpisode
 import app.fireplayer.player.PlayerFactory
+import app.fireplayer.player.ServerSwitch
 import app.fireplayer.player.TitleInfo
 import app.fireplayer.subs.FontImport
 import app.fireplayer.subs.OpenSubtitles
@@ -203,6 +206,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     // Which look-up is the current one, and whether it hasn't answered yet; leaving the player drops it.
     private var lookupRun = 0
     private var lookupInFlight = false
+    // When a look-up was asked for that waits for the film to be well ahead (elapsedRealtime; 0 when none waits).
+    private var lookupWantedAt = 0L
+    // Times this video's connection was dropped just after the skip preview connected.
+    private var previewCutOffs = 0
     // The sound and subtitles picked by hand, to pick the same kind again in the next episode.
     private val trackWishes = HashMap<Int, TrackWish>()
     private var reapplyWishes = false
@@ -254,6 +261,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     // Network hiccups are retried quietly before an error is shown
     private var retries = 0
     private var firstErrorAt = 0L
+    // When the viewer started waiting for the film (0 while it plays), and when the latest try started loading.
+    private var waitingSince = 0L
+    private var roundStartedAt = 0L
     private var retryPending = false
     private val retryRunnable = object : Runnable {
         override fun run() {
@@ -264,6 +274,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
                 return
             }
             retryPending = false
+            roundStartedAt = SystemClock.elapsedRealtime()
             player?.prepare()
         }
     }
@@ -383,6 +394,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             lookupRun++
             nextLookedUpFor = null
         }
+        lookupWantedAt = 0L
         handler.removeCallbacksAndMessages(null)
     }
 
@@ -590,9 +602,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         // A new player starts its quiet retries afresh, and a retry meant for the old one doesn't touch it.
         retries = 0
         firstErrorAt = 0L
+        waitingSince = 0L
         retryPending = false
         handler.removeCallbacks(retryRunnable)
         cannotOpen = false
+        previewCutOffs = 0
         // TIME_UNSET starts VOD at the beginning and live at the live edge.
         try {
             p.setMediaItems(items, index, position)
@@ -745,12 +759,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         if (state == Player.STATE_BUFFERING) {
             shownPercent = 0
             handler.postDelayed(showBuffering, 400)
+            // A wait that quiet retries carry on with is still the same wait.
+            if (retries == 0) waitingSince = SystemClock.elapsedRealtime()
         } else if (!(state == Player.STATE_IDLE && retryPending)) {
             hideBuffering()
         }
         if (state == Player.STATE_READY) {
             findNextEpisode()
             errorBox.visibility = View.GONE
+            waitingSince = 0L
             retries = 0
             retryPending = false
             handler.removeCallbacks(deviceRetriesBack)
@@ -976,9 +993,16 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         // for a few seconds after a jump, while the old connection still counts against the limit.
         val permanent = status == 404 || status == 410
         val network = error.errorCode in 2000..2999 && error.errorCode !in NOT_RETRIED && !permanent
-        if (retries == 0) firstErrorAt = now
-        // Quiet retries stop after a while, so a server that's down shows an error instead of a spinner forever.
-        if (network && retries < MAX_RETRIES && now - firstErrorAt < RETRY_WINDOW_MS) {
+        // The player has already tried a few times by the time an error comes, so the time counts from when the
+        // viewer started waiting, not from the error.
+        if (retries == 0) {
+            firstErrorAt = if (waitingSince > 0) waitingSince else now
+            roundStartedAt = firstErrorAt
+        }
+        // Quiet retries stop after a while, so a server that's down shows an error instead of a spinner forever. One
+        // more try is only made if it would end inside that time, guessing it takes as long as the last one did.
+        val nextRoundEndsAt = now + (now - roundStartedAt)
+        if (network && retries < MAX_RETRIES && nextRoundEndsAt - firstErrorAt < RETRY_WINDOW_MS) {
             retries++
             val step = if (status != null && status in 400..499) 3_000L else 1_000L
             retryQuietly(step * retries)
@@ -1065,12 +1089,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         }
     }
 
-    // The film's connection failing just after the preview asked for video is the server allowing one connection
-    // (or cutting the older one off). The film comes first: previews stop.
     /**
-     * The server turning the film away just after the preview asked for video usually means it allows one
-     * connection at a time; previews then stop so the film keeps it. Only the film's own link counts (not a
-     * subtitle file), and only an answer that means "no" (not a hiccup the film retries past).
+     * The server turning the film away just after the preview asked for video, or cutting the film's connection off
+     * just as the preview connected, usually means it allows one connection at a time; previews then stop so the film
+     * keeps it. Only the film's own link counts (not a subtitle file), and only an answer that means "no" or a
+     * connection dropped at that moment (not a hiccup the film retries past).
      */
     private val filmLoadErrors = object : AnalyticsListener {
         override fun onLoadError(
@@ -1081,9 +1104,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             wasCanceled: Boolean,
         ) {
             val film = entries.getOrNull(playingIndex)?.uri ?: return
-            if (loadEventInfo.dataSpec.uri == film && SeekPreview.isRefusal(error) && seekPreview.requestedWithin(8_000)) {
-                seekPreview.serverRefused()
-            }
+            if (loadEventInfo.dataSpec.uri != film) return
+            val refused = SeekPreview.isRefusal(error) && seekPreview.requestedWithin(8_000)
+            // A server that cuts the older connection off when another opens: a working film connection dropped just
+            // as the preview connected. Twice, so one ordinary drop doesn't end previews.
+            val cutOff = SeekPreview.isCutOff(error) && IdleCloseDataSource.openedWithin(SeekPreview.CUT_OFF_MS) &&
+                ++previewCutOffs >= 2
+            if (refused || cutOff) seekPreview.serverRefused()
         }
     }
 
@@ -1122,7 +1149,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             dim = findViewById(R.id.preview_dim),
             time = findViewById(R.id.preview_time),
             format = { formatTime(it, longTimes == true) },
-            create = { PlayerFactory.buildPreview(this, headersFromIntent()) },
+            create = { allowLoading -> PlayerFactory.buildPreview(this, headersFromIntent(), allowLoading) },
             // Subtitles from where the film is now would sit under a picture of somewhere else; they step aside.
             onShowing = { showing ->
                 val alpha = if (showing) 0f else 1f
@@ -1209,9 +1236,31 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     /**
      * Once the last episode in the list is playing, asks the provider in the background which show it belongs to and
      * which episode comes after it, and adds that, so it plays at the end and Next appears. An episode named only by
-     * its number gets its show's name on screen too. Nothing touches the network before the picture is up.
+     * its number gets its show's name on screen too. Nothing touches the network before the picture is up, and the
+     * asking (the provider's list of shows can be megabytes) waits until the film is well ahead, see [lookUpWhenFree].
      */
     private fun findNextEpisode() {
+        if (lookupWantedAt == 0L) lookupWantedAt = SystemClock.elapsedRealtime()
+    }
+
+    /**
+     * From [postPlayTick]: starts the look-up asked for once the film has a minute loaded, or has all it needs, so the
+     * download doesn't take the line from a film that has only just started. Not later than a few minutes before the
+     * end card, nor after a few minutes of waiting, on a line that never gets that far ahead.
+     */
+    private fun lookUpWhenFree() {
+        val p = player ?: return
+        if (lookupWantedAt == 0L || p.playbackState != Player.STATE_READY) return
+        val duration = p.duration
+        val nearEnd = duration != C.TIME_UNSET && duration - p.currentPosition < POST_PLAY_LEAD_MS + LOOKUP_BEFORE_END_MS
+        val free = p.totalBufferedDuration >= LOOKUP_AHEAD_MS || !p.isLoading || nearEnd ||
+            SystemClock.elapsedRealtime() - lookupWantedAt >= LOOKUP_WAIT_MS
+        if (!free) return
+        lookupWantedAt = 0L
+        startNextEpisodeLookup()
+    }
+
+    private fun startNextEpisodeLookup() {
         val p = player ?: return
         val last = entries.lastOrNull() ?: return
         val needed = prefs.playNextEpisode || !last.info.named
@@ -1224,7 +1273,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         val rawTitle = last.rawTitle
         val show = last.info.title
         thread(name = "FirePlayerNext", isDaemon = true, priority = Thread.MIN_PRIORITY) {
-            val found = runCatching { finder.find(last.uri, rawTitle, show) }.getOrNull()
+            // The film shares the line meanwhile: it isn't moved to another server for arriving slower.
+            val found = ServerSwitch.alongside { runCatching { finder.find(last.uri, rawTitle, show) }.getOrNull() }
             handler.post {
                 // Dropped when the player was left meanwhile (it looks again on return).
                 if (run != lookupRun) return@post
@@ -1250,9 +1300,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         }
     }
 
-    /** Checks the end card five times a second, while the player screen is up. */
+    /** Checks the end card (and a look-up waiting to start) five times a second, while the player screen is up. */
     private val postPlayTick = object : Runnable {
         override fun run() {
+            lookUpWhenFree()
             updatePostPlay()
             handler.postDelayed(this, 200)
         }
@@ -1824,11 +1875,24 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             cancelSeek()
             return
         }
-        seekPreview.hide()
+        val p = player
+        // Where the preview's picture really is (a keyframe near the target), so the film starts on what was shown.
+        val landing = seekPreview.landingFor(seekTarget())
+        val target = landing ?: seekTarget()
+        // Past what's loaded (ahead, or further back than is kept): the film loads again from there.
+        val reloads = p != null && (target > p.bufferedPosition || target < p.currentPosition - KEPT_BEHIND_MS)
+        seekPreview.hide(filmReloads = reloads)
         handler.removeCallbacks(commitSeekRunnable)
-        // Past what's loaded: the film loads again from there, so what was lined up to read is stale.
-        if (seekTarget() > (player?.bufferedPosition ?: 0L)) pictureText.discardAhead()
-        player?.seekTo(seekTarget())
+        // What was lined up to read past what's loaded is stale.
+        if (target > (p?.bufferedPosition ?: 0L)) pictureText.discardAhead()
+        if (p != null && landing != null) {
+            // On that keyframe exactly (the time in ms can be a fraction before it), or right there if it isn't one.
+            p.setSeekParameters(SeekParameters(0L, 1_000L))
+            p.seekTo(landing)
+            p.setSeekParameters(PlayerFactory.FILM_SEEK)
+        } else {
+            p?.seekTo(target)
+        }
         seeking = false
         updateOverlay()
         updateProgress()
@@ -2500,6 +2564,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         // How long the film waits for the TV to change refresh rate.
         const val DISPLAY_SWITCH_PAUSE_MS = 2_000L
         const val POST_PLAY_LEAD_MS = 20_000L
+        // A next-episode look-up starts with this much of the film loaded, after this long at most, and no later than
+        // this long before the end card.
+        const val LOOKUP_AHEAD_MS = 60_000L
+        const val LOOKUP_WAIT_MS = 3 * 60_000L
+        const val LOOKUP_BEFORE_END_MS = 4 * 60_000L
+        // The least the film keeps behind where it is (on TVs with little memory); a jump back further loads again.
+        const val KEPT_BEHIND_MS = 5_000L
         const val POST_PLAY_COUNT_MS = 10_000L
         /** How long a note about previews stays up. */
         const val NOTE_MS = 4_000L

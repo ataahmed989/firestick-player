@@ -36,6 +36,7 @@ class IdleCloseDataSource(private val upstream: DataSource, private val idleMs: 
     override fun addTransferListener(transferListener: TransferListener) = upstream.addTransferListener(transferListener)
 
     override fun open(dataSpec: DataSpec): Long = lock.withLock {
+        openedAt = SystemClock.elapsedRealtime()
         val length = upstream.open(dataSpec)
         spec = dataSpec
         bytesRead = 0
@@ -51,6 +52,7 @@ class IdleCloseDataSource(private val upstream: DataSource, private val idleMs: 
     override fun read(buffer: ByteArray, offset: Int, length: Int): Int = lock.withLock {
         val current = spec ?: throw IOException("Read from a closed source")
         if (!connected) {
+            openedAt = SystemClock.elapsedRealtime()
             upstream.open(current.subrange(bytesRead))
             connected = true
         }
@@ -88,12 +90,17 @@ class IdleCloseDataSource(private val upstream: DataSource, private val idleMs: 
         }
     }
 
-    private companion object {
-        val active: MutableSet<IdleCloseDataSource> = ConcurrentHashMap.newKeySet()
-        var watcher: ScheduledExecutorService? = null
+    companion object {
+        private val active: MutableSet<IdleCloseDataSource> = ConcurrentHashMap.newKeySet()
+        private var watcher: ScheduledExecutorService? = null
+        // When one of these last opened a connection (elapsedRealtime). Only the skip preview uses them.
+        @Volatile private var openedAt = 0L
+
+        /** Whether the skip preview opened a connection within the last [ms]; a server allowing one may have cut the film off for it. */
+        fun openedWithin(ms: Long): Boolean = SystemClock.elapsedRealtime() - openedAt < ms
 
         @Synchronized
-        fun startWatching() {
+        private fun startWatching() {
             if (watcher != null) return
             watcher = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "IdleClose").apply { isDaemon = true } }
                 .apply {
