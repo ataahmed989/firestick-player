@@ -144,6 +144,8 @@ class SettingsPanels(
             }
         }
         tmdbProblem?.let { message("$it.") }
+        // TMDB asks apps that use its API to say so.
+        if (prefs.tmdbApiKey.isNotEmpty()) message("This product uses the TMDB API but is not endorsed or certified by TMDB.")
 
         header("App")
         row("Check for updates", updateStatus ?: "Version ${updater.installedName}") {
