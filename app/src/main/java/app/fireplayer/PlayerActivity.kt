@@ -136,6 +136,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private lateinit var postPlayGo: CountdownPill
     // The episode whose end card was put away (Watch credits, or Back), so it doesn't come straight back.
     private var postPlayDismissedFor = -1
+    // Where the end card's count started, and how long it runs.
+    private var postPlayFrom = 0L
+    private var postPlayCountMs = POST_PLAY_COUNT_MS
     private lateinit var bufferingInfo: TextView
     private lateinit var scrimTop: View
     private lateinit var scrimBottom: View
@@ -335,6 +338,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         val list = extras?.getParcelableArray("video_list")?.mapNotNull { it as? Uri }
         val names = extras?.getStringArray("video_list.name")
         val type = intent.type
+        NextEpisode.status = null
         if (!list.isNullOrEmpty()) {
             list.forEachIndexed { i, uri -> entries += Entry(uri, names?.getOrNull(i)) }
             val index = list.indexOf(data)
@@ -350,8 +354,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             entries += Entry(data, title, type)
             entries.addAll(siblingFiles(data))
             findsNextEpisode = entries.size == 1 && NextEpisode.canFind(data)
-            NextEpisode.status = if (findsNextEpisode || entries.size > 1) null
-            else "This video's link doesn't carry your provider's login, so the next episode can't be looked up."
+            NextEpisode.status = if (!findsNextEpisode && entries.size == 1 && NextEpisode.isEpisodeLink(data)) {
+                "This episode's link isn't in the usual shape for your provider, so the next one can't be looked up."
+            } else null
         }
 
         // Subtitles handed to us.
@@ -718,6 +723,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         fpsMeter.reset()
         updateTitle()
         refreshLabels()
+        // Moving on by itself keeps the picture up, so the episode after this one is looked up from here.
+        if (player?.playbackState == Player.STATE_READY) findNextEpisode()
     }
 
     override fun onTracksChanged(tracks: Tracks) {
@@ -980,6 +987,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         postPlayNext = findViewById(R.id.post_play_next)
         postPlayCredits = findViewById(R.id.post_play_credits)
         postPlayGo = findViewById(R.id.post_play_go)
+        postPlayGo.countdown = { postPlayProgress() }
         bufferingInfo = findViewById(R.id.buffering_info)
         scrimTop = findViewById(R.id.scrim_top)
         scrimBottom = findViewById(R.id.scrim_bottom)
@@ -1041,7 +1049,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
         btnPlay.setOnClickListener { togglePlay() }
         btnRestart.setOnClickListener { player?.seekTo(0); player?.play() }
-        btnNext.setOnClickListener { savePosition(); player?.seekToNextMediaItem() }
+        btnNext.setOnClickListener { savePosition(); player?.seekToNextMediaItem(); player?.play() }
         btnSubs.setOnClickListener { openSubtitlesPanel(btnSubs) }
         btnAudio.setOnClickListener { openAudioPanel(btnAudio) }
         focusEffect(btnPlay, 1.08f)
@@ -1096,12 +1104,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         nextLookedUpFor = last.key
         val finder = NextEpisode(applicationContext, headersFromIntent())
         thread(name = "FirePlayerNext", isDaemon = true, priority = Thread.MIN_PRIORITY) {
-            val found = runCatching { finder.find(last.uri, last.info.title) }.getOrNull() ?: return@thread
+            val found = runCatching { finder.find(last.uri, last.rawTitle, last.info.title) }.getOrNull() ?: return@thread
             handler.post {
                 val playing = player ?: return@post
-                // Still the end of the list (nothing was added meanwhile).
-                if (entries.lastOrNull()?.key != last.key) return@post
-                val next = Entry(found.uri, found.title, last.mimeType, nextEpisode = true)
+                // Still the end of the list (nothing was added meanwhile), and still wanted.
+                if (entries.lastOrNull()?.key != last.key || !prefs.playNextEpisode) return@post
+                // Its link ends in its own file type, so the type this one came with is left out.
+                val next = Entry(found.uri, found.title, null, nextEpisode = true)
                 entries += next
                 playing.addMediaItem(mediaItem(next))
                 updateTitle()
@@ -1119,38 +1128,53 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     /**
      * The end of an episode, Netflix-style: when a show has a next episode, a card comes up [POST_PLAY_LEAD_MS] before
-     * the end (where the credits usually roll), and Next episode fills up over [POST_PLAY_COUNT_MS] of playing, then
-     * starts it. Paused, the count waits too. Watch credits puts the card away; the next episode then starts at the end.
+     * the end (where the credits usually roll), and Next episode fills up over [POST_PLAY_COUNT_MS] of playing (less
+     * when the card comes up later, so it's full by the end), then starts it. Paused, the count waits too. Watch credits
+     * puts the card away; the next episode then starts at the end.
      */
     private fun updatePostPlay() {
         val p = player
         val index = p?.currentMediaItemIndex ?: -1
         val next = entries.getOrNull(index + 1)
         val duration = p?.duration ?: C.TIME_UNSET
+        val known = duration != C.TIME_UNSET
         val position = p?.currentPosition ?: 0L
         val showAt = duration - POST_PLAY_LEAD_MS
         // Going back out of the credits brings the card back when they come again.
-        if (postPlayDismissedFor == index && position < showAt - 5_000) postPlayDismissedFor = -1
-        val due = p != null && next?.nextEpisode == true && duration != C.TIME_UNSET && duration > 3 * POST_PLAY_LEAD_MS &&
-            !p.isCurrentMediaItemLive && position >= showAt && postPlayDismissedFor != index && !seeking && !controlsShown &&
-            !panel.isOpen && errorBox.visibility != View.VISIBLE && !resumeDialogShowing
+        if (known && postPlayDismissedFor == index && position < showAt - 5_000) postPlayDismissedFor = -1
+        val due = p != null && next?.nextEpisode == true && prefs.playNextEpisode && !sleepAtEnd && known &&
+            duration > 3 * POST_PLAY_LEAD_MS && !p.isCurrentMediaItemLive && position >= showAt &&
+            postPlayDismissedFor != index && !seeking && !controlsShown && !panel.isOpen &&
+            errorBox.visibility != View.VISIBLE && !resumeDialogShowing
         if (!due || p == null || next == null) {
             if (postPlay.visibility == View.VISIBLE) hidePostPlay()
             return
         }
         if (postPlay.visibility != View.VISIBLE) {
             postPlayNext.text = "Next · " + (next.info.subtitle ?: next.info.title)
+            // The count starts with the card, however late in the credits that is.
+            postPlayFrom = position
+            postPlayCountMs = minOf(POST_PLAY_COUNT_MS, duration - position).coerceAtLeast(1L)
             postPlayGo.counting = true
+            postPlay.alpha = 0f
             postPlay.visibility = View.VISIBLE
+            postPlay.animate().alpha(1f).setDuration(250).start()
             postPlayGo.requestFocus()
         }
-        postPlayGo.progress = (position - showAt).toFloat() / POST_PLAY_COUNT_MS
-        if (position >= showAt + POST_PLAY_COUNT_MS && p.playWhenReady) playNextEpisode()
+        // The fill follows every frame by itself; this only wakes it after a pause.
+        postPlayGo.invalidate()
+        if (position >= postPlayFrom + postPlayCountMs && p.playWhenReady) playNextEpisode()
+    }
+
+    /** How far the end card's count has got, from where the episode is right now. */
+    private fun postPlayProgress(): Float {
+        val p = player ?: return 0f
+        return (p.currentPosition - postPlayFrom).toFloat() / postPlayCountMs
     }
 
     private fun hidePostPlay() {
+        postPlay.animate().cancel()
         postPlay.visibility = View.GONE
-        postPlayGo.progress = 0f
     }
 
     private fun dismissPostPlay() {
@@ -1164,6 +1188,24 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         // This one was watched to the credits: next time it starts from the top.
         entries.getOrNull(p.currentMediaItemIndex)?.let { prefs.savePosition(it.key, 0L) }
         p.seekToNextMediaItem()
+        p.play()
+    }
+
+    /** Play next episode was switched in Settings: put away the episodes found, or look for one now. */
+    private fun nextEpisodeSwitched() {
+        val p = player ?: return
+        if (prefs.playNextEpisode) {
+            findNextEpisode()
+            return
+        }
+        for (i in entries.lastIndex downTo p.currentMediaItemIndex + 1) {
+            if (!entries[i].nextEpisode) break
+            entries.removeAt(i)
+            p.removeMediaItem(i)
+        }
+        nextLookedUpFor = null
+        hidePostPlay()
+        updateTitle()
     }
 
     private fun updateTitle() {
@@ -1702,7 +1744,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
                 }
                 return true
             }
-            KeyEvent.KEYCODE_MEDIA_NEXT -> { savePosition(); player?.seekToNextMediaItem(); return true }
+            KeyEvent.KEYCODE_MEDIA_NEXT -> { savePosition(); player?.seekToNextMediaItem(); player?.play(); return true }
             // The menu button (three lines) goes straight to Settings or Subtitle style, as chosen in Settings;
             // pressed again, it closes the window.
             KeyEvent.KEYCODE_MENU -> {
@@ -2046,9 +2088,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     private fun openSettingsPanel(from: View) {
         val passthrough = prefs.passthrough
+        val playNext = prefs.playNextEpisode
         // Rebuild once the window closes if a playback setting changed.
         openPanel("Settings", from, onClosed = {
             if (prefs.passthrough != passthrough) rebuildPlayer()
+            if (prefs.playNextEpisode != playNext) nextEpisodeSwitched()
             if (prefs.matchFrameRate) { matchedFpsForIndex = -1; matchFrameRate() } else frameRateMatcher.reset()
             refreshLabels()
         }) { settingsPanels.renderSettings(this) }

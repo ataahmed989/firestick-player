@@ -4,26 +4,26 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.Path
 import android.graphics.RectF
 import android.util.AttributeSet
 import android.widget.TextView
 
 /**
  * The end-of-episode buttons, drawn the way Netflix draws them: a flat pill, white with dark text when chosen,
- * grey and see-through otherwise. With [counting], the pale button fills with white from the left as [progress]
+ * grey and see-through otherwise. With [counting], the pale button fills with white from the left as the countdown
  * runs to 1, which is when the next episode starts.
  */
 class CountdownPill @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null) : TextView(context, attrs) {
 
-    /** Part of the countdown done, 0 to 1. */
-    var progress = 0f
+    /**
+     * Part of the countdown done, 0 to 1, read again on every frame drawn while it keeps moving, so the fill glides
+     * instead of jumping a step at a time. [invalidate] wakes it up again after it stood still (paused).
+     */
+    var countdown: (() -> Float)? = null
         set(value) {
-            val v = value.coerceIn(0f, 1f)
-            if (v != field) {
-                field = v
-                invalidate()
-            }
+            field = value
+            drawn = -1f
+            invalidate()
         }
 
     /** Whether this button shows the countdown. */
@@ -33,9 +33,9 @@ class CountdownPill @JvmOverloads constructor(context: Context, attrs: Attribute
             refreshColors()
         }
 
+    private var drawn = -1f
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val rect = RectF()
-    private val clip = Path()
     private val radius = 4 * resources.displayMetrics.density
 
     init {
@@ -64,22 +64,25 @@ class CountdownPill @JvmOverloads constructor(context: Context, attrs: Attribute
 
     override fun onDraw(canvas: Canvas) {
         rect.set(0f, 0f, width.toFloat(), height.toFloat())
-        clip.reset()
-        clip.addRoundRect(rect, radius, radius, Path.Direction.CW)
-        canvas.save()
-        canvas.clipPath(clip)
         paint.color = when {
             isFocused && !counting -> Color.WHITE
             counting -> PALE_COUNTING
             else -> PALE
         }
-        canvas.drawRect(rect, paint)
-        if (counting && progress > 0f) {
+        canvas.drawRoundRect(rect, radius, radius, paint)
+        val progress = if (counting) countdown?.invoke()?.coerceIn(0f, 1f) ?: 0f else 0f
+        if (progress > 0f) {
+            // The same rounded shape in white, cut off straight where the count has got to.
             paint.color = Color.WHITE
-            canvas.drawRect(0f, 0f, width * progress, height.toFloat(), paint)
+            canvas.save()
+            canvas.clipRect(0f, 0f, width * progress, height.toFloat())
+            canvas.drawRoundRect(rect, radius, radius, paint)
+            canvas.restore()
         }
-        canvas.restore()
         super.onDraw(canvas)
+        // Next frame too, for as long as the count moves.
+        if (counting && countdown != null && progress != drawn && isShown) postInvalidateOnAnimation()
+        drawn = progress
     }
 
     override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: android.graphics.Rect?) {
