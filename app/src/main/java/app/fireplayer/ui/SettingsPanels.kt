@@ -73,6 +73,9 @@ class SettingsPanels(
         }
 
         header("Playback")
+        row("Play next episode", onOff(prefs.playNextEpisode)) {
+            prefs.playNextEpisode = !prefs.playNextEpisode; refresh()
+        }
         row("Match frame rate", onOff(prefs.matchFrameRate)) {
             prefs.matchFrameRate = !prefs.matchFrameRate; refresh()
         }
