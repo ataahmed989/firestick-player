@@ -222,6 +222,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private var cannotOpen = false
     // The most the buffering line has shown during this wait, so it never counts backwards.
     private var shownPercent = 0
+    // When the latest jump was made (elapsedRealtime): a reading of the wait from before it is about the old spot.
+    private var percentFrom = 0L
     private var startPositionMs = C.TIME_UNSET
     private var savedTrackParams: TrackSelectionParameters? = null
     private var savedPlayWhenReady = true
@@ -903,7 +905,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
         // A jump while already waiting is a new wait (the state doesn't change), so the percentage starts again.
-        if (reason == Player.DISCONTINUITY_REASON_SEEK) shownPercent = 0
+        if (reason == Player.DISCONTINUITY_REASON_SEEK) {
+            shownPercent = 0
+            percentFrom = SystemClock.elapsedRealtime()
+        }
         // Going back reloads the film from there (nothing behind is kept), so what was lined up to read is stale.
         if (reason == Player.DISCONTINUITY_REASON_SEEK && newPosition.positionMs < oldPosition.positionMs) {
             pictureText.discardAhead()
@@ -994,7 +999,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         val status = (error.cause as? HttpDataSource.InvalidResponseCodeException)?.responseCode
         // A missing video won't come back. Other refusals are retried: IPTV servers often answer 403
         // for a few seconds after a jump, while the old connection still counts against the limit.
-        val permanent = status == 404 || status == 410
+        // A live channel's server may answer 404 for a moment while its source restarts; that one is tried again.
+        val permanent = (status == 404 || status == 410) && !p.isCurrentMediaItemLive
         val network = error.errorCode in 2000..2999 && error.errorCode !in NOT_RETRIED && !permanent
         // The player has already tried a few times by the time an error comes, so the time counts from when the
         // viewer started waiting, not from the error.
@@ -1081,7 +1087,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
                 return
             }
             val wait = bufferWait()
-            val current = !retryPending && wait != null && SystemClock.elapsedRealtime() - wait.atMs < 1_000
+            val current = !retryPending && wait != null && wait.atMs > percentFrom &&
+                SystemClock.elapsedRealtime() - wait.atMs < 1_000
             if (current && wait != null) {
                 // The target can grow as the connection is measured; the number shown only goes up.
                 shownPercent = maxOf(shownPercent, (wait.fraction * 100).toInt().coerceAtMost(99))
