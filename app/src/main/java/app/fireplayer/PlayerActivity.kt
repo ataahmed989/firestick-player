@@ -598,9 +598,18 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private fun finishWithResult() {
         val p = player
         val result = Intent("com.mxtech.intent.result.VIEW")
-        if (p != null) {
+        // Which episode the position is for, once a list has moved on to the next one. Web links only: handing back a
+        // file:// link would crash the app on newer Android.
+        entries.getOrNull(p?.currentMediaItemIndex ?: 0)?.uri?.takeIf { it.scheme == "http" || it.scheme == "https" }
+            ?.let { result.data = it }
+        // A finished video is reported as finished, without a position, as MX Player does.
+        if (p != null && !completed) {
+            val duration = p.duration.takeIf { it != C.TIME_UNSET }
             result.putExtra("position", p.currentPosition.toInt())
-            result.putExtra("duration", p.duration.coerceAtLeast(0).toInt())
+            duration?.let { result.putExtra("duration", it.toInt()) }
+            // VLC's names too, for apps that only read those.
+            result.putExtra("extra_position", p.currentPosition)
+            duration?.let { result.putExtra("extra_duration", it) }
         }
         savePosition()
         // Silence at once; the player itself is released only after TiviMate is back on screen.
