@@ -73,6 +73,7 @@ import app.fireplayer.ui.SidePanel
 import io.github.peerless2012.ass.media.AssHandler
 import java.io.File
 import java.io.IOException
+import java.lang.ref.WeakReference
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executors
@@ -283,6 +284,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // A player left open behind (TiviMate reopened, or Home pressed instead of Back) would be where Back lands
+        // after this one, showing the episode watched before. Only the newest stays, so Back goes to TiviMate.
+        shown?.get()?.takeIf { it !== this && !it.isFinishing }?.let { old ->
+            if (old.isTaskRoot) old.finishAndRemoveTask() else old.finish()
+        }
+        shown = WeakReference(this)
         setContentView(R.layout.activity_player)
         prefs = Prefs(this)
         presets = SubtitlePresets(prefs)
@@ -331,7 +338,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     override fun onDestroy() {
         super.onDestroy()
-        frameRateMatcher.reset()
+        // One replaced by a newer player leaves the screen's mode to that one.
+        if (shown?.get() === this) {
+            shown = null
+            frameRateMatcher.reset()
+        }
         pictureText.release()
         io.shutdownNow()
         handler.removeCallbacksAndMessages(null)
@@ -2315,6 +2326,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     // ---------------------------------------------------------------------
 
     companion object {
+        // The player screen opened last.
+        private var shown: WeakReference<PlayerActivity>? = null
+
         val VIDEO_EXTENSIONS = setOf("mkv", "mp4", "m4v", "avi", "mov", "ts", "m2ts", "webm", "wmv", "flv", "mpg", "mpeg")
         val SUBTITLE_EXTENSIONS = setOf("srt", "ass", "ssa", "vtt", "ttml", "dfxp")
         val DISPLAY_MODES = listOf("Normal", "Fill screen", "Zoom", "Stretch", "16:9", "4:3", "21:9")
