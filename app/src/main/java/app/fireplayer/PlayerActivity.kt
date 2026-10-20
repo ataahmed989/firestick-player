@@ -2187,6 +2187,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
                 prefs.subtitleSearchLanguage = languages[it]
             }
             row("Search") { runSearch(entry) }
+            openSubtitles.quota?.let { message(it) }
             findMatch?.let { message(it) }
             findStatus?.let { message(it) }
             findResults.forEach { r ->
