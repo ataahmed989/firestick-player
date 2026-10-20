@@ -118,6 +118,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     private class MoreItem(val view: View, val value: TextView, val open: () -> Unit)
 
+    /** What a track picked by hand was like, to find its match among another episode's tracks. */
+    private class TrackWish(val language: String?, val label: String?, val roleFlags: Int, val forced: Boolean, val channels: Int)
+
     private lateinit var prefs: Prefs
     private lateinit var presets: SubtitlePresets
     private lateinit var styler: SubtitleStyler
@@ -197,6 +200,20 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     // episode it was last looked up for.
     private var findsNextEpisode = false
     private var nextLookedUpFor: String? = null
+    // Which look-up is the current one, and whether it hasn't answered yet; leaving the player drops it.
+    private var lookupRun = 0
+    private var lookupInFlight = false
+    // The sound and subtitles picked by hand, to pick the same kind again in the next episode.
+    private val trackWishes = HashMap<Int, TrackWish>()
+    private var reapplyWishes = false
+    // The film was paused for the TV to change refresh rate, and goes on by itself afterwards.
+    private var pausedForSwitch = false
+    // A sleep timer's time left while the player is away; it only counts down on screen.
+    private var sleepRemainingMs = 0L
+    // The link is of a kind the player can't open at all, so OK can't try again.
+    private var cannotOpen = false
+    // The most the buffering line has shown during this wait, so it never counts backwards.
+    private var shownPercent = 0
     private var startPositionMs = C.TIME_UNSET
     private var savedTrackParams: TrackSelectionParameters? = null
     private var savedPlayWhenReady = true
@@ -319,7 +336,25 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     override fun onStart() {
         super.onStart()
-        if (entries.isNotEmpty() && player == null) initPlayer()
+        if (entries.isNotEmpty() && player == null) {
+            // Back from Home with the TV on another refresh rate: it switches again as the window shows, so the film
+            // waits for the picture instead of playing into the blank.
+            val tvSwitching = frameRateMatcher.switchPending()
+            val play = savedPlayWhenReady
+            if (tvSwitching) {
+                displaySwitchAt = SystemClock.elapsedRealtime()
+                savedPlayWhenReady = false
+            }
+            initPlayer()
+            if (tvSwitching && play) {
+                pausedForSwitch = true
+                handler.postDelayed(resumeAfterSwitch, DISPLAY_SWITCH_PAUSE_MS)
+            }
+        }
+        if (sleepRemainingMs > 0) {
+            sleepEndsAt = SystemClock.elapsedRealtime() + sleepRemainingMs
+            sleepRemainingMs = 0
+        }
         updateOverlay()
         handler.post(clockTick)
         handler.post(postPlayTick)
@@ -333,6 +368,21 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         retryPending = false
         savePosition()
         releasePlayer()
+        // Paused only for a refresh-rate switch: it plays on when the viewer comes back.
+        if (pausedForSwitch) {
+            savedPlayWhenReady = true
+            pausedForSwitch = false
+        }
+        if (sleepEndsAt > 0) {
+            sleepRemainingMs = (sleepEndsAt - SystemClock.elapsedRealtime()).coerceAtLeast(1L)
+            sleepEndsAt = 0
+        }
+        // A look-up still on its way is dropped with the player; it runs again on return.
+        if (lookupInFlight) {
+            lookupInFlight = false
+            lookupRun++
+            nextLookedUpFor = null
+        }
         handler.removeCallbacksAndMessages(null)
     }
 
@@ -537,6 +587,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         }
         playingIndex = index
         deviceRetries = 0
+        // A new player starts its quiet retries afresh, and a retry meant for the old one doesn't touch it.
+        retries = 0
+        firstErrorAt = 0L
+        retryPending = false
+        handler.removeCallbacks(retryRunnable)
+        cannotOpen = false
         // TIME_UNSET starts VOD at the beginning and live at the live edge.
         try {
             p.setMediaItems(items, index, position)
@@ -547,6 +603,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             errorText.text = "FirePlayer can't open this kind of link."
             errorHint.text = "Press Back to return"
             errorBox.visibility = View.VISIBLE
+            cannotOpen = true
+            updateKeepScreenOn()
             return
         }
         if (askResume) {
@@ -557,6 +615,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         }
         updateTitle()
         updatePlayButton()
+        updateKeepScreenOn()
         refreshLabels()
         // A rebuilt player has no subtitles yet; puts the style example back if its window is open.
         showTextCues()
@@ -620,17 +679,20 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
                 "Resume" to {
                     resumeDialogShowing = false
                     player?.play()
+                    updateKeepScreenOn()
                 },
                 "Start over" to {
                     resumeDialogShowing = false
                     player?.seekTo(0)
                     player?.play()
+                    updateKeepScreenOn()
                 },
             ),
             // Back means "never mind": carry on from where you were rather than losing the spot.
             onDismiss = {
                 resumeDialogShowing = false
                 player?.play()
+                updateKeepScreenOn()
             },
         )
     }
@@ -679,7 +741,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     override fun onPlaybackStateChanged(state: Int) {
         handler.removeCallbacks(showBuffering)
+        updateKeepScreenOn()
         if (state == Player.STATE_BUFFERING) {
+            shownPercent = 0
             handler.postDelayed(showBuffering, 400)
         } else if (!(state == Player.STATE_IDLE && retryPending)) {
             hideBuffering()
@@ -695,6 +759,17 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         if (state == Player.STATE_ENDED && seeking && seekOffsetMs < 0) {
             // The film ended while a jump back in it was being lined up: make that jump instead of closing.
             commitSeek()
+            player?.play()
+            return
+        }
+        // An end the jump above has already left behind (the player is loading the new spot).
+        if (state == Player.STATE_ENDED && player?.playbackState != Player.STATE_ENDED) {
+            updateProgress()
+            return
+        }
+        // Nothing could be opened at all: that isn't the film played to the end.
+        if (state == Player.STATE_ENDED && player?.mediaItemCount == 0) {
+            updateProgress()
             return
         }
         if (state == Player.STATE_ENDED) {
@@ -707,7 +782,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     override fun onIsPlayingChanged(isPlaying: Boolean) {
         updatePlayButton()
-        root.keepScreenOn = isPlaying
+        updateKeepScreenOn()
         if (isPlaying) scheduleHide() else handler.removeCallbacks(hideControlsRunnable)
     }
 
@@ -718,7 +793,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             player?.play()
             return
         }
-        if (sleepAtEnd && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM) {
+        updateKeepScreenOn()
+        // Only while still paused there: a jump back made at the very end has already set it playing again.
+        if (sleepAtEnd && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM && player?.playWhenReady == false) {
             completed = true
             entries.getOrNull(player?.currentMediaItemIndex ?: -1)?.let { prefs.savePosition(it.key, 0L) }
             finishWithResult()
@@ -743,9 +820,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         }
         // Any other jump being lined up was for the video that was playing, not this one.
         if (seeking) cancelSeek()
-        if (now != playingIndex) pictureText.discardAhead()
+        if (now != playingIndex) {
+            pictureText.discardAhead()
+            // Another episode: the refresh rate is checked again, and the sound and subtitles picked are matched.
+            matchedFpsForIndex = -1
+            reapplyWishes = trackWishes.isNotEmpty()
+        }
         playingIndex = now
-        matchedFpsForIndex = -1
         deviceRetries = 0
         measuredFps = 0f
         fpsMeter.reset()
@@ -771,6 +852,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
                 if (!option.selected) selectTrack(option)
             }
         }
+        if (reapplyWishes) reapplyChoices()
         refreshLabels()
         updateChips()
         matchFrameRate()
@@ -912,12 +994,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         // The number helps if the error has to be reported; the name of the code would be noise here.
         errorHint.text = "Press OK to try again  ·  Error ${error.errorCode}"
         errorBox.visibility = View.VISIBLE
+        updateKeepScreenOn()
         hideControls()
     }
 
     /** Tries again after [delayMs] with the spinner up instead of an error. */
     private fun retryQuietly(delayMs: Long) {
         retryPending = true
+        shownPercent = 0
         handler.removeCallbacks(showBuffering)
         buffering.visibility = View.VISIBLE
         handler.removeCallbacks(retryRunnable)
@@ -971,7 +1055,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             val wait = bufferWait()
             val current = !retryPending && wait != null && SystemClock.elapsedRealtime() - wait.atMs < 1_000
             if (current && wait != null) {
-                val percent = (wait.fraction * 100).toInt().coerceAtMost(99)
+                // The target can grow as the connection is measured; the number shown only goes up.
+                shownPercent = maxOf(shownPercent, (wait.fraction * 100).toInt().coerceAtMost(99))
+                val percent = shownPercent
                 bufferingInfo.text = if (wait.slowLine) "$percent%\nConnection slower than this film" else "$percent%"
             }
             bufferingInfo.visibility = if (current) View.VISIBLE else View.GONE
@@ -1132,13 +1218,19 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         if (!findsNextEpisode || !needed || p.currentMediaItemIndex != entries.lastIndex) return
         if (nextLookedUpFor == last.key) return
         nextLookedUpFor = last.key
+        val run = ++lookupRun
+        lookupInFlight = true
         val finder = NextEpisode(applicationContext, headersFromIntent())
         val rawTitle = last.rawTitle
         val show = last.info.title
         thread(name = "FirePlayerNext", isDaemon = true, priority = Thread.MIN_PRIORITY) {
-            val found = runCatching { finder.find(last.uri, rawTitle, show) }.getOrNull() ?: return@thread
+            val found = runCatching { finder.find(last.uri, rawTitle, show) }.getOrNull()
             handler.post {
-                val playing = player ?: return@post
+                // Dropped when the player was left meanwhile (it looks again on return).
+                if (run != lookupRun) return@post
+                lookupInFlight = false
+                val playing = player ?: run { nextLookedUpFor = null; return@post }
+                if (found == null) return@post
                 if (!last.info.named) {
                     val before = last.info.searchQuery
                     last.showName = found.showName
@@ -1261,6 +1353,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         nextGroup.visibility = if (hasNext) View.VISIBLE else View.GONE
     }
 
+    /** The screen stays on only while the film plays or loads to play; paused, asking or showing an error, it may sleep. */
+    private fun updateKeepScreenOn() {
+        val p = player
+        root.keepScreenOn = p != null && p.playWhenReady &&
+            (p.playbackState == Player.STATE_READY || p.playbackState == Player.STATE_BUFFERING) &&
+            errorBox.visibility != View.VISIBLE && !resumeDialogShowing
+    }
+
     private fun updatePlayButton() {
         val playing = player?.playWhenReady == true && player?.playbackState != Player.STATE_ENDED
         btnPlay.setImageResource(if (playing) R.drawable.ic_pause else R.drawable.ic_play)
@@ -1345,12 +1445,16 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         if (switching && wasPlaying) {
             // The TV blanks for a moment while it switches; don't play through it.
             p.pause()
+            pausedForSwitch = true
             handler.removeCallbacks(resumeAfterSwitch)
-            handler.postDelayed(resumeAfterSwitch, 2_000)
+            handler.postDelayed(resumeAfterSwitch, DISPLAY_SWITCH_PAUSE_MS)
         }
     }
 
-    private val resumeAfterSwitch = Runnable { player?.play() }
+    private val resumeAfterSwitch = Runnable {
+        pausedForSwitch = false
+        player?.play()
+    }
 
     private val rebuildForAss = Runnable {
         if (player != null && builtWithAss != prefs.keepAssStyling) rebuildPlayer()
@@ -1621,6 +1725,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private fun togglePlay() {
         val p = player ?: return
         handler.removeCallbacks(resumeAfterSwitch)
+        pausedForSwitch = false
         if (p.playbackState == Player.STATE_ENDED) p.seekTo(0)
         p.playWhenReady = !p.playWhenReady
         updatePlayButton()
@@ -1777,6 +1882,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_MEDIA_PLAY, KeyEvent.KEYCODE_MEDIA_PAUSE -> {
                 if (event.repeatCount == 0) {
                     handler.removeCallbacks(resumeAfterSwitch)
+                    pausedForSwitch = false
                     when (code) {
                         KeyEvent.KEYCODE_MEDIA_PLAY -> player?.play()
                         KeyEvent.KEYCODE_MEDIA_PAUSE -> player?.pause()
@@ -1824,6 +1930,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             code == KeyEvent.KEYCODE_NUMPAD_ENTER
         // OK on the error tries again, unless the controls are up and another button is chosen (Settings, Subtitles).
         if (errorBox.visibility == View.VISIBLE && isOk && (!controlsShown || currentFocus === btnPlay)) {
+            // Nothing to try again with a link of a kind the player can't open: OK leaves, as Back does.
+            if (cannotOpen) {
+                if (event.repeatCount == 0) finishWithResult()
+                return true
+            }
             errorBox.visibility = View.GONE
             retries = 0
             deviceRetries = 0
@@ -2011,7 +2122,46 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             .build()
     }
 
+    /** A track picked by hand: chosen now, and the same kind is picked again in the next episode. */
+    private fun chooseTrack(o: TrackOption) {
+        val f = o.group.getTrackFormat(o.trackIndex)
+        val type = o.group.type
+        trackWishes[type] = TrackWish(
+            f.language, f.label, f.roleFlags, f.selectionFlags and C.SELECTION_FLAG_FORCED != 0, f.channelCount,
+        )
+        selectTrack(o)
+        // For as long as the player is open, that language comes first (Settings keeps the default).
+        val p = player ?: return
+        val language = f.language ?: return
+        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon().apply {
+            if (type == C.TRACK_TYPE_AUDIO) setPreferredAudioLanguage(language)
+            if (type == C.TRACK_TYPE_TEXT) setPreferredTextLanguage(language).setPreferredTextRoleFlags(f.roleFlags)
+        }.build()
+    }
+
+    /**
+     * Another episode's tracks are in: the same kind of sound and subtitles as picked by hand before, by language and
+     * then name ("English (Full)" over "English (Signs)"), then kind, then channels.
+     */
+    private fun reapplyChoices() {
+        if (player?.currentTracks?.groups.isNullOrEmpty()) return
+        reapplyWishes = false
+        for ((type, wish) in trackWishes) {
+            val same = trackOptions(type).filter { it.group.getTrackFormat(it.trackIndex).language == wish.language }
+            fun format(o: TrackOption) = o.group.getTrackFormat(o.trackIndex)
+            val pick = same.firstOrNull { format(it).label == wish.label }
+                ?: same.firstOrNull {
+                    format(it).roleFlags == wish.roleFlags &&
+                        (format(it).selectionFlags and C.SELECTION_FLAG_FORCED != 0) == wish.forced
+                }
+                ?: same.firstOrNull { type != C.TRACK_TYPE_AUDIO || format(it).channelCount == wish.channels }
+                ?: same.firstOrNull()
+            if (pick != null && !pick.selected) selectTrack(pick)
+        }
+    }
+
     private fun subtitlesOff() {
+        trackWishes.remove(C.TRACK_TYPE_TEXT)
         val p = player ?: return
         p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
             .clearOverridesOfType(C.TRACK_TYPE_TEXT)
@@ -2027,12 +2177,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         header("In this video")
         if (embedded.isEmpty()) message("No subtitles inside this video.")
         embedded.forEach { o ->
-            row(o.label, checked = o.selected) { selectTrack(o); handler.postDelayed({ refreshLabels(); refresh() }, 150) }
+            row(o.label, checked = o.selected) { chooseTrack(o); handler.postDelayed({ refreshLabels(); refresh() }, 150) }
         }
         row("Off", checked = !anySelected) { subtitlesOff(); handler.postDelayed({ refreshLabels(); refresh() }, 150) }
         header("Other subtitles")
         other.forEach { o ->
-            row(o.label, checked = o.selected) { selectTrack(o); handler.postDelayed({ refreshLabels(); refresh() }, 150) }
+            row(o.label, checked = o.selected) { chooseTrack(o); handler.postDelayed({ refreshLabels(); refresh() }, 150) }
         }
         row("Search online") { panel.close(); openFindPanel(from) }
         spacer(6)
@@ -2055,7 +2205,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         val options = trackOptions(C.TRACK_TYPE_AUDIO)
         if (options.isEmpty()) message("No audio tracks.")
         options.forEach { o ->
-            row(o.label, checked = o.selected) { selectTrack(o); handler.postDelayed({ refreshLabels(); refresh() }, 150) }
+            row(o.label, checked = o.selected) { chooseTrack(o); handler.postDelayed({ refreshLabels(); refresh() }, 150) }
         }
         spacer(6)
         stepper("Delay", formatDelay(delays.audioUs)) { dir ->
@@ -2119,6 +2269,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         sleepAtEnd = minutes < 0
         player?.pauseAtEndOfMediaItems = sleepAtEnd
         sleepEndsAt = if (minutes > 0) SystemClock.elapsedRealtime() + minutes * 60_000L else 0L
+        sleepRemainingMs = 0
         refreshLabels()
     }
 
@@ -2131,11 +2282,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private fun openSettingsPanel(from: View) {
         val passthrough = prefs.passthrough
         val playNext = prefs.playNextEpisode
+        val matchFps = prefs.matchFrameRate
         // Rebuild once the window closes if a playback setting changed.
         openPanel("Settings", from, onClosed = {
             if (prefs.passthrough != passthrough) rebuildPlayer()
             if (prefs.playNextEpisode != playNext) nextEpisodeSwitched()
-            if (prefs.matchFrameRate) { matchedFpsForIndex = -1; matchFrameRate() } else frameRateMatcher.reset()
+            // Only when the setting itself changed: matching again would pause the film for nothing.
+            if (prefs.matchFrameRate != matchFps) {
+                if (prefs.matchFrameRate) { matchedFpsForIndex = -1; matchFrameRate() } else frameRateMatcher.reset()
+            }
             refreshLabels()
         }) { settingsPanels.renderSettings(this) }
     }
@@ -2342,6 +2497,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         // The languages the subtitle search offers.
         val SEARCH_LANGUAGES = listOf("en", "ar")
         val YEAR_IN_TITLE = Regex("""\(((?:19|20)\d{2})\)""")
+        // How long the film waits for the TV to change refresh rate.
+        const val DISPLAY_SWITCH_PAUSE_MS = 2_000L
         const val POST_PLAY_LEAD_MS = 20_000L
         const val POST_PLAY_COUNT_MS = 10_000L
         /** How long a note about previews stays up. */

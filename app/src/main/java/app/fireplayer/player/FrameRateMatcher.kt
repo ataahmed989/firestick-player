@@ -23,10 +23,21 @@ class FrameRateMatcher(private val activity: Activity) {
         val best = pickMode(display.supportedModes, current, fps) ?: return false
         if (best.modeId == current.modeId) return false
         val params = activity.window.attributes
+        // Asked for already: the TV is switching, or won't. Asking again would only pause the film again.
+        if (params.preferredDisplayModeId == best.modeId) return false
         params.preferredDisplayModeId = best.modeId
         activity.window.attributes = params
         switched = true
         return true
+    }
+
+    /** Whether a mode this window asked for isn't showing: coming back to the player, the TV switches to it again. */
+    fun switchPending(): Boolean {
+        if (!switched || Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return false
+        val wanted = activity.window.attributes.preferredDisplayModeId
+        @Suppress("DEPRECATION")
+        val display = activity.windowManager.defaultDisplay ?: return false
+        return wanted != 0 && display.mode.modeId != wanted
     }
 
     fun reset() {
