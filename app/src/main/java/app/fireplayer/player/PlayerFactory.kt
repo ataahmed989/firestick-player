@@ -80,7 +80,11 @@ object PlayerFactory {
 
     private val HEAVY_VIDEO = setOf(MimeTypes.VIDEO_H265, MimeTypes.VIDEO_DOLBY_VISION, MimeTypes.VIDEO_VP9, MimeTypes.VIDEO_AV1)
 
-    private fun dataSourceFactory(context: Context, headers: Map<String, String>): DataSource.Factory {
+    private fun dataSourceFactory(
+        context: Context,
+        headers: Map<String, String>,
+        serverSwitch: ServerSwitch? = null,
+    ): DataSource.Factory {
         // IPTV providers often require the User-Agent TiviMate passes along, so it must win over ours.
         val userAgent = headers.entries.firstOrNull { it.key.equals("User-Agent", true) }?.value
         val httpFactory = DefaultHttpDataSource.Factory()
@@ -90,7 +94,7 @@ object PlayerFactory {
             .setConnectTimeoutMs(12_000)
             .setReadTimeoutMs(30_000)
             .setDefaultRequestProperties(headers.filterKeys { !it.equals("User-Agent", true) })
-        return DefaultDataSource.Factory(context, RedirectMemoryDataSource.Factory(httpFactory))
+        return DefaultDataSource.Factory(context, RedirectMemoryDataSource.Factory(httpFactory, serverSwitch))
     }
 
     /**
@@ -145,7 +149,8 @@ object PlayerFactory {
         /** Reads picture subtitles as text while they load (see [PictureText]); only used without libass. */
         pictureText: PictureText,
     ): Built {
-        val dataSourceFactory = dataSourceFactory(context, headers)
+        val serverSwitch = ServerSwitch()
+        val dataSourceFactory = dataSourceFactory(context, headers, serverSwitch)
 
         val extractors = DefaultExtractorsFactory()
             .setConstantBitrateSeekingEnabled(true)
@@ -169,12 +174,13 @@ object PlayerFactory {
                 )
                 .setTargetBufferBytes(budget)
                 .setPrioritizeTimeOverSizeThresholds(false)
-                // Nothing behind is kept (it would come out of the same memory, and a high-quality film needs all of
-                // it ahead) except the keyframe the picture is decoded from, without which a skip inside the buffer
-                // would find no keyframe to start from and load everything again.
-                .setBackBuffer(0, /* retainBackBufferFromKeyframe = */ true)
+                // The last 15 s are kept, so going back one press (10 s, landing up to 2 s early) plays at once
+                // instead of loading again; more would come out of the memory a high-quality film needs ahead. Kept
+                // from the keyframe before, without which the picture there couldn't be decoded.
+                .setBackBuffer(15_000, /* retainBackBufferFromKeyframe = */ true)
                 .build(),
             budget,
+            serverSwitch,
         )
 
         val builder = ExoPlayer.Builder(context)
@@ -270,7 +276,11 @@ private class FilmRetryPolicy : DefaultLoadErrorHandlingPolicy(RETRIES) {
  * (4, 10, then 20 seconds).
  */
 @OptIn(UnstableApi::class)
-private class FilmLoadControl(private val inner: DefaultLoadControl, private val budgetBytes: Int) : LoadControl {
+private class FilmLoadControl(
+    private val inner: DefaultLoadControl,
+    private val budgetBytes: Int,
+    private val serverSwitch: ServerSwitch,
+) : LoadControl {
 
     // When recent stalls began (elapsedRealtime), on the playback thread only.
     private val stalls = ArrayDeque<Long>()
@@ -363,6 +373,16 @@ private class FilmLoadControl(private val inner: DefaultLoadControl, private val
                 loadedUs /= 2
                 loadingMs /= 2
             }
+            // Arriving slower than it plays, for long enough to be sure: the provider may have sent us to a busy
+            // server, so ask it for another. A live channel never arrives faster than it plays, so it never counts.
+            if (loadingMs >= SWITCH_AFTER_MS && loadedUs < loadingMs * 1000 && !isLive(parameters) &&
+                serverSwitch.request()
+            ) {
+                // The new server is measured afresh.
+                loadedUs = 0
+                loadingMs = 0
+                arriving = false
+            }
         }
         lastAtMs = now
         lastEndUs = endUs
@@ -412,6 +432,42 @@ private class FilmLoadControl(private val inner: DefaultLoadControl, private val
         const val RATE_MEMORY_MS = 30_000L
         const val SMOOTH_US = 60_000_000L
         const val MAX_CUSHION_US = 30_000_000L
+        const val SWITCH_AFTER_MS = 10_000L
+    }
+}
+
+/**
+ * Lets the film's buffer rules ask its connection to move to another of the provider's servers, when the film keeps
+ * arriving slower than it plays. At most once a minute, and three times in all, so a provider whose servers are all
+ * slow isn't asked forever.
+ */
+class ServerSwitch {
+    /** Whether the film came through a redirect, so the provider has other servers it could send us to instead. */
+    @Volatile var possible = false
+    @Volatile private var wanted = false
+    private var count = 0
+    private var lastAt = 0L
+
+    /** On the playback thread. False when it's too soon after the last move, or there have been enough. */
+    fun request(): Boolean {
+        val now = SystemClock.elapsedRealtime()
+        if (!possible || count >= MAX_SWITCHES || (count > 0 && now - lastAt < GAP_MS)) return false
+        count++
+        lastAt = now
+        wanted = true
+        return true
+    }
+
+    /** On the loading thread: whether a move was asked for (only one connection gets to act on it). */
+    fun take(): Boolean {
+        if (!wanted) return false
+        wanted = false
+        return true
+    }
+
+    private companion object {
+        const val MAX_SWITCHES = 3
+        const val GAP_MS = 60_000L
     }
 }
 

@@ -1,7 +1,6 @@
 package app.fireplayer.ui
 
 import android.app.Activity
-import android.content.Intent
 import android.view.View
 import android.view.ViewGroup
 import app.fireplayer.data.Prefs
@@ -124,21 +123,6 @@ class SettingsPanels(
                 if (isOpen) refresh()
                 release?.let { updater.offer(it) }
             }
-        }
-        // An app only hears how far a video got if it asked to when it opened it; this says whether it did.
-        if (activity.intent?.action == Intent.ACTION_VIEW) {
-            val caller = activity.callingActivity?.packageName ?: activity.referrer?.host
-            val name = when (caller) {
-                null -> "The app that opened this video"
-                TIVIMATE -> "TiviMate"
-                else -> runCatching {
-                    activity.packageManager.run { getApplicationLabel(getApplicationInfo(caller, 0)).toString() }
-                }.getOrDefault(caller)
-            }
-            message(
-                if (activity.callingActivity != null) "$name is told how far you watched when you press Back."
-                else "$name isn't listening for how far you watched, so it can't show your progress.",
-            )
         }
     }
 
@@ -283,8 +267,6 @@ class SettingsPanels(
     }
 
     companion object {
-        private const val TIVIMATE = "ar.tvplayer.tv"
-
         fun onOff(on: Boolean) = if (on) "On" else "Off"
 
         fun formatStep(sec: Int): String =
