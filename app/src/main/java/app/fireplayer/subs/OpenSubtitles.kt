@@ -14,8 +14,14 @@ class OpenSubtitles(private val prefs: Prefs) {
     /** [episode] is "S1 E8" when the site says which episode the subtitles are for. */
     data class Result(val fileId: Long, val release: String, val language: String, val downloads: Int, val episode: String?)
 
-    private val base = "https://api.opensubtitles.com/api/v1"
+    // VIP accounts are sent to their own server when they sign in.
+    private var base = "https://api.opensubtitles.com/api/v1"
     private var token: String? = null
+    private var signInFailed = false
+
+    /** How many downloads are left today, as the site said after the last one; null until then. */
+    @Volatile var quota: String? = null
+        private set
 
     val isConfigured: Boolean get() = prefs.openSubtitlesApiKey.isNotEmpty()
 
@@ -75,6 +81,14 @@ class OpenSubtitles(private val prefs: Prefs) {
         ensureLogin()
         val body = JSONObject().put("file_id", result.fileId).toString()
         val json = JSONObject(request("POST", "$base/download", body))
+        val remaining = json.optInt("remaining", Int.MIN_VALUE)
+        val reset = json.optString("reset_time").trim()
+        quota = when {
+            remaining == Int.MIN_VALUE -> null
+            remaining <= 0 -> "No subtitle downloads left today" + if (reset.isNotEmpty()) "; more in $reset." else "."
+            remaining == 1 -> "1 subtitle download left today."
+            else -> "$remaining subtitle downloads left today."
+        }?.let { if (signInFailed) "$it Signing in to OpenSubtitles failed, so the smaller limit applies." else it }
         val link = json.optString("link")
         if (link.isEmpty()) error(json.optString("message", "Download limit reached"))
         val name = json.optString("file_name").ifEmpty { "${result.fileId}.srt" }
@@ -92,8 +106,10 @@ class OpenSubtitles(private val prefs: Prefs) {
             .put("username", prefs.openSubtitlesUser)
             .put("password", prefs.openSubtitlesPassword)
             .toString()
-        token = runCatching { JSONObject(request("POST", "$base/login", body)).optString("token") }
-            .getOrNull()?.ifEmpty { null }
+        val login = runCatching { JSONObject(request("POST", "$base/login", body)) }.getOrNull()
+        token = login?.optString("token")?.ifEmpty { null }
+        signInFailed = token == null
+        login?.optString("base_url")?.takeIf { it.isNotBlank() && token != null }?.let { base = "https://$it/api/v1" }
     }
 
     private fun request(method: String, url: String, body: String?): String {

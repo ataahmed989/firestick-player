@@ -70,6 +70,12 @@ object PlayerFactory {
     class Built(val player: ExoPlayer, val assHandler: AssHandler?, val bufferWait: () -> BufferWait?)
 
     /**
+     * Jumps land on a keyframe up to 2 s before the time asked for (never after; 2 s before when there's none in
+     * between), so less video has to be downloaded and decoded before the picture moves.
+     */
+    val FILM_SEEK = SeekParameters(2_000_000L, 0L)
+
+    /**
      * Decoders for the skip preview. Its picture is decoded while the film plays, so 4K-class formats only get a
      * hardware decoder: decoding them on the processor would take it from the film and make it stutter.
      */
@@ -84,36 +90,42 @@ object PlayerFactory {
         context: Context,
         headers: Map<String, String>,
         serverSwitch: ServerSwitch? = null,
+        readOnlyMemory: Boolean = false,
     ): DataSource.Factory {
         // IPTV providers often require the User-Agent TiviMate passes along, so it must win over ours.
         val userAgent = headers.entries.firstOrNull { it.key.equals("User-Agent", true) }?.value
         val httpFactory = DefaultHttpDataSource.Factory()
             .setUserAgent(userAgent ?: "FirePlayer/1.0 (Linux; Android) ExoPlayer")
             .setAllowCrossProtocolRedirects(true)
-            // A server that doesn't answer in 12 s won't answer at 20; failing sooner lets the retries take over.
+            // A server that doesn't answer in 12 s won't answer at 20; failing sooner lets the retries take over. The
+            // same for one that goes quiet in the middle of the film: a skip can't get past a read that's waiting.
             .setConnectTimeoutMs(12_000)
-            .setReadTimeoutMs(30_000)
+            .setReadTimeoutMs(12_000)
             .setDefaultRequestProperties(headers.filterKeys { !it.equals("User-Agent", true) })
-        return DefaultDataSource.Factory(context, RedirectMemoryDataSource.Factory(httpFactory, serverSwitch))
+        return DefaultDataSource.Factory(context, RedirectMemoryDataSource.Factory(httpFactory, serverSwitch, readOnlyMemory))
     }
 
     /**
      * A small video-only player for the skip preview: it loads a second or so around a jump target,
-     * shows the nearest keyframe, and never plays sound or subtitles.
+     * shows the nearest keyframe, and never plays sound or subtitles. It loads only while [allowLoading] says so.
      */
-    fun buildPreview(context: Context, headers: Map<String, String>): ExoPlayer {
+    fun buildPreview(context: Context, headers: Map<String, String>, allowLoading: () -> Boolean): ExoPlayer {
         val extractors = SeekableMkvExtractorsFactory(DefaultExtractorsFactory().setConstantBitrateSeekingEnabled(true))
-        val upstream = dataSourceFactory(context, headers)
+        // Where the provider sent the film is the film's to change: the preview being turned away says nothing about it.
+        val upstream = dataSourceFactory(context, headers, readOnlyMemory = true)
         // Its connection closes as soon as a picture is loaded, so the film can have the server to itself.
         val dataSources = DataSource.Factory { IdleCloseDataSource(upstream.createDataSource(), 400) }
         val mediaSourceFactory = DefaultMediaSourceFactory(dataSources, extractors)
             .setLoadErrorHandlingPolicy(DefaultLoadErrorHandlingPolicy(1))
-        val loadControl = DefaultLoadControl.Builder()
-            // The keyframe and a few frames after it. Every extra second is megabytes of a high-quality
-            // film that the film itself is waiting for.
-            .setBufferDurationsMs(300, 600, 100, 100)
-            .setPrioritizeTimeOverSizeThresholds(true)
-            .build()
+        val loadControl = GatedLoadControl(
+            DefaultLoadControl.Builder()
+                // The keyframe and a few frames after it. Every extra second is megabytes of a high-quality
+                // film that the film itself is waiting for.
+                .setBufferDurationsMs(300, 600, 100, 100)
+                .setPrioritizeTimeOverSizeThresholds(true)
+                .build(),
+            allowLoading,
+        )
         val renderers = DefaultRenderersFactory(context)
             .setEnableDecoderFallback(true)
             .setMediaCodecSelector(PREVIEW_DECODERS)
@@ -163,6 +175,13 @@ object PlayerFactory {
         // films fill it by size first; the stall-free stretch then depends on the connection, not a fixed
         // half minute.
         val budget = (Runtime.getRuntime().maxMemory() * 0.6).toLong().coerceIn(64L shl 20, 400L shl 20).toInt()
+        // What's kept behind comes out of the same memory as what's ahead (for a 4K remux, about 8 MB a second), so
+        // TVs with less of it keep less, or the room ahead would shrink to a few seconds.
+        val backBufferMs = when {
+            budget >= 280 shl 20 -> 15_000
+            budget >= 180 shl 20 -> 10_000
+            else -> 5_000
+        }
         val loadControl = FilmLoadControl(
             DefaultLoadControl.Builder()
                 .setBufferDurationsMs(
@@ -174,10 +193,11 @@ object PlayerFactory {
                 )
                 .setTargetBufferBytes(budget)
                 .setPrioritizeTimeOverSizeThresholds(false)
-                // The last 15 s are kept, so going back one press (10 s, landing up to 2 s early) plays at once
-                // instead of loading again; more would come out of the memory a high-quality film needs ahead. Kept
-                // from the keyframe before, without which the picture there couldn't be decoded.
-                .setBackBuffer(15_000, /* retainBackBufferFromKeyframe = */ true)
+                // The last 15 s are kept (less on TVs with little memory), so going back one press (10 s, landing up
+                // to 2 s early) plays at once instead of loading again; more would come out of the memory a
+                // high-quality film needs ahead. Kept from the keyframe before, without which the picture there
+                // couldn't be decoded.
+                .setBackBuffer(backBufferMs, /* retainBackBufferFromKeyframe = */ true)
                 .build(),
             budget,
             serverSwitch,
@@ -191,12 +211,10 @@ object PlayerFactory {
             .setVideoScalingMode(C.VIDEO_SCALING_MODE_SCALE_TO_FIT)
             // Keeps Wi-Fi at full speed while playing; left to itself it may save power and fall behind the film.
             .setWakeMode(C.WAKE_MODE_NETWORK)
-            // Jumps land on a keyframe up to 2 s before the time asked for (never after; 2 s before when there's none
-            // in between), so less video has to be downloaded and decoded before the picture moves.
-            .setSeekParameters(SeekParameters(2_000_000L, 0L))
+            .setSeekParameters(FILM_SEEK)
 
         // Slow IPTV servers drop connections now and then; keep retrying before giving up.
-        val retryPolicy = FilmRetryPolicy()
+        val retryPolicy = FilmRetryPolicy(serverSwitch)
 
         if (!useAss) {
             val parsers = pictureText.readAhead(DefaultSubtitleParserFactory())
@@ -237,13 +255,15 @@ object PlayerFactory {
 /**
  * The film's load retries. IPTV servers often refuse a reconnect (403 and the like) for a few seconds while the old
  * connection still counts, so a refused load of the film is tried every second instead of at 0, 0, 1, 3, 6 and 10 s,
- * within the same 10 s or so before the error reaches PlayerActivity. Everything else (timeouts, dropped connections,
- * 400/401/404/410, HLS and DASH) keeps Media3's spacing and limit.
+ * within the same 10 s or so before the error reaches PlayerActivity. A film that isn't there (404, 410) isn't tried
+ * again at all, and a server that doesn't answer is tried three times rather than six, each try being a full timeout.
+ * Everything else (dropped connections, 400/401, HLS and DASH) keeps Media3's spacing and limit.
  */
 @OptIn(UnstableApi::class)
-private class FilmRetryPolicy : DefaultLoadErrorHandlingPolicy(RETRIES) {
-    // Whether the latest load error was a refusal of the film. On the playback thread.
+private class FilmRetryPolicy(private val serverSwitch: ServerSwitch) : DefaultLoadErrorHandlingPolicy(RETRIES) {
+    // Whether the latest load error was a refusal of the film, or a server not answering. On the playback thread.
     @Volatile private var refused = false
+    @Volatile private var unanswered = false
 
     override fun getRetryDelayMsFor(loadErrorInfo: LoadErrorHandlingPolicy.LoadErrorInfo): Long {
         val delay = super.getRetryDelayMsFor(loadErrorInfo)
@@ -251,19 +271,37 @@ private class FilmRetryPolicy : DefaultLoadErrorHandlingPolicy(RETRIES) {
         // A progressive film's loads (the only ones that look at the limit again on every check) carry no track type
         // or format.
         val progressive = data.dataType == C.DATA_TYPE_MEDIA && data.trackType == C.TRACK_TYPE_UNKNOWN && data.trackFormat == null
-        val code = (loadErrorInfo.exception as? HttpDataSource.InvalidResponseCodeException)?.responseCode
+        val error = loadErrorInfo.exception
+        val code = (error as? HttpDataSource.InvalidResponseCodeException)?.responseCode
         refused = progressive && delay != C.TIME_UNSET && code != null && code !in PERMANENT
+        unanswered = progressive && error is HttpDataSource.HttpDataSourceException &&
+            error.type == HttpDataSource.HttpDataSourceException.TYPE_OPEN && error.cause is java.net.SocketTimeoutException
+        if (progressive) serverSwitch.loadFailed(refused)
+        // Gone from the server: the error shows at once instead of after 10 s of asking again.
+        if (progressive && (code == 404 || code == 410)) return C.TIME_UNSET
         return if (refused && loadErrorInfo.errorCount <= REFUSED_RETRIES) minOf(delay, 1_000L) else delay
     }
 
-    override fun getMinimumLoadableRetryCount(dataType: Int): Int = if (refused) REFUSED_RETRIES else RETRIES
+    override fun getMinimumLoadableRetryCount(dataType: Int): Int = when {
+        refused -> REFUSED_RETRIES
+        unanswered -> UNANSWERED_RETRIES
+        else -> RETRIES
+    }
 
     private companion object {
         const val RETRIES = 5
         // Tries at 0, 0, 1, 2 ... 10 s: the 12th failure reaches PlayerActivity at about 10 s, as the 6th did before.
         const val REFUSED_RETRIES = 11
+        const val UNANSWERED_RETRIES = 2
         val PERMANENT = setOf(400, 401, 404, 410)
     }
+}
+
+/** The skip preview's buffer rules, which load nothing while [allowLoading] says no. */
+@OptIn(UnstableApi::class)
+private class GatedLoadControl(private val inner: LoadControl, private val allowLoading: () -> Boolean) : LoadControl by inner {
+    override fun shouldContinueLoading(parameters: LoadControl.Parameters): Boolean =
+        allowLoading() && inner.shouldContinueLoading(parameters)
 }
 
 /**
@@ -300,6 +338,8 @@ private class FilmLoadControl(
     private var loading = false
     // Film has started arriving since the last jump; the wait for the connection before that doesn't count.
     private var arriving = false
+    // ServerSwitch.disturbances when last measured.
+    private var disturbancesSeen = 0
 
     /** The latest wait before playing, read by the spinner on the main thread. */
     @Volatile var wait: BufferWait? = null
@@ -308,7 +348,10 @@ private class FilmLoadControl(
     override fun shouldStartPlayback(parameters: LoadControl.Parameters): Boolean {
         // Live channels can't build up a cushion (the stream only comes as fast as it plays), so they keep the usual rule.
         if (isLive(parameters)) return inner.shouldStartPlayback(parameters)
-        measure(parameters)
+        // All of this episode is loaded, and what's loading is the next one (queued after it): nothing more of this
+        // one can come, so waiting on would only wait on the next episode's server.
+        if (loadedToEnd(parameters)) return true
+        measure(parameters, waiting = true)
         // Memory full means nothing more can come before playing on.
         if (inner.allocator.totalBytesAllocated >= budgetBytes) return true
         val buffered = parameters.bufferedDurationUs
@@ -336,6 +379,16 @@ private class FilmLoadControl(
         return buffered >= neededUs
     }
 
+    private fun loadedToEnd(parameters: LoadControl.Parameters): Boolean {
+        // The time is counted from the start of the item being loaded, so it's before zero when that's a later one.
+        if (parameters.playbackPositionUs < 0) return true
+        val timeline = parameters.timeline
+        val index = timeline.getIndexOfPeriod(parameters.mediaPeriodId.periodUid)
+        if (index == C.INDEX_UNSET) return false
+        val durationUs = timeline.getPeriod(index, period).durationUs
+        return durationUs != C.TIME_UNSET && parameters.playbackPositionUs + parameters.bufferedDurationUs >= durationUs - 200_000
+    }
+
     /** Seconds of film arriving per second of loading, once there's enough to tell; null before that. */
     private fun fillRate(): Float? = if (loadingMs < MEASURE_MS) null else loadedUs / 1000f / loadingMs
 
@@ -348,8 +401,11 @@ private class FilmLoadControl(
         else -> (SMOOTH_US * (1f - rate)).toLong().coerceAtMost(MAX_CUSHION_US)
     }
 
-    /** Follows how far the loaded film reaches, counting only time spent loading, and starts over after a jump. */
-    private fun measure(parameters: LoadControl.Parameters) {
+    /**
+     * Follows how far the loaded film reaches, counting only time spent loading, and starts over after a jump.
+     * [waiting]: playback is held up waiting for the film.
+     */
+    private fun measure(parameters: LoadControl.Parameters, waiting: Boolean) {
         val now = SystemClock.elapsedRealtime()
         val positionUs = parameters.playbackPositionUs
         val endUs = positionUs + parameters.bufferedDurationUs
@@ -359,7 +415,12 @@ private class FilmLoadControl(
         val moved = kotlin.math.abs(positionUs - lastPositionUs) > elapsedMs * 2_000 + 1_000_000
         val jumped = lastEndUs == C.TIME_UNSET || periodUid != lastPeriod || endUs < lastEndUs - 100_000 ||
             (moved && kotlin.math.abs(endUs - lastEndUs) > 2_000_000)
-        if (jumped) {
+        // Held up by something other than the server's speed (a failed load and the wait to try again, or another
+        // download on the same line): that stretch says nothing about the server, so it's measured afresh.
+        val disturbances = ServerSwitch.disturbances.get()
+        val disturbed = disturbances != disturbancesSeen
+        disturbancesSeen = disturbances
+        if (jumped || disturbed) {
             loadedUs = 0
             loadingMs = 0
             arriving = false
@@ -375,8 +436,9 @@ private class FilmLoadControl(
             }
             // Arriving slower than it plays, for long enough to be sure: the provider may have sent us to a busy
             // server, so ask it for another. A live channel never arrives faster than it plays, so it never counts.
+            // While playing, only with enough loaded to cover the reconnect, which some servers refuse for a moment.
             if (loadingMs >= SWITCH_AFTER_MS && loadedUs < loadingMs * 1000 && !isLive(parameters) &&
-                serverSwitch.request()
+                (waiting || parameters.bufferedDurationUs >= MOVE_COVER_US) && serverSwitch.request()
             ) {
                 // The new server is measured afresh.
                 loadedUs = 0
@@ -399,7 +461,7 @@ private class FilmLoadControl(
     }
 
     override fun shouldContinueLoading(parameters: LoadControl.Parameters): Boolean {
-        measure(parameters)
+        measure(parameters, waiting = false)
         return inner.shouldContinueLoading(parameters).also { loading = it }
     }
 
@@ -433,25 +495,30 @@ private class FilmLoadControl(
         const val SMOOTH_US = 60_000_000L
         const val MAX_CUSHION_US = 30_000_000L
         const val SWITCH_AFTER_MS = 10_000L
+        const val MOVE_COVER_US = 15_000_000L
     }
 }
 
 /**
  * Lets the film's buffer rules ask its connection to move to another of the provider's servers, when the film keeps
  * arriving slower than it plays. At most once a minute, and three times in all, so a provider whose servers are all
- * slow isn't asked forever.
+ * slow isn't asked forever; never while the app downloads something else on the same line ([alongside]), and not
+ * again once a move's reconnect was refused.
  */
 class ServerSwitch {
     /** Whether the film came through a redirect, so the provider has other servers it could send us to instead. */
     @Volatile var possible = false
     private val wanted = java.util.concurrent.atomic.AtomicBoolean(false)
+    // On the playback thread.
     private var count = 0
     private var lastAt = 0L
 
     /** On the playback thread. False when it's too soon after the last move, or there have been enough. */
     fun request(): Boolean {
         val now = SystemClock.elapsedRealtime()
-        if (!possible || count >= MAX_SWITCHES || (count > 0 && now - lastAt < GAP_MS)) return false
+        if (!possible || downloadsAlongside.get() > 0 || count >= MAX_SWITCHES || (count > 0 && now - lastAt < GAP_MS)) {
+            return false
+        }
         count++
         lastAt = now
         wanted.set(true)
@@ -461,9 +528,38 @@ class ServerSwitch {
     /** On the loading thread: whether a move was asked for (only one connection gets to act on it). */
     fun take(): Boolean = wanted.getAndSet(false)
 
-    private companion object {
-        const val MAX_SWITCHES = 3
-        const val GAP_MS = 60_000L
+    /**
+     * On the playback thread: a load of the film failed ([refused]: the server said no). Refused just after a move,
+     * the provider's servers still count the old connection, so the film stays where it is from then on.
+     */
+    fun loadFailed(refused: Boolean) {
+        disturbances.incrementAndGet()
+        if (refused && count > 0 && SystemClock.elapsedRealtime() - lastAt < REFUSED_AFTER_MOVE_MS) count = MAX_SWITCHES
+    }
+
+    companion object {
+        private const val MAX_SWITCHES = 3
+        private const val GAP_MS = 60_000L
+        private const val REFUSED_AFTER_MOVE_MS = 10_000L
+        private val downloadsAlongside = java.util.concurrent.atomic.AtomicInteger()
+
+        /** Changes whenever the film was held up by something other than its server's speed. */
+        val disturbances = java.util.concurrent.atomic.AtomicInteger()
+
+        /**
+         * Runs [block], a download sharing the film's line: the film arriving slower meanwhile is that download's
+         * doing, not the server's, so no move is asked for, and its speed is measured afresh afterwards.
+         */
+        fun <T> alongside(block: () -> T): T {
+            downloadsAlongside.incrementAndGet()
+            disturbances.incrementAndGet()
+            try {
+                return block()
+            } finally {
+                downloadsAlongside.decrementAndGet()
+                disturbances.incrementAndGet()
+            }
+        }
     }
 }
 

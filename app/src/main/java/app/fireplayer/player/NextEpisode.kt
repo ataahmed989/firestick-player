@@ -148,42 +148,65 @@ class NextEpisode(context: Context, private val headers: Map<String, String>) {
     // Finding the show by the episode alone
 
     /**
-     * The show holding this episode when its name is no help. Providers number everything they add in one sequence,
-     * and note on each show when it last changed, which is usually when its latest episode came in. So the list sorted
-     * by that time is halved until the shows either side of the moment this episode was added are found (other shows'
-     * episodes with smaller numbers came in before it, larger ones after), and the shows changed from that moment on
-     * are tried in turn: a show added in one go, or whose latest episodes these are, comes up within a few tries.
+     * The show holding this episode when its name is no help. Providers number everything they add in one sequence and
+     * note when each episode came in, and every show carries a time too: when it last changed, or on some panels when
+     * it was made. Either way a show's time is close to when this episode came in if it's among the show's first or
+     * latest. So each show asked about tells, by its own episodes' numbers and times, when this one came in (between
+     * the nearest numbers below and above it); the list sorted by time is halved towards that moment, then the shows
+     * around it are tried, with now and then the most recently changed, for shows still getting new episodes.
      */
     private fun findById(link: Link, shows: List<Show>): Pair<Show, Series>? {
         val target = link.episodeId.toLongOrNull() ?: return null
         val byTime = shows.filter { it.modified > 0 }.sortedBy { it.modified }
         // Every show stamped at the same moment (some providers refresh them all at once) says nothing.
         if (byTime.map { it.modified }.distinct().size < MIN_DISTINCT_TIMES) return null
+        val cameIn = java.util.TreeMap<Long, Long>()
         val tried = HashSet<String>()
         var asked = 0
         fun ask(show: Show): Series? {
             if (asked >= MAX_ASKED || !tried.add(show.id)) return null
             asked++
-            return series(link, show.id)
+            val series = series(link, show.id) ?: return null
+            series.episodes.forEach { e -> e.id.toLongOrNull()?.let { id -> if (e.added > 0) cameIn[id] = e.added } }
+            return series
         }
-        // Halve until the first show changed after this episode was added.
+        // Halve towards the moment this episode came in.
         var lo = 0
-        var hi = byTime.size
-        while (lo < hi && asked < MAX_HALVINGS) {
-            val mid = (lo + hi) / 2
+        var hi = byTime.lastIndex
+        var centre = -1
+        while (lo <= hi && asked < MAX_HALVINGS) {
+            val mid = (lo + hi) ushr 1
             val series = ask(byTime[mid]) ?: break
             if (series.episodes.any { it.id == link.episodeId }) return byTime[mid] to series
-            val latest = series.episodes.mapNotNull { it.id.toLongOrNull() }.maxOrNull()
-            if (latest == null || latest < target) lo = mid + 1 else hi = mid
+            val after = cameIn.lowerEntry(target)?.value ?: 0L
+            val before = cameIn.higherEntry(target)?.value ?: Long.MAX_VALUE
+            val time = byTime[mid].modified
+            when {
+                time <= after -> lo = mid + 1
+                time >= before -> hi = mid - 1
+                // Known closely enough, and this show's time falls right in it: look around here.
+                after > 0 && before != Long.MAX_VALUE && before - after <= CLOSE_ENOUGH_S -> {
+                    centre = mid
+                    break
+                }
+                // Otherwise towards the side less is known about.
+                time - after < before - time -> lo = mid + 1
+                else -> hi = mid - 1
+            }
         }
-        // From there on, in the order they changed; now and then the most recently changed too, for shows still
-        // getting new episodes, whose last change came long after this one.
-        var up = lo
-        var down = byTime.lastIndex
+        if (centre < 0) centre = lo.coerceIn(0, byTime.lastIndex)
+        // Outwards from there, and every third try the most recently changed.
+        var up = centre
+        var down = centre - 1
+        var top = byTime.lastIndex
         var turn = 0
-        while (asked < MAX_ASKED && (up < byTime.size || down >= lo)) {
-            val fromTop = turn++ % 3 == 2 && down >= lo
-            val show = if (fromTop || up >= byTime.size) byTime[down--] else byTime[up++]
+        while (asked < MAX_ASKED && (up < byTime.size || down >= 0)) {
+            val show = when {
+                turn++ % 3 == 2 && top > up -> byTime[top--]
+                (turn % 2 == 0 || down < 0) && up < byTime.size -> byTime[up++]
+                down >= 0 -> byTime[down--]
+                else -> break
+            }
             if (show.id in tried) continue
             val series = ask(show) ?: continue
             if (series.episodes.any { it.id == link.episodeId }) return show to series
@@ -406,6 +429,7 @@ class NextEpisode(context: Context, private val headers: Map<String, String>) {
         private const val MAX_HALVINGS = 17
         private const val MAX_ASKED = 40
         private const val MIN_DISTINCT_TIMES = 20
+        private const val CLOSE_ENOUGH_S = 6 * 60 * 60L
         private val startedAt = System.currentTimeMillis()
 
         /** How the last look-up went, for Settings; null when there was nothing to look up. */

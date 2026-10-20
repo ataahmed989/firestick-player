@@ -15,6 +15,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
+import app.fireplayer.player.RedirectMemoryDataSource
 
 /**
  * The picture above the time bar while skipping: a still from where the jump will land.
@@ -33,7 +34,8 @@ class SeekPreview(
     private val dim: View,
     private val time: TextView,
     private val format: (Long) -> String,
-    private val create: () -> ExoPlayer,
+    /** Builds the preview's player, which loads only while the function it's given says so. */
+    private val create: (allowLoading: () -> Boolean) -> ExoPlayer,
     /** Called when the card appears (true) and goes away (false), so subtitles can make room. */
     private val onShowing: (Boolean) -> Unit,
     /** Called once when previews stop, with a short note saying why. */
@@ -56,6 +58,10 @@ class SeekPreview(
     // The target of the picture on show. The time under it is always the newest target, so when skipping has
     // moved on and the new picture is slow to come, the old one is darkened rather than passed off as the new.
     private var shownMs = 0L
+    // Where the picture on show really is: the keyframe the preview landed on, often a little off the target.
+    private var landingMs = 0L
+    // Whether the preview may load; off once its picture is in, so it takes nothing more from the film's line.
+    @Volatile private var loadingAllowed = true
     private var dimPending = false
     private var dimmed = false
     private var jumpAt = 0L
@@ -101,11 +107,21 @@ class SeekPreview(
         }
     }
 
-    /** Hides the preview; the player is let go a little later in case skipping resumes. */
-    fun hide() {
+    /**
+     * Hides the preview; the player is let go a little later in case skipping resumes. [filmReloads]: the film is
+     * jumping past what it has loaded, so it needs the line (and the server's connection) to itself at once.
+     */
+    fun hide(filmReloads: Boolean = false) {
         if (!active) return
         active = false
         round++
+        if (filmReloads) {
+            loadingAllowed = false
+            if (inFlight) {
+                release()
+                return
+            }
+        }
         // A picture still on its way is let in (and not shown), so the next round's first seek isn't held up.
         handler.removeCallbacks(seekRunnable)
         handler.removeCallbacks(dimRunnable)
@@ -116,6 +132,12 @@ class SeekPreview(
         handler.removeCallbacks(releaseRunnable)
         handler.postDelayed(releaseRunnable, 15_000)
     }
+
+    /**
+     * Where the film should jump to land on the picture shown for [targetMs], or null when that picture isn't on show.
+     * The preview shows the nearest keyframe, which can be a few seconds either side of the target.
+     */
+    fun landingFor(targetMs: Long): Long? = landingMs.takeIf { shown && !dimmed && shownMs == targetMs }
 
     /** False once previews have stopped for [key] (or for every video, when the server refused). */
     fun canPreview(key: String): Boolean = key != failedKey && !refused
@@ -167,13 +189,14 @@ class SeekPreview(
         if (!active || inFlight) return@Runnable
         val target = requestedMs
         val current = player
+        loadingAllowed = true
         if (current != null) {
             current.seekTo(target)
         } else {
             val mediaItem = item ?: return@Runnable
             var created: ExoPlayer? = null
             try {
-                created = create()
+                created = create { loadingAllowed }
                 created.addListener(this)
                 created.setVideoTextureView(texture)
                 created.setMediaItem(mediaItem, target)
@@ -242,8 +265,8 @@ class SeekPreview(
     override fun onPlayerError(error: PlaybackException) {
         // This video can't be previewed; leave skipping exactly as it was, and say why once.
         val note = when {
-            // Turned away: the film keeps the server to itself from now on.
-            isRefusal(error.cause) -> {
+            // Turned away, or cut off for the film's new connection: the film keeps the server to itself from now on.
+            isRefusal(error.cause) || (isCutOff(error.cause) && RedirectMemoryDataSource.filmOpenedWithin(CUT_OFF_MS)) -> {
                 refused = true
                 SERVER_NOTE
             }
@@ -261,6 +284,8 @@ class SeekPreview(
         val state = p.playbackState
         if (!inFlight || (state != Player.STATE_READY && state != Player.STATE_ENDED)) return
         inFlight = false
+        // The picture is in: nothing more is loaded until the next seek asks for it.
+        loadingAllowed = false
         // Skipping has moved on since this seek was sent (or it was for an earlier round): fetch where it is now.
         if (active && (requestedMs != issuedMs || issuedRound != round)) handler.post(seekRunnable)
         // Not a picture asked for in an earlier round of skipping.
@@ -268,6 +293,7 @@ class SeekPreview(
         // Popping up only to vanish with the jump a moment later would just flicker.
         if (!shown && SystemClock.uptimeMillis() > jumpAt - 300) return
         shownMs = issuedMs
+        landingMs = p.currentPosition
         time.text = format(requestedMs)
         if (!shown) {
             dim.animate().cancel()
@@ -302,14 +328,31 @@ class SeekPreview(
         // What IPTV servers answer when an account already has its connections in use.
         private val REFUSAL_CODES = setOf(401, 403, 429, 456, 458, 503, 509)
 
+        /** How soon after the other player opened a connection a dropped one counts as cut off for it. */
+        const val CUT_OFF_MS = 3_000L
+
         /** Whether [error] is the server saying no to a connection, rather than a slow or broken one. */
         fun isRefusal(error: Throwable?): Boolean = when (error) {
             is HttpDataSource.InvalidResponseCodeException -> error.responseCode in REFUSAL_CODES
-            // Hung up on as soon as it connected.
+            // Hung up on as soon as it connected (not a server that couldn't be reached at all, which is the network).
             is HttpDataSource.HttpDataSourceException ->
-                error.type == HttpDataSource.HttpDataSourceException.TYPE_OPEN &&
-                    (error.cause is java.net.SocketException || error.cause is java.io.EOFException)
+                error.type == HttpDataSource.HttpDataSourceException.TYPE_OPEN && isHangUp(error.cause)
             else -> false
         }
+
+        /**
+         * Whether [error] is a connection that was working being dropped by the server, as servers allowing one
+         * connection do to the older one when another opens. Only means that if the other player just connected.
+         */
+        fun isCutOff(error: Throwable?): Boolean =
+            error is HttpDataSource.HttpDataSourceException &&
+                error.type == HttpDataSource.HttpDataSourceException.TYPE_READ &&
+                // ProtocolException: "unexpected end of stream", the server closing in the middle of the file.
+                (isHangUp(error.cause) || error.cause is java.net.ProtocolException)
+
+        private fun isHangUp(cause: Throwable?): Boolean =
+            (cause is java.net.SocketException && cause !is java.net.ConnectException &&
+                cause !is java.net.NoRouteToHostException && cause !is java.net.PortUnreachableException) ||
+                cause is java.io.EOFException || cause?.cause is java.io.EOFException
     }
 }

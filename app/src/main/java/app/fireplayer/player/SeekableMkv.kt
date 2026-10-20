@@ -56,6 +56,8 @@ private class SeekableMkvExtractor(private val inner: Extractor) : Extractor by 
     private var dataStart = 0L
     private var first: Cluster? = null
     private var search: Search? = null
+    // Where a finished search sent the player, until reading starts there; -1 when none is pending.
+    private var landingPos = -1L
     private val buffer = ByteArray(CHUNK + TAIL)
 
     /** From the video track's DefaultDuration; 0 when the file doesn't say. */
@@ -100,10 +102,21 @@ private class SeekableMkvExtractor(private val inner: Extractor) : Extractor by 
             readHeader(input)
         }
         search?.let { return it.step(input, seekPosition) }
+        val landing = landingPos
+        if (landing >= 0) {
+            // A reconnect that failed is tried again where the last connection had got to, not where the jump was to
+            // land; reading on from there would start the film part-way into a cluster.
+            if (input.position != landing) {
+                seekPosition.position = landing
+                return Extractor.RESULT_SEEK
+            }
+            landingPos = -1
+        }
         return inner.read(input, seekPosition)
     }
 
     override fun seek(position: Long, timeUs: Long) {
+        landingPos = -1
         inner.seek(position, timeUs)
         search = if (active && (position != 0L || timeUs != 0L)) Search(timeUs) else null
     }
@@ -192,6 +205,7 @@ private class SeekableMkvExtractor(private val inner: Extractor) : Extractor by 
 
         private fun finish(holder: PositionHolder, position: Long): Int {
             search = null
+            landingPos = position
             return seekTo(holder, position)
         }
 
