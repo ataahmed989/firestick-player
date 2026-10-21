@@ -15,13 +15,57 @@ class Tmdb(private val prefs: Prefs) {
 
     /**
      * A film or show on TMDB. [close]: its name is the one asked for (give or take punctuation and a word like a
-     * country), or its year is, so it's surely the same title and not just TMDB's nearest guess.
+     * country), or its year is, so it's surely the same title and not just TMDB's nearest guess. [exact]: the very
+     * name asked for.
      */
-    class Match(val id: Int, val name: String, val year: String?, val close: Boolean = true) {
+    class Match(val id: Int, val name: String, val year: String?, val close: Boolean = true, val exact: Boolean = true) {
         val label: String get() = if (year != null) "$name ($year)" else name
     }
 
     val isConfigured: Boolean get() = prefs.tmdbApiKey.isNotEmpty()
+
+    /**
+     * The film or show TMDB confirms for a name a provider wrote. Tried as it is first, then without words in
+     * brackets, then without a short last word or two that may be a tag the name's clean-up didn't know
+     * ("Blank1 Blank2 xyz"). A shortened name only counts when TMDB has a title by exactly that name (and year, when
+     * one is known), so it can't wander off to another title. Null when nothing is confirmed; remembered either way
+     * (a miss for a few days), so the next time is instant.
+     */
+    fun verify(name: String, year: Int?, show: Boolean): Match? {
+        val key = cacheKey(name, year, show)
+        for ((i, candidate) in variants(name).withIndex()) {
+            val match = find(candidate, year, show) ?: continue
+            val sure = if (i == 0) match.close else match.exact && (year == null || match.year == year.toString())
+            if (sure) {
+                save(key, match)
+                return match
+            }
+        }
+        prefs.saveTmdbMatch(key, "$MISSED\t${System.currentTimeMillis() / 1000}")
+        return null
+    }
+
+    /** Whether [verify] found nothing for this lately, so it isn't asked again yet. Doesn't block. */
+    fun recentlyMissed(name: String, year: Int?, show: Boolean): Boolean {
+        val parts = prefs.tmdbMatch(cacheKey(name, year, show))?.split('\t') ?: return false
+        if (parts[0] != MISSED) return false
+        val at = parts.getOrNull(1)?.toLongOrNull() ?: return false
+        return System.currentTimeMillis() / 1000 - at < MISS_KEPT_S
+    }
+
+    private fun variants(name: String): List<String> {
+        val bare = name.replace(BRACKETS, " ").replace(SPACES, " ").trim()
+        val words = bare.split(' ').filter { it.isNotEmpty() }
+        val shorter = (1..2).mapNotNull { n ->
+            val dropped = words.takeLast(n)
+            if (words.size - n < 1 || dropped.any { it.length > MAX_TAG_LENGTH }) null
+            else words.dropLast(n).joinToString(" ")
+        }
+        return (listOf(name, bare) + shorter).filter { it.isNotBlank() }.distinct()
+    }
+
+    private fun save(key: String, match: Match) =
+        prefs.saveTmdbMatch(key, "${match.id}\t${match.name}\t${match.year.orEmpty()}")
 
     /** A close match found before for the same question, without asking TMDB again. Doesn't block. */
     fun cached(name: String, year: Int?, show: Boolean): Match? {
@@ -37,7 +81,7 @@ class Tmdb(private val prefs: Prefs) {
         val yearParam = if (show) "first_air_date_year" else "year"
         // The year can be the provider's guess; without it is the second try. Then without words in brackets
         // ("The Office (US)"), which TMDB doesn't have in its names.
-        val bare = name.replace(BRACKETS, " ").replace(Regex("""\s+"""), " ").trim()
+        val bare = name.replace(BRACKETS, " ").replace(SPACES, " ").trim()
         val results = year?.let { search(path, name, yearParam to it.toString()) }?.takeIf { it.length() > 0 }
             ?: search(path, name, null).takeIf { it.length() > 0 }
             ?: bare.takeIf { it.isNotEmpty() && it != name }?.let { search(path, it, null) }
@@ -59,8 +103,8 @@ class Tmdb(private val prefs: Prefs) {
             long.startsWith(short) && short.length * 10 >= long.length * 6
         }
         val close = exact != null || nearly || (year != null && found == year.toString())
-        val match = Match(best.optInt("id"), title, found, close)
-        if (close) prefs.saveTmdbMatch(cacheKey(name, year, show), "${match.id}\t${match.name}\t${match.year.orEmpty()}")
+        val match = Match(best.optInt("id"), title, found, close, exact = exact != null)
+        if (close) save(cacheKey(name, year, show), match)
         return match
     }
 
@@ -100,7 +144,9 @@ class Tmdb(private val prefs: Prefs) {
         }
     }
 
-    private fun simple(s: String) = s.lowercase().filter { it.isLetterOrDigit() }
+    /** Only letters and digits, without "the", "a" or "an" in front: "The Walking Dead" and "Walking Dead" match. */
+    private fun simple(s: String) =
+        s.lowercase().trim().replace(ARTICLE, "").filter { it.isLetterOrDigit() }
 
     private fun cacheKey(name: String, year: Int?, show: Boolean) =
         "${if (show) "tv" else "movie"}|${simple(name)}|${year ?: ""}"
@@ -108,6 +154,12 @@ class Tmdb(private val prefs: Prefs) {
     private companion object {
         val NAME_FIELDS = listOf("title", "original_title", "name", "original_name")
         val BRACKETS = Regex("""[(\[][^)\]]*[)\]]""")
+        val SPACES = Regex("""\s+""")
+        val ARTICLE = Regex("""^(the|a|an)\s+""")
+        const val MISSED = "-"
+        const val MISS_KEPT_S = 3 * 24 * 3600L
+        // Words this short at the end of a name may be tags ("xyz", "vf2"); longer ones are taken as part of it.
+        const val MAX_TAG_LENGTH = 4
     }
 
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
