@@ -125,9 +125,11 @@ data class TitleInfo(
             }
         }
 
-        // A tag joined on at the end ("BLANK-eng", "Dark [EN]", "Show (ENG)", "Show ENG"), and a year in brackets
-        // after it.
-        private val trailRegex = Regex("""(\s*[-_|]\s*|\s+|\s*[(\[])([A-Za-z]{2,7})[)\]]?\s*$""")
+        // A tag joined on at the end ("BLANK-eng", "Dark [EN]", "Show (ENG)", "Show ENG"), maybe of a few parts
+        // ("-pt-br", "[EN+FR]"), and a year in brackets after it.
+        private val trailRegex = Regex("""(\s*[-_|–—]\s*|\s+|\s*[(\[])([A-Za-z]{2,10})[)\]]?\s*$""")
+        private val trailPartsRegex =
+            Regex("""(\s*[-_|–—]\s*|\s+|\s*[(\[])([A-Za-z]{2,10}(?:[-+,/][A-Za-z]{2,10})+)[)\]]?\s*$""")
         private val yearAtEndRegex = Regex("""\s*[(\[](?:19|20)\d{2}[)\]]\s*$""")
 
         // A dot or underscore between two words, at least one of them letters (not "2.0").
@@ -135,24 +137,34 @@ data class TitleInfo(
 
         /**
          * Language tags providers put after names; only these go, so a title ending in a real word stays whole. Codes
-         * that are also words ("it", "no", "hi", "he", "pan", "chi") aren't here.
+         * that are also words or numerals ("it", "no", "hi", "he", "pan", "chi", "dan", "ko", "vi") aren't here.
          */
         private val END_TAGS = setOf(
             "EN", "ENG", "ENGLISH", "AR", "ARA", "ARABIC", "FR", "FRE", "FRA", "FRENCH", "DE", "GER", "DEU", "GERMAN",
             "ES", "SPA", "ESP", "SPANISH", "LATINO", "LATAM", "CASTELLANO", "ITA", "ITALIAN", "PT", "POR", "PORTUGUESE",
             "NL", "DUT", "NLD", "DUTCH", "RU", "RUS", "RUSSIAN", "TR", "TUR", "TURKISH", "PL", "POL", "POLISH",
-            "JA", "JP", "JPN", "JAPANESE", "KO", "KR", "KOR", "KOREAN", "ZH", "CN", "ZHO", "CHN", "CHINESE", "MANDARIN",
-            "CANTONESE", "SV", "SWE", "SWEDISH", "DA", "DAN", "DANISH", "FI", "FINNISH", "NOR", "NORWEGIAN", "EL", "GRE",
-            "ELL", "CS", "CZ", "CZE", "CES", "CZECH", "HU", "HUNGARIAN", "RO", "RUM", "RON", "ROMANIAN", "UKR",
+            "JA", "JP", "JPN", "JAPANESE", "KR", "KOR", "KOREAN", "ZH", "CN", "ZHO", "CHN", "CHINESE", "MANDARIN",
+            "CANTONESE", "SV", "SWE", "SWEDISH", "DANISH", "FINNISH", "NOR", "NORWEGIAN", "EL", "GRE",
+            "ELL", "CS", "CZ", "CZE", "CES", "CZECH", "HU", "HUNGARIAN", "RO", "RUM", "ROMANIAN", "UKR",
             "UKRAINIAN", "FA", "FAS", "PERSIAN", "FARSI", "UR", "URD", "URDU", "HEB", "HEBREW", "HIN", "HINDI", "TH",
-            "THA", "VI", "VIE", "VIETNAMESE", "MS", "MSA", "MALAY", "SQ", "ALB", "ALBANIAN", "SR", "SRP", "SERBIAN",
+            "THA", "VIETNAMESE", "MS", "MSA", "MALAY", "SQ", "ALB", "ALBANIAN", "SR", "SRP", "SERBIAN",
             "HR", "HRV", "CROATIAN", "BG", "BUL", "BULGARIAN", "KUR", "KURDISH", "TAM", "TAMIL", "TEL", "TELUGU",
-            "MULTI", "SUB", "SUBS", "SUBBED", "ESUB", "DUB", "DUBBED", "VOST", "VOSTFR", "VOSE", "VF", "VO",
+            "MALAYALAM", "KANNADA", "BENGALI", "MARATHI", "PUNJABI", "GUJARATI", "INDONESIAN", "FILIPINO", "TAGALOG",
+            "MULTI", "SUB", "SUBS", "SUBBED", "ESUB", "ESUBS", "DUB", "DUBBED", "VOST", "VOSTFR", "VOSE", "VF", "VO",
+            "ENGSUB", "ENGSUBS", "MULTISUB", "MULTISUBS", "DUAL", "VFF", "VFQ", "TRUEFRENCH",
+        )
+
+        /** Codes that are also words, or a country: tags only when joined on with a dash, "_", "|" or brackets. */
+        private val JOINED_TAGS = setOf("IT", "HI", "HE", "NO", "IND", "MAL", "KAN", "BEN", "PAN", "EX", "YU", "EXYU")
+
+        /** Countries, after a language ("-pt-br", "-en-us"); alone ("Shameless-US") the country is kept, in brackets. */
+        private val REGIONS = setOf(
+            "US", "USA", "UK", "GB", "BR", "LA", "CA", "TW", "HK", "MX", "AL", "AU", "NZ", "IE", "IN", "BE", "CH", "AT",
         )
 
         /**
-         * Removes language tags from the end: "BLANK-eng" → "BLANK", "Dark [EN] (2017)" → "Dark (2017)". [anyCase]:
-         * the spaces were dots or underscores, so a tag after one is a tag whatever its case.
+         * Removes language tags from the end: "BLANK-eng" → "BLANK", "Dark [EN] (2017)" → "Dark (2017)", "BLANK-pt-br"
+         * → "BLANK". [anyCase]: the spaces were dots or underscores, so a tag after one is a tag whatever its case.
          */
         private fun stripEndTags(input: String, anyCase: Boolean): String {
             val year = yearAtEndRegex.find(input)
@@ -162,15 +174,38 @@ data class TitleInfo(
             }
             var s = input.trim()
             while (true) {
-                val m = trailRegex.find(s) ?: return s
+                // A tag of a few parts ("-pt-br", "[EN+FR]") when they all are tags, otherwise its last part alone.
+                var parts = trailPartsRegex.find(s)
+                while (parts != null && !isEndTag(parts.groupValues[1], parts.groupValues[2], anyCase)) {
+                    parts = trailPartsRegex.find(s, parts.range.first + 1)
+                }
+                val m = parts ?: trailRegex.find(s) ?: return s
                 val separator = m.groupValues[1]
                 val tag = m.groupValues[2]
                 val rest = s.substring(0, m.range.first).trim()
-                if (rest.isEmpty() || tag.uppercase() !in END_TAGS) return s
-                // After a plain space, only a tag in capitals ("Dark ENG"): "Tout en" is a title.
-                if (separator.isBlank() && !anyCase && tag != tag.uppercase()) return s
+                if (rest.isEmpty()) return s
+                val joined = separator.isNotBlank()
+                // A country alone, joined on in capitals ("Shameless-US"), tells same-named shows apart: kept.
+                if (tag.uppercase() in REGIONS) {
+                    return if (joined && !separator.trim().startsWith("(") && !separator.trim().startsWith("[") &&
+                        tag == tag.uppercase()
+                    ) "$rest (${tag.uppercase()})" else s
+                }
+                if (!isEndTag(separator, tag, anyCase)) return s
                 s = rest
             }
+        }
+
+        /** Whether [tag], after [separator], is a language or subtitle tag ("eng", "pt-br", "EN+FR"). */
+        private fun isEndTag(separator: String, tag: String, anyCase: Boolean): Boolean {
+            val joined = separator.isNotBlank()
+            // After a plain space, only a tag in capitals ("Dark ENG"): "Tout en" is a title.
+            if (!joined && !anyCase && tag != tag.uppercase()) return false
+            val parts = tag.uppercase().split('-', '+', ',', '/')
+            fun known(part: String) = part in END_TAGS || (joined && part in JOINED_TAGS)
+            if (parts.size == 1) return known(parts[0])
+            // A country after a language ("pt-br") goes with it.
+            return parts.all { known(it) || it in REGIONS } && parts.any { known(it) }
         }
 
         private fun isTag(token: String): Boolean {
