@@ -61,14 +61,24 @@ data class TitleInfo(
         fun parse(rawTitle: String?, uri: Uri?): TitleInfo {
             val source = rawTitle?.takeIf { it.isNotBlank() } ?: nameFromUri(uri)
             val fileName = ' ' !in source.trim()
-            var name = if (fileName) undot(source) else source.trim()
+            // Words joined by dots or underscores inside a name that also has spaces ("BLANK1.BLANK2-eng S01E03"); a
+            // lone "Dr." or "2.0" stays as it is.
+            val dotted = !fileName && joinedRegex.containsMatchIn(source)
+            var name = when {
+                fileName -> undot(source)
+                dotted -> source.trim().split(' ').joinToString(" ") { if (joinedRegex.containsMatchIn(it)) undot(it) else it }
+                    .replace(Regex("""\s+"""), " ").trim()
+                else -> source.trim()
+            }
+            // Where dots or underscores were the spaces, a tag after one is a tag whatever its case ("BLANK_fr").
+            val anyCase = fileName || dotted
             name = stripTags(name).ifBlank { name }
             val junk = if (fileName) fileJunkRegex else junkRegex
 
             val ep = episodeRegex.find(name) ?: altEpisodeRegex.find(name)
             if (ep != null) {
-                val show = stripEndTags(clean(junk.replace(name.substring(0, ep.range.first), "")), fileName)
-                val after = stripEndTags(clean(junk.replace(name.substring(ep.range.last + 1), "")), fileName)
+                val show = stripEndTags(clean(junk.replace(name.substring(0, ep.range.first), "")), anyCase)
+                val after = stripEndTags(clean(junk.replace(name.substring(ep.range.last + 1), "")), anyCase)
                 val season = ep.groupValues[1].toInt()
                 val episode = ep.groupValues[2].toInt()
                 val sub = buildString {
@@ -86,12 +96,12 @@ data class TitleInfo(
             val year = years.findAll(withoutJunk).lastOrNull()?.takeIf { it.range.first > 0 }
                 ?: years.findAll(name).lastOrNull()?.takeIf { it.range.first > 0 }
             if (year != null) {
-                val title = stripEndTags(clean(junk.replace(name.substring(0, year.range.first), "")), fileName)
+                val title = stripEndTags(clean(junk.replace(name.substring(0, year.range.first), "")), anyCase)
                 if (title.isNotEmpty()) {
                     return TitleInfo("$title (${year.groupValues[1]})", null, title, null, null)
                 }
             }
-            val title = stripEndTags(clean(withoutJunk).ifEmpty { clean(name) }.ifEmpty { name }, fileName)
+            val title = stripEndTags(clean(withoutJunk).ifEmpty { clean(name) }.ifEmpty { name }, anyCase)
             return TitleInfo(title, null, title, null, null)
         }
 
@@ -117,19 +127,34 @@ data class TitleInfo(
         private val trailRegex = Regex("""(\s*[-_|]\s*|\s+|\s*[(\[])([A-Za-z]{2,7})[)\]]?\s*$""")
         private val yearAtEndRegex = Regex("""\s*[(\[](?:19|20)\d{2}[)\]]\s*$""")
 
-        /** Language tags providers put after names; only these go, so a title ending in a real word stays whole. */
+        // A dot or underscore between two words, at least one of them letters (not "2.0").
+        private val joinedRegex = Regex("""(?<=[A-Za-z])[._](?=[A-Za-z0-9])|(?<=[0-9])[._](?=[A-Za-z])|(?<=[0-9])_(?=[0-9])""")
+
+        /**
+         * Language tags providers put after names; only these go, so a title ending in a real word stays whole. Codes
+         * that are also words ("it", "no", "hi", "he", "pan", "chi") aren't here.
+         */
         private val END_TAGS = setOf(
-            "EN", "ENG", "ENGLISH", "AR", "ARA", "ARABIC", "MULTI", "SUB", "SUBS", "SUBBED", "DUB", "DUBBED", "VOST", "VOSTFR",
+            "EN", "ENG", "ENGLISH", "AR", "ARA", "ARABIC", "FR", "FRE", "FRA", "FRENCH", "DE", "GER", "DEU", "GERMAN",
+            "ES", "SPA", "ESP", "SPANISH", "LATINO", "LATAM", "CASTELLANO", "ITA", "ITALIAN", "PT", "POR", "PORTUGUESE",
+            "NL", "DUT", "NLD", "DUTCH", "RU", "RUS", "RUSSIAN", "TR", "TUR", "TURKISH", "PL", "POL", "POLISH",
+            "JA", "JP", "JPN", "JAPANESE", "KO", "KR", "KOR", "KOREAN", "ZH", "CN", "ZHO", "CHN", "CHINESE", "MANDARIN",
+            "CANTONESE", "SV", "SWE", "SWEDISH", "DA", "DAN", "DANISH", "FI", "FINNISH", "NOR", "NORWEGIAN", "EL", "GRE",
+            "ELL", "CS", "CZ", "CZE", "CES", "CZECH", "HU", "HUNGARIAN", "RO", "RUM", "RON", "ROMANIAN", "UKR",
+            "UKRAINIAN", "FA", "FAS", "PERSIAN", "FARSI", "UR", "URD", "URDU", "HEB", "HEBREW", "HIN", "HINDI", "TH",
+            "THA", "VI", "VIE", "VIETNAMESE", "MS", "MSA", "MALAY", "SQ", "ALB", "ALBANIAN", "SR", "SRP", "SERBIAN",
+            "HR", "HRV", "CROATIAN", "BG", "BUL", "BULGARIAN", "KUR", "KURDISH", "TAM", "TAMIL", "TEL", "TELUGU",
+            "MULTI", "SUB", "SUBS", "SUBBED", "ESUB", "DUB", "DUBBED", "VOST", "VOSTFR", "VOSE", "VF", "VO",
         )
 
         /**
-         * Removes language tags from the end: "BLANK-eng" → "BLANK", "Dark [EN] (2017)" → "Dark (2017)". [fileName]:
+         * Removes language tags from the end: "BLANK-eng" → "BLANK", "Dark [EN] (2017)" → "Dark (2017)". [anyCase]:
          * the spaces were dots or underscores, so a tag after one is a tag whatever its case.
          */
-        private fun stripEndTags(input: String, fileName: Boolean): String {
+        private fun stripEndTags(input: String, anyCase: Boolean): String {
             val year = yearAtEndRegex.find(input)
             if (year != null && year.range.first > 0) {
-                val head = stripEndTags(input.substring(0, year.range.first), fileName)
+                val head = stripEndTags(input.substring(0, year.range.first), anyCase)
                 return "$head ${year.value.trim()}"
             }
             var s = input.trim()
@@ -140,7 +165,7 @@ data class TitleInfo(
                 val rest = s.substring(0, m.range.first).trim()
                 if (rest.isEmpty() || tag.uppercase() !in END_TAGS) return s
                 // After a plain space, only a tag in capitals ("Dark ENG"): "Tout en" is a title.
-                if (separator.isBlank() && !fileName && tag != tag.uppercase()) return s
+                if (separator.isBlank() && !anyCase && tag != tag.uppercase()) return s
                 s = rest
             }
         }

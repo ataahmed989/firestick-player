@@ -1439,7 +1439,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     /**
      * With a TMDB key, puts the film or show on screen under the name TMDB knows it by, then its year, as soon as its
      * name is known: at once when it was matched before, otherwise when TMDB answers (one small request). Only a
-     * sure match renames it; TMDB's nearest guess for a name it doesn't know leaves the provider's name.
+     * title TMDB confirms renames it (see [Tmdb.verify]); otherwise the provider's name, cleaned up, stays.
      */
     private fun matchOnTmdb(entry: Entry) {
         if (entry.tmdbAsked || !tmdb.isConfigured || !entry.info.named || player?.isCurrentMediaItemLive == true) return
@@ -1452,8 +1452,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             applyTmdbMatch(entry, it)
             return
         }
+        if (tmdb.recentlyMissed(name, year, show)) return
         thread(name = "FirePlayerTmdb", isDaemon = true) {
-            val match = runCatching { tmdb.find(name, year, show) }.getOrNull()?.takeIf { it.close } ?: return@thread
+            // TMDB checks the name: only a title it confirms goes on screen.
+            val match = runCatching { tmdb.verify(name, year, show) }.getOrNull() ?: return@thread
             handler.post { if (!isFinishing) applyTmdbMatch(entry, match) }
         }
     }
