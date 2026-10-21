@@ -129,7 +129,7 @@ data class TitleInfo(
         // ("-pt-br", "[EN+FR]"), and a year in brackets after it.
         private val trailRegex = Regex("""(\s*[-_|–—]\s*|\s+|\s*[(\[])([A-Za-z]{2,10})[)\]]?\s*$""")
         private val trailPartsRegex =
-            Regex("""(\s*[-_|–—]\s*|\s+|\s*[(\[])([A-Za-z]{2,10}(?:[-+,/][A-Za-z]{2,10})+)[)\]]?\s*$""")
+            Regex("""(\s*[-_|–—]\s*|\s+|\s*[(\[])([A-Za-z]{2,10}(?:\s*[-+,/]\s*[A-Za-z]{2,10})+)[)\]]?\s*$""")
         private val yearAtEndRegex = Regex("""\s*[(\[](?:19|20)\d{2}[)\]]\s*$""")
 
         // A dot or underscore between two words, at least one of them letters (not "2.0").
@@ -154,13 +154,22 @@ data class TitleInfo(
             "ENGSUB", "ENGSUBS", "MULTISUB", "MULTISUBS", "DUAL", "VFF", "VFQ", "TRUEFRENCH",
         )
 
-        /** Codes that are also words, or a country: tags only when joined on with a dash, "_", "|" or brackets. */
+        /**
+         * Codes that are also words: tags only when joined on with a dash, "|" or brackets, and written as tags are, in
+         * small letters or capitals ("-it", "-IT", not "Whip-It" or "Hi-de-Hi").
+         */
         private val JOINED_TAGS = setOf("IT", "HI", "HE", "NO", "IND", "MAL", "KAN", "BEN", "PAN", "EX", "YU", "EXYU")
 
-        /** Countries, after a language ("-pt-br", "-en-us"); alone ("Shameless-US") the country is kept, in brackets. */
+        /** Of those, the ones that in brackets are the country a show is from ("The Office (IND)"): kept. */
+        private val BRACKET_COUNTRIES = setOf("IT", "NO", "IND")
+
+        /** Countries and places after a language ("-pt-br", "-en-us", "-es-la"): they go with it. */
         private val REGIONS = setOf(
             "US", "USA", "UK", "GB", "BR", "LA", "CA", "TW", "HK", "MX", "AL", "AU", "NZ", "IE", "IN", "BE", "CH", "AT",
         )
+
+        /** A country alone, joined on in capitals ("Shameless-US"), tells same-named shows apart: kept, in brackets. */
+        private val COUNTRY_TAGS = setOf("US", "USA", "UK", "GB", "CA", "AU", "NZ", "IE")
 
         /**
          * Removes language tags from the end: "BLANK-eng" → "BLANK", "Dark [EN] (2017)" → "Dark (2017)", "BLANK-pt-br"
@@ -176,7 +185,7 @@ data class TitleInfo(
             while (true) {
                 // A tag of a few parts ("-pt-br", "[EN+FR]") when they all are tags, otherwise its last part alone.
                 var parts = trailPartsRegex.find(s)
-                while (parts != null && !isEndTag(parts.groupValues[1], parts.groupValues[2], anyCase)) {
+                while (parts != null && !isEndTag(parts.groupValues[1], parts.groupValues[2], anyCase, s, parts.range.first)) {
                     parts = trailPartsRegex.find(s, parts.range.first + 1)
                 }
                 val m = parts ?: trailRegex.find(s) ?: return s
@@ -185,27 +194,49 @@ data class TitleInfo(
                 val rest = s.substring(0, m.range.first).trim()
                 if (rest.isEmpty()) return s
                 val joined = separator.isNotBlank()
-                // A country alone, joined on in capitals ("Shameless-US"), tells same-named shows apart: kept.
                 if (tag.uppercase() in REGIONS) {
-                    return if (joined && !separator.trim().startsWith("(") && !separator.trim().startsWith("[") &&
-                        tag == tag.uppercase()
-                    ) "$rest (${tag.uppercase()})" else s
+                    // "_pt_br", ".es.la": a country after a language, both once joined on with "_" or ".", goes with it.
+                    val language = if (anyCase && !joined) trailRegex.find(rest) else null
+                    if (language != null && language.range.first > 0 &&
+                        isEndTag(language.groupValues[1], language.groupValues[2], true, rest, language.range.first)
+                    ) {
+                        s = rest.substring(0, language.range.first).trim()
+                        continue
+                    }
+                    val bracketed = separator.trim().let { it.startsWith("(") || it.startsWith("[") }
+                    return if (joined && !bracketed && tag == tag.uppercase() && tag in COUNTRY_TAGS) "$rest ($tag)" else s
                 }
-                if (!isEndTag(separator, tag, anyCase)) return s
+                if (!isEndTag(separator, tag, anyCase, s, m.range.first)) return s
                 s = rest
             }
         }
 
-        /** Whether [tag], after [separator], is a language or subtitle tag ("eng", "pt-br", "EN+FR"). */
-        private fun isEndTag(separator: String, tag: String, anyCase: Boolean): Boolean {
+        /**
+         * Whether [tag], after [separator] at [at] in [name], is a language or subtitle tag ("eng", "pt-br", "EN+FR").
+         */
+        private fun isEndTag(separator: String, tag: String, anyCase: Boolean, name: String, at: Int): Boolean {
             val joined = separator.isNotBlank()
-            // After a plain space, only a tag in capitals ("Dark ENG"): "Tout en" is a title.
-            if (!joined && !anyCase && tag != tag.uppercase()) return false
-            val parts = tag.uppercase().split('-', '+', ',', '/')
-            fun known(part: String) = part in END_TAGS || (joined && part in JOINED_TAGS)
+            if (!joined) {
+                // After a plain space, only a tag in capitals ("Dark ENG"): "Tout en" is a title. Where the spaces were
+                // dots or underscores, a short code in any case ("BLANK_fr"), but a language's whole name only as tags
+                // are written, all small: "Johnny.English" and "The.Albanian" are titles.
+                if (tag != tag.uppercase() && (!anyCase || (tag.length > 3 && tag != tag.lowercase()))) return false
+                // In a name all in capitals, a whole language name may be its last word ("JOHNNY ENGLISH").
+                val head = name.substring(0, at)
+                if (tag == tag.uppercase() && tag.length > 4 && head.none { it.isLowerCase() }) return false
+            }
+            val parts = tag.split('-', '+', ',', '/').map { it.trim() }
+            val bracketed = separator.trim().let { it.startsWith("(") || it.startsWith("[") }
+            fun known(part: String): Boolean {
+                val code = part.uppercase()
+                if (code in END_TAGS) return true
+                // In brackets, a few of these name the country a show is from ("The Office (IND)").
+                if (parts.size == 1 && bracketed && code in BRACKET_COUNTRIES) return false
+                return joined && code in JOINED_TAGS && (part == part.lowercase() || part == part.uppercase())
+            }
             if (parts.size == 1) return known(parts[0])
-            // A country after a language ("pt-br") goes with it.
-            return parts.all { known(it) || it in REGIONS } && parts.any { known(it) }
+            // A language first, then maybe a country ("pt-br"): "Suits.LA-eng" keeps "LA".
+            return known(parts[0]) && parts.drop(1).all { known(it) || it.uppercase() in REGIONS }
         }
 
         private fun isTag(token: String): Boolean {
