@@ -6,6 +6,7 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import java.text.Normalizer
 import kotlin.math.abs
 
 /**
@@ -30,20 +31,31 @@ class Tmdb(private val prefs: Prefs) {
     val isConfigured: Boolean get() = prefs.tmdbApiKey.isNotEmpty()
 
     /**
-     * The film or show TMDB confirms for a name a provider wrote. Tried as it is first, then without words in
-     * brackets, then without a short last word or two that may be a tag the name's clean-up didn't know
-     * ("Blank1 Blank2 xyz"). A shortened name only counts when TMDB has a title by exactly that name (and year, when
-     * one is known), so it can't wander off to another title. Null when nothing is confirmed; remembered either way
-     * (a miss for a few days), so the next time is instant.
+     * The film or show TMDB confirms for a name a provider wrote. Tried as it is first (and without words in
+     * brackets), then without a short last word or two, or a part joined on with a dash, that may be a tag the
+     * name's clean-up didn't know ("Blank1 Blank2 xyz", "Dark-dual"). A shortened name only counts when TMDB has a
+     * title by exactly that name (and year, when one is known), and none longer that starts with it: "Dune" isn't
+     * "Dune 2", nor "NCIS" "NCIS LA". Null when nothing is confirmed; remembered either way (a miss for a few days),
+     * so the next time is instant.
      */
     fun verify(name: String, year: Int?, show: Boolean): Match? {
         val key = cacheKey(name, year, show)
         // The country goes with every try, also once its brackets are left out of the name.
         val country = countryIn(name)
-        for ((i, candidate) in variants(name).withIndex()) {
-            val match = find(candidate, year, show, country) ?: continue
-            val sure = if (i == 0) match.close else match.exact && (year == null || match.year == year.toString())
-            if (sure) {
+        val whole = lookup(name, year, show, country)
+        whole.match?.takeIf { it.close }?.let {
+            save(key, it)
+            return it
+        }
+        val full = setOf(simple(name), simple(name.replace(BRACKETS, " ")))
+        for (candidate in shorterNames(name)) {
+            val short = simple(candidate)
+            if (whole.names.any { it.length > short.length && it.startsWith(short) }) continue
+            val found = lookup(candidate, year, show, country)
+            // TMDB has a title by the whole name after all ("Spider-Man" when asked for "Spider"): not this one.
+            if (found.names.any { it in full }) continue
+            val match = found.match ?: continue
+            if (match.exact && (year == null || match.year == year.toString())) {
                 save(key, match)
                 return match
             }
@@ -60,15 +72,22 @@ class Tmdb(private val prefs: Prefs) {
         return System.currentTimeMillis() / 1000 - at < MISS_KEPT_S
     }
 
-    private fun variants(name: String): List<String> {
+    /** [name] without what may be a tag at its end; never a number, a numeral or "Part" ("Dune 2", "Saw VI"). */
+    private fun shorterNames(name: String): List<String> {
         val bare = name.replace(BRACKETS, " ").replace(SPACES, " ").trim()
         val words = bare.split(' ').filter { it.isNotEmpty() }
+        val joined = words.lastOrNull()?.let { last ->
+            val cut = last.lastIndexOf('-')
+            val tag = last.substring(cut + 1)
+            if (cut <= 0 || tag.length !in 2..10 || !tag.all { it.isLetter() } || SEQUEL_WORD.matches(tag)) null
+            else (words.dropLast(1) + last.substring(0, cut)).joinToString(" ")
+        }
         val shorter = (1..2).mapNotNull { n ->
             val dropped = words.takeLast(n)
-            if (words.size - n < 1 || dropped.any { it.length > MAX_TAG_LENGTH }) null
+            if (words.size - n < 1 || dropped.any { it.length > MAX_TAG_LENGTH || SEQUEL_WORD.matches(it) }) null
             else words.dropLast(n).joinToString(" ")
         }
-        return (listOf(name, bare) + shorter).filter { it.isNotBlank() }.distinct()
+        return (listOfNotNull(joined) + shorter).filter { it.isNotBlank() && it != name && it != bare }.distinct()
     }
 
     private fun save(key: String, match: Match) =
@@ -86,11 +105,21 @@ class Tmdb(private val prefs: Prefs) {
      * The show (or film) called [name], from [year] when given; null when TMDB has nothing by that name. When nothing
      * is [Match.close], TMDB's nearest guess. A country in brackets ("The Office (UK)") only lets shows from there in.
      */
-    fun find(name: String, year: Int?, show: Boolean, country: String? = countryIn(name)): Match? {
+    fun find(name: String, year: Int?, show: Boolean, country: String? = countryIn(name)): Match? =
+        lookup(name, year, show, country).match
+
+    /** What [find] found, and the simple names of everything TMDB answered with on the way. */
+    private class Lookup(val match: Match?, val names: Set<String>)
+
+    private class Pick(val match: Match, val sure: Boolean)
+
+    private fun lookup(name: String, year: Int?, show: Boolean, country: String?): Lookup {
         val path = if (show) "search/tv" else "search/movie"
         // A film's "year" also matches its later releases somewhere ("Miracle on 34th Street" from 1947 for 1994).
         val yearParam = if (show) "first_air_date_year" else "primary_release_year"
         val bare = name.replace(BRACKETS, " ").replace(SPACES, " ").trim()
+        val seen = mutableSetOf<String>()
+        var byYear: Match? = null
         var guess: Match? = null
         // The year can be the provider's guess, so without it is the next try. Then without words in brackets
         // ("The Office (US)"), which TMDB doesn't have in its names.
@@ -98,22 +127,30 @@ class Tmdb(private val prefs: Prefs) {
             for (y in listOf(year, null).distinct()) {
                 val results = search(path, query, y?.let { yearParam to it.toString() })
                 val items = (0 until results.length()).mapNotNull { results.optJSONObject(it) }
-                val match = pick(items, name, bare, year, show, country) ?: continue
-                if (match.close) {
-                    save(cacheKey(name, year, show), match)
-                    return match
+                items.forEach { item -> seen += NAME_FIELDS.map { simple(item.optString(it)) }.filter { it.isNotEmpty() } }
+                val pick = pick(items, name, bare, year, show, country) ?: continue
+                if (pick.sure) {
+                    save(cacheKey(name, year, show), pick.match)
+                    return Lookup(pick.match, seen)
                 }
-                if (guess == null) guess = match
+                // Only the year and the start of the name agree: used when no search finds the name itself.
+                if (pick.match.close) {
+                    if (byYear == null) byYear = pick.match
+                } else if (guess == null) {
+                    guess = pick.match
+                }
             }
         }
-        return guess
+        byYear?.let { save(cacheKey(name, year, show), it) }
+        return Lookup(byYear ?: guess, seen)
     }
 
-    private fun pick(items: List<JSONObject>, name: String, bare: String, year: Int?, show: Boolean, country: String?): Match? {
+    private fun pick(items: List<JSONObject>, name: String, bare: String, year: Int?, show: Boolean, country: String?): Pick? {
         val pool = if (show && country != null) items.filter { it.optJSONArray("origin_country").has(country) } else items
         if (pool.isEmpty()) return null
         val wanted = simple(name)
         val wantedBare = simple(bare)
+        val asWritten = setOf(plain(name), plain(bare))
         fun names(item: JSONObject) = NAME_FIELDS.map { simple(item.optString(it)) }.filter { it.isNotEmpty() }
         fun yearOf(item: JSONObject) = item.optString(if (show) "first_air_date" else "release_date").take(4).toIntOrNull()
         // The provider's year, give or take one; a show's can be a later season's.
@@ -122,21 +159,33 @@ class Tmdb(private val prefs: Prefs) {
             val y = yearOf(item) ?: return false
             return if (show) y <= year + 1 else abs(y - year) <= 1
         }
-        // TMDB puts the most popular first; one with exactly this name, in English or its own language, wins, and of
-        // those the one from the provider's year, which tells a film from its remake.
+        fun choose(list: List<JSONObject>) =
+            if (year == null) list.firstOrNull() else list.filter(::fits).minByOrNull { abs(yearOf(it)!! - year) }
+        // Nearly the same name: one starts the other and isn't much shorter ("theofficeus" and "theoffice", not
+        // "itfollows" and "it"), and isn't the other with a number on ("deadpool3").
+        fun nearly(item: JSONObject) = fits(item) && names(item).any { n ->
+            val (short, long) = if (n.length <= wanted.length) n to wanted else wanted to n
+            long.startsWith(short) && short.length * 10 >= long.length * 6 &&
+                !SEQUEL_WORD.matches(long.substring(short.length))
+        }
+        // From the provider's year, with a name that starts the same way ("Dune 2" and "Dune: Part Two").
+        fun sameStart(item: JSONObject) = year != null && yearOf(item) == year && names(item).any { n ->
+            n.commonPrefixWith(wanted).length >= minOf(4, n.length, wanted.length)
+        }
+        // TMDB puts the most popular first; one with exactly this name, in English or its own language, wins: with
+        // "the" or without it as the provider wrote it first ("Batman" isn't "The Batman"), and of those the one from
+        // the provider's year, which tells a film from its remake.
         val named = pool.filter { item -> names(item).any { it == wanted || it == wantedBare } }
-        val exact = if (year == null) named.firstOrNull() else named.filter(::fits).minByOrNull { abs(yearOf(it)!! - year) }
-        val best = exact ?: named.firstOrNull() ?: pool.first()
+        val written = named.filter { item -> NAME_FIELDS.any { plain(item.optString(it)) in asWritten } }
+        val exact = choose(written) ?: choose(named)
+        val near = if (exact == null) pool.firstOrNull(::nearly) else null
+        val linked = if (exact == null && near == null) pool.firstOrNull(::sameStart) else null
+        val best = exact ?: near ?: linked ?: named.firstOrNull() ?: pool.first()
         val title = best.optString(if (show) "name" else "title").ifEmpty { name }
         val found = yearOf(best)?.toString()
-        // Nearly the same name: one starts the other and isn't much shorter ("theofficeus" and "theoffice", not
-        // "itfollows" and "it").
-        val nearly = fits(best) && names(best).any { n ->
-            val (short, long) = if (n.length <= wanted.length) n to wanted else wanted to n
-            long.startsWith(short) && short.length * 10 >= long.length * 6
-        }
-        val close = exact != null || nearly || (year != null && found == year.toString())
-        return Match(best.optInt("id"), title, found, close, exact = exact != null)
+        val match = Match(best.optInt("id"), title, found, close = exact != null || near != null || linked != null,
+            exact = exact != null)
+        return Pick(match, sure = exact != null || near != null)
     }
 
     private fun JSONArray?.has(value: String): Boolean =
@@ -179,21 +228,28 @@ class Tmdb(private val prefs: Prefs) {
     }
 
     /** Only letters and digits, without "the", "a" or "an" in front: "The Walking Dead" and "Walking Dead" match. */
-    private fun simple(s: String) =
-        s.lowercase().trim().replace(ARTICLE, "").filter { it.isLetterOrDigit() }
+    private fun simple(s: String) = plain(s.lowercase().trim().replace(ARTICLE, ""))
+
+    /** Only letters and digits, without accents and with "&" as "and": "Pokémon", "Law & Order". */
+    private fun plain(s: String) = Normalizer.normalize(s.lowercase(), Normalizer.Form.NFD).replace(MARKS, "")
+        .replace("&", "and").filter { it.isLetterOrDigit() }
 
     /** The country a name in brackets says the show is from ("The Office (UK)"), as TMDB writes it ("GB"). */
     private fun countryIn(name: String): String? =
         COUNTRY.findAll(name).mapNotNull { COUNTRIES[it.groupValues[1].uppercase()] }.lastOrNull()
 
+    // With "the" as written, so "Batman" and "The Batman" are remembered apart.
     private fun cacheKey(name: String, year: Int?, show: Boolean) =
-        "${if (show) "tv" else "movie"}|${simple(name)}|${year ?: ""}"
+        "${if (show) "tv" else "movie"}|${plain(name)}|${year ?: ""}"
 
     private companion object {
         val NAME_FIELDS = listOf("title", "original_title", "name", "original_name")
         val BRACKETS = Regex("""[(\[][^)\]]*[)\]]""")
         val SPACES = Regex("""\s+""")
         val ARTICLE = Regex("""^(the|a|an)\s+""")
+        val MARKS = Regex("""\p{M}+""")
+        // A number, a numeral or "Part" at the end makes another title: "Dune 2", "Saw VI".
+        val SEQUEL_WORD = Regex("""(?i)\d+|part|[ivx]{1,4}""")
         val COUNTRY = Regex("""[(\[]\s*([A-Za-z]{2,3})\s*[)\]]""")
         val COUNTRIES = mapOf(
             "UK" to "GB", "GB" to "GB", "US" to "US", "USA" to "US", "AU" to "AU", "AUS" to "AU", "CA" to "CA",
@@ -203,7 +259,7 @@ class Tmdb(private val prefs: Prefs) {
             "MX" to "MX", "JP" to "JP", "KR" to "KR", "TR" to "TR",
         )
         // Matches saved under older rules ("The Office (UK)" as the US show) are dropped once and asked again.
-        const val MATCH_RULES = 2
+        const val MATCH_RULES = 3
         const val MISSED = "-"
         const val MISS_KEPT_S = 3 * 24 * 3600L
         // Words this short at the end of a name may be tags ("xyz", "vf2"); longer ones are taken as part of it.
