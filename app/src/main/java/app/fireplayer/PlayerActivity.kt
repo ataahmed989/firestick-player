@@ -778,6 +778,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         }
         if (state == Player.STATE_READY) {
             findNextEpisode()
+            player?.let { p -> entries.getOrNull(p.currentMediaItemIndex)?.let { matchOnTmdb(it) } }
             errorBox.visibility = View.GONE
             waitingSince = 0L
             retries = 0
@@ -1442,7 +1443,18 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
      * title TMDB confirms renames it (see [Tmdb.verify]); otherwise the provider's name, cleaned up, stays.
      */
     private fun matchOnTmdb(entry: Entry) {
-        if (entry.tmdbAsked || !tmdb.isConfigured || !entry.info.named || player?.isCurrentMediaItemLive == true) return
+        if (entry.tmdbAsked || !tmdb.isConfigured || !entry.info.named) return
+        if (entry.rawTitle.isNullOrBlank() && entry.info.searchQuery == TitleInfo.NO_NAME) return
+        // A live channel ("UK: Dave") or a catch-up programme isn't a film. A link that is surely a film or episode
+        // is asked about at once; any other waits until the player has opened it and knows it has an end.
+        if (!isVodLink(entry.uri)) {
+            val p = player ?: return
+            if (entries.getOrNull(p.currentMediaItemIndex) !== entry || p.playbackState != Player.STATE_READY) return
+            if (p.isCurrentMediaItemLive || p.duration == C.TIME_UNSET || isCatchUp(entry.uri)) {
+                entry.tmdbAsked = true
+                return
+            }
+        }
         entry.tmdbAsked = true
         val info = entry.info
         val show = info.season != null
@@ -1459,6 +1471,19 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             handler.post { if (!isFinishing) applyTmdbMatch(entry, match) }
         }
     }
+
+    /** A provider's film or episode (".../movie/..." or ".../series/..."), a file, or a link to a video file. */
+    private fun isVodLink(uri: Uri): Boolean {
+        if (isCatchUp(uri)) return false
+        if (uri.scheme == "file" || uri.scheme == "content") return true
+        if (uri.pathSegments.any { it.equals("movie", true) || it.equals("series", true) }) return true
+        return uri.lastPathSegment?.substringAfterLast('.', "")?.lowercase() in VIDEO_FILES
+    }
+
+    /** A programme played back from a live channel's past. */
+    private fun isCatchUp(uri: Uri): Boolean =
+        CATCH_UP.containsMatchIn(uri.path.orEmpty()) ||
+            (uri.isHierarchical && (uri.getQueryParameter("utc") != null || uri.getQueryParameter("lutc") != null))
 
     private fun applyTmdbMatch(entry: Entry, match: Tmdb.Match) {
         val before = entry.info.searchQuery
@@ -2636,6 +2661,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         // The languages the subtitle search offers.
         val SEARCH_LANGUAGES = listOf("en", "ar")
         val YEAR_IN_TITLE = Regex("""\(((?:19|20)\d{2})\)""")
+        val VIDEO_FILES = setOf("mkv", "mp4", "m4v", "avi", "mov", "wmv", "webm", "mpg", "mpeg", "divx", "flv", "ogv")
+        // Xtream ".../timeshift/..." and "timeshift.php", and other servers' catch-up links.
+        val CATCH_UP = Regex("""(?i)timeshift|catch-?up""")
         // How long the film waits for the TV to change refresh rate.
         const val DISPLAY_SWITCH_PAUSE_MS = 2_000L
         const val POST_PLAY_LEAD_MS = 20_000L
