@@ -103,10 +103,19 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
                 field = value
                 parsed = null
             }
+        /** The film or show as TMDB knows it, whose name and year then go on screen; and whether it was asked for. */
+        var tmdbMatch: Tmdb.Match? = null
+            set(value) {
+                field = value
+                parsed = null
+            }
+        var tmdbAsked = false
         private var parsed: TitleInfo? = null
         val info: TitleInfo
             get() = parsed ?: TitleInfo.parse(rawTitle, uri).let { base ->
                 showName?.takeIf { !base.named }?.let { base.withShow(it) } ?: base
+            }.let { named ->
+                tmdbMatch?.let { named.withMatch(it.name, it.year) } ?: named
             }.also { parsed = it }
         val key: String get() = uri.toString()
     }
@@ -1257,6 +1266,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
      * asking (the provider's list of shows can be megabytes) waits until the film is well ahead, see [lookUpWhenFree].
      */
     private fun findNextEpisode() {
+        // An episode named only by its number wants its show's name on screen at once; only the next episode can wait.
+        if (entries.lastOrNull()?.info?.named == false) {
+            startNextEpisodeLookup()
+            return
+        }
         if (lookupWantedAt == 0L) lookupWantedAt = SystemClock.elapsedRealtime()
     }
 
@@ -1419,6 +1433,37 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         // Hiding the focused Next button would send focus to the time bar; keep it on the buttons.
         if (!hasNext && btnNext.hasFocus()) btnPlay.requestFocus()
         nextGroup.visibility = if (hasNext) View.VISIBLE else View.GONE
+        matchOnTmdb(entry)
+    }
+
+    /**
+     * With a TMDB key, puts the film or show on screen under the name TMDB knows it by, then its year, as soon as its
+     * name is known: at once when it was matched before, otherwise when TMDB answers (one small request). Only a
+     * sure match renames it; TMDB's nearest guess for a name it doesn't know leaves the provider's name.
+     */
+    private fun matchOnTmdb(entry: Entry) {
+        if (entry.tmdbAsked || !tmdb.isConfigured || !entry.info.named || player?.isCurrentMediaItemLive == true) return
+        entry.tmdbAsked = true
+        val info = entry.info
+        val show = info.season != null
+        val name = info.searchQuery
+        val year = YEAR_IN_TITLE.find(info.title)?.groupValues?.get(1)?.toIntOrNull()
+        tmdb.cached(name, year, show)?.let {
+            applyTmdbMatch(entry, it)
+            return
+        }
+        thread(name = "FirePlayerTmdb", isDaemon = true) {
+            val match = runCatching { tmdb.find(name, year, show) }.getOrNull()?.takeIf { it.close } ?: return@thread
+            handler.post { if (!isFinishing) applyTmdbMatch(entry, match) }
+        }
+    }
+
+    private fun applyTmdbMatch(entry: Entry, match: Tmdb.Match) {
+        val before = entry.info.searchQuery
+        entry.tmdbMatch = match
+        // A subtitle search still set to the old name goes by TMDB's now.
+        if (findFor == entry.key && findQuery == before) findQuery = entry.info.searchQuery
+        if (entries.getOrNull(player?.currentMediaItemIndex ?: startIndex) === entry) updateTitle()
     }
 
     /** The screen stays on only while the film plays or loads to play; paused, asking or showing an error, it may sleep. */
@@ -2462,8 +2507,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         findMatch = null
         panel.refresh()
         io.execute {
-            // With a TMDB key, the search asks for the exact film or show instead of anything with that name.
-            val match = if (tmdb.isConfigured) runCatching { tmdb.find(query, year, show) } else null
+            // With a TMDB key, the search asks for the exact film or show instead of anything with that name: the one
+            // already matched for the title on screen, when the name is still that one.
+            val known = entry.tmdbMatch?.takeIf { query == entry.info.searchQuery && show == (entry.info.season != null) }
+            val match = when {
+                known != null -> Result.success(known)
+                tmdb.isConfigured -> runCatching { tmdb.find(query, year, show) }
+                else -> null
+            }
             val found = match?.getOrNull()
             val result = runCatching { openSubtitles.search(query, language, season, episode, found?.id, show) }
             handler.post {

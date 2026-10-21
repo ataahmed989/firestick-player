@@ -85,6 +85,11 @@ class Prefs(context: Context) {
         get() = sp.getString("tmdb_key", "") ?: ""
         set(v) = sp.edit().putString("tmdb_key", v.trim()).apply()
 
+    /** A film or show matched on TMDB before, by what was asked: "id\tname\tyear". */
+    fun tmdbMatch(key: String): String? = sp.getString("tmdb|$key", null)
+
+    fun saveTmdbMatch(key: String, value: String) = sp.edit().putString("tmdb|$key", value).apply()
+
     /** The language Find subtitles searches in; "" until one is picked, then the default subtitle language is used. */
     var subtitleSearchLanguage: String
         get() = sp.getString("sub_search_lang", "") ?: ""
