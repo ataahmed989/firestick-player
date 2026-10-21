@@ -48,6 +48,14 @@ class Tmdb(private val prefs: Prefs) {
             return it
         }
         val full = setOf(simple(name), simple(name.replace(BRACKETS, " ")))
+        // Only the year agrees: TMDB found it by a translated name ("Le Roi Lion" for "The Lion King") when one of its
+        // translations is this very name. Not for shortened names: "Le Roi" is also "The King" in French.
+        whole.match?.takeIf { year != null && it.year == year.toString() && translatedNames(it.id, show).any { n -> n in full } }
+            ?.let {
+                val sure = Match(it.id, it.name, it.year)
+                save(key, sure)
+                return sure
+            }
         for (candidate in shorterNames(name)) {
             val short = simple(candidate)
             if (whole.names.any { it.length > short.length && it.startsWith(short) }) continue
@@ -71,6 +79,14 @@ class Tmdb(private val prefs: Prefs) {
         val at = parts.getOrNull(1)?.toLongOrNull() ?: return false
         return System.currentTimeMillis() / 1000 - at < MISS_KEPT_S
     }
+
+    /** The film's or show's name in every language TMDB has it in, simplified. */
+    private fun translatedNames(id: Int, show: Boolean): Set<String> = runCatching {
+        val list = JSONObject(request("${if (show) "tv" else "movie"}/$id/translations", emptyList()))
+            .optJSONArray("translations") ?: JSONArray()
+        (0 until list.length()).mapNotNull { list.optJSONObject(it)?.optJSONObject("data") }
+            .map { simple(it.optString(if (show) "name" else "title")) }.filter { it.isNotEmpty() }.toSet()
+    }.getOrDefault(emptySet())
 
     /** [name] without what may be a tag at its end; never a number, a numeral or "Part" ("Dune 2", "Saw VI"). */
     private fun shorterNames(name: String): List<String> {
@@ -119,6 +135,8 @@ class Tmdb(private val prefs: Prefs) {
         val yearParam = if (show) "first_air_date_year" else "primary_release_year"
         val bare = name.replace(BRACKETS, " ").replace(SPACES, " ").trim()
         val seen = mutableSetOf<String>()
+        // Saved under this name only when asked about as itself, not with another name's country.
+        val own = country == countryIn(name)
         var byYear: Match? = null
         var guess: Match? = null
         // The year can be the provider's guess, so without it is the next try. Then without words in brackets
@@ -130,7 +148,7 @@ class Tmdb(private val prefs: Prefs) {
                 items.forEach { item -> seen += NAME_FIELDS.map { simple(item.optString(it)) }.filter { it.isNotEmpty() } }
                 val pick = pick(items, name, bare, year, show, country) ?: continue
                 if (pick.sure) {
-                    save(cacheKey(name, year, show), pick.match)
+                    if (own) save(cacheKey(name, year, show), pick.match)
                     return Lookup(pick.match, seen)
                 }
                 // Only the year and the start of the name agree: used when no search finds the name itself.
@@ -141,7 +159,7 @@ class Tmdb(private val prefs: Prefs) {
                 }
             }
         }
-        byYear?.let { save(cacheKey(name, year, show), it) }
+        if (own) byYear?.let { save(cacheKey(name, year, show), it) }
         return Lookup(byYear ?: guess, seen)
     }
 
@@ -162,23 +180,37 @@ class Tmdb(private val prefs: Prefs) {
         fun choose(list: List<JSONObject>) =
             if (year == null) list.firstOrNull() else list.filter(::fits).minByOrNull { abs(yearOf(it)!! - year) }
         // Nearly the same name: one starts the other and isn't much shorter ("theofficeus" and "theoffice", not
-        // "itfollows" and "it"), and isn't the other with a number on ("deadpool3").
+        // "itfollows" and "it"), and isn't the other with a number on ("deadpool3"). TMDB's shorter name doesn't count
+        // when another of its titles goes on the way the provider's does ("NCIS" for "NCIS LA", with "NCIS: Los
+        // Angeles" there too).
         fun nearly(item: JSONObject) = fits(item) && names(item).any { n ->
             val (short, long) = if (n.length <= wanted.length) n to wanted else wanted to n
             long.startsWith(short) && short.length * 10 >= long.length * 6 &&
-                !SEQUEL_WORD.matches(long.substring(short.length))
+                !SEQUEL_WORD.matches(long.substring(short.length)) &&
+                !(n.length < wanted.length && pool.any { other ->
+                    names(other).any { m -> m.length > n.length && m.startsWith(n) && m.commonPrefixWith(wanted).length > n.length }
+                })
         }
-        // From the provider's year, with a name that starts the same way ("Dune 2" and "Dune: Part Two").
-        fun sameStart(item: JSONObject) = year != null && yearOf(item) == year && names(item).any { n ->
-            n.commonPrefixWith(wanted).length >= minOf(4, n.length, wanted.length)
-        }
+        // A sequel the provider numbered and TMDB named, from the provider's year: "Dune 2" and "Dune: Part Two".
+        val words = bare.split(' ').filter { it.isNotEmpty() }
+        val stem = if (words.size > 1 && SEQUEL_WORD.matches(words.last())) simple(words.dropLast(1).joinToString(" ")) else ""
+        fun sameStart(item: JSONObject) = stem.isNotEmpty() && year != null && yearOf(item) == year &&
+            names(item).any { it.length > stem.length && it.startsWith(stem) }
         // TMDB puts the most popular first; one with exactly this name, in English or its own language, wins: with
         // "the" or without it as the provider wrote it first ("Batman" isn't "The Batman"), and of those the one from
-        // the provider's year, which tells a film from its remake.
-        val named = pool.filter { item -> names(item).any { it == wanted || it == wantedBare } }
+        // the provider's year, which tells a film from its remake. An "&" the provider left out counts too ("Love
+        // Death Robots").
+        val loose = setOf(simple(name.replace("&", " ")), simple(bare.replace("&", " ")))
+        val named = pool.filter { item ->
+            names(item).any { it == wanted || it == wantedBare } ||
+                NAME_FIELDS.any { simple(item.optString(it).replace("&", " ")) in loose }
+        }
         val written = named.filter { item -> NAME_FIELDS.any { plain(item.optString(it)) in asWritten } }
-        val exact = choose(written) ?: choose(named)
-        val near = if (exact == null) pool.firstOrNull(::nearly) else null
+        // Without a year or "the", a title by just that name only wins when it's also TMDB's most popular by it:
+        // "Godfather" is likely "The Godfather", not 2022's "GodFather", so neither is sure.
+        val unsure = year == null && plain(name) == wanted && written.isNotEmpty() && named.first() !in written
+        val exact = if (unsure) null else choose(written) ?: choose(named)
+        val near = if (exact == null && !unsure) pool.firstOrNull(::nearly) else null
         val linked = if (exact == null && near == null) pool.firstOrNull(::sameStart) else null
         val best = exact ?: near ?: linked ?: named.firstOrNull() ?: pool.first()
         val title = best.optString(if (show) "name" else "title").ifEmpty { name }
@@ -256,10 +288,11 @@ class Tmdb(private val prefs: Prefs) {
             "CAN" to "CA", "NZ" to "NZ", "IE" to "IE", "IRL" to "IE", "IN" to "IN", "IND" to "IN", "FR" to "FR",
             "DE" to "DE", "GER" to "DE", "ES" to "ES", "ESP" to "ES", "IT" to "IT", "ITA" to "IT", "NL" to "NL",
             "SE" to "SE", "SWE" to "SE", "NO" to "NO", "NOR" to "NO", "DK" to "DK", "BE" to "BE", "BR" to "BR",
-            "MX" to "MX", "JP" to "JP", "KR" to "KR", "TR" to "TR",
+            "MX" to "MX", "JP" to "JP", "KR" to "KR", "TR" to "TR", "TW" to "TW", "HK" to "HK", "CH" to "CH",
+            "AT" to "AT", "AL" to "AL", "LA" to "LA",
         )
         // Matches saved under older rules ("The Office (UK)" as the US show) are dropped once and asked again.
-        const val MATCH_RULES = 3
+        const val MATCH_RULES = 4
         const val MISSED = "-"
         const val MISS_KEPT_S = 3 * 24 * 3600L
         // Words this short at the end of a name may be tags ("xyz", "vf2"); longer ones are taken as part of it.
