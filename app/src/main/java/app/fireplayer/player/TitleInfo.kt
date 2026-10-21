@@ -21,6 +21,10 @@ data class TitleInfo(
         return copy(title = s.title, searchQuery = s.searchQuery, named = true)
     }
 
+    /** Under the name TMDB knows it by, then its year: "Breaking Bad (2008)". */
+    fun withMatch(name: String, year: String?): TitleInfo =
+        copy(title = if (year != null) "$name ($year)" else name, searchQuery = name, named = true)
+
     companion object {
         private val episodeRegex = Regex("""(?i)\bS(\d{1,2})\s*[ ._-]?\s*E(\d{1,3})\b""")
         private val altEpisodeRegex = Regex("""(?i)\b(\d{1,2})x(\d{2,3})\b""")
