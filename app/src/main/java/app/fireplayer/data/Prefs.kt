@@ -90,6 +90,14 @@ class Prefs(context: Context) {
 
     fun saveTmdbMatch(key: String, value: String) = sp.edit().putString("tmdb|$key", value).apply()
 
+    /** Forgets every saved match once, when they were saved under matching rules older than [rules]. */
+    fun dropTmdbMatchesBefore(rules: Int) {
+        if (sp.getInt("tmdb_rules", 1) >= rules) return
+        val edit = sp.edit()
+        sp.all.keys.filter { it.startsWith("tmdb|") }.forEach { edit.remove(it) }
+        edit.putInt("tmdb_rules", rules).apply()
+    }
+
     /** The language Find subtitles searches in; "" until one is picked, then the default subtitle language is used. */
     var subtitleSearchLanguage: String
         get() = sp.getString("sub_search_lang", "") ?: ""

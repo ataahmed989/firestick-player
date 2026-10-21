@@ -26,6 +26,9 @@ data class TitleInfo(
         copy(title = if (year != null) "$name ($year)" else name, searchQuery = name, named = true)
 
     companion object {
+        /** The title of a video that came with no name. */
+        const val NO_NAME = "Video"
+
         private val episodeRegex = Regex("""(?i)\bS(\d{1,2})\s*[ ._-]?\s*E(\d{1,3})\b""")
         private val altEpisodeRegex = Regex("""(?i)\b(\d{1,2})x(\d{2,3})\b""")
         private val yearRegex = Regex("""[(\[]?\b((?:19|20)\d{2})\b[)\]]?""")
@@ -183,10 +186,10 @@ data class TitleInfo(
                 .trim()
 
         private fun nameFromUri(uri: Uri?): String {
-            val last = uri?.lastPathSegment ?: return "Video"
+            val last = uri?.lastPathSegment ?: return NO_NAME
             val noExt = last.substringBeforeLast('.', last)
             // IPTV links end in a number (…/series/user/pass/12345.mkv); that isn't a useful title.
-            return if (noExt.all { it.isDigit() }) "Video" else noExt
+            return if (noExt.all { it.isDigit() }) NO_NAME else noExt
         }
 
         private fun stripYear(s: String) = clean(bracketYearRegex.replace(s, ""))
