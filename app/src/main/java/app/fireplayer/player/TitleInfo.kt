@@ -67,8 +67,8 @@ data class TitleInfo(
 
             val ep = episodeRegex.find(name) ?: altEpisodeRegex.find(name)
             if (ep != null) {
-                val show = clean(junk.replace(name.substring(0, ep.range.first), ""))
-                val after = clean(junk.replace(name.substring(ep.range.last + 1), ""))
+                val show = stripEndTags(clean(junk.replace(name.substring(0, ep.range.first), "")), fileName)
+                val after = stripEndTags(clean(junk.replace(name.substring(ep.range.last + 1), "")), fileName)
                 val season = ep.groupValues[1].toInt()
                 val episode = ep.groupValues[2].toInt()
                 val sub = buildString {
@@ -86,12 +86,12 @@ data class TitleInfo(
             val year = years.findAll(withoutJunk).lastOrNull()?.takeIf { it.range.first > 0 }
                 ?: years.findAll(name).lastOrNull()?.takeIf { it.range.first > 0 }
             if (year != null) {
-                val title = clean(junk.replace(name.substring(0, year.range.first), ""))
+                val title = stripEndTags(clean(junk.replace(name.substring(0, year.range.first), "")), fileName)
                 if (title.isNotEmpty()) {
                     return TitleInfo("$title (${year.groupValues[1]})", null, title, null, null)
                 }
             }
-            val title = clean(withoutJunk).ifEmpty { clean(name) }.ifEmpty { name }
+            val title = stripEndTags(clean(withoutJunk).ifEmpty { clean(name) }.ifEmpty { name }, fileName)
             return TitleInfo(title, null, title, null, null)
         }
 
@@ -109,6 +109,39 @@ data class TitleInfo(
                     return s
                 }
                 s = rest.trim()
+            }
+        }
+
+        // A tag joined on at the end ("BLANK-eng", "Dark [EN]", "Show (ENG)", "Show ENG"), and a year in brackets
+        // after it.
+        private val trailRegex = Regex("""(\s*[-_|]\s*|\s+|\s*[(\[])([A-Za-z]{2,7})[)\]]?\s*$""")
+        private val yearAtEndRegex = Regex("""\s*[(\[](?:19|20)\d{2}[)\]]\s*$""")
+
+        /** Language tags providers put after names; only these go, so a title ending in a real word stays whole. */
+        private val END_TAGS = setOf(
+            "EN", "ENG", "ENGLISH", "AR", "ARA", "ARABIC", "MULTI", "SUB", "SUBS", "SUBBED", "DUB", "DUBBED", "VOST", "VOSTFR",
+        )
+
+        /**
+         * Removes language tags from the end: "BLANK-eng" → "BLANK", "Dark [EN] (2017)" → "Dark (2017)". [fileName]:
+         * the spaces were dots or underscores, so a tag after one is a tag whatever its case.
+         */
+        private fun stripEndTags(input: String, fileName: Boolean): String {
+            val year = yearAtEndRegex.find(input)
+            if (year != null && year.range.first > 0) {
+                val head = stripEndTags(input.substring(0, year.range.first), fileName)
+                return "$head ${year.value.trim()}"
+            }
+            var s = input.trim()
+            while (true) {
+                val m = trailRegex.find(s) ?: return s
+                val separator = m.groupValues[1]
+                val tag = m.groupValues[2]
+                val rest = s.substring(0, m.range.first).trim()
+                if (rest.isEmpty() || tag.uppercase() !in END_TAGS) return s
+                // After a plain space, only a tag in capitals ("Dark ENG"): "Tout en" is a title.
+                if (separator.isBlank() && !fileName && tag != tag.uppercase()) return s
+                s = rest
             }
         }
 
