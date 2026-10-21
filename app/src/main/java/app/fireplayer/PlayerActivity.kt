@@ -61,6 +61,7 @@ import app.fireplayer.player.NextEpisode
 import app.fireplayer.player.PlayerFactory
 import app.fireplayer.player.ServerSwitch
 import app.fireplayer.player.TitleInfo
+import app.fireplayer.player.XtreamAccount
 import app.fireplayer.subs.FontImport
 import app.fireplayer.subs.OpenSubtitles
 import app.fireplayer.subs.Tmdb
@@ -201,6 +202,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private lateinit var errorBox: View
     private lateinit var errorHint: TextView
     private lateinit var errorText: TextView
+    /** Counts errors shown, so a late answer about the account's screens only changes the error it was asked for. */
+    private var errorsShown = 0
     private lateinit var focusSink: View
 
     private val moreItems = LinkedHashMap<String, MoreItem>()
@@ -1040,6 +1043,27 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         errorBox.visibility = View.VISIBLE
         updateKeepScreenOn()
         hideControls()
+        checkScreens(error, status)
+    }
+
+    /**
+     * When the video wouldn't load because every screen the provider allows is in use, the error says so. The
+     * provider is asked once the error is up, when the player's own connection has let go.
+     */
+    private fun checkScreens(error: PlaybackException, status: Int?) {
+        val shown = ++errorsShown
+        if (error.errorCode !in 2000..2999 || status == 404 || status == 410) return
+        val uri = entries.getOrNull(player?.currentMediaItemIndex ?: startIndex)?.uri ?: return
+        if (XtreamAccount.login(uri) == null) return
+        val account = XtreamAccount(headersFromIntent())
+        thread(name = "FirePlayerScreens", isDaemon = true) {
+            val screens = account.screens(uri)?.takeIf { it.full } ?: return@thread
+            handler.post {
+                if (isFinishing || shown != errorsShown || errorBox.visibility != View.VISIBLE) return@post
+                errorText.text = "Your account's screen limit is reached (${screens.inUse} of ${screens.allowed} in use). " +
+                    "Stop watching on another device, then try again."
+            }
+        }
     }
 
     /** Tries again after [delayMs] with the spinner up instead of an error. */
