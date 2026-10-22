@@ -4,7 +4,7 @@ import android.net.Uri
 
 /**
  * Turns whatever name TiviMate (or a file name) gives us into
- * "Movie (2024)" or "Show" + "S1 · E4 · Episode".
+ * "Movie (2024)" or "Show" + "S1 E4".
  */
 data class TitleInfo(
     val title: String,
@@ -81,13 +81,10 @@ data class TitleInfo(
             val ep = episodeRegex.find(name) ?: altEpisodeRegex.find(name)
             if (ep != null) {
                 val show = stripEndTags(clean(junk.replace(name.substring(0, ep.range.first), "")), anyCase)
-                val after = stripEndTags(clean(junk.replace(name.substring(ep.range.last + 1), "")), anyCase)
                 val season = ep.groupValues[1].toInt()
                 val episode = ep.groupValues[2].toInt()
-                val sub = buildString {
-                    append("S").append(season).append(" · E").append(episode)
-                    if (after.isNotEmpty()) append(" · ").append(after)
-                }
+                // Just where it is in the show: the provider's name for the episode is often in another language
+                val sub = "S$season E$episode"
                 val showTitle = show.ifEmpty { clean(junk.replace(name, "")).ifEmpty { name } }
                 return TitleInfo(showTitle, sub, stripYear(showTitle), season, episode, named = show.isNotEmpty())
             }
