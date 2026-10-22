@@ -19,8 +19,13 @@ class TitleMatcher(private val tmdb: Tmdb) {
         val name = info.searchQuery.trim()
         if (name.isEmpty()) return null
         val wantedYear = YEAR.find(info.title)?.groupValues?.get(1)?.toIntOrNull() ?: year.takeIf { it > 0 }
-        val match = (if (tmdbId > 0) byId(tmdbId, name, wantedYear, show) else null)
-            ?: tmdb.verify(name, wantedYear, show)?.let { Found(it.name, it.year) }
+        // "Radioactive Detectives 2017" may be the name and its year, or a name ending in a number ("Blade Runner
+        // 2049"): read both ways, the name as it is first; only what TMDB confirms counts either way.
+        val bare = BARE_YEAR.find(name)?.takeIf { it.range.first > 0 && wantedYear == null }
+        val readings = listOf(name to wantedYear) +
+            listOfNotNull(bare?.let { name.substring(0, it.range.first).trim() to it.groupValues[1].toInt() })
+        val match = readings.firstNotNullOfOrNull { (n, y) -> if (tmdbId > 0) byId(tmdbId, n, y, show) else null }
+            ?: readings.firstNotNullOfOrNull { (n, y) -> tmdb.verify(n, y, show)?.let { Found(it.name, it.year) } }
             ?: return null
         val quality = Quality.of(raw, category)
         return buildString {
@@ -67,5 +72,6 @@ class TitleMatcher(private val tmdb: Tmdb) {
 
     private companion object {
         val YEAR = Regex("""\(((?:19|20)\d{2})\)""")
+        val BARE_YEAR = Regex("""\s((?:19|20)\d{2})$""")
     }
 }

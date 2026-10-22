@@ -11,7 +11,7 @@ import app.fireplayer.subs.Tmdb
  * name it gets in TiviMate once TMDB confirms it ([TitleMatcher]). Also TMDB's answers, so a title listed by
  * several providers is asked about once. Opened by the proxy and, to show progress in Settings, by the app.
  */
-class TitleBook(context: Context) : SQLiteOpenHelper(context, "titles.db", null, 1) {
+class TitleBook(context: Context) : SQLiteOpenHelper(context, "titles.db", null, MATCH_RULES) {
 
     enum class Kind(val code: Int) { MOVIE(0), SHOW(1) }
 
@@ -53,7 +53,10 @@ class TitleBook(context: Context) : SQLiteOpenHelper(context, "titles.db", null,
         db.execSQL("CREATE TABLE tmdb(key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID")
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+    // Better rules may find what the old ones didn't: titles kept as they were are asked about again.
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        db.execSQL("UPDATE item SET state = $WAITING, checked = 0 WHERE state = $KEPT")
+    }
 
     /** Everything known of a provider's films or shows, by id. Read once per list TiviMate asks for. */
     fun known(server: String, kind: Kind): Map<Int, Known> {
@@ -185,6 +188,8 @@ class TitleBook(context: Context) : SQLiteOpenHelper(context, "titles.db", null,
     }
 
     private companion object {
+        // The version of TitleMatcher's rules; raised when they change.
+        const val MATCH_RULES = 2
         const val WAITING = 0
         const val RENAMED = 1
         const val KEPT = 2
