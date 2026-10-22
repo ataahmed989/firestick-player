@@ -17,6 +17,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.res.ResourcesCompat
 import app.fireplayer.data.Prefs
 import app.fireplayer.subs.SubtitlePresets
+import app.fireplayer.titles.TitleService
 import app.fireplayer.ui.FireDialog
 import app.fireplayer.ui.Rows
 import app.fireplayer.ui.SettingsPanels
@@ -52,6 +53,8 @@ class HomeActivity : AppCompatActivity() {
 
         val updater = Updater(this)
         updater.check { release -> release?.let { updater.offer(it) } }
+        // Normally running since the TV started; the first time after installing, from here.
+        TitleService.start(this)
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {

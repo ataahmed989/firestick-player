@@ -9,6 +9,10 @@
         android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- TiviMate titles: a small server on this TV, running from when it starts. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <uses-feature
         android:name="android.software.leanback"
@@ -125,6 +129,30 @@
                 <data android:pathPattern=".*\\.MPD" />
             </intent-filter>
         </activity>
+
+        <!--
+            TiviMate's films and shows under their English names (see titles/TitleService.kt). Its own process, so the
+            player never shares memory or a crash with it.
+        -->
+        <service
+            android:name=".titles.TitleService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse"
+            android:process=":titles">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Local server TiviMate reaches its IPTV provider through, renaming films and shows" />
+        </service>
+
+        <receiver
+            android:name=".titles.TitleService$Starter"
+            android:exported="true"
+            android:process=":titles">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
         <provider
             android:name="androidx.core.content.FileProvider"

@@ -11,13 +11,32 @@ import kotlin.math.abs
 
 /**
  * Minimal client for The Movie Database, with the user's own key, so a subtitle search can ask for the exact film or
- * show, and the player can show its proper name and year. All network calls block; run them off the main thread.
+ * show, and TiviMate's lists can show their English names (see [app.fireplayer.titles.TitleMatcher]). What it
+ * matched is kept in [memory]. All network calls block; run them off the main thread.
  */
-class Tmdb(private val prefs: Prefs) {
+class Tmdb(private val key: () -> String, private val memory: Memory) {
 
-    init {
-        prefs.dropTmdbMatchesBefore(MATCH_RULES)
+    /** The player's: its key from Settings, matches kept only while it runs. */
+    constructor(prefs: Prefs) : this({ prefs.tmdbApiKey }, Memory.inProcess())
+
+    /** Where matches are kept, by what was asked. */
+    interface Memory {
+        fun get(key: String): String?
+        fun put(key: String, value: String)
+
+        companion object {
+            fun inProcess(): Memory = object : Memory {
+                private val map = java.util.concurrent.ConcurrentHashMap<String, String>()
+                override fun get(key: String) = map[key]
+                override fun put(key: String, value: String) {
+                    map[key] = value
+                }
+            }
+        }
     }
+
+    /** TMDB answered with [code]: 401 for a key it doesn't take, 404 for no such title, 429 for too many requests. */
+    class HttpError(val code: Int, message: String) : Exception(message)
 
     /**
      * A film or show on TMDB. [close]: its name is the one asked for (give or take punctuation and a word like a
@@ -28,7 +47,7 @@ class Tmdb(private val prefs: Prefs) {
         val label: String get() = if (year != null) "$name ($year)" else name
     }
 
-    val isConfigured: Boolean get() = prefs.tmdbApiKey.isNotEmpty()
+    val isConfigured: Boolean get() = key().isNotEmpty()
 
     /**
      * The film or show TMDB confirms for a name a provider wrote. Tried as it is first (and without words in
@@ -68,13 +87,13 @@ class Tmdb(private val prefs: Prefs) {
                 return match
             }
         }
-        prefs.saveTmdbMatch(key, "$MISSED\t${System.currentTimeMillis() / 1000}")
+        memory.put(key, "$MISSED\t${System.currentTimeMillis() / 1000}")
         return null
     }
 
     /** Whether [verify] found nothing for this lately, so it isn't asked again yet. Doesn't block. */
     fun recentlyMissed(name: String, year: Int?, show: Boolean): Boolean {
-        val parts = prefs.tmdbMatch(cacheKey(name, year, show))?.split('\t') ?: return false
+        val parts = memory.get(cacheKey(name, year, show))?.split('\t') ?: return false
         if (parts[0] != MISSED) return false
         val at = parts.getOrNull(1)?.toLongOrNull() ?: return false
         return System.currentTimeMillis() / 1000 - at < MISS_KEPT_S
@@ -107,11 +126,11 @@ class Tmdb(private val prefs: Prefs) {
     }
 
     private fun save(key: String, match: Match) =
-        prefs.saveTmdbMatch(key, "${match.id}\t${match.name}\t${match.year.orEmpty()}")
+        memory.put(key, "${match.id}\t${match.name}\t${match.year.orEmpty()}")
 
     /** A close match found before for the same question, without asking TMDB again. Doesn't block. */
     fun cached(name: String, year: Int?, show: Boolean): Match? {
-        val parts = prefs.tmdbMatch(cacheKey(name, year, show))?.split('\t') ?: return null
+        val parts = memory.get(cacheKey(name, year, show))?.split('\t') ?: return null
         val id = parts.getOrNull(0)?.toIntOrNull() ?: return null
         val title = parts.getOrNull(1)?.takeIf { it.isNotEmpty() } ?: return null
         return Match(id, title, parts.getOrNull(2)?.takeIf { it.isNotEmpty() })
@@ -123,6 +142,51 @@ class Tmdb(private val prefs: Prefs) {
      */
     fun find(name: String, year: Int?, show: Boolean, country: String? = countryIn(name)): Match? =
         lookup(name, year, show, country).match
+
+    /**
+     * A film or show by its TMDB id: its English name and year, and its names simplified (see [simple]), in every
+     * language and their other names too when [allNames]. Null when TMDB has no title by that id.
+     */
+    class Details(val id: Int, val name: String, val year: String?, val names: Set<String>)
+
+    fun details(id: Int, show: Boolean, allNames: Boolean): Details? {
+        val key = "$MATCH_RULES|id|${if (show) "tv" else "movie"}|$id|${if (allNames) "all" else "en"}"
+        memory.get(key)?.let { saved ->
+            if (saved == MISSED) return null
+            val parts = saved.split('\t')
+            return Details(id, parts[0], parts.getOrNull(1)?.ifEmpty { null }, parts.getOrNull(2)?.split(' ')?.toSet().orEmpty())
+        }
+        return fetchDetails(id, show, allNames).also { found ->
+            memory.put(key, found?.let { "${it.name.replace('\t', ' ')}\t${it.year.orEmpty()}\t${it.names.joinToString(" ")}" } ?: MISSED)
+        }
+    }
+
+    private fun fetchDetails(id: Int, show: Boolean, allNames: Boolean): Details? {
+        val params = listOfNotNull("language" to "en-US", if (allNames) "append_to_response" to "translations,alternative_titles" else null)
+        val item = try {
+            JSONObject(request("${if (show) "tv" else "movie"}/$id", params))
+        } catch (e: HttpError) {
+            if (e.code == 404) return null
+            throw e
+        }
+        val name = item.optString(if (show) "name" else "title").ifEmpty { item.optString(if (show) "original_name" else "original_title") }
+        if (name.isEmpty()) return null
+        val names = NAME_FIELDS.map { simple(item.optString(it)) }.toMutableSet()
+        if (allNames) {
+            val translations = item.optJSONObject("translations")?.optJSONArray("translations") ?: JSONArray()
+            for (i in 0 until translations.length()) {
+                translations.optJSONObject(i)?.optJSONObject("data")?.let { names += simple(it.optString(if (show) "name" else "title")) }
+            }
+            val others = item.optJSONObject("alternative_titles")?.let { it.optJSONArray("titles") ?: it.optJSONArray("results") } ?: JSONArray()
+            for (i in 0 until others.length()) others.optJSONObject(i)?.let { names += simple(it.optString("title")) }
+        }
+        names.remove("")
+        val year = item.optString(if (show) "first_air_date" else "release_date").take(4).takeIf { it.length == 4 }
+        return Details(id, name, year, names)
+    }
+
+    /** Only letters and digits, without "the", "a" or "an" in front, as [Details.names] are written. */
+    fun simplify(s: String): String = simple(s)
 
     /** What [find] found, and the simple names of everything TMDB answered with on the way. */
     private class Lookup(val match: Match?, val names: Set<String>)
@@ -233,7 +297,7 @@ class Tmdb(private val prefs: Prefs) {
     }
 
     private fun request(path: String, params: List<Pair<String, String>>): String {
-        val key = prefs.tmdbApiKey
+        val key = key()
         // The long "API Read Access Token" goes in a header; the short "API Key" in the address.
         val token = key.length > 40
         val all = if (token) params else params + ("api_key" to key)
@@ -249,9 +313,9 @@ class Tmdb(private val prefs: Prefs) {
             val stream = if (code in 200..299) conn.inputStream else conn.errorStream
             val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
             if (code !in 200..299) {
-                if (code == 401) error("TMDB didn't accept this key")
+                if (code == 401) throw HttpError(code, "TMDB didn't accept this key")
                 val message = runCatching { JSONObject(text).optString("status_message") }.getOrNull()
-                error(message?.ifEmpty { null } ?: "TMDB error $code")
+                throw HttpError(code, message?.ifEmpty { null } ?: "TMDB error $code")
             }
             return text
         } finally {
@@ -270,9 +334,9 @@ class Tmdb(private val prefs: Prefs) {
     private fun countryIn(name: String): String? =
         COUNTRY.findAll(name).mapNotNull { COUNTRIES[it.groupValues[1].uppercase()] }.lastOrNull()
 
-    // With "the" as written, so "Batman" and "The Batman" are remembered apart.
+    // With "the" as written, so "Batman" and "The Batman" are remembered apart; and under these rules only.
     private fun cacheKey(name: String, year: Int?, show: Boolean) =
-        "${if (show) "tv" else "movie"}|${plain(name)}|${year ?: ""}"
+        "$MATCH_RULES|${if (show) "tv" else "movie"}|${plain(name)}|${year ?: ""}"
 
     private companion object {
         val NAME_FIELDS = listOf("title", "original_title", "name", "original_name")
@@ -291,7 +355,7 @@ class Tmdb(private val prefs: Prefs) {
             "MX" to "MX", "JP" to "JP", "KR" to "KR", "TR" to "TR", "TW" to "TW", "HK" to "HK", "CH" to "CH",
             "AT" to "AT", "AL" to "AL", "LA" to "LA",
         )
-        // Matches saved under older rules ("The Office (UK)" as the US show) are dropped once and asked again.
+        // Matches saved under older rules ("The Office (UK)" as the US show) aren't used; they're asked again.
         const val MATCH_RULES = 4
         const val MISSED = "-"
         const val MISS_KEPT_S = 3 * 24 * 3600L

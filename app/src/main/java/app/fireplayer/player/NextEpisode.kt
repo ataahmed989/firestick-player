@@ -5,6 +5,7 @@ import android.net.Uri
 import android.util.JsonReader
 import android.util.JsonToken
 import android.util.Log
+import app.fireplayer.titles.TitleProxy
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -39,8 +40,10 @@ class NextEpisode(context: Context, private val headers: Map<String, String>) {
         val user: String,
         val password: String,
         val episodeId: String,
+        /** The provider's server, when the link goes through FirePlayer's title proxy (see [TitleProxy]). */
+        val server: String?,
     ) {
-        val base get() = "$scheme://$authority"
+        val base get() = "$scheme://$authority" + (server?.let { "/$it" } ?: "")
     }
 
     private class Episode(
@@ -473,11 +476,12 @@ class NextEpisode(context: Context, private val headers: Map<String, String>) {
             val scheme = uri.scheme?.lowercase()
             if (scheme != "http" && scheme != "https") return null
             val authority = uri.encodedAuthority ?: return null
-            val parts = uri.pathSegments
+            val server = TitleProxy.serverIn(uri)
+            val parts = if (server != null) uri.pathSegments.drop(1) else uri.pathSegments
             if (parts.size != 4 || !parts[0].equals("series", true)) return null
             val episodeId = parts[3].substringBeforeLast('.').takeIf { id -> id.isNotEmpty() && id.all { it.isDigit() } }
                 ?: return null
-            return Link(uri, scheme, authority, parts[1], parts[2], episodeId)
+            return Link(uri, scheme, authority, parts[1], parts[2], episodeId, server)
         }
 
         // Where an episode's own part of a name starts: "S01E03", "S1 EP3", "1x03", "Season 1", "Episode 3".

@@ -46,6 +46,11 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
+    testOptions {
+        // TitleInfo's tests never touch the Android parts it can use.
+        unitTests.isReturnDefaultValues = true
+    }
+
     lint {
         abortOnError = false
         checkReleaseBuilds = false
@@ -66,4 +71,5 @@ dependencies {
     implementation(libs.ass.media)
     implementation(libs.ffmpeg.decoder)
     implementation(libs.mlkit.text.recognition)
+    testImplementation(libs.junit)
 }
