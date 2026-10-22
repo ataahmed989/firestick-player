@@ -126,25 +126,36 @@ class TitleBook(context: Context) : SQLiteOpenHelper(context, "titles.db", null,
 
     /**
      * Titles to ask TMDB about: new ones, ones whose last try failed a while ago, and, now and then, ones TMDB
-     * wasn't sure of (it learns new titles). Shows first, then the newest films (the highest ids).
+     * wasn't sure of (it learns new titles). Every provider in turn, so a small playlist never waits behind a big
+     * one; of each, shows first, then the newest films (the highest ids).
      */
     fun waiting(now: Long, limit: Int): List<Waiting> {
-        val list = ArrayList<Waiting>(limit)
-        readableDatabase.rawQuery(
-            """SELECT i.server, i.kind, i.id, i.raw, i.tmdb, c.name, i.year FROM item i
-               LEFT JOIN category c ON c.server = i.server AND c.kind = i.kind AND c.id = i.category
-               WHERE (i.state = $WAITING AND i.checked < ?) OR (i.state = $KEPT AND i.checked < ?)
-               ORDER BY i.kind DESC, i.id DESC LIMIT $limit""",
-            arrayOf((now - RETRY_FAILED_S).toString(), (now - RETRY_KEPT_S).toString()),
-        ).use { c ->
-            while (c.moveToNext()) {
-                list += Waiting(
-                    c.getString(0), if (c.getInt(1) == Kind.SHOW.code) Kind.SHOW else Kind.MOVIE, c.getInt(2), c.getString(3),
-                    c.getInt(4), if (c.isNull(5)) null else c.getString(5), c.getInt(6),
-                )
-            }
+        val db = readableDatabase
+        val servers = db.rawQuery("SELECT DISTINCT server FROM item", null).use { c ->
+            buildList { while (c.moveToNext()) add(c.getString(0)) }
         }
-        return list
+        if (servers.isEmpty()) return emptyList()
+        val each = (limit / servers.size).coerceAtLeast(1)
+        val lists = servers.map { server ->
+            val list = ArrayList<Waiting>(each)
+            db.rawQuery(
+                """SELECT i.server, i.kind, i.id, i.raw, i.tmdb, c.name, i.year FROM item i
+                   LEFT JOIN category c ON c.server = i.server AND c.kind = i.kind AND c.id = i.category
+                   WHERE i.server = ? AND ((i.state = $WAITING AND i.checked < ?) OR (i.state = $KEPT AND i.checked < ?))
+                   ORDER BY i.kind DESC, i.id DESC LIMIT $each""",
+                arrayOf(server, (now - RETRY_FAILED_S).toString(), (now - RETRY_KEPT_S).toString()),
+            ).use { c ->
+                while (c.moveToNext()) {
+                    list += Waiting(
+                        c.getString(0), if (c.getInt(1) == Kind.SHOW.code) Kind.SHOW else Kind.MOVIE, c.getInt(2), c.getString(3),
+                        c.getInt(4), if (c.isNull(5)) null else c.getString(5), c.getInt(6),
+                    )
+                }
+            }
+            list
+        }
+        // Taking turns: one of each provider's, then the next of each.
+        return (0 until each).flatMap { i -> lists.mapNotNull { it.getOrNull(i) } }
     }
 
     /** TMDB's answer for [w]: its English name, or null to keep the provider's. Ignored if the provider renamed it since. */
