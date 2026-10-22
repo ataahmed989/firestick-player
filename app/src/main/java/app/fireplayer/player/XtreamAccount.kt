@@ -2,6 +2,7 @@ package app.fireplayer.player
 
 import android.net.Uri
 import android.util.Log
+import app.fireplayer.titles.TitleProxy
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -20,8 +21,10 @@ class XtreamAccount(private val headers: Map<String, String>) {
     /** Null when the provider can't be asked or doesn't say. */
     fun screens(uri: Uri): Screens? {
         val (user, password) = login(uri) ?: return null
-        val url = Uri.Builder().scheme(uri.scheme).encodedAuthority(uri.encodedAuthority)
-            .appendPath("player_api.php")
+        val builder = Uri.Builder().scheme(uri.scheme).encodedAuthority(uri.encodedAuthority)
+        // Through FirePlayer's title proxy, the provider is asked the same way.
+        TitleProxy.serverIn(uri)?.let { builder.appendPath(it) }
+        val url = builder.appendPath("player_api.php")
             .appendQueryParameter("username", user)
             .appendQueryParameter("password", password)
             .build().toString()
@@ -64,7 +67,7 @@ class XtreamAccount(private val headers: Map<String, String>) {
         fun login(uri: Uri): Pair<String, String>? {
             val scheme = uri.scheme?.lowercase()
             if (scheme != "http" && scheme != "https") return null
-            val parts = uri.pathSegments
+            val parts = uri.pathSegments.let { if (TitleProxy.serverIn(uri) != null) it.drop(1) else it }
             return when {
                 parts.size >= 4 && parts[0].lowercase() in KINDS -> parts[1] to parts[2]
                 // A live channel can also be ".../user/pass/123".

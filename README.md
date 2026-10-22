@@ -24,6 +24,25 @@ A fast, minimal video player for Fire TV and Android TV, built for opening VOD f
 
 TiviMate → Settings → Playback → External player → **FirePlayer**. Then pick a movie or episode and choose to play it in the external player (or set it as the default player for VOD). FirePlayer reports where you stopped, so TiviMate's resume points keep working.
 
+## English titles in TiviMate
+
+FirePlayer can give TiviMate its films and shows under their English names from TMDB, as **The Matrix (1999) [4K]**,
+and TiviMate's search then finds them by those names.
+
+1. FirePlayer → Settings → Online subtitles → add your **TMDB API key** (or read access token).
+2. In TiviMate: Settings → Playlists → a playlist → **Xtream Codes parameters** → **Server address**. Put
+   `http://127.0.0.1:8000/` in front of what's there, so `http://proxpanel.fans:80` becomes
+   `http://127.0.0.1:8000/proxpanel.fans:80`, then **Apply changes**. A new playlist is added the same way.
+3. Update the playlist. FirePlayer looks the titles up in the background (a few thousand a minute, never while a
+   film plays); the next update shows them in English.
+
+How it works: FirePlayer runs a small server on the TV, from when it starts, that TiviMate reaches its provider
+through. Only the names in the lists of films and shows change; videos, live channels and catch-up go straight to
+the provider, and categories, artwork, episodes, favourites and watch history stay as they are. A title is renamed
+only when TMDB confirms it (by the TMDB id the provider gives, or by its name and year), so the provider's own name
+stays when TMDB isn't sure. The quality tag comes from the provider's name or category ("4K Movies"); videos are
+never opened to find it. Settings → TiviMate titles shows how far along each provider is, and turns it off.
+
 ## Remote
 
 | Key | Action |

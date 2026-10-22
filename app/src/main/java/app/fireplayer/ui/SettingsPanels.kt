@@ -12,6 +12,9 @@ import app.fireplayer.subs.SubtitleFont
 import app.fireplayer.subs.SubtitlePresets
 import app.fireplayer.subs.SubtitleStyle
 import app.fireplayer.subs.Tmdb
+import app.fireplayer.titles.TitleBook
+import app.fireplayer.titles.TitleProxy
+import app.fireplayer.titles.TitleService
 import app.fireplayer.update.Updater
 import java.util.Locale
 import kotlin.concurrent.thread
@@ -29,12 +32,17 @@ class SettingsPanels(
     // How the last TMDB key check went: the row's value, and what TMDB said when it said no.
     private var tmdbStatus: String? = null
     private var tmdbProblem: String? = null
+    // How far TiviMate's titles are, read when Settings opens.
+    private var titlesProgress: List<TitleBook.Progress>? = null
+    private var titlesAsked = false
 
     /** Called after a font arrives from the phone (or is removed), so the subtitles can switch to it. */
     var onFontChanged: () -> Unit = {}
 
     /** Languages offered as defaults; English first. */
     private val languages = listOf("en", "ar", "es", "fr", "de", "it", "pt", "hi", "ur", "tr", "ja", "ko", "zh")
+
+    private fun count(n: Int) = String.format(Locale.US, "%,d", n)
 
     fun languageName(code: String): String =
         if (code.isEmpty()) "Off" else Locale(code).getDisplayLanguage(Locale.ENGLISH)
@@ -90,6 +98,37 @@ class SettingsPanels(
             prefs.passthrough = !prefs.passthrough; refresh()
         }
 
+        header("TiviMate titles")
+        message("Films and shows in TiviMate under their English names from TMDB, as \"The Matrix (1999) [4K]\", and found by those names in TiviMate's search.")
+        row("English titles in TiviMate", onOff(prefs.tivimateTitles)) {
+            prefs.tivimateTitles = !prefs.tivimateTitles
+            TitleService.start(activity)
+            refresh()
+        }
+        if (prefs.tivimateTitles) {
+            if (prefs.tmdbApiKey.isEmpty()) message("Add a TMDB key (under Online subtitles) for the names to be looked up.")
+            message(
+                "In TiviMate: Settings, Playlists, a playlist, Xtream Codes parameters. Put http://127.0.0.1:${TitleProxy.PORT}/ " +
+                    "in front of the server address: ${TitleProxy.addressFor("proxpanel.fans:80")}.",
+            )
+            titlesProgress?.forEach { p ->
+                message(
+                    "${p.server}: ${count(p.renamed)} renamed, ${count(p.kept)} kept as they are" +
+                        if (p.waiting > 0) ", ${count(p.waiting)} still to look up" else "",
+                )
+            }
+            if (!titlesAsked) {
+                titlesAsked = true
+                thread(name = "FirePlayerTitles", isDaemon = true) {
+                    val progress = runCatching { TitleBook(activity).use { it.progress() } }.getOrNull()
+                    activity.runOnUiThread {
+                        titlesProgress = progress
+                        if (isOpen && !progress.isNullOrEmpty()) refresh()
+                    }
+                }
+            }
+        }
+
         header("Subtitle font")
         message(importedFontName?.let { "Using $it from your phone." } ?: "Using the built-in font.")
         row("Send a font from your phone") {
@@ -128,6 +167,8 @@ class SettingsPanels(
         row("TMDB API key", tmdbStatus ?: if (prefs.tmdbApiKey.isEmpty()) "Optional" else "Saved") {
             SidePanel.prompt(activity, "TMDB API key or read access token", prefs.tmdbApiKey) { key ->
                 prefs.tmdbApiKey = key
+                // TiviMate's titles start being looked up with it.
+                TitleService.start(activity)
                 tmdbProblem = null
                 tmdbStatus = if (prefs.tmdbApiKey.isEmpty()) null else "Checking…"
                 refresh()

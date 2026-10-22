@@ -21,10 +21,6 @@ data class TitleInfo(
         return copy(title = s.title, searchQuery = s.searchQuery, named = true)
     }
 
-    /** Under the name TMDB knows it by, then its year: "Breaking Bad (2008)". */
-    fun withMatch(name: String, year: String?): TitleInfo =
-        copy(title = if (year != null) "$name ($year)" else name, searchQuery = name, named = true)
-
     companion object {
         /** The title of a video that came with no name. */
         const val NO_NAME = "Video"
@@ -33,6 +29,9 @@ data class TitleInfo(
         private val altEpisodeRegex = Regex("""(?i)\b(\d{1,2})x(\d{2,3})\b""")
         private val yearRegex = Regex("""[(\[]?\b((?:19|20)\d{2})\b[)\]]?""")
         private val bracketYearRegex = Regex("""[(\[]((?:19|20)\d{2})[)\]]""")
+        private val dashYearRegex = Regex("""\s+[-–]\s+((?:19|20)\d{2})\s*$""")
+        // As app.fireplayer.titles.Quality writes it.
+        private val qualityEndRegex = Regex("""\s*\[(?:4K|1080p|720p|HD|SD)(?: HDR)?]\s*$""")
 
         // Release tags and everything after them. Needs a space before it, so the title itself survives.
         private const val JUNK = """2160p|1080p|720p|480p|4k|uhd|hdr10?\+?|web-?dl|webrip|bluray|brrip|remux|x26[45]|""" +
@@ -76,6 +75,8 @@ data class TitleInfo(
             // Where dots or underscores were the spaces, a tag after one is a tag whatever its case ("BLANK_fr").
             val anyCase = fileName || dotted
             name = stripTags(name).ifBlank { name }
+            // The quality TiviMate's names now end with ("The Matrix (1999) [4K]"), and a year after a dash ("K.O. - 2025").
+            name = name.replace(qualityEndRegex, "").ifBlank { name }.replace(dashYearRegex) { " (${it.groupValues[1]})" }
             val junk = if (fileName) fileJunkRegex else junkRegex
 
             val ep = episodeRegex.find(name) ?: altEpisodeRegex.find(name)

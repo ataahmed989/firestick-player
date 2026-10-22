@@ -9,6 +9,10 @@ class Prefs(context: Context) {
     private val sp: SharedPreferences =
         context.applicationContext.getSharedPreferences("fireplayer", Context.MODE_PRIVATE)
 
+    init {
+        forgetPlayerMatches()
+    }
+
     enum class Resume(val label: String) { ASK("Ask"), ALWAYS("Always"), NEVER("Never") }
 
     var dpadStepSec: Int
@@ -85,18 +89,21 @@ class Prefs(context: Context) {
         get() = sp.getString("tmdb_key", "") ?: ""
         set(v) = sp.edit().putString("tmdb_key", v.trim()).apply()
 
-    /** A film or show matched on TMDB before, by what was asked: "id\tname\tyear". */
-    fun tmdbMatch(key: String): String? = sp.getString("tmdb|$key", null)
-
-    fun saveTmdbMatch(key: String, value: String) = sp.edit().putString("tmdb|$key", value).apply()
-
-    /** Forgets every saved match once, when they were saved under matching rules older than [rules]. */
-    fun dropTmdbMatchesBefore(rules: Int) {
-        if (sp.getInt("tmdb_rules", 1) >= rules) return
+    /**
+     * The player used to rename films with TMDB and kept every match here. TiviMate now gets the names already right
+     * (see [app.fireplayer.titles.TitleService]), so they're cleared out once, which keeps this file small to read.
+     */
+    private fun forgetPlayerMatches() {
+        if (sp.getInt("tmdb_rules", 1) >= PLAYER_MATCHES_GONE) return
         val edit = sp.edit()
         sp.all.keys.filter { it.startsWith("tmdb|") }.forEach { edit.remove(it) }
-        edit.putInt("tmdb_rules", rules).apply()
+        edit.putInt("tmdb_rules", PLAYER_MATCHES_GONE).apply()
     }
+
+    /** Whether TiviMate's films and shows are renamed with TMDB (see [app.fireplayer.titles.TitleService]). */
+    var tivimateTitles: Boolean
+        get() = sp.getBoolean("tivimate_titles", true)
+        set(v) = sp.edit().putBoolean("tivimate_titles", v).apply()
 
     /** The language Find subtitles searches in; "" until one is picked, then the default subtitle language is used. */
     var subtitleSearchLanguage: String
@@ -133,4 +140,8 @@ class Prefs(context: Context) {
     var customFontName: String
         get() = sp.getString("custom_font", "") ?: ""
         set(v) = sp.edit().putString("custom_font", v).apply()
+
+    private companion object {
+        const val PLAYER_MATCHES_GONE = 100
+    }
 }
