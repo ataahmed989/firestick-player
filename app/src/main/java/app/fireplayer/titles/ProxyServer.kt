@@ -105,7 +105,7 @@ class ProxyServer(
                 else -> respond(output, 302, "Found", listOf("Location" to upstream), null)
             }
         } catch (e: Exception) {
-            Log.i(TAG, "${request.method} $server$rest failed: $e")
+            Log.i(TAG, "${request.method} $server$rest${ACTION.find(query)?.let { " (${it.groupValues[1]})" }.orEmpty()} failed: $e")
             runCatching { respondText(output, 502, "The provider couldn't be reached.") }
         }
     }
@@ -116,22 +116,30 @@ class ProxyServer(
     private fun api(request: Request, server: String, upstream: String, query: String, output: OutputStream) {
         val params = Uri.parse("http://x/?$query")
         val action = params.getQueryParameter("action")
+        val started = System.currentTimeMillis()
         val conn = open(request, upstream)
         try {
             val code = conn.responseCode
             val body = body(conn)
             if (code != 200 || body == null) {
+                Log.i(TAG, "$server ${action ?: "account"}: the provider answered $code")
                 relay(conn, code, body, output)
                 return
             }
             when (action) {
-                "get_vod_streams" -> list(server, Kind.MOVIE, "stream_id", conn, body, output)
-                "get_series" -> list(server, Kind.SHOW, "series_id", conn, body, output)
+                "get_vod_streams", "get_series" -> {
+                    val (kind, idKey) = if (action == "get_series") Kind.SHOW to "series_id" else Kind.MOVIE to "stream_id"
+                    val (listed, renamed) = list(server, kind, idKey, conn, body, output)
+                    Log.i(TAG, "$server $action: $listed listed, $renamed renamed, ${System.currentTimeMillis() - started} ms")
+                }
                 "get_vod_categories" -> categories(server, Kind.MOVIE, conn, body, output)
                 "get_series_categories" -> categories(server, Kind.SHOW, conn, body, output)
                 "get_vod_info" -> info(server, Kind.MOVIE, params.getQueryParameter("vod_id"), conn, body, output)
                 "get_series_info" -> info(server, Kind.SHOW, params.getQueryParameter("series_id"), conn, body, output)
-                else -> relay(conn, code, body, output)
+                else -> {
+                    relay(conn, code, body, output)
+                    Log.i(TAG, "$server ${action ?: "account"}: ${System.currentTimeMillis() - started} ms")
+                }
             }
         } finally {
             conn.disconnect()
@@ -139,15 +147,30 @@ class ProxyServer(
     }
 
     /** A list of films or shows, renamed as it streams through. */
-    private fun list(server: String, kind: Kind, idKey: String, conn: HttpURLConnection, body: InputStream, output: OutputStream) {
+    /** How many titles it listed, and how many of them went out renamed. */
+    private fun list(
+        server: String,
+        kind: Kind,
+        idKey: String,
+        conn: HttpURLConnection,
+        body: InputStream,
+        output: OutputStream,
+    ): Pair<Int, Int> {
+        // TiviMate hears back at once, while what's known is read.
+        respond(output, 200, "OK", contentType(conn), null)
         val known = book.known(server, kind)
         val fresh = ArrayList<TitleBook.Listed>()
-        respond(output, 200, "OK", contentType(conn), null)
+        var listed = 0
+        var renamed = 0
         JsonList(body, output).copy { item ->
             val id = item.number(idKey)
             val raw = item.text("name") ?: return@copy null
+            listed++
             val k = known[id]
-            if (k != null && k.rawHash == raw.hashCode()) return@copy k.title
+            if (k != null && k.rawHash == raw.hashCode()) {
+                if (k.title != null) renamed++
+                return@copy k.title
+            }
             val year = (item.text("year") ?: item.text("release_date") ?: item.text("releaseDate"))
                 ?.let { YEAR.find(it)?.value?.toIntOrNull() } ?: 0
             val tmdb = item.number("tmdb").takeIf { it > 0 } ?: item.number("tmdb_id")
@@ -162,6 +185,7 @@ class ProxyServer(
                 onNewTitles()
             }
         }
+        return listed to renamed
     }
 
     /** Category names pass through; they're noted for the quality they may say ("4K Movies"). */
@@ -282,6 +306,8 @@ class ProxyServer(
         const val TAG = "FirePlayerTitles"
         const val MAX_CONNECTIONS = 16
         val YEAR = Regex("""(19|20)\d{2}""")
+        // Only the action goes in the log, never the login around it.
+        val ACTION = Regex("""(?:^|&)action=([A-Za-z_]+)""")
         val HOP_HEADERS = setOf("host", "connection", "accept-encoding", "content-length", "transfer-encoding", "keep-alive")
     }
 }

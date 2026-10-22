@@ -103,6 +103,7 @@ class TitleService : Service() {
             }.apply { isDaemon = true }
         }
         var told = false
+        var batches = 0
         while (running) {
             if (!tmdb.isConfigured) {
                 if (!told) Log.i(TAG, "No TMDB key in FirePlayer's Settings yet; titles wait for one")
@@ -118,6 +119,8 @@ class TitleService : Service() {
                 continue
             }
             val batch = runCatching { book.waiting(now(), BATCH) }.getOrElse { emptyList() }
+            // Now and then, and when everything is done: how far each provider is.
+            if (batches++ % PROGRESS_EVERY == 0 || batch.isEmpty()) logProgress()
             if (batch.isEmpty()) {
                 sleep(IDLE_MS)
                 continue
@@ -158,6 +161,15 @@ class TitleService : Service() {
 
     private fun now() = System.currentTimeMillis() / 1000
 
+    private var lastProgress = ""
+
+    private fun logProgress() {
+        val text = runCatching { book.progress() }.getOrElse { emptyList() }
+            .joinToString("; ") { "${it.server}: ${it.renamed} renamed, ${it.kept} kept, ${it.waiting} to look up" }
+        if (text.isNotEmpty() && text != lastProgress) Log.i(TAG, "Progress: $text")
+        lastProgress = text
+    }
+
     /** Starts it at boot and after FirePlayer is updated, before TiviMate needs it. */
     class Starter : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) = start(context)
@@ -177,6 +189,7 @@ class TitleService : Service() {
         private const val PLAYING_CHECK_MS = 60_000L
         private const val SLOW_DOWN_MS = 60_000L
         private const val LOGGED_PER_BATCH = 4
+        private const val PROGRESS_EVERY = 10
 
         /** Starts it when it's turned on in Settings (it is unless turned off), stops it otherwise. */
         fun start(context: Context) {
