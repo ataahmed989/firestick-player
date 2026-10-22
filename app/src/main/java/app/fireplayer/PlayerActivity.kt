@@ -65,6 +65,8 @@ import app.fireplayer.player.XtreamAccount
 import app.fireplayer.subs.FontImport
 import app.fireplayer.subs.OpenSubtitles
 import app.fireplayer.subs.Tmdb
+import app.fireplayer.titles.TitleBook
+import app.fireplayer.titles.TitleProxy
 import app.fireplayer.titles.TitleService
 import app.fireplayer.subs.PictureText
 import app.fireplayer.subs.SubtitlePresets
@@ -105,9 +107,16 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
                 field = value
                 parsed = null
             }
+        /** Its English name, found by FirePlayer's title server (see [lookUpEnglishName]); and whether it was asked for. */
+        var english: TitleInfo? = null
+            set(value) {
+                field = value
+                parsed = null
+            }
+        var englishAsked = false
         private var parsed: TitleInfo? = null
         val info: TitleInfo
-            get() = parsed ?: TitleInfo.parse(rawTitle, uri).let { base ->
+            get() = parsed ?: english ?: TitleInfo.parse(rawTitle, uri).let { base ->
                 showName?.takeIf { !base.named }?.let { base.withShow(it) } ?: base
             }.also { parsed = it }
         val key: String get() = uri.toString()
@@ -138,6 +147,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     private val handler = Handler(Looper.getMainLooper())
     private val io = Executors.newSingleThreadExecutor()
+    // FirePlayer's title server's names, opened when first needed (on [io]).
+    private var titleBook: TitleBook? = null
     private val delays = Delays()
 
     private var player: ExoPlayer? = null
@@ -410,6 +421,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     override fun onDestroy() {
         super.onDestroy()
+        io.execute { titleBook?.close() }
         // One replaced by a newer player leaves the screen's mode to that one.
         if (shown?.get() === this) {
             shown = null
@@ -1331,6 +1343,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
                 lookupInFlight = false
                 val playing = player ?: run { nextLookedUpFor = null; return@post }
                 if (found == null) return@post
+                // The look-up listed the show's episodes through the title server: its English name may be known now.
+                if (last.english == null) {
+                    last.englishAsked = false
+                    handler.postDelayed({ if (!isFinishing) lookUpEnglishName(last) }, EPISODES_NOTED_MS)
+                }
                 if (!last.info.named) {
                     val before = last.info.searchQuery
                     last.showName = found.showName
@@ -1452,6 +1469,51 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         // Hiding the focused Next button would send focus to the time bar; keep it on the buttons.
         if (!hasNext && btnNext.hasFocus()) btnPlay.requestFocus()
         nextGroup.visibility = if (hasNext) View.VISIBLE else View.GONE
+        lookUpEnglishName(entry)
+    }
+
+    /**
+     * TiviMate hands over the provider's name, which for an episode is often in another language. A film or episode
+     * that comes through FirePlayer's title server (see [TitleProxy]) goes on screen under the English name it found:
+     * "The Matrix (1999)", or the show's with "S1 E4" under it. An episode is known once its show's episodes were
+     * listed, by TiviMate or by the next-episode look-up.
+     */
+    private fun lookUpEnglishName(entry: Entry) {
+        if (entry.englishAsked || entry.english != null) return
+        val server = TitleProxy.serverIn(entry.uri) ?: return
+        entry.englishAsked = true
+        io.execute {
+            val found = runCatching { englishName(server, entry.uri) }.getOrNull() ?: return@execute
+            handler.post {
+                if (isFinishing) return@post
+                val before = entry.info.searchQuery
+                entry.english = found
+                // A subtitle search still set to the old name goes by the English one now.
+                if (findFor == entry.key && findQuery == before) findQuery = entry.info.searchQuery
+                if (entries.getOrNull(player?.currentMediaItemIndex ?: startIndex) === entry) updateTitle()
+            }
+        }
+    }
+
+    /** Blocks; on [io]. ".../server/movie/USER/PASSWORD/123.mkv" or ".../series/...". */
+    private fun englishName(server: String, uri: Uri): TitleInfo? {
+        val parts = uri.pathSegments.drop(1)
+        if (parts.size != 4) return null
+        val id = parts[3].substringBeforeLast('.').toIntOrNull() ?: return null
+        val book = titleBook ?: TitleBook(applicationContext).also { titleBook = it }
+        return when (parts[0].lowercase()) {
+            "movie" -> book.title(server, TitleBook.Kind.MOVIE, id)?.let { TitleInfo.parse(it, null) }
+            "series" -> {
+                val episode = book.episode(server, id) ?: return null
+                val show = book.title(server, TitleBook.Kind.SHOW, episode.series) ?: return null
+                TitleInfo.parse(show, null).copy(
+                    subtitle = "S${episode.season} E${episode.number}",
+                    season = episode.season,
+                    episode = episode.number,
+                )
+            }
+            else -> null
+        }
     }
 
     /** The screen stays on only while the film plays or loads to play; paused, asking or showing an error, it may sleep. */
@@ -2616,6 +2678,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         // The languages the subtitle search offers.
         val SEARCH_LANGUAGES = listOf("en", "ar")
         val YEAR_IN_TITLE = Regex("""\(((?:19|20)\d{2})\)""")
+        // The title server notes a show's episodes just after listing them.
+        const val EPISODES_NOTED_MS = 1_500L
         // How long the film waits for the TV to change refresh rate.
         const val DISPLAY_SWITCH_PAUSE_MS = 2_000L
         const val POST_PLAY_LEAD_MS = 20_000L

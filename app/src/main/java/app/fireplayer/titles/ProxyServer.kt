@@ -205,19 +205,45 @@ class ProxyServer(
         }
     }
 
-    /** One film's or show's details: its name as in the list. */
+    /**
+     * One film's or show's details: its name as in the list. A show's episodes are noted with it, so FirePlayer can
+     * show an episode under the show's English name.
+     */
     private fun info(server: String, kind: Kind, id: String?, conn: HttpURLConnection, body: InputStream, output: OutputStream) {
         val bytes = body.readBytes()
-        val title = id?.toIntOrNull()?.let { book.title(server, kind, it) }
-        val renamed = title?.let {
+        val number = id?.toIntOrNull()
+        val title = number?.let { book.title(server, kind, it) }
+        val json = runCatching { JSONObject(String(bytes, Charsets.UTF_8)) }.getOrNull()
+        val renamed = if (title != null && json != null) {
             runCatching {
-                val json = JSONObject(String(bytes, Charsets.UTF_8))
                 json.optJSONObject("info")?.let { info -> if (info.has("name")) info.put("name", title) }
                 json.optJSONObject("movie_data")?.let { data -> if (data.has("name")) data.put("name", title) }
                 json.toString().toByteArray(Charsets.UTF_8)
             }.getOrNull()
-        }
+        } else null
         respond(output, 200, "OK", contentType(conn), renamed ?: bytes)
+        if (kind == Kind.SHOW && number != null && json != null) {
+            recorder.execute {
+                runCatching { book.recordEpisodes(server, episodesIn(json, number)) }
+                    .onFailure { Log.w(TAG, "Couldn't note episodes: $it") }
+            }
+        }
+    }
+
+    /** The episodes in get_series_info: by season, as an object ({"1": [...]}) or a list of lists. */
+    private fun episodesIn(json: JSONObject, series: Int): List<TitleBook.Episode> {
+        val seasons = when (val e = json.opt("episodes")) {
+            is JSONObject -> e.keys().asSequence().mapNotNull { e.optJSONArray(it) }.toList()
+            is JSONArray -> (0 until e.length()).mapNotNull { e.optJSONArray(it) }
+            else -> emptyList()
+        }
+        return seasons.flatMap { list ->
+            (0 until list.length()).mapNotNull { i ->
+                val ep = list.optJSONObject(i) ?: return@mapNotNull null
+                val id = ep.optString("id").toIntOrNull() ?: return@mapNotNull null
+                TitleBook.Episode(id, series, ep.optString("season").toIntOrNull() ?: 0, ep.optString("episode_num").toIntOrNull() ?: 0)
+            }
+        }
     }
 
     // ---------------------------------------------------------------------

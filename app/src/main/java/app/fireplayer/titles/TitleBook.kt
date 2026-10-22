@@ -11,7 +11,7 @@ import app.fireplayer.subs.Tmdb
  * name it gets in TiviMate once TMDB confirms it ([TitleMatcher]). Also TMDB's answers, so a title listed by
  * several providers is asked about once. Opened by the proxy and, to show progress in Settings, by the app.
  */
-class TitleBook(context: Context) : SQLiteOpenHelper(context, "titles.db", null, MATCH_RULES) {
+class TitleBook(context: Context) : SQLiteOpenHelper(context, "titles.db", null, VERSION) {
 
     enum class Kind(val code: Int) { MOVIE(0), SHOW(1) }
 
@@ -32,6 +32,9 @@ class TitleBook(context: Context) : SQLiteOpenHelper(context, "titles.db", null,
         val year: Int,
     )
 
+    /** One of a show's episodes, by its id in the provider's links. */
+    class Episode(val id: Int, val series: Int, val season: Int, val number: Int)
+
     /** How far along a provider's titles are, for Settings. */
     class Progress(val server: String, val renamed: Int, val kept: Int, val waiting: Int)
 
@@ -51,12 +54,47 @@ class TitleBook(context: Context) : SQLiteOpenHelper(context, "titles.db", null,
                PRIMARY KEY(server, kind, id)) WITHOUT ROWID""",
         )
         db.execSQL("CREATE TABLE tmdb(key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID")
+        createEpisodes(db)
     }
 
-    // Better rules may find what the old ones didn't: titles kept as they were are asked about again.
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        db.execSQL("UPDATE item SET state = $WAITING, checked = 0 WHERE state = $KEPT")
+        // Better rules may find what the old ones didn't: titles kept as they were are asked about again.
+        if (oldVersion < 2) db.execSQL("UPDATE item SET state = $WAITING, checked = 0 WHERE state = $KEPT")
+        if (oldVersion < 3) createEpisodes(db)
     }
+
+    private fun createEpisodes(db: SQLiteDatabase) = db.execSQL(
+        """CREATE TABLE IF NOT EXISTS episode(server TEXT NOT NULL, id INTEGER NOT NULL, series INTEGER NOT NULL,
+           season INTEGER NOT NULL, number INTEGER NOT NULL, PRIMARY KEY(server, id)) WITHOUT ROWID""",
+    )
+
+    /** A show's episodes, as TiviMate (or FirePlayer's next-episode look-up) listed them. */
+    fun recordEpisodes(server: String, episodes: List<Episode>) {
+        if (episodes.isEmpty()) return
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val insert = db.compileStatement("INSERT OR REPLACE INTO episode(server, id, series, season, number) VALUES (?, ?, ?, ?, ?)")
+            for (e in episodes) {
+                insert.bindString(1, server)
+                insert.bindLong(2, e.id.toLong())
+                insert.bindLong(3, e.series.toLong())
+                insert.bindLong(4, e.season.toLong())
+                insert.bindLong(5, e.number.toLong())
+                insert.executeInsert()
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    /** The episode with this id in the provider's links, once its show's episodes were listed. */
+    fun episode(server: String, id: Int): Episode? =
+        readableDatabase.rawQuery(
+            "SELECT series, season, number FROM episode WHERE server = ? AND id = ?",
+            arrayOf(server, id.toString()),
+        ).use { c -> if (c.moveToFirst()) Episode(id, c.getInt(0), c.getInt(1), c.getInt(2)) else null }
 
     /** Everything known of a provider's films or shows, by id. Read once per list TiviMate asks for. */
     fun known(server: String, kind: Kind): Map<Int, Known> {
@@ -199,8 +237,8 @@ class TitleBook(context: Context) : SQLiteOpenHelper(context, "titles.db", null,
     }
 
     private companion object {
-        // The version of TitleMatcher's rules; raised when they change.
-        const val MATCH_RULES = 2
+        // 2: TitleMatcher's better rules; 3: episodes and their shows.
+        const val VERSION = 3
         const val WAITING = 0
         const val RENAMED = 1
         const val KEPT = 2
