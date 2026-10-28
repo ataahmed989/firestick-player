@@ -170,7 +170,10 @@ class TitleService : Service() {
         lastProgress = text
     }
 
-    /** Starts it at boot and after FirePlayer is updated, before TiviMate needs it. */
+    /**
+     * Starts it at boot and after FirePlayer is updated, before TiviMate needs it; and when Glass Home asks: pressing
+     * Home with the TV short of memory has Fire OS force-stop the app in front, and with FirePlayer this goes too.
+     */
     class Starter : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) = start(context)
     }

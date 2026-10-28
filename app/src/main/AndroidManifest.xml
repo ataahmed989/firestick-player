@@ -153,6 +153,8 @@
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <!-- From Glass Home, after Fire OS has force-stopped FirePlayer (see TitleService.Starter) -->
+                <action android:name="app.fireplayer.titles.START" />
             </intent-filter>
         </receiver>
 
