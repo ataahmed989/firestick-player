@@ -184,7 +184,9 @@ object PlayerFactory {
         // TVs with less of it keep less, or the room ahead would shrink to a few seconds.
         val backBufferMs = when {
             budget >= 280 shl 20 -> 15_000
-            budget >= 180 shl 20 -> 10_000
+            // Still one press back (10 s, landing up to 2 s early) on a TV with 384 MB for an app, as the Fire TV Stick
+            // 4K Plus: at 10 s, going back one press in a 4K film loaded it all again (2 s, measured).
+            budget >= 180 shl 20 -> 13_000
             else -> 5_000
         }
         val loadControl = FilmLoadControl(
