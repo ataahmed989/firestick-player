@@ -162,6 +162,8 @@ object PlayerFactory {
         pictureText: PictureText,
         /** Given the player's video renderers, to keep their frames evenly paced (see [VsyncFix]). */
         vsync: VsyncFix,
+        /** When the TV last switched refresh rate, which passthrough sound waits out (see [SwitchTolerantAudioSink]). */
+        displaySwitch: DisplaySwitch,
     ): Built {
         val serverSwitch = ServerSwitch()
         val dataSourceFactory = dataSourceFactory(context, headers, serverSwitch)
@@ -169,7 +171,7 @@ object PlayerFactory {
         val extractors = DefaultExtractorsFactory()
             .setConstantBitrateSeekingEnabled(true)
 
-        val baseRenderers = TvRenderersFactory(context, passthrough)
+        val baseRenderers = TvRenderersFactory(context, passthrough, displaySwitch)
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
             .setEnableDecoderFallback(true)
 
@@ -597,6 +599,7 @@ class ServerSwitch {
 private class TvRenderersFactory(
     context: Context,
     private val passthrough: Boolean,
+    private val displaySwitch: DisplaySwitch,
 ) : DefaultRenderersFactory(context) {
     override fun buildAudioSink(
         context: Context,
@@ -605,6 +608,7 @@ private class TvRenderersFactory(
     ): AudioSink? {
         if (passthrough) {
             return super.buildAudioSink(context, enableFloatOutput, enableAudioTrackPlaybackParams)
+                ?.let { SwitchTolerantAudioSink(it, displaySwitch) }
         }
         // Without a context the sink uses these fixed capabilities instead of what the TV reports,
         // so surround formats get decoded to PCM rather than passed through.

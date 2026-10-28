@@ -54,6 +54,7 @@ import androidx.media3.ui.SubtitleView
 import app.fireplayer.data.Prefs
 import app.fireplayer.player.BufferWait
 import app.fireplayer.player.Delays
+import app.fireplayer.player.DisplaySwitch
 import app.fireplayer.player.FpsMeter
 import app.fireplayer.player.FrameRateMatcher
 import app.fireplayer.player.IdleCloseDataSource
@@ -304,8 +305,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private var deviceRetries = 0
     private var firstDeviceErrorAt = 0L
     private val deviceRetriesBack = Runnable { deviceRetries = 0 }
-    // When the TV was last asked to change refresh rate; its sound output drops out while it switches.
+    // When the TV was last asked to change refresh rate; its sound output drops out while it switches. Passed on to
+    // the player's sound, which waits that out (see SwitchTolerantAudioSink).
+    private val displaySwitch = DisplaySwitch()
     private var displaySwitchAt = 0L
+        set(value) {
+            field = value
+            displaySwitch.atMs = value
+        }
 
     private var resumeDialogShowing = false
     private var pendingAudioId: String? = null
@@ -598,6 +605,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             headers = headersFromIntent(),
             pictureText = pictureText,
             vsync = vsync,
+            displaySwitch = displaySwitch,
         )
         vsyncFix = vsync.also { it.start() }
         val p = built.player
