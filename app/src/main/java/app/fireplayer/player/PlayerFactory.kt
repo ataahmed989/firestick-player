@@ -38,6 +38,7 @@ import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.metadata.MetadataOutput
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.text.TextOutput
+import androidx.media3.exoplayer.video.MediaCodecVideoRenderer
 import androidx.media3.exoplayer.video.VideoRendererEventListener
 import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.extractor.text.DefaultSubtitleParserFactory
@@ -171,7 +172,7 @@ object PlayerFactory {
         val extractors = DefaultExtractorsFactory()
             .setConstantBitrateSeekingEnabled(true)
 
-        val baseRenderers = TvRenderersFactory(context, passthrough, displaySwitch)
+        val baseRenderers = TvRenderersFactory(context, passthrough, displaySwitch, vsync)
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
             .setEnableDecoderFallback(true)
 
@@ -600,7 +601,38 @@ private class TvRenderersFactory(
     context: Context,
     private val passthrough: Boolean,
     private val displaySwitch: DisplaySwitch,
+    private val vsync: VsyncFix,
 ) : DefaultRenderersFactory(context) {
+    /** Media3's video renderer, with the same settings, as [PacedVideoRenderer]. */
+    override fun buildVideoRenderers(
+        context: Context,
+        extensionRendererMode: Int,
+        mediaCodecSelector: MediaCodecSelector,
+        enableDecoderFallback: Boolean,
+        eventHandler: Handler,
+        eventListener: VideoRendererEventListener,
+        allowedVideoJoiningTimeMs: Long,
+        out: java.util.ArrayList<Renderer>,
+    ) {
+        val start = out.size
+        super.buildVideoRenderers(
+            context, extensionRendererMode, mediaCodecSelector, enableDecoderFallback, eventHandler, eventListener,
+            allowedVideoJoiningTimeMs, out,
+        )
+        val i = (start until out.size).firstOrNull { out[it] is MediaCodecVideoRenderer } ?: return
+        out[i] = PacedVideoRenderer(
+            MediaCodecVideoRenderer.Builder(context)
+                .setCodecAdapterFactory(codecAdapterFactory)
+                .setMediaCodecSelector(mediaCodecSelector)
+                .setAllowedJoiningTimeMs(allowedVideoJoiningTimeMs)
+                .setEnableDecoderFallback(enableDecoderFallback)
+                .setEventHandler(eventHandler)
+                .setEventListener(eventListener)
+                .setMaxDroppedFramesToNotify(MAX_DROPPED_VIDEO_FRAME_COUNT_TO_NOTIFY),
+            vsync,
+        )
+    }
+
     override fun buildAudioSink(
         context: Context,
         enableFloatOutput: Boolean,

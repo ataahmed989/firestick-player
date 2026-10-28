@@ -23,7 +23,7 @@ import kotlin.math.abs
  * 60 Hz: they only meet the TV's refreshes every few frames, frames get lined up with refreshes that aren't there, and
  * about one frame in ten is shown twice while the next is never shown (measured on a Fire TV Stick 4K Plus). When the
  * callbacks don't come at the TV's rate, Media3 is told it doesn't know the refresh rate, as it would be without a
- * display, and sends each frame out at the film's own even pace, which the TV, at the film's rate, shows one for one.
+ * display, and [PacedVideoRenderer] lines the frames up with the TV's refreshes instead, timed from the screen itself.
  * When they do (a 60 fps film on a 60 Hz TV), Media3 is left as it is. Should Media3's insides not be where this
  * expects, it does nothing and playback is as before.
  */
@@ -33,8 +33,13 @@ class VsyncFix(private val activity: Activity) {
     private val handler = Handler(Looper.getMainLooper())
     // Media3's frame timing for each video renderer of the player.
     private val helpers = mutableListOf<Any>()
-    // The frame callbacks don't come at the TV's rate: Media3's lining up is switched off.
-    private var unaligned = false
+    /** The frame callbacks don't come at the TV's rate: Media3's lining up is switched off ([PacedVideoRenderer]'s takes over). */
+    @Volatile var unaligned = false
+        private set
+
+    /** How long the TV's refreshes are, while [unaligned]. */
+    @Volatile var tvPeriodNs = 0L
+        private set
     private val intervals = LongArray(SAMPLES)
     private var count = 0
     private var lastFrameNs = 0L
@@ -120,7 +125,8 @@ class VsyncFix(private val activity: Activity) {
         val tvNs = (1e9 / rate).toLong()
         val now = abs(callbackNs - tvNs) > tvNs / 100
         if (now != unaligned) Log.i(TAG, "Frame callbacks every ${callbackNs / 1000} us, the TV refreshes every ${tvNs / 1000} us: " +
-            if (now) "frames go out at the film's own pace" else "Media3 lines them up")
+            if (now) "frames are lined up with the TV's refreshes here" else "Media3 lines them up")
+        tvPeriodNs = tvNs
         unaligned = now
         apply()
     }
