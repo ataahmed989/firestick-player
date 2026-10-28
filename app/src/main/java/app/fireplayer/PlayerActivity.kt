@@ -54,6 +54,7 @@ import androidx.media3.ui.SubtitleView
 import app.fireplayer.data.Prefs
 import app.fireplayer.player.BufferWait
 import app.fireplayer.player.Delays
+import app.fireplayer.player.DisplaySwitch
 import app.fireplayer.player.FpsMeter
 import app.fireplayer.player.FrameRateMatcher
 import app.fireplayer.player.IdleCloseDataSource
@@ -61,6 +62,7 @@ import app.fireplayer.player.NextEpisode
 import app.fireplayer.player.PlayerFactory
 import app.fireplayer.player.ServerSwitch
 import app.fireplayer.player.TitleInfo
+import app.fireplayer.player.VsyncFix
 import app.fireplayer.player.XtreamAccount
 import app.fireplayer.subs.FontImport
 import app.fireplayer.subs.OpenSubtitles
@@ -152,6 +154,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private val delays = Delays()
 
     private var player: ExoPlayer? = null
+    // Keeps the film's frames evenly paced on a TV switched to the film's refresh rate (see VsyncFix).
+    private var vsyncFix: VsyncFix? = null
     private var assHandler: AssHandler? = null
     private var bufferWait: () -> BufferWait? = { null }
 
@@ -301,8 +305,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private var deviceRetries = 0
     private var firstDeviceErrorAt = 0L
     private val deviceRetriesBack = Runnable { deviceRetries = 0 }
-    // When the TV was last asked to change refresh rate; its sound output drops out while it switches.
+    // When the TV was last asked to change refresh rate; its sound output drops out while it switches. Passed on to
+    // the player's sound, which waits that out (see SwitchTolerantAudioSink).
+    private val displaySwitch = DisplaySwitch()
     private var displaySwitchAt = 0L
+        set(value) {
+            field = value
+            displaySwitch.atMs = value
+        }
 
     private var resumeDialogShowing = false
     private var pendingAudioId: String? = null
@@ -333,7 +343,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         // A player left open behind (TiviMate reopened, or Home pressed instead of Back) would be where Back lands
         // after this one, showing the episode watched before. Only the newest stays, so Back goes to TiviMate.
         shown?.get()?.takeIf { it !== this && !it.isFinishing }?.let { old ->
-            if (old.isTaskRoot) old.finishAndRemoveTask() else old.finish()
+            // Its task is this one's too when this was started into it (players share a task affinity): removing the
+            // task would close this player as well, and the film would never open.
+            if (old.isTaskRoot && old.taskId != taskId) old.finishAndRemoveTask() else old.finish()
         }
         shown = WeakReference(this)
         setContentView(R.layout.activity_player)
@@ -583,6 +595,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     // Player
 
     private fun initPlayer() {
+        val vsync = VsyncFix(this)
         val built = PlayerFactory.build(
             context = this,
             delays = delays,
@@ -591,7 +604,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             assSubtitleView = frameSubtitles,
             headers = headersFromIntent(),
             pictureText = pictureText,
+            vsync = vsync,
+            displaySwitch = displaySwitch,
         )
+        vsyncFix = vsync.also { it.start() }
         val p = built.player
         player = p
         builtWithAss = prefs.keepAssStyling
@@ -683,6 +699,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private fun releasePlayer() {
         val p = player ?: return
         captureState()
+        vsyncFix?.stop()
+        vsyncFix = null
         p.removeListener(this)
         p.release()
         assHandler?.release()

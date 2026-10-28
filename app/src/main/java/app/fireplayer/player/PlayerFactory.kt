@@ -38,6 +38,7 @@ import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.metadata.MetadataOutput
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.text.TextOutput
+import androidx.media3.exoplayer.video.MediaCodecVideoRenderer
 import androidx.media3.exoplayer.video.VideoRendererEventListener
 import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.extractor.text.DefaultSubtitleParserFactory
@@ -160,6 +161,10 @@ object PlayerFactory {
         headers: Map<String, String>,
         /** Reads picture subtitles as text while they load (see [PictureText]); only used without libass. */
         pictureText: PictureText,
+        /** Given the player's video renderers, to keep their frames evenly paced (see [VsyncFix]). */
+        vsync: VsyncFix,
+        /** When the TV last switched refresh rate, which passthrough sound waits out (see [SwitchTolerantAudioSink]). */
+        displaySwitch: DisplaySwitch,
     ): Built {
         val serverSwitch = ServerSwitch()
         val dataSourceFactory = dataSourceFactory(context, headers, serverSwitch)
@@ -167,7 +172,7 @@ object PlayerFactory {
         val extractors = DefaultExtractorsFactory()
             .setConstantBitrateSeekingEnabled(true)
 
-        val baseRenderers = TvRenderersFactory(context, passthrough)
+        val baseRenderers = TvRenderersFactory(context, passthrough, displaySwitch, vsync)
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
             .setEnableDecoderFallback(true)
 
@@ -179,7 +184,9 @@ object PlayerFactory {
         // TVs with less of it keep less, or the room ahead would shrink to a few seconds.
         val backBufferMs = when {
             budget >= 280 shl 20 -> 15_000
-            budget >= 180 shl 20 -> 10_000
+            // Still one press back (10 s, landing up to 2 s early) on a TV with 384 MB for an app, as the Fire TV Stick
+            // 4K Plus: at 10 s, going back one press in a 4K film loaded it all again (2 s, measured).
+            budget >= 180 shl 20 -> 13_000
             else -> 5_000
         }
         val loadControl = FilmLoadControl(
@@ -225,7 +232,7 @@ object PlayerFactory {
                 .setSubtitleParserFactory(parsers)
             val player = builder
                 .setMediaSourceFactory(mediaSourceFactory)
-                .setRenderersFactory(DelayRenderersFactory(baseRenderers, delays))
+                .setRenderersFactory(DelayRenderersFactory(baseRenderers, delays, vsync))
                 .build()
             return Built(player, null) { loadControl.wait }
         }
@@ -244,7 +251,7 @@ object PlayerFactory {
         mediaSourceFactory.setLoadErrorHandlingPolicy(retryPolicy)
         val player = builder
             .setMediaSourceFactory(mediaSourceFactory)
-            .setRenderersFactory(DelayRenderersFactory(baseRenderers.withAssSupport(assHandler), delays))
+            .setRenderersFactory(DelayRenderersFactory(baseRenderers.withAssSupport(assHandler), delays, vsync))
             .build()
         assSubtitleView.withAssSupport(assHandler)
         assHandler.init(player)
@@ -595,7 +602,39 @@ class ServerSwitch {
 private class TvRenderersFactory(
     context: Context,
     private val passthrough: Boolean,
+    private val displaySwitch: DisplaySwitch,
+    private val vsync: VsyncFix,
 ) : DefaultRenderersFactory(context) {
+    /** Media3's video renderer, with the same settings, as [PacedVideoRenderer]. */
+    override fun buildVideoRenderers(
+        context: Context,
+        extensionRendererMode: Int,
+        mediaCodecSelector: MediaCodecSelector,
+        enableDecoderFallback: Boolean,
+        eventHandler: Handler,
+        eventListener: VideoRendererEventListener,
+        allowedVideoJoiningTimeMs: Long,
+        out: java.util.ArrayList<Renderer>,
+    ) {
+        val start = out.size
+        super.buildVideoRenderers(
+            context, extensionRendererMode, mediaCodecSelector, enableDecoderFallback, eventHandler, eventListener,
+            allowedVideoJoiningTimeMs, out,
+        )
+        val i = (start until out.size).firstOrNull { out[it] is MediaCodecVideoRenderer } ?: return
+        out[i] = PacedVideoRenderer(
+            MediaCodecVideoRenderer.Builder(context)
+                .setCodecAdapterFactory(codecAdapterFactory)
+                .setMediaCodecSelector(mediaCodecSelector)
+                .setAllowedJoiningTimeMs(allowedVideoJoiningTimeMs)
+                .setEnableDecoderFallback(enableDecoderFallback)
+                .setEventHandler(eventHandler)
+                .setEventListener(eventListener)
+                .setMaxDroppedFramesToNotify(MAX_DROPPED_VIDEO_FRAME_COUNT_TO_NOTIFY),
+            vsync,
+        )
+    }
+
     override fun buildAudioSink(
         context: Context,
         enableFloatOutput: Boolean,
@@ -603,6 +642,7 @@ private class TvRenderersFactory(
     ): AudioSink? {
         if (passthrough) {
             return super.buildAudioSink(context, enableFloatOutput, enableAudioTrackPlaybackParams)
+                ?.let { SwitchTolerantAudioSink(it, displaySwitch) }
         }
         // Without a context the sink uses these fixed capabilities instead of what the TV reports,
         // so surround formats get decoded to PCM rather than passed through.
@@ -623,6 +663,7 @@ private class TvRenderersFactory(
 private class DelayRenderersFactory(
     private val inner: RenderersFactory,
     private val delays: Delays,
+    private val vsync: VsyncFix,
 ) : RenderersFactory {
 
     override fun createRenderers(
@@ -637,7 +678,7 @@ private class DelayRenderersFactory(
         audioRendererEventListener,
         textRendererOutput,
         metadataRendererOutput,
-    ).map { wrap(it) }.toTypedArray()
+    ).map { vsync.add(it); wrap(it) }.toTypedArray()
 
     private fun wrap(renderer: Renderer): Renderer = when {
         renderer is AssRenderer -> AssOffsetRenderer(renderer, delays)
