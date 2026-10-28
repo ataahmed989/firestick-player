@@ -61,6 +61,7 @@ import app.fireplayer.player.NextEpisode
 import app.fireplayer.player.PlayerFactory
 import app.fireplayer.player.ServerSwitch
 import app.fireplayer.player.TitleInfo
+import app.fireplayer.player.VsyncFix
 import app.fireplayer.player.XtreamAccount
 import app.fireplayer.subs.FontImport
 import app.fireplayer.subs.OpenSubtitles
@@ -152,6 +153,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private val delays = Delays()
 
     private var player: ExoPlayer? = null
+    // Keeps the film's frames evenly paced on a TV switched to the film's refresh rate (see VsyncFix).
+    private var vsyncFix: VsyncFix? = null
     private var assHandler: AssHandler? = null
     private var bufferWait: () -> BufferWait? = { null }
 
@@ -585,6 +588,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     // Player
 
     private fun initPlayer() {
+        val vsync = VsyncFix(this)
         val built = PlayerFactory.build(
             context = this,
             delays = delays,
@@ -593,7 +597,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             assSubtitleView = frameSubtitles,
             headers = headersFromIntent(),
             pictureText = pictureText,
+            vsync = vsync,
         )
+        vsyncFix = vsync.also { it.start() }
         val p = built.player
         player = p
         builtWithAss = prefs.keepAssStyling
@@ -685,6 +691,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private fun releasePlayer() {
         val p = player ?: return
         captureState()
+        vsyncFix?.stop()
+        vsyncFix = null
         p.removeListener(this)
         p.release()
         assHandler?.release()

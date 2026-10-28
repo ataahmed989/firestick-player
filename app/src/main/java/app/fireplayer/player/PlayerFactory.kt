@@ -160,6 +160,8 @@ object PlayerFactory {
         headers: Map<String, String>,
         /** Reads picture subtitles as text while they load (see [PictureText]); only used without libass. */
         pictureText: PictureText,
+        /** Given the player's video renderers, to keep their frames evenly paced (see [VsyncFix]). */
+        vsync: VsyncFix,
     ): Built {
         val serverSwitch = ServerSwitch()
         val dataSourceFactory = dataSourceFactory(context, headers, serverSwitch)
@@ -225,7 +227,7 @@ object PlayerFactory {
                 .setSubtitleParserFactory(parsers)
             val player = builder
                 .setMediaSourceFactory(mediaSourceFactory)
-                .setRenderersFactory(DelayRenderersFactory(baseRenderers, delays))
+                .setRenderersFactory(DelayRenderersFactory(baseRenderers, delays, vsync))
                 .build()
             return Built(player, null) { loadControl.wait }
         }
@@ -244,7 +246,7 @@ object PlayerFactory {
         mediaSourceFactory.setLoadErrorHandlingPolicy(retryPolicy)
         val player = builder
             .setMediaSourceFactory(mediaSourceFactory)
-            .setRenderersFactory(DelayRenderersFactory(baseRenderers.withAssSupport(assHandler), delays))
+            .setRenderersFactory(DelayRenderersFactory(baseRenderers.withAssSupport(assHandler), delays, vsync))
             .build()
         assSubtitleView.withAssSupport(assHandler)
         assHandler.init(player)
@@ -623,6 +625,7 @@ private class TvRenderersFactory(
 private class DelayRenderersFactory(
     private val inner: RenderersFactory,
     private val delays: Delays,
+    private val vsync: VsyncFix,
 ) : RenderersFactory {
 
     override fun createRenderers(
@@ -637,7 +640,7 @@ private class DelayRenderersFactory(
         audioRendererEventListener,
         textRendererOutput,
         metadataRendererOutput,
-    ).map { wrap(it) }.toTypedArray()
+    ).map { vsync.add(it); wrap(it) }.toTypedArray()
 
     private fun wrap(renderer: Renderer): Renderer = when {
         renderer is AssRenderer -> AssOffsetRenderer(renderer, delays)
