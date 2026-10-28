@@ -333,7 +333,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         // A player left open behind (TiviMate reopened, or Home pressed instead of Back) would be where Back lands
         // after this one, showing the episode watched before. Only the newest stays, so Back goes to TiviMate.
         shown?.get()?.takeIf { it !== this && !it.isFinishing }?.let { old ->
-            if (old.isTaskRoot) old.finishAndRemoveTask() else old.finish()
+            // Its task is this one's too when this was started into it (players share a task affinity): removing the
+            // task would close this player as well, and the film would never open.
+            if (old.isTaskRoot && old.taskId != taskId) old.finishAndRemoveTask() else old.finish()
         }
         shown = WeakReference(this)
         setContentView(R.layout.activity_player)
