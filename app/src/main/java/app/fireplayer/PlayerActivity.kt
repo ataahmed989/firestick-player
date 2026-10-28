@@ -389,6 +389,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         handler.post(postPlayTick)
         // TiviMate's titles aren't looked up on TMDB while a film is on.
         TitleService.playing(this, true)
+        prefs.forgetLeftPlayer()
     }
 
     override fun onStop() {
@@ -417,6 +418,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         }
         lookupWantedAt = 0L
         handler.removeCallbacksAndMessages(null)
+        // Left with Home: the FirePlayer icon brings this film back for a few minutes (see HomeActivity).
+        if (!isFinishing && shown?.get() === this) prefs.leavePlayer(taskId, SystemClock.elapsedRealtime())
     }
 
     override fun onDestroy() {
@@ -426,6 +429,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         if (shown?.get() === this) {
             shown = null
             frameRateMatcher.reset()
+            prefs.forgetLeftPlayer()
         }
         pictureText.release()
         io.shutdownNow()

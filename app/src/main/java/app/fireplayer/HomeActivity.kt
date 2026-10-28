@@ -1,8 +1,11 @@
 package app.fireplayer
 
+import android.app.ActivityManager
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.text.InputType
 import android.util.TypedValue
 import android.view.Gravity
@@ -34,8 +37,9 @@ class HomeActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_home)
         val prefs = Prefs(this)
+        if (backToPlayer(prefs)) return
+        setContentView(R.layout.activity_home)
         settingsPanels = SettingsPanels(this, prefs, SubtitlePresets(prefs))
         panel = SidePanel(this)
         list = findViewById(R.id.home_list)
@@ -55,6 +59,34 @@ class HomeActivity : AppCompatActivity() {
         updater.check { release -> release?.let { updater.offer(it) } }
         // Normally running since the TV started; the first time after installing, from here.
         TitleService.start(this)
+    }
+
+    override fun onRestart() {
+        super.onRestart()
+        backToPlayer(Prefs(this))
+    }
+
+    /**
+     * A film left with Home a few minutes ago comes straight back where it was, instead of this screen. The player
+     * lives in a task of its own (so Back goes to TiviMate), which the app icon wouldn't otherwise find.
+     */
+    private fun backToPlayer(prefs: Prefs): Boolean {
+        val task = prefs.leftPlayerTask(SystemClock.elapsedRealtime(), RESUME_WINDOW_MS) ?: return false
+        val am = getSystemService(ACTIVITY_SERVICE) as ActivityManager
+        val alive = am.appTasks.any { t ->
+            runCatching { t.taskInfo.let { if (Build.VERSION.SDK_INT >= 29) it.taskId else @Suppress("DEPRECATION") it.persistentId } }
+                .getOrNull() == task
+        }
+        if (!alive) {
+            prefs.forgetLeftPlayer()
+            return false
+        }
+        am.moveTaskToFront(task, 0)
+        // Nothing of this screen stays behind the film, so Back from it doesn't land here.
+        if (isTaskRoot) finishAndRemoveTask() else finish()
+        @Suppress("DEPRECATION")
+        overridePendingTransition(0, 0)
+        return true
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -146,5 +178,7 @@ class HomeActivity : AppCompatActivity() {
     companion object {
         /** Link types the player can open; others (rtsp://, rtmp://) would need extra modules. */
         private val PLAYABLE_SCHEMES = setOf("http", "https", "file", "content")
+        /** How long after Home the app icon still brings the film back; later it opens this screen as before. */
+        private const val RESUME_WINDOW_MS = 5 * 60_000L
     }
 }

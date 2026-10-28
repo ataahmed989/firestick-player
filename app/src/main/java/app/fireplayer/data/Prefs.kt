@@ -136,6 +136,19 @@ class Prefs(context: Context) {
         editor.apply()
     }
 
+    // The player left behind by Home: its task, and when it was left (elapsedRealtime), so the app icon can bring it
+    // back for a few minutes.
+    fun leavePlayer(taskId: Int, at: Long) = sp.edit().putInt("left_task", taskId).putLong("left_at", at).apply()
+
+    fun forgetLeftPlayer() = sp.edit().remove("left_task").remove("left_at").apply()
+
+    /** The task of a player left less than [withinMs] ago, or null. */
+    fun leftPlayerTask(now: Long, withinMs: Long): Int? {
+        val task = sp.getInt("left_task", -1)
+        val ago = now - sp.getLong("left_at", Long.MIN_VALUE / 2)
+        return task.takeIf { it != -1 && ago in 0..withinMs }
+    }
+
     /** Name of the subtitle font sent from the phone, or "" when there isn't one. */
     var customFontName: String
         get() = sp.getString("custom_font", "") ?: ""

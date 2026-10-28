@@ -9,6 +9,8 @@
         android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- The app icon brings back a film left with Home a few minutes ago (HomeActivity.backToPlayer). -->
+    <uses-permission android:name="android.permission.REORDER_TASKS" />
     <!-- TiviMate titles: a small server on this TV, running from when it starts. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
