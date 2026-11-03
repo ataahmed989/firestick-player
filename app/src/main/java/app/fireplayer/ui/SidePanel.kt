@@ -39,6 +39,7 @@ class SidePanel(private val activity: Activity) {
         this.onClose = onClose
         renderer = render
         title.text = titleText
+        root.setBackgroundResource(Glass.panel)
         root.visibility = View.VISIBLE
         root.alpha = 0f
         root.translationX = rows.dp(24).toFloat()

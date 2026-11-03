@@ -160,7 +160,7 @@ object FireDialog {
         val buttons = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
         fun button(label: String, onClick: () -> Unit) = rows.base().apply {
             gravity = Gravity.CENTER
-            setBackgroundResource(R.drawable.bg_pill)
+            setBackgroundResource(Glass.pill)
             addView(rows.text(label))
             setOnClickListener { onClick() }
         }
@@ -199,7 +199,7 @@ object FireDialog {
         val rows = Rows(activity)
         return LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundResource(R.drawable.bg_popup)
+            setBackgroundResource(Glass.popup)
             setPadding(rows.dp(14), rows.dp(14), rows.dp(14), rows.dp(12))
             addView(TextView(activity).apply {
                 text = title

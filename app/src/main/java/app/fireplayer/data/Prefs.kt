@@ -60,6 +60,11 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("match_frame_rate", true)
         set(v) = sp.edit().putBoolean("match_frame_rate", v).apply()
 
+    /** The optional see-through glass look for the controls and windows; off keeps the classic look. */
+    var glassLook: Boolean
+        get() = sp.getBoolean("glass_look", false)
+        set(v) = sp.edit().putBoolean("glass_look", v).apply()
+
     var passthrough: Boolean
         get() = sp.getBoolean("passthrough", true)
         set(v) = sp.edit().putBoolean("passthrough", v).apply()

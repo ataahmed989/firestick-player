@@ -1,5 +1,7 @@
 package app.fireplayer
 
+import android.view.animation.DecelerateInterpolator
+import android.widget.FrameLayout
 import android.app.ActivityManager
 import android.content.Intent
 import android.graphics.Paint
@@ -76,6 +78,7 @@ import app.fireplayer.subs.SubtitlePresets
 import app.fireplayer.subs.SubtitleStyler
 import app.fireplayer.ui.CountdownPill
 import app.fireplayer.ui.FireDialog
+import app.fireplayer.ui.Glass
 import app.fireplayer.ui.SeekBarView
 import app.fireplayer.ui.SeekPreview
 import app.fireplayer.ui.SettingsPanels
@@ -367,6 +370,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         bindViews()
         panel = SidePanel(this)
         buildMoreRow()
+        applyLook()
+        settingsPanels.onLookChanged = { applyLook() }
         displayMode = prefs.displayMode
 
         if (!readIntent(intent)) {
@@ -1667,7 +1672,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         focusSink.isFocusable = false
         val target = focus ?: btnPlay
         // Coming back from a window opened from the icon row returns to that row.
-        if (target.parent === moreRow) showMoreRow(target) else showMainRow(focusRow = false)
+        if (target.parent === moreRow) showMoreRow(target, animate = false) else showMainRow(focusRow = false, animate = false)
         updateOverlay()
         updateProgress()
         updateClock()
@@ -1688,22 +1693,65 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         handler.removeCallbacks(hideControlsRunnable)
     }
 
-    private fun showMoreRow(focus: View = moreItems.values.first().view) {
+    private fun showMoreRow(focus: View = moreItems.values.first().view, animate: Boolean = true) {
+        val changed = !moreShown
         moreShown = true
-        mainRow.visibility = View.GONE
-        arrowDown.visibility = View.GONE
-        moreRow.visibility = View.VISIBLE
-        arrowUp.visibility = View.VISIBLE
+        swapRows(show = moreRow, hide = mainRow, showArrow = arrowUp, hideArrow = arrowDown, up = true, animate = animate && changed)
         focus.requestFocus()
     }
 
-    private fun showMainRow(focusRow: Boolean = true) {
+    private fun showMainRow(focusRow: Boolean = true, animate: Boolean = true) {
+        val changed = moreShown
         moreShown = false
-        moreRow.visibility = View.GONE
-        arrowUp.visibility = View.GONE
-        mainRow.visibility = View.VISIBLE
-        arrowDown.visibility = View.VISIBLE
+        swapRows(show = mainRow, hide = moreRow, showArrow = arrowDown, hideArrow = arrowUp, up = false, animate = animate && changed)
         if (focusRow) btnPlay.requestFocus()
+    }
+
+    /**
+     * Swaps the button row and the icon row under the arrow. Instead of a hard cut, the old row fades out while it
+     * drifts the way the D-pad pointed and the new one glides in from the other side, so the change reads as one move.
+     * Short enough (220 ms) that a quick second press never waits on it.
+     */
+    private fun swapRows(show: View, hide: View, showArrow: View, hideArrow: View, up: Boolean, animate: Boolean) {
+        val shift = resources.displayMetrics.density * 14f * (if (up) -1 else 1)
+        for (v in listOf(show, hide, showArrow, hideArrow)) v.animate().cancel()
+        show.visibility = View.VISIBLE
+        showArrow.visibility = View.VISIBLE
+        if (!animate) {
+            for (v in listOf(show, showArrow)) { v.alpha = 1f; v.translationY = 0f }
+            for (v in listOf(hide, hideArrow)) { v.visibility = View.GONE; v.alpha = 1f; v.translationY = 0f }
+            return
+        }
+        val ease = DecelerateInterpolator(1.6f)
+        if (show.alpha >= 1f) { show.alpha = 0f; show.translationY = -shift }
+        if (showArrow.alpha >= 1f) showArrow.alpha = 0f
+        show.animate().alpha(1f).translationY(0f).setStartDelay(0).setDuration(220).setInterpolator(ease).start()
+        showArrow.animate().alpha(1f).setStartDelay(80).setDuration(160).setInterpolator(ease).start()
+        hide.animate().alpha(0f).translationY(shift).setStartDelay(0).setDuration(160).setInterpolator(ease).withEndAction {
+            hide.visibility = View.GONE; hide.alpha = 1f; hide.translationY = 0f
+        }.start()
+        hideArrow.animate().alpha(0f).setStartDelay(0).setDuration(100).withEndAction {
+            hideArrow.visibility = View.GONE; hideArrow.alpha = 1f
+        }.start()
+    }
+
+    /** Puts the classic or glass backgrounds on the controls (Settings, Look, Glass look). Padding and sizes stay. */
+    private fun applyLook() {
+        Glass.on = prefs.glassLook
+        fun View.bg(res: Int) {
+            val l = paddingLeft; val t = paddingTop; val r = paddingRight; val b = paddingBottom
+            setBackgroundResource(res)
+            setPadding(l, t, r, b)
+        }
+        btnPlay.bg(Glass.circle)
+        btnRestart.bg(Glass.circle)
+        btnNext.bg(Glass.circle)
+        btnSubs.bg(Glass.pill)
+        btnAudio.bg(Glass.pill)
+        for (chip in listOf(chipResolution, chipFps, chipAudio)) chip.bg(Glass.chip)
+        for (item in moreItems.values) (item.view.findViewById<View>(R.id.more_icon).parent as View).bg(Glass.moreIcon)
+        errorBox.bg(Glass.popup)
+        (findViewById<FrameLayout>(R.id.preview_card)).foreground = ContextCompat.getDrawable(this, Glass.previewEdge)
     }
 
     /** Which parts of the overlay show: everything, just the time bar while seeking, or nothing. */

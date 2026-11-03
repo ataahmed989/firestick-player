@@ -141,7 +141,7 @@ class Rows(private val context: Context) {
         gravity = Gravity.CENTER_VERTICAL
         isFocusable = true
         isClickable = true
-        setBackgroundResource(R.drawable.bg_row)
+        setBackgroundResource(Glass.row)
         minimumHeight = dp(33)
         setPadding(dp(12), dp(6), dp(12), dp(6))
     }

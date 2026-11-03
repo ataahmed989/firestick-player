@@ -38,6 +38,7 @@ class HomeActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val prefs = Prefs(this)
+        app.fireplayer.ui.Glass.on = prefs.glassLook
         if (backToPlayer(prefs)) return
         setContentView(R.layout.activity_home)
         settingsPanels = SettingsPanels(this, prefs, SubtitlePresets(prefs))
@@ -145,7 +146,7 @@ class HomeActivity : AppCompatActivity() {
             gravity = Gravity.CENTER_VERTICAL
             isFocusable = true
             isClickable = true
-            setBackgroundResource(R.drawable.bg_row)
+            setBackgroundResource(app.fireplayer.ui.Glass.row)
             minimumHeight = (44 * density).toInt()
             val h = (14 * density).toInt()
             setPadding(h, 0, h, 0)
