@@ -9,6 +9,10 @@ class Prefs(context: Context) {
     private val sp: SharedPreferences =
         context.applicationContext.getSharedPreferences("fireplayer", Context.MODE_PRIVATE)
 
+    init {
+        forgetPlayerMatches()
+    }
+
     enum class Resume(val label: String) { ASK("Ask"), ALWAYS("Always"), NEVER("Never") }
 
     var dpadStepSec: Int
@@ -47,9 +51,19 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("seek_previews", true)
         set(v) = sp.edit().putBoolean("seek_previews", v).apply()
 
+    /** Finds the episode after the one TiviMate opened, from the provider, and plays it next. */
+    var playNextEpisode: Boolean
+        get() = sp.getBoolean("play_next_episode", true)
+        set(v) = sp.edit().putBoolean("play_next_episode", v).apply()
+
     var matchFrameRate: Boolean
         get() = sp.getBoolean("match_frame_rate", true)
         set(v) = sp.edit().putBoolean("match_frame_rate", v).apply()
+
+    /** The optional see-through glass look for the controls and windows; off keeps the classic look. */
+    var glassLook: Boolean
+        get() = sp.getBoolean("glass_look", false)
+        set(v) = sp.edit().putBoolean("glass_look", v).apply()
 
     var passthrough: Boolean
         get() = sp.getBoolean("passthrough", true)
@@ -74,6 +88,32 @@ class Prefs(context: Context) {
     var openSubtitlesPassword: String
         get() = sp.getString("os_pass", "") ?: ""
         set(v) = sp.edit().putString("os_pass", v).apply()
+
+    /** The user's own TMDB key (the short API key or the long read access token), "" for none. */
+    var tmdbApiKey: String
+        get() = sp.getString("tmdb_key", "") ?: ""
+        set(v) = sp.edit().putString("tmdb_key", v.trim()).apply()
+
+    /**
+     * The player used to rename films with TMDB and kept every match here. TiviMate now gets the names already right
+     * (see [app.fireplayer.titles.TitleService]), so they're cleared out once, which keeps this file small to read.
+     */
+    private fun forgetPlayerMatches() {
+        if (sp.getInt("tmdb_rules", 1) >= PLAYER_MATCHES_GONE) return
+        val edit = sp.edit()
+        sp.all.keys.filter { it.startsWith("tmdb|") }.forEach { edit.remove(it) }
+        edit.putInt("tmdb_rules", PLAYER_MATCHES_GONE).apply()
+    }
+
+    /** Whether TiviMate's films and shows are renamed with TMDB (see [app.fireplayer.titles.TitleService]). */
+    var tivimateTitles: Boolean
+        get() = sp.getBoolean("tivimate_titles", true)
+        set(v) = sp.edit().putBoolean("tivimate_titles", v).apply()
+
+    /** The language Find subtitles searches in; "" until one is picked, then the default subtitle language is used. */
+    var subtitleSearchLanguage: String
+        get() = sp.getString("sub_search_lang", "") ?: ""
+        set(v) = sp.edit().putString("sub_search_lang", v).apply()
 
     // Subtitle style presets, kept as JSON (see SubtitleStyle).
     var subtitlePresetsJson: String
@@ -101,8 +141,25 @@ class Prefs(context: Context) {
         editor.apply()
     }
 
+    // The player left behind by Home: its task, and when it was left (elapsedRealtime), so the app icon can bring it
+    // back for a few minutes.
+    fun leavePlayer(taskId: Int, at: Long) = sp.edit().putInt("left_task", taskId).putLong("left_at", at).apply()
+
+    fun forgetLeftPlayer() = sp.edit().remove("left_task").remove("left_at").apply()
+
+    /** The task of a player left less than [withinMs] ago, or null. */
+    fun leftPlayerTask(now: Long, withinMs: Long): Int? {
+        val task = sp.getInt("left_task", -1)
+        val ago = now - sp.getLong("left_at", Long.MIN_VALUE / 2)
+        return task.takeIf { it != -1 && ago in 0..withinMs }
+    }
+
     /** Name of the subtitle font sent from the phone, or "" when there isn't one. */
     var customFontName: String
         get() = sp.getString("custom_font", "") ?: ""
         set(v) = sp.edit().putString("custom_font", v).apply()
+
+    private companion object {
+        const val PLAYER_MATCHES_GONE = 100
+    }
 }

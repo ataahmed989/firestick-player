@@ -4,14 +4,20 @@ import android.app.Activity
 import android.view.View
 import android.view.ViewGroup
 import app.fireplayer.data.Prefs
+import app.fireplayer.player.NextEpisode
 import app.fireplayer.subs.FontImport
 import app.fireplayer.subs.ShadowStrength
 import app.fireplayer.subs.SubtitleEdge
 import app.fireplayer.subs.SubtitleFont
 import app.fireplayer.subs.SubtitlePresets
 import app.fireplayer.subs.SubtitleStyle
+import app.fireplayer.subs.Tmdb
+import app.fireplayer.titles.TitleBook
+import app.fireplayer.titles.TitleProxy
+import app.fireplayer.titles.TitleService
 import app.fireplayer.update.Updater
 import java.util.Locale
+import kotlin.concurrent.thread
 import kotlin.math.roundToInt
 
 /** The Settings and Subtitle style windows, shared by the player and the home screen. */
@@ -23,12 +29,23 @@ class SettingsPanels(
 
     private val updater = Updater(activity)
     private var updateStatus: String? = null
+    // How the last TMDB key check went: the row's value, and what TMDB said when it said no.
+    private var tmdbStatus: String? = null
+    private var tmdbProblem: String? = null
+    // How far TiviMate's titles are, read when Settings opens.
+    private var titlesProgress: List<TitleBook.Progress>? = null
+    private var titlesAsked = false
+
+    /** Called when the glass look is turned on or off, so the screen behind can restyle its buttons. */
+    var onLookChanged: () -> Unit = {}
 
     /** Called after a font arrives from the phone (or is removed), so the subtitles can switch to it. */
     var onFontChanged: () -> Unit = {}
 
     /** Languages offered as defaults; English first. */
     private val languages = listOf("en", "ar", "es", "fr", "de", "it", "pt", "hi", "ur", "tr", "ja", "ko", "zh")
+
+    private fun count(n: Int) = String.format(Locale.US, "%,d", n)
 
     fun languageName(code: String): String =
         if (code.isEmpty()) "Off" else Locale(code).getDisplayLanguage(Locale.ENGLISH)
@@ -40,6 +57,15 @@ class SettingsPanels(
         header("Remote")
         choice("Menu button opens", listOf("Settings", "Subtitle style"), if (prefs.menuOpensStyle) 1 else 0) {
             prefs.menuOpensStyle = it == 1
+        }
+
+        header("Look")
+        row("Glass look", onOff(prefs.glassLook)) {
+            prefs.glassLook = !prefs.glassLook
+            Glass.on = prefs.glassLook
+            onLookChanged()
+            root.setBackgroundResource(Glass.panel)
+            refresh()
         }
 
         header("Skipping")
@@ -73,11 +99,46 @@ class SettingsPanels(
         }
 
         header("Playback")
+        row("Play next episode", onOff(prefs.playNextEpisode)) {
+            prefs.playNextEpisode = !prefs.playNextEpisode; refresh()
+        }
+        if (prefs.playNextEpisode) NextEpisode.status?.let { message(it) }
         row("Match frame rate", onOff(prefs.matchFrameRate)) {
             prefs.matchFrameRate = !prefs.matchFrameRate; refresh()
         }
         row("Surround passthrough", onOff(prefs.passthrough)) {
             prefs.passthrough = !prefs.passthrough; refresh()
+        }
+
+        header("TiviMate titles")
+        message("Films and shows in TiviMate under their English names from TMDB, as \"The Matrix (1999) [4K]\", and found by those names in TiviMate's search.")
+        row("English titles in TiviMate", onOff(prefs.tivimateTitles)) {
+            prefs.tivimateTitles = !prefs.tivimateTitles
+            TitleService.start(activity)
+            refresh()
+        }
+        if (prefs.tivimateTitles) {
+            if (prefs.tmdbApiKey.isEmpty()) message("Add a TMDB key (under Online subtitles) for the names to be looked up.")
+            message(
+                "In TiviMate: Settings, Playlists, a playlist, Xtream Codes parameters. Put http://127.0.0.1:${TitleProxy.PORT}/ " +
+                    "in front of the server address: ${TitleProxy.addressFor("proxpanel.fans:80")}.",
+            )
+            titlesProgress?.forEach { p ->
+                message(
+                    "${p.server}: ${count(p.renamed)} renamed, ${count(p.kept)} kept as they are" +
+                        if (p.waiting > 0) ", ${count(p.waiting)} still to look up" else "",
+                )
+            }
+            if (!titlesAsked) {
+                titlesAsked = true
+                thread(name = "FirePlayerTitles", isDaemon = true) {
+                    val progress = runCatching { TitleBook(activity).use { it.progress() } }.getOrNull()
+                    activity.runOnUiThread {
+                        titlesProgress = progress
+                        if (isOpen && !progress.isNullOrEmpty()) refresh()
+                    }
+                }
+            }
         }
 
         header("Subtitle font")
@@ -114,6 +175,30 @@ class SettingsPanels(
                 prefs.openSubtitlesPassword = it; refresh()
             }
         }
+        message("Optional free key from themoviedb.org (Settings, API). Lets the search find subtitles for the exact film or episode.")
+        row("TMDB API key", tmdbStatus ?: if (prefs.tmdbApiKey.isEmpty()) "Optional" else "Saved") {
+            SidePanel.prompt(activity, "TMDB API key or read access token", prefs.tmdbApiKey) { key ->
+                prefs.tmdbApiKey = key
+                // TiviMate's titles start being looked up with it.
+                TitleService.start(activity)
+                tmdbProblem = null
+                tmdbStatus = if (prefs.tmdbApiKey.isEmpty()) null else "Checking…"
+                refresh()
+                if (prefs.tmdbApiKey.isNotEmpty()) {
+                    thread(name = "FirePlayerTmdb", isDaemon = true) {
+                        val problem = Tmdb(prefs).check()
+                        activity.runOnUiThread {
+                            tmdbStatus = if (problem == null) "Works" else "Not accepted"
+                            tmdbProblem = problem
+                            if (isOpen) refresh()
+                        }
+                    }
+                }
+            }
+        }
+        tmdbProblem?.let { message("$it.") }
+        // TMDB asks apps that use its API to say so.
+        if (prefs.tmdbApiKey.isNotEmpty()) message("This product uses the TMDB API but is not endorsed or certified by TMDB.")
 
         header("App")
         row("Check for updates", updateStatus ?: "Version ${updater.installedName}") {

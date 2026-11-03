@@ -7,6 +7,7 @@ ffmpegDecoder = "1.8.0+1"
 coreKtx = "1.16.0"
 appcompat = "1.7.1"
 mlkitText = "16.0.1"
+junit = "4.13.2"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -19,6 +20,8 @@ ass-media = { group = "io.github.peerless2012", name = "ass-media", version.ref 
 ffmpeg-decoder = { group = "org.jellyfin.media3", name = "media3-ffmpeg-decoder", version.ref = "ffmpegDecoder" }
 # Bundled model: Fire TV has no Google Play services to download one.
 mlkit-text-recognition = { group = "com.google.mlkit", name = "text-recognition", version.ref = "mlkitText" }
+
+junit = { group = "junit", name = "junit", version.ref = "junit" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

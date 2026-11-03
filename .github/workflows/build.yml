@@ -12,10 +12,12 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      BUILD_NUMBER: ${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4
+      # Builds made outside GitHub reached 1.0.70 while this was at 63: numbered past them, so every
+      # release here installs over what the TVs have
+      - name: Build number
+        run: echo "BUILD_NUMBER=$(( ${{ github.run_number }} + 10 ))" >> "$GITHUB_ENV"
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -27,13 +29,13 @@ jobs:
         run: cp app/build/outputs/apk/release/app-release.apk FirePlayer.apk
       - uses: actions/upload-artifact@v4
         with:
-          name: FirePlayer-${{ github.run_number }}
+          name: FirePlayer-${{ env.BUILD_NUMBER }}
           path: FirePlayer.apk
       - name: Publish release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.${{ github.run_number }}
-          name: FirePlayer 1.0.${{ github.run_number }}
+          tag_name: v1.0.${{ env.BUILD_NUMBER }}
+          name: FirePlayer 1.0.${{ env.BUILD_NUMBER }}
           files: FirePlayer.apk
           make_latest: true
