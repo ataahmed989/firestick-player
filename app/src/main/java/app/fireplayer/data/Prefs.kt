@@ -62,7 +62,7 @@ class Prefs(context: Context) {
 
     /** The optional see-through glass look for the controls and windows; off keeps the classic look. */
     var glassLook: Boolean
-        get() = sp.getBoolean("glass_look", true)
+        get() = sp.getBoolean("glass_look", false)
         set(v) = sp.edit().putBoolean("glass_look", v).apply()
 
     var passthrough: Boolean

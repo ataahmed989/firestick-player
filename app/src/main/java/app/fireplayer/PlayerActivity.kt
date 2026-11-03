@@ -1123,15 +1123,6 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         handler.postDelayed(retryRunnable, delayMs)
     }
 
-    /** Tries again after [delayMs] with the spinner up instead of an error. */
-    private fun retryQuietly(delayMs: Long) {
-        retryPending = true
-        handler.removeCallbacks(showBuffering)
-        buffering.visibility = View.VISIBLE
-        handler.removeCallbacks(retryRunnable)
-        handler.postDelayed(retryRunnable, delayMs)
-    }
-
     private fun errorMessage(error: PlaybackException, status: Int?): String = when (error.errorCode) {
         PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
         PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT -> "Can't reach the video. Check your connection."
@@ -1218,28 +1209,6 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
                 cutOff = ++previewCutOffs >= 2
             }
             if (refused || cutOff) seekPreview.serverRefused()
-        }
-    }
-
-    // The film's connection failing just after the preview asked for video is the server allowing one connection
-    // (or cutting the older one off). The film comes first: previews stop.
-    /**
-     * The server turning the film away just after the preview asked for video usually means it allows one
-     * connection at a time; previews then stop so the film keeps it. Only the film's own link counts (not a
-     * subtitle file), and only an answer that means "no" (not a hiccup the film retries past).
-     */
-    private val filmLoadErrors = object : AnalyticsListener {
-        override fun onLoadError(
-            eventTime: AnalyticsListener.EventTime,
-            loadEventInfo: LoadEventInfo,
-            mediaLoadData: MediaLoadData,
-            error: IOException,
-            wasCanceled: Boolean,
-        ) {
-            val film = entries.getOrNull(playingIndex)?.uri ?: return
-            if (loadEventInfo.dataSpec.uri == film && SeekPreview.isRefusal(error) && seekPreview.requestedWithin(8_000)) {
-                seekPreview.serverRefused()
-            }
         }
     }
 
