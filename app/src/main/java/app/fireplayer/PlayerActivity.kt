@@ -1,5 +1,6 @@
 package app.fireplayer
 
+import android.app.ActivityManager
 import android.content.Intent
 import android.graphics.Paint
 import android.net.Uri
@@ -788,10 +789,23 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         p?.pause()
         result.putExtra("end_by", if (completed) "playback_completion" else "user")
         setResult(RESULT_OK, result)
-        // Straight back to the app that opened us, without a lingering empty task.
-        if (isTaskRoot) finishAndRemoveTask() else finish()
+        // Straight back to the app that opened us, without a lingering empty task. Opened by another app, the whole
+        // player task goes: a player left in it from before (Home pressed, then Fire OS closed the app, so the newer
+        // one couldn't close it) would otherwise come back and play the old film on Back.
+        if (isTaskRoot || inPlayerTask()) finishAndRemoveTask() else finish()
         @Suppress("DEPRECATION")
         overridePendingTransition(0, android.R.anim.fade_out)
+    }
+
+    /** This player's task was started by a player (opened from another app), not by FirePlayer's own home screen. */
+    private fun inPlayerTask(): Boolean = try {
+        (getSystemService(ACTIVITY_SERVICE) as ActivityManager).appTasks.any { t ->
+            val info = t.taskInfo
+            val id = if (Build.VERSION.SDK_INT >= 29) info.taskId else @Suppress("DEPRECATION") info.persistentId
+            id == taskId && info.baseIntent.component?.className == PlayerActivity::class.java.name
+        }
+    } catch (e: RuntimeException) {
+        false
     }
 
     // ---------------------------------------------------------------------
