@@ -270,11 +270,6 @@
                         android:scaleType="fitCenter"
                         android:src="@drawable/ic_restart"
                         android:tint="@color/sel_on_button" />
-
-                    <TextView
-                        android:id="@+id/restart_tooltip"
-                        style="@style/Tooltip"
-                        android:text="Watch from start" />
                 </LinearLayout>
 
                 <LinearLayout
@@ -298,11 +293,6 @@
                         android:scaleType="fitCenter"
                         android:src="@drawable/ic_next"
                         android:tint="@color/sel_on_button" />
-
-                    <TextView
-                        android:id="@+id/next_tooltip"
-                        style="@style/Tooltip"
-                        android:text="Next episode" />
                 </LinearLayout>
 
                 <View

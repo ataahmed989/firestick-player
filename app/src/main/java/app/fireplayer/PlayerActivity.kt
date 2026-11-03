@@ -1287,8 +1287,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         btnSubs.setOnClickListener { openSubtitlesPanel(btnSubs) }
         btnAudio.setOnClickListener { openAudioPanel(btnAudio) }
         focusEffect(btnPlay, 1.08f)
-        focusEffect(btnRestart, 1.08f, findViewById(R.id.restart_tooltip))
-        focusEffect(btnNext, 1.08f, findViewById(R.id.next_tooltip))
+        focusEffect(btnRestart, 1.08f)
+        focusEffect(btnNext, 1.08f)
         focusEffect(btnSubs, 1.04f)
         focusEffect(btnAudio, 1.04f)
         seekBar.onThumbMoved = { placeBubble() }
@@ -1296,11 +1296,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     }
 
     /** Selected buttons grow slightly, so moving around feels smooth rather than jumpy. */
-    private fun focusEffect(button: View, scale: Float, tooltip: View? = null) {
+    private fun focusEffect(button: View, scale: Float) {
         button.setOnFocusChangeListener { v, hasFocus ->
             val s = if (hasFocus) scale else 1f
             v.animate().scaleX(s).scaleY(s).setDuration(140).start()
-            tooltip?.visibility = if (hasFocus) View.VISIBLE else View.INVISIBLE
         }
     }
 
