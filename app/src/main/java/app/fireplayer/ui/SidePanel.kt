@@ -148,7 +148,7 @@ class SidePanel(private val activity: Activity) {
 
     /** A setting with several values: shows the current one and opens a small picker window. */
     fun choice(label: String, options: List<String>, selected: Int, onPick: (Int) -> Unit): View {
-        val value = options.getOrNull(selected) ?: ""
+        val value = (options.getOrNull(selected) ?: "") + if (Glass.on) "  ›" else ""
         return row(label, value) {
             FireDialog.choose(activity, label, options, selected, besidePanel = true) { index ->
                 if (index != selected) onPick(index)
