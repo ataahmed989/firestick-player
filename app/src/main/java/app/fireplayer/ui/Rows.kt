@@ -176,7 +176,16 @@ class Rows(private val context: Context) {
         }
         row.addView(labelView, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         // A long value is shortened rather than pushing the label off the row.
-        if (value != null) row.addView(text(value).apply { alpha = 0.85f; maxWidth = dp(118) })
+        if (Glass.on && (value == "On" || value == "Off")) {
+            // Glass look: on/off settings show a switch instead of the word.
+            row.addView(ImageView(context).apply {
+                setImageResource(if (value == "On") R.drawable.glass_toggle_on else R.drawable.glass_toggle_off)
+                contentDescription = value
+                layoutParams = LinearLayout.LayoutParams(dp(34), dp(20)).apply { marginStart = dp(8) }
+            })
+        } else if (value != null) {
+            row.addView(text(value).apply { alpha = 0.85f; maxWidth = dp(118) })
+        }
         if (trailingIcon != null) row.addView(icon(trailingIcon, 15))
         return row
     }
