@@ -730,9 +730,11 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
     }
 
     private companion object {
-        const val REFRESH_MS = 1_000L
+        /** About four copies a second while the film plays, so the glass keeps up with the picture. */
+        const val REFRESH_MS = 250L
         const val TICK_SLACK_MS = 30L
-        const val CROSSFADE_MS = 400f
+        /** Shorter than REFRESH_MS, so each new copy has finished fading in before the next one lands. */
+        const val CROSSFADE_MS = 180f
         /** Older than this while playing, a copy isn't shown: it would be another scene. */
         const val STALE_MS = 2_000L
         const val MIN_GAP_MS = 120L
