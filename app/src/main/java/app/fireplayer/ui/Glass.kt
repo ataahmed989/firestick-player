@@ -15,6 +15,7 @@ object Glass {
     val pill get() = if (on) R.drawable.glass_pill else R.drawable.bg_pill
     val chip get() = if (on) R.drawable.glass_chip else R.drawable.bg_chip
     val moreIcon get() = if (on) R.drawable.glass_more_icon else R.drawable.bg_more_icon
+    val tray get() = if (on) R.drawable.glass_tray else 0
     val row get() = if (on) R.drawable.glass_row else R.drawable.bg_row
     val panel get() = if (on) R.drawable.glass_panel else R.drawable.bg_panel
     val popup get() = if (on) R.drawable.glass_popup else R.drawable.bg_popup

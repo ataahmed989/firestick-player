@@ -1749,6 +1749,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         btnSubs.bg(Glass.pill)
         btnAudio.bg(Glass.pill)
         for (chip in listOf(chipResolution, chipFps, chipAudio)) chip.bg(Glass.chip)
+        // The icon row sits in one glass tray; the icons and their spacing stay as they are.
+        if (Glass.tray != 0) moreRow.bg(Glass.tray) else moreRow.background = null
         for (item in moreItems.values) (item.view.findViewById<View>(R.id.more_icon).parent as View).bg(Glass.moreIcon)
         errorBox.bg(Glass.popup)
         (findViewById<FrameLayout>(R.id.preview_card)).foreground = ContextCompat.getDrawable(this, Glass.previewEdge)
