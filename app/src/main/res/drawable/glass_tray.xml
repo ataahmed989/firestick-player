@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Glass look: the tray the icon row sits in (arrow-down row). Same icons and spacing as the classic look. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <gradient android:angle="270" android:startColor="#2EFFFFFF" android:centerColor="#12FFFFFF" android:endColor="#1CFFFFFF" />
+            <stroke android:width="1dp" android:color="#47FFFFFF" />
+            <corners android:radius="40dp" />
+        </shape>
+    </item>
+    <item android:left="1dp" android:right="1dp" android:top="1dp">
+        <shape android:shape="rectangle">
+            <gradient android:angle="270" android:startColor="#24FFFFFF" android:centerColor="#00FFFFFF" android:endColor="#00FFFFFF" />
+            <corners android:radius="40dp" />
+        </shape>
+    </item>
+</layer-list>
