@@ -1,0 +1,30 @@
+11-04 05:27:11.473 I/ExoPlayerImpl( 8676): Init f575558 [AndroidXMedia3/1.8.0] [generic_x86, AOSP TV on x86, Google, 30]
+11-04 05:27:46.886 I/ExoPlayerImpl( 8676): Release f575558 [AndroidXMedia3/1.8.0] [generic_x86, AOSP TV on x86, Google, 30] [media3.common, media3.exoplayer, media3.decoder, media3.datasource, media3.extractor, media3.decoder.ffmpeg]
+11-04 05:27:46.937 I/ExoPlayerImpl( 8676): Init 4dddfd6 [AndroidXMedia3/1.8.0] [generic_x86, AOSP TV on x86, Google, 30]
+11-04 05:27:46.964 D/DecoupledTextDelegate( 8676): Start loading thick OCR module.
+11-04 05:27:53.877 D/PipelineManager( 8676): OCR process succeeded via visionkit pipeline.
+11-04 05:27:53.896 D/FirePlayerOcr( 8676): Read a picture in 7009 ms, 29 waiting
+11-04 05:27:57.220 D/PipelineManager( 8676): OCR process succeeded via visionkit pipeline.
+11-04 05:27:57.238 D/FirePlayerOcr( 8676): Read a picture in 3342 ms, 29 waiting
+11-04 05:28:01.094 D/PipelineManager( 8676): OCR process succeeded via visionkit pipeline.
+11-04 05:28:01.095 D/FirePlayerOcr( 8676): Read a picture in 3857 ms, 28 waiting
+11-04 05:28:04.809 D/PipelineManager( 8676): OCR process succeeded via visionkit pipeline.
+11-04 05:28:04.811 D/FirePlayerOcr( 8676): Read a picture in 3715 ms, 27 waiting
+11-04 05:28:08.757 D/PipelineManager( 8676): OCR process succeeded via visionkit pipeline.
+11-04 05:28:08.760 D/FirePlayerOcr( 8676): Read a picture in 3949 ms, 29 waiting
+11-04 05:28:12.935 D/PipelineManager( 8676): OCR process succeeded via visionkit pipeline.
+11-04 05:28:12.937 D/FirePlayerOcr( 8676): Read a picture in 4178 ms, 28 waiting
+11-04 05:28:16.604 D/PipelineManager( 8676): OCR process succeeded via visionkit pipeline.
+11-04 05:28:16.607 D/FirePlayerOcr( 8676): Read a picture in 3669 ms, 27 waiting
+11-04 05:28:19.920 D/PipelineManager( 8676): OCR process succeeded via visionkit pipeline.
+11-04 05:28:19.926 D/FirePlayerOcr( 8676): Read a picture in 3318 ms, 26 waiting
+11-04 05:28:23.682 D/PipelineManager( 8676): OCR process succeeded via visionkit pipeline.
+11-04 05:28:23.684 D/FirePlayerOcr( 8676): Read a picture in 3758 ms, 25 waiting
+11-04 05:28:26.999 D/PipelineManager( 8676): OCR process succeeded via visionkit pipeline.
+11-04 05:28:27.001 D/FirePlayerOcr( 8676): Read a picture in 3317 ms, 24 waiting
+11-04 05:28:30.425 D/PipelineManager( 8676): OCR process succeeded via visionkit pipeline.
+11-04 05:28:30.426 D/FirePlayerOcr( 8676): Read a picture in 3424 ms, 23 waiting
+11-04 05:28:33.904 D/PipelineManager( 8676): OCR process succeeded via visionkit pipeline.
+11-04 05:28:33.905 D/FirePlayerOcr( 8676): Read a picture in 3479 ms, 22 waiting
+11-04 05:28:37.225 D/PipelineManager( 8676): OCR process succeeded via visionkit pipeline.
+11-04 05:28:37.226 D/FirePlayerOcr( 8676): Read a picture in 3320 ms, 21 waiting

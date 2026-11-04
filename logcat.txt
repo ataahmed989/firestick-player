@@ -1,0 +1,43 @@
+--------- beginning of main
+11-04 05:28:59.726 W/app.fireplayer(11121): Unexpected CPU variant for X86 using defaults: x86
+11-04 05:28:59.760 E/app.fireplayer(11121): Not starting debugger since process cannot load the jdwp agent.
+11-04 05:28:59.791 D/NetworkSecurityConfig(11121): No Network Security Config specified, using platform default
+11-04 05:28:59.792 D/NetworkSecurityConfig(11121): No Network Security Config specified, using platform default
+11-04 05:28:59.857 D/AppCompatDelegate(11121): Checking for metadata for AppLocalesMetadataHolderService : Service not found
+11-04 05:28:59.863 D/libEGL  (11121): loaded /vendor/lib/egl/libEGL_emulation.so
+11-04 05:28:59.864 D/libEGL  (11121): loaded /vendor/lib/egl/libGLESv1_CM_emulation.so
+11-04 05:28:59.871 D/libEGL  (11121): loaded /vendor/lib/egl/libGLESv2_emulation.so
+11-04 05:29:00.090 I/ExoPlayerImpl(11121): Init f575558 [AndroidXMedia3/1.8.0] [generic_x86, AOSP TV on x86, Google, 30]
+11-04 05:29:00.091 W/app.fireplayer(11121): Accessing hidden method Landroid/media/MediaRouter2$RoutingController;->getRoutingSessionInfo()Landroid/media/RoutingSessionInfo; (blacklist, linking, denied)
+11-04 05:29:00.096 I/DefaultRenderersFactory(11121): Loaded FfmpegVideoRenderer.
+11-04 05:29:00.098 I/DefaultRenderersFactory(11121): Loaded FfmpegAudioRenderer.
+11-04 05:29:00.145 D/HostConnection(11121): HostConnection::get() New Host Connection established 0xe98c2070, tid 11138
+11-04 05:29:00.160 D/HostConnection(11121): HostComposition ext ANDROID_EMU_CHECKSUM_HELPER_v1 ANDROID_EMU_native_sync_v2 ANDROID_EMU_dma_v1 ANDROID_EMU_direct_mem ANDROID_EMU_host_composition_v1 ANDROID_EMU_host_composition_v2 ANDROID_EMU_vulkan ANDROID_EMU_deferred_vulkan_commands ANDROID_EMU_vulkan_null_optional_strings ANDROID_EMU_vulkan_create_resources_with_requirements ANDROID_EMU_YUV_Cache ANDROID_EMU_vulkan_ignored_handles ANDROID_EMU_has_shared_slots_host_memory_allocator ANDROID_EMU_vulkan_free_memory_sync ANDROID_EMU_vulkan_shader_float16_int8 ANDROID_EMU_vulkan_async_queue_submit ANDROID_EMU_sync_buffer_data ANDROID_EMU_vulkan_async_qsri ANDROID_EMU_read_color_buffer_dma ANDROID_EMU_hwc_color_transform GL_OES_EGL_image_external_essl3 GL_OES_vertex_array_object GL_KHR_texture_compression_astc_ldr ANDROID_EMU_host_side_tracing ANDROID_EMU_gles_max_version_3_0 
+11-04 05:29:00.243 D/EGL_emulation(11121): eglCreateContext: 0xe98c2460: maj 3 min 0 rcv 3
+11-04 05:29:00.244 D/EGL_emulation(11121): eglMakeCurrent: 0xe98c2460: ver 3 0 (tinfo 0xe9c392b0) (first time)
+11-04 05:29:00.318 I/Gralloc4(11121): mapper 4.x is not supported
+11-04 05:29:00.319 D/HostConnection(11121): createUnique: call
+11-04 05:29:00.319 D/HostConnection(11121): HostConnection::get() New Host Connection established 0xe98de380, tid 11138
+11-04 05:29:00.319 D/goldfish-address-space(11121): allocate: Ask for block of size 0x100
+11-04 05:29:00.320 D/goldfish-address-space(11121): allocate: ioctl allocate returned offset 0x3f7ffe000 size 0x2000
+11-04 05:29:00.329 E/ExoPlayerImplInternal(11121): Playback error
+11-04 05:29:00.329 E/ExoPlayerImplInternal(11121):   androidx.media3.exoplayer.ExoPlaybackException: Source error
+11-04 05:29:00.329 E/ExoPlayerImplInternal(11121):       at androidx.media3.exoplayer.ExoPlayerImplInternal.handleIoException(ExoPlayerImplInternal.java:927)
+11-04 05:29:00.329 E/ExoPlayerImplInternal(11121):       at androidx.media3.exoplayer.ExoPlayerImplInternal.handleMessage(ExoPlayerImplInternal.java:899)
+11-04 05:29:00.329 E/ExoPlayerImplInternal(11121):       at android.os.Handler.dispatchMessage(Handler.java:102)
+11-04 05:29:00.329 E/ExoPlayerImplInternal(11121):       at android.os.Looper.loop(Looper.java:223)
+11-04 05:29:00.329 E/ExoPlayerImplInternal(11121):       at android.os.HandlerThread.run(HandlerThread.java:67)
+11-04 05:29:00.329 E/ExoPlayerImplInternal(11121):   Caused by: androidx.media3.datasource.HttpDataSource$InvalidResponseCodeException: Response code: 404
+11-04 05:29:00.329 E/ExoPlayerImplInternal(11121):       at androidx.media3.datasource.DefaultHttpDataSource.open(DefaultHttpDataSource.java:400)
+11-04 05:29:00.329 E/ExoPlayerImplInternal(11121):       at app.fireplayer.player.RedirectMemoryDataSource.openRemembering(RedirectMemoryDataSource.kt:93)
+11-04 05:29:00.329 E/ExoPlayerImplInternal(11121):       at app.fireplayer.player.RedirectMemoryDataSource.open(RedirectMemoryDataSource.kt:55)
+11-04 05:29:00.329 E/ExoPlayerImplInternal(11121):       at androidx.media3.datasource.DefaultDataSource.open(DefaultDataSource.java:275)
+11-04 05:29:00.329 E/ExoPlayerImplInternal(11121):       at androidx.media3.datasource.StatsDataSource.open(StatsDataSource.java:88)
+11-04 05:29:00.329 E/ExoPlayerImplInternal(11121):       at androidx.media3.exoplayer.source.ProgressiveMediaPeriod$ExtractingLoadable.load(ProgressiveMediaPeriod.java:1109)
+11-04 05:29:00.329 E/ExoPlayerImplInternal(11121):       at androidx.media3.exoplayer.upstream.Loader$LoadTask.run(Loader.java:453)
+11-04 05:29:00.329 E/ExoPlayerImplInternal(11121):       at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1167)
+11-04 05:29:00.329 E/ExoPlayerImplInternal(11121):       at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:641)
+11-04 05:29:00.329 E/ExoPlayerImplInternal(11121):       at java.lang.Thread.run(Thread.java:923)
+11-04 05:29:00.341 D/HostConnection(11121): HostComposition ext ANDROID_EMU_CHECKSUM_HELPER_v1 ANDROID_EMU_native_sync_v2 ANDROID_EMU_dma_v1 ANDROID_EMU_direct_mem ANDROID_EMU_host_composition_v1 ANDROID_EMU_host_composition_v2 ANDROID_EMU_vulkan ANDROID_EMU_deferred_vulkan_commands ANDROID_EMU_vulkan_null_optional_strings ANDROID_EMU_vulkan_create_resources_with_requirements ANDROID_EMU_YUV_Cache ANDROID_EMU_vulkan_ignored_handles ANDROID_EMU_has_shared_slots_host_memory_allocator ANDROID_EMU_vulkan_free_memory_sync ANDROID_EMU_vulkan_shader_float16_int8 ANDROID_EMU_vulkan_async_queue_submit ANDROID_EMU_sync_buffer_data ANDROID_EMU_vulkan_async_qsri ANDROID_EMU_read_color_buffer_dma ANDROID_EMU_hwc_color_transform GL_OES_EGL_image_external_essl3 GL_OES_vertex_array_object GL_KHR_texture_compression_astc_ldr ANDROID_EMU_host_side_tracing ANDROID_EMU_gles_max_version_3_0 
+11-04 05:29:00.470 I/TetheringManager(11121): registerTetheringEventCallback:app.fireplayer
+11-04 05:29:05.914 D/ProfileInstaller(11121): Skipping profile installation for app.fireplayer

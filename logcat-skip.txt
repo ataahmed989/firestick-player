@@ -1,0 +1,154 @@
+11-04 05:23:41.039 D/AndroidRuntime(  265): >>>>>> START com.android.internal.os.ZygoteInit uid 0 <<<<<<
+11-04 05:23:41.081 I/AndroidRuntime(  265): Using default boot image
+11-04 05:23:41.081 I/AndroidRuntime(  265): Leaving lock profiling enabled
+11-04 05:23:41.445 D/MediaCodecsXmlParser(  397): parsing /vendor/etc/media_codecs.xml...
+11-04 05:23:41.446 D/MediaCodecsXmlParser(  397): Ignoring unrecognized tag <MediaCodec> at line 85 of /vendor/etc/media_codecs.xml
+11-04 05:23:41.446 D/MediaCodecsXmlParser(  397): Ignoring unrecognized tag <MediaCodec> at line 88 of /vendor/etc/media_codecs.xml
+11-04 05:23:41.446 D/MediaCodecsXmlParser(  397): Ignoring unrecognized tag <MediaCodec> at line 91 of /vendor/etc/media_codecs.xml
+11-04 05:23:41.446 D/MediaCodecsXmlParser(  397): parsing /vendor/etc/media_codecs_google_audio.xml...
+11-04 05:23:41.446 D/MediaCodecsXmlParser(  397): parsing /vendor/etc/media_codecs_google_telephony.xml...
+11-04 05:23:41.450 D/MediaCodecsXmlParser(  397): parsing /vendor/etc/media_codecs_google_video.xml...
+11-04 05:23:41.451 D/MediaCodecsXmlParser(  397): parsing /vendor/etc/media_codecs_performance.xml...
+11-04 05:23:41.452 D/MediaCodecsXmlParser(  397): Cannot find /data/misc/media/media_codecs_profiling_results.xml
+11-04 05:23:41.456 D/MediaCodecsXmlParser(  397): parsing /vendor/etc/media_codecs.xml...
+11-04 05:23:41.456 D/MediaCodecsXmlParser(  397): Ignoring unrecognized tag <MediaCodec> at line 85 of /vendor/etc/media_codecs.xml
+11-04 05:23:41.456 D/MediaCodecsXmlParser(  397): Ignoring unrecognized tag <MediaCodec> at line 88 of /vendor/etc/media_codecs.xml
+11-04 05:23:41.456 D/MediaCodecsXmlParser(  397): Ignoring unrecognized tag <MediaCodec> at line 91 of /vendor/etc/media_codecs.xml
+11-04 05:23:41.456 D/MediaCodecsXmlParser(  397): parsing /vendor/etc/media_codecs_google_audio.xml...
+11-04 05:23:41.456 D/MediaCodecsXmlParser(  397): parsing /vendor/etc/media_codecs_google_telephony.xml...
+11-04 05:23:41.456 D/MediaCodecsXmlParser(  397): parsing /vendor/etc/media_codecs_google_video.xml...
+11-04 05:23:41.456 D/MediaCodecsXmlParser(  397): parsing /vendor/etc/media_codecs_performance.xml...
+11-04 05:23:41.456 D/MediaCodecsXmlParser(  397): Cannot find /data/misc/media/media_codecs_profiling_results.xml
+11-04 05:23:48.976 D/MediaCodecList(  389): Allowing all OMX codecs
+11-04 05:23:49.068 D/MediaCodecInfo(  389): detail feature-tunneled-playback wasn't present to remove
+11-04 05:23:49.070 D/MediaCodecInfo(  389): detail feature-tunneled-playback wasn't present to remove
+11-04 05:23:49.074 D/MediaCodecInfo(  389): detail feature-tunneled-playback wasn't present to remove
+11-04 05:23:49.077 D/MediaCodecInfo(  389): detail feature-tunneled-playback wasn't present to remove
+11-04 05:23:49.084 D/MediaCodecInfo(  389): detail feature-tunneled-playback wasn't present to remove
+11-04 05:23:49.095 D/MediaCodecInfo(  389): detail feature-tunneled-playback wasn't present to remove
+11-04 05:23:49.116 D/MediaCodecInfo(  389): detail feature-frame-parsing wasn't present to remove
+11-04 05:23:49.134 D/MediaCodecInfo(  389): detail feature-frame-parsing wasn't present to remove
+11-04 05:23:49.146 I/AndroidRuntime(  790): VM exiting with result code 0, cleanup skipped.
+11-04 05:23:49.150 D/MediaCodecInfo(  389): detail feature-frame-parsing wasn't present to remove
+11-04 05:23:49.158 D/MediaCodecInfo(  389): detail feature-frame-parsing wasn't present to remove
+11-04 05:23:49.240 D/MediaCodecsXmlParser(  389): parsing /apex/com.android.media.swcodec/etc/media_codecs.xml...
+11-04 05:23:49.241 D/MediaCodecsXmlParser(  389): disabling c2.android.gsm.decoder
+11-04 05:23:49.241 D/MediaCodecsXmlParser(  389): disabling c2.android.mpeg2.decoder
+11-04 05:23:49.241 D/MediaCodecsXmlParser(  389): Cannot find 
+11-04 05:23:49.241 D/MediaCodecsXmlParser(  389): Cannot find 
+11-04 05:23:49.241 D/MediaCodecsXmlParser(  389): parsing /vendor/etc/media_codecs.xml...
+11-04 05:23:49.241 D/MediaCodecsXmlParser(  389): Ignoring unrecognized tag <MediaCodec> at line 85 of /vendor/etc/media_codecs.xml
+11-04 05:23:49.241 D/MediaCodecsXmlParser(  389): Ignoring unrecognized tag <MediaCodec> at line 88 of /vendor/etc/media_codecs.xml
+11-04 05:23:49.241 D/MediaCodecsXmlParser(  389): Ignoring unrecognized tag <MediaCodec> at line 91 of /vendor/etc/media_codecs.xml
+11-04 05:23:49.241 D/MediaCodecsXmlParser(  389): parsing /vendor/etc/media_codecs_google_audio.xml...
+11-04 05:23:49.241 D/MediaCodecsXmlParser(  389): parsing /vendor/etc/media_codecs_google_telephony.xml...
+11-04 05:23:49.241 D/MediaCodecsXmlParser(  389): parsing /vendor/etc/media_codecs_google_video.xml...
+11-04 05:23:49.242 D/MediaCodecsXmlParser(  389): parsing /vendor/etc/media_codecs_performance.xml...
+11-04 05:23:49.313 D/MediaCodecList(  472): codecHandlesFormat: no format, so no extra checks
+11-04 05:23:49.346 D/MediaCodecList(  472): codecHandlesFormat: no format, so no extra checks
+11-04 05:23:49.374 D/MediaCodecList(  472): codecHandlesFormat: no format, so no extra checks
+11-04 05:23:49.410 D/MediaCodecList(  472): codecHandlesFormat: no format, so no extra checks
+11-04 05:23:49.510 D/MediaCodecList(  472): codecHandlesFormat: no format, so no extra checks
+11-04 05:23:49.791 D/MediaCodecList(  472): codecHandlesFormat: no format, so no extra checks
+11-04 05:23:53.077 D/AndroidRuntime( 1623): >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-04 05:23:53.147 I/AndroidRuntime( 1623): Using default boot image
+11-04 05:23:53.147 I/AndroidRuntime( 1623): Leaving lock profiling enabled
+11-04 05:23:54.091 D/AndroidRuntime( 1623): Calling main entry com.android.commands.input.Input
+11-04 05:23:54.253 D/AndroidRuntime( 1623): Shutting down VM
+11-04 05:24:21.944 D/AndroidRuntime( 3606): >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-04 05:24:21.945 I/AndroidRuntime( 3606): Using default boot image
+11-04 05:24:21.945 I/AndroidRuntime( 3606): Leaving lock profiling enabled
+11-04 05:24:21.999 D/AndroidRuntime( 3606): Calling main entry com.android.commands.input.Input
+11-04 05:24:22.004 D/AndroidRuntime( 3606): Shutting down VM
+11-04 05:24:25.339 D/AndroidRuntime( 3668): >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-04 05:24:25.351 I/AndroidRuntime( 3668): Using default boot image
+11-04 05:24:25.351 I/AndroidRuntime( 3668): Leaving lock profiling enabled
+11-04 05:24:25.408 D/AndroidRuntime( 3668): Calling main entry com.android.commands.input.Input
+11-04 05:24:25.418 D/AndroidRuntime( 3668): Shutting down VM
+11-04 05:24:25.426 I/AndroidRuntime( 3668): NOTE: attach of thread 'Binder:3668_1' failed
+11-04 05:24:26.588 D/AndroidRuntime( 3686): >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-04 05:24:26.590 I/AndroidRuntime( 3686): Using default boot image
+11-04 05:24:26.590 I/AndroidRuntime( 3686): Leaving lock profiling enabled
+11-04 05:24:26.649 D/AndroidRuntime( 3686): Calling main entry com.android.commands.input.Input
+11-04 05:24:26.652 D/AndroidRuntime( 3686): Shutting down VM
+11-04 05:24:27.804 D/AndroidRuntime( 3704): >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-04 05:24:27.805 I/AndroidRuntime( 3704): Using default boot image
+11-04 05:24:27.805 I/AndroidRuntime( 3704): Leaving lock profiling enabled
+11-04 05:24:27.844 D/AndroidRuntime( 3704): Calling main entry com.android.commands.input.Input
+11-04 05:24:27.871 D/AndroidRuntime( 3704): Shutting down VM
+11-04 05:24:31.138 D/AndroidRuntime( 3728): >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-04 05:24:31.139 I/AndroidRuntime( 3728): Using default boot image
+11-04 05:24:31.139 I/AndroidRuntime( 3728): Leaving lock profiling enabled
+11-04 05:24:31.184 D/AndroidRuntime( 3728): Calling main entry com.android.commands.input.Input
+11-04 05:24:31.187 D/AndroidRuntime( 3728): Shutting down VM
+11-04 05:24:32.338 D/AndroidRuntime( 3741): >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-04 05:24:32.339 I/AndroidRuntime( 3741): Using default boot image
+11-04 05:24:32.339 I/AndroidRuntime( 3741): Leaving lock profiling enabled
+11-04 05:24:32.378 D/AndroidRuntime( 3741): Calling main entry com.android.commands.input.Input
+11-04 05:24:32.382 D/AndroidRuntime( 3741): Shutting down VM
+11-04 05:24:33.671 D/AndroidRuntime( 3757): >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-04 05:24:33.693 I/AndroidRuntime( 3757): Using default boot image
+11-04 05:24:33.693 I/AndroidRuntime( 3757): Leaving lock profiling enabled
+11-04 05:24:33.836 D/AndroidRuntime( 3757): Calling main entry com.android.commands.input.Input
+11-04 05:24:33.915 D/AndroidRuntime( 3757): Shutting down VM
+11-04 05:24:37.461 I/ExoPlayerImpl( 3789): Init f575558 [AndroidXMedia3/1.8.0] [generic_x86, AOSP TV on x86, Google, 30]
+11-04 05:24:40.055 I/MediaCodec( 3789): [OMX.google.h264.decoder] setting surface generation to 3879937
+11-04 05:24:40.386 D/MediaCodec( 3789): [OMX.google.h264.decoder] setting dataspace on output surface to #104
+11-04 05:24:53.286 D/AndroidRuntime( 4254): >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-04 05:24:53.288 I/AndroidRuntime( 4254): Using default boot image
+11-04 05:24:53.288 I/AndroidRuntime( 4254): Leaving lock profiling enabled
+11-04 05:24:53.399 D/AndroidRuntime( 4254): Calling main entry com.android.commands.input.Input
+11-04 05:24:53.405 I/ExoPlayerImpl( 3789): Init e483e1 [AndroidXMedia3/1.8.0] [generic_x86, AOSP TV on x86, Google, 30]
+11-04 05:24:53.408 D/AndroidRuntime( 4254): Shutting down VM
+11-04 05:24:54.424 D/AndroidRuntime( 4287): >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-04 05:24:54.541 I/AndroidRuntime( 4287): Using default boot image
+11-04 05:24:54.541 I/AndroidRuntime( 4287): Leaving lock profiling enabled
+11-04 05:24:55.092 D/AndroidRuntime( 4287): Calling main entry com.android.commands.input.Input
+11-04 05:24:55.157 D/AndroidRuntime( 4287): Shutting down VM
+11-04 05:24:56.145 D/AndroidRuntime( 4363): >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-04 05:24:56.160 I/AndroidRuntime( 4363): Using default boot image
+11-04 05:24:56.160 I/AndroidRuntime( 4363): Leaving lock profiling enabled
+11-04 05:24:56.851 D/AndroidRuntime( 4363): Calling main entry com.android.commands.input.Input
+11-04 05:24:56.875 D/AndroidRuntime( 4363): Shutting down VM
+11-04 05:24:57.652 I/MediaCodec( 3789): [OMX.google.h264.decoder] setting surface generation to 3879938
+11-04 05:24:57.883 D/MediaCodec( 3789): [OMX.google.h264.decoder] setting dataspace on output surface to #104
+11-04 05:25:05.084 D/AndroidRuntime( 4742): >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-04 05:25:05.093 I/AndroidRuntime( 4742): Using default boot image
+11-04 05:25:05.093 I/AndroidRuntime( 4742): Leaving lock profiling enabled
+11-04 05:25:05.223 D/AndroidRuntime( 4742): Calling main entry com.android.commands.input.Input
+11-04 05:25:05.227 D/AndroidRuntime( 4742): Shutting down VM
+11-04 05:25:08.227 D/AndroidRuntime( 4837): >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-04 05:25:08.238 I/AndroidRuntime( 4837): Using default boot image
+11-04 05:25:08.238 I/AndroidRuntime( 4837): Leaving lock profiling enabled
+11-04 05:25:08.326 D/AndroidRuntime( 4837): Calling main entry com.android.commands.input.Input
+11-04 05:25:08.346 D/AndroidRuntime( 4837): Shutting down VM
+11-04 05:25:10.534 D/AndroidRuntime( 4960): >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-04 05:25:10.535 I/AndroidRuntime( 4960): Using default boot image
+11-04 05:25:10.535 I/AndroidRuntime( 4960): Leaving lock profiling enabled
+11-04 05:25:10.623 D/AndroidRuntime( 4960): Calling main entry com.android.commands.input.Input
+11-04 05:25:10.626 D/AndroidRuntime( 4960): Shutting down VM
+11-04 05:25:11.505 D/AndroidRuntime( 5000): >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-04 05:25:11.533 I/AndroidRuntime( 5000): Using default boot image
+11-04 05:25:11.533 I/AndroidRuntime( 5000): Leaving lock profiling enabled
+11-04 05:25:12.333 D/AndroidRuntime( 5000): Calling main entry com.android.commands.input.Input
+11-04 05:25:12.453 D/AndroidRuntime( 5000): Shutting down VM
+11-04 05:25:13.913 D/AndroidRuntime( 5071): >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-04 05:25:13.920 I/AndroidRuntime( 5071): Using default boot image
+11-04 05:25:13.920 I/AndroidRuntime( 5071): Leaving lock profiling enabled
+11-04 05:25:14.105 D/AndroidRuntime( 5071): Calling main entry com.android.commands.input.Input
+11-04 05:25:14.110 D/AndroidRuntime( 5071): Shutting down VM
+11-04 05:25:17.943 D/AndroidRuntime( 5236): >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-04 05:25:17.944 I/AndroidRuntime( 5236): Using default boot image
+11-04 05:25:17.944 I/AndroidRuntime( 5236): Leaving lock profiling enabled
+11-04 05:25:18.035 D/AndroidRuntime( 5236): Calling main entry com.android.commands.input.Input
+11-04 05:25:18.055 D/AndroidRuntime( 5236): Shutting down VM
+11-04 05:25:21.229 D/AndroidRuntime( 5367): >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-04 05:25:21.230 I/AndroidRuntime( 5367): Using default boot image
+11-04 05:25:21.230 I/AndroidRuntime( 5367): Leaving lock profiling enabled
+11-04 05:25:21.288 D/AndroidRuntime( 5367): Calling main entry com.android.commands.input.Input
+11-04 05:25:21.300 D/AndroidRuntime( 5367): Shutting down VM
+11-04 05:25:22.480 D/AndroidRuntime( 5387): >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-04 05:25:22.481 I/AndroidRuntime( 5387): Using default boot image
+11-04 05:25:22.481 I/AndroidRuntime( 5387): Leaving lock profiling enabled
+11-04 05:25:22.522 D/AndroidRuntime( 5387): Calling main entry com.android.commands.input.Input
+11-04 05:25:22.525 D/AndroidRuntime( 5387): Shutting down VM
