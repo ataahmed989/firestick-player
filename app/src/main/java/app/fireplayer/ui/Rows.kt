@@ -121,11 +121,14 @@ class RowLayout(context: Context, private val colors: ColorStateList?) : LinearL
         for (i in 0 until childCount) {
             when (val child = getChildAt(i)) {
                 is TextView -> if (child.currentTextColor != color) child.setTextColor(color)
-                is ImageView -> if (child.imageTintList?.defaultColor != color) child.imageTintList = ColorStateList.valueOf(color)
+                is ImageView -> if (child.tag != KEEP_COLORS && child.imageTintList?.defaultColor != color) child.imageTintList = ColorStateList.valueOf(color)
             }
         }
     }
 }
+
+/** Tag for a row's image that keeps its own colours (the glass switch) instead of following the text colour. */
+const val KEEP_COLORS = "keepColors"
 
 /** Shared look and D-pad behaviour for the rows in the settings windows and pickers. */
 class Rows(private val context: Context) {
@@ -181,6 +184,7 @@ class Rows(private val context: Context) {
             row.addView(ImageView(context).apply {
                 setImageResource(if (value == "On") R.drawable.glass_toggle_on else R.drawable.glass_toggle_off)
                 contentDescription = value
+                tag = KEEP_COLORS
                 layoutParams = LinearLayout.LayoutParams(dp(34), dp(20)).apply { marginStart = dp(8) }
             })
         } else if (value != null) {
