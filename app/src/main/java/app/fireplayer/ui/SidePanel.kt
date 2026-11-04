@@ -39,6 +39,7 @@ class SidePanel(private val activity: Activity) {
         this.onClose = onClose
         renderer = render
         title.text = titleText
+        root.setBackgroundResource(Glass.panel)
         root.visibility = View.VISIBLE
         root.alpha = 0f
         root.translationX = rows.dp(24).toFloat()
@@ -147,7 +148,7 @@ class SidePanel(private val activity: Activity) {
 
     /** A setting with several values: shows the current one and opens a small picker window. */
     fun choice(label: String, options: List<String>, selected: Int, onPick: (Int) -> Unit): View {
-        val value = options.getOrNull(selected) ?: ""
+        val value = (options.getOrNull(selected) ?: "") + if (Glass.on) "  ›" else ""
         return row(label, value) {
             FireDialog.choose(activity, label, options, selected, besidePanel = true) { index ->
                 if (index != selected) onPick(index)

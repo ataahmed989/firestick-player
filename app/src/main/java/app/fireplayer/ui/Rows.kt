@@ -121,11 +121,14 @@ class RowLayout(context: Context, private val colors: ColorStateList?) : LinearL
         for (i in 0 until childCount) {
             when (val child = getChildAt(i)) {
                 is TextView -> if (child.currentTextColor != color) child.setTextColor(color)
-                is ImageView -> if (child.imageTintList?.defaultColor != color) child.imageTintList = ColorStateList.valueOf(color)
+                is ImageView -> if (child.tag != KEEP_COLORS && child.imageTintList?.defaultColor != color) child.imageTintList = ColorStateList.valueOf(color)
             }
         }
     }
 }
+
+/** Tag for a row's image that keeps its own colours (the glass switch) instead of following the text colour. */
+const val KEEP_COLORS = "keepColors"
 
 /** Shared look and D-pad behaviour for the rows in the settings windows and pickers. */
 class Rows(private val context: Context) {
@@ -141,7 +144,7 @@ class Rows(private val context: Context) {
         gravity = Gravity.CENTER_VERTICAL
         isFocusable = true
         isClickable = true
-        setBackgroundResource(R.drawable.bg_row)
+        setBackgroundResource(Glass.row)
         minimumHeight = dp(33)
         setPadding(dp(12), dp(6), dp(12), dp(6))
     }
@@ -176,7 +179,17 @@ class Rows(private val context: Context) {
         }
         row.addView(labelView, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         // A long value is shortened rather than pushing the label off the row.
-        if (value != null) row.addView(text(value).apply { alpha = 0.85f; maxWidth = dp(118) })
+        if (Glass.on && (value == "On" || value == "Off")) {
+            // Glass look: on/off settings show a switch instead of the word.
+            row.addView(ImageView(context).apply {
+                setImageResource(if (value == "On") R.drawable.glass_toggle_on else R.drawable.glass_toggle_off)
+                contentDescription = value
+                tag = KEEP_COLORS
+                layoutParams = LinearLayout.LayoutParams(dp(34), dp(20)).apply { marginStart = dp(8) }
+            })
+        } else if (value != null) {
+            row.addView(text(value).apply { alpha = 0.85f; maxWidth = dp(118) })
+        }
         if (trailingIcon != null) row.addView(icon(trailingIcon, 15))
         return row
     }

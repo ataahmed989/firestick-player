@@ -36,6 +36,9 @@ class SettingsPanels(
     private var titlesProgress: List<TitleBook.Progress>? = null
     private var titlesAsked = false
 
+    /** Called when the glass look is turned on or off, so the screen behind can restyle its buttons. */
+    var onLookChanged: () -> Unit = {}
+
     /** Called after a font arrives from the phone (or is removed), so the subtitles can switch to it. */
     var onFontChanged: () -> Unit = {}
 
@@ -54,6 +57,15 @@ class SettingsPanels(
         header("Remote")
         choice("Menu button opens", listOf("Settings", "Subtitle style"), if (prefs.menuOpensStyle) 1 else 0) {
             prefs.menuOpensStyle = it == 1
+        }
+
+        header("Look")
+        row("Glass look", onOff(prefs.glassLook)) {
+            prefs.glassLook = !prefs.glassLook
+            Glass.on = prefs.glassLook
+            onLookChanged()
+            root.setBackgroundResource(Glass.panel)
+            refresh()
         }
 
         header("Skipping")
