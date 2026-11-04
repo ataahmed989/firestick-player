@@ -79,6 +79,7 @@ import app.fireplayer.subs.SubtitleStyler
 import app.fireplayer.ui.CountdownPill
 import app.fireplayer.ui.FireDialog
 import app.fireplayer.ui.Glass
+import app.fireplayer.ui.GlassBackdrop
 import app.fireplayer.ui.SeekBarView
 import app.fireplayer.ui.SeekPreview
 import app.fireplayer.ui.SettingsPanels
@@ -96,7 +97,7 @@ import kotlin.math.ceil
 import kotlin.math.roundToInt
 
 @OptIn(UnstableApi::class)
-class PlayerActivity : AppCompatActivity(), Player.Listener {
+class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host {
 
     /** One video to play, with any subtitles we were handed or added. */
     private class Entry(
@@ -160,6 +161,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private var player: ExoPlayer? = null
     // Keeps the film's frames evenly paced on a TV switched to the film's refresh rate (see VsyncFix).
     private var vsyncFix: VsyncFix? = null
+    // The blurred film the glass look shows (see GlassBackdrop): this player's own, made once the views are.
+    private var backdrop: GlassBackdrop? = null
+    override val glassBackdrop: GlassBackdrop? get() = backdrop
+    // A jump was made: the glass copies the picture again once the player is ready at the new spot.
+    private var glassAfterSeek = false
     private var assHandler: AssHandler? = null
     private var bufferWait: () -> BufferWait? = { null }
 
@@ -316,6 +322,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         set(value) {
             field = value
             displaySwitch.atMs = value
+            suspendGlass()
         }
 
     private var resumeDialogShowing = false
@@ -368,6 +375,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             applySubtitleStyle()
         }
         bindViews()
+        // Before applyLook: the glass looks for its film here.
+        backdrop = GlassBackdrop(this, surfaceView)
+        // Another display size moves the picture on screen: the glass's copy of it is out of place.
+        videoFrame.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+            if (left != oldLeft || top != oldTop || right != oldRight || bottom != oldBottom) backdrop?.frameChanged()
+        }
         panel = SidePanel(this)
         buildMoreRow()
         applyLook()
@@ -383,6 +396,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     override fun onStart() {
         super.onStart()
+        backdrop?.start()
         if (entries.isNotEmpty() && player == null) {
             // Back from Home with the TV on another refresh rate: it switches again as the window shows, so the film
             // waits for the picture instead of playing into the blank.
@@ -418,6 +432,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         notice = false
         retryPending = false
         savePosition()
+        // Before the player goes, so no copy is taken of a film being taken down.
+        backdrop?.stop()
         releasePlayer()
         // Paused only for a refresh-rate switch: it plays on when the viewer comes back.
         if (pausedForSwitch) {
@@ -436,6 +452,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         }
         lookupWantedAt = 0L
         handler.removeCallbacksAndMessages(null)
+        // That dropped the end of any refresh-rate wait (glassSettled); onStart starts another if the TV switches again.
+        backdrop?.suspended = false
         // Left with Home: the FirePlayer icon brings this film back for a few minutes (see HomeActivity).
         if (!isFinishing && shown?.get() === this) prefs.leavePlayer(taskId, SystemClock.elapsedRealtime())
     }
@@ -450,6 +468,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             prefs.forgetLeftPlayer()
         }
         pictureText.release()
+        backdrop?.release()
         io.shutdownNow()
         handler.removeCallbacksAndMessages(null)
         FontImport.stopAll()
@@ -708,6 +727,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         vsyncFix?.stop()
         vsyncFix = null
         p.removeListener(this)
+        // Its listener is gone, so the glass won't hear that it stopped playing.
+        backdrop?.playing = false
         p.release()
         assHandler?.release()
         assHandler = null
@@ -828,6 +849,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             hideBuffering()
         }
         if (state == Player.STATE_READY) {
+            if (glassAfterSeek) {
+                glassAfterSeek = false
+                backdrop?.frameChanged()
+            }
             findNextEpisode()
             errorBox.visibility = View.GONE
             waitingSince = 0L
@@ -861,6 +886,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     }
 
     override fun onIsPlayingChanged(isPlaying: Boolean) {
+        backdrop?.playing = isPlaying
         updatePlayButton()
         updateKeepScreenOn()
         if (isPlaying) scheduleHide() else handler.removeCallbacks(hideControlsRunnable)
@@ -947,6 +973,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     override fun onVideoSizeChanged(videoSize: VideoSize) {
         applyDisplayMode()
         updateChips()
+        backdrop?.frameChanged()
+    }
+
+    override fun onRenderedFirstFrame() {
+        // The first picture of a new player or video, or after a jump: the glass copies it.
+        backdrop?.frameChanged()
     }
 
     override fun onCues(cueGroup: CueGroup) {
@@ -968,6 +1000,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         if (reason == Player.DISCONTINUITY_REASON_SEEK) {
             shownPercent = 0
             percentFrom = SystemClock.elapsedRealtime()
+            glassAfterSeek = true
         }
         // Going back reloads the film from there (nothing behind is kept), so what was lined up to read is stale.
         if (reason == Player.DISCONTINUITY_REASON_SEEK && newPosition.positionMs < oldPosition.positionMs) {
@@ -1659,6 +1692,19 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         player?.play()
     }
 
+    /**
+     * While the TV changes refresh rate the picture is blank and VsyncFix measures again, so the glass takes no copies
+     * of the film until it has settled (DISPLAY_SETTLE_MS, which outlasts the film's pause for the switch).
+     */
+    private fun suspendGlass() {
+        val b = backdrop ?: return
+        b.suspended = true
+        handler.removeCallbacks(glassSettled)
+        handler.postDelayed(glassSettled, DISPLAY_SETTLE_MS)
+    }
+
+    private val glassSettled = Runnable { backdrop?.suspended = false }
+
     private val rebuildForAss = Runnable {
         if (player != null && builtWithAss != prefs.keepAssStyling) rebuildPlayer()
     }
@@ -1738,19 +1784,21 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     /** Puts the classic or glass backgrounds on the controls (Settings, Look, Glass look). Padding and sizes stay. */
     private fun applyLook() {
         Glass.on = prefs.glassLook
-        fun View.bg(res: Int) {
-            val l = paddingLeft; val t = paddingTop; val r = paddingRight; val b = paddingBottom
-            setBackgroundResource(res)
-            setPadding(l, t, r, b)
+        Glass.background(btnPlay, Glass.Kind.CIRCLE)
+        Glass.background(btnRestart, Glass.Kind.CIRCLE)
+        Glass.background(btnNext, Glass.Kind.CIRCLE)
+        Glass.background(btnSubs, Glass.Kind.PILL)
+        Glass.background(btnAudio, Glass.Kind.PILL)
+        for (chip in listOf(chipResolution, chipFps, chipAudio)) Glass.background(chip, Glass.Kind.CHIP)
+        // Glass chips cast a shadow below them that their row would cut off; classic chips keep the row as it was.
+        (chips as ViewGroup).apply {
+            clipChildren = !Glass.on
+            clipToPadding = !Glass.on
         }
-        btnPlay.bg(Glass.circle)
-        btnRestart.bg(Glass.circle)
-        btnNext.bg(Glass.circle)
-        btnSubs.bg(Glass.pill)
-        btnAudio.bg(Glass.pill)
-        for (chip in listOf(chipResolution, chipFps, chipAudio)) chip.bg(Glass.chip)
-        for (item in moreItems.values) (item.view.findViewById<View>(R.id.more_icon).parent as View).bg(Glass.moreIcon)
-        errorBox.bg(Glass.popup)
+        for (item in moreItems.values) {
+            Glass.background(item.view.findViewById<View>(R.id.more_icon).parent as View, Glass.Kind.MORE_ICON)
+        }
+        Glass.background(errorBox, Glass.Kind.POPUP)
         (findViewById<FrameLayout>(R.id.preview_card)).foreground = ContextCompat.getDrawable(this, Glass.previewEdge)
     }
 
@@ -2725,6 +2773,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         val p = player
         val size = p?.videoSize
         val aspect = if (size == null || size.height == 0) 0f else size.width * size.pixelWidthHeightRatio / size.height
+        val scale = videoFrame.scaleX
         videoFrame.scaleX = 1f
         videoFrame.scaleY = 1f
         when (displayMode) {
@@ -2741,6 +2790,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             5 -> { videoFrame.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT; videoFrame.setAspectRatio(4f / 3f) }
             6 -> { videoFrame.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT; videoFrame.setAspectRatio(21f / 9f) }
         }
+        // Zoom grows the picture without a new layout, which the layout listener wouldn't see.
+        if (videoFrame.scaleX != scale) backdrop?.frameChanged()
     }
 
     // ---------------------------------------------------------------------

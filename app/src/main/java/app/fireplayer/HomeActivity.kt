@@ -22,6 +22,7 @@ import app.fireplayer.data.Prefs
 import app.fireplayer.subs.SubtitlePresets
 import app.fireplayer.titles.TitleService
 import app.fireplayer.ui.FireDialog
+import app.fireplayer.ui.Glass
 import app.fireplayer.ui.Rows
 import app.fireplayer.ui.SettingsPanels
 import app.fireplayer.ui.SidePanel
@@ -34,11 +35,13 @@ class HomeActivity : AppCompatActivity() {
     private lateinit var panel: SidePanel
     private lateinit var list: LinearLayout
     private var consumeBackUp = false
+    /** The look the rows were given, so a switch made in the player meanwhile shows here too. */
+    private var lookOn = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val prefs = Prefs(this)
-        app.fireplayer.ui.Glass.on = prefs.glassLook
+        Glass.on = prefs.glassLook
         if (backToPlayer(prefs)) return
         setContentView(R.layout.activity_home)
         settingsPanels = SettingsPanels(this, prefs, SubtitlePresets(prefs))
@@ -55,6 +58,9 @@ class HomeActivity : AppCompatActivity() {
             openPanel("Settings", from) { settingsPanels.renderSettings(this) }
         }
         first.requestFocus()
+        lookOn = Glass.on
+        clipForLook()
+        settingsPanels.onLookChanged = { applyLook() }
 
         val updater = Updater(this)
         updater.check { release -> release?.let { updater.offer(it) } }
@@ -64,7 +70,27 @@ class HomeActivity : AppCompatActivity() {
 
     override fun onRestart() {
         super.onRestart()
-        backToPlayer(Prefs(this))
+        if (backToPlayer(Prefs(this)) || !::list.isInitialized || lookOn == Glass.on) return
+        // The look was switched in the player while this screen was behind it.
+        applyLook()
+        if (panel.isOpen) {
+            Glass.background(panel.root, Glass.Kind.PANEL)
+            panel.refresh()
+        }
+    }
+
+    /** Gives the rows the look Settings now has (the window redraws its own). */
+    private fun applyLook() {
+        lookOn = Glass.on
+        for (i in 0 until list.childCount) Glass.background(list.getChildAt(i), Glass.Kind.ROW)
+        // A selected row shows its look at once rather than fading in.
+        list.jumpDrawablesToCurrentState()
+        clipForLook()
+    }
+
+    /** The glass settings window's shadow falls outside it, which this screen would otherwise cut off. */
+    private fun clipForLook() {
+        (panel.root.parent as? ViewGroup)?.clipChildren = !Glass.on
     }
 
     /**
@@ -146,7 +172,7 @@ class HomeActivity : AppCompatActivity() {
             gravity = Gravity.CENTER_VERTICAL
             isFocusable = true
             isClickable = true
-            setBackgroundResource(app.fireplayer.ui.Glass.row)
+            Glass.background(this, Glass.Kind.ROW)
             minimumHeight = (44 * density).toInt()
             val h = (14 * density).toInt()
             setPadding(h, 0, h, 0)
