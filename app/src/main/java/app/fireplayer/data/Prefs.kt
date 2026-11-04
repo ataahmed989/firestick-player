@@ -62,7 +62,7 @@ class Prefs(context: Context) {
 
     /** The optional see-through glass look for the controls and windows; off keeps the classic look. */
     var glassLook: Boolean
-        get() = sp.getBoolean("glass_look", true)
+        get() = sp.getBoolean("glass_look", false)
         set(v) = sp.edit().putBoolean("glass_look", v).apply()
 
     var passthrough: Boolean
@@ -131,6 +131,11 @@ class Prefs(context: Context) {
     var displayMode: Int
         get() = sp.getInt("display_mode", 0)
         set(v) = sp.edit().putInt("display_mode", v).apply()
+
+    /** Screen dimmer, 0 (off) to 10 (darkest); kept from one film to the next. */
+    var dimLevel: Int
+        get() = sp.getInt("dim_level", 0).coerceIn(0, 10)
+        set(v) = sp.edit().putInt("dim_level", v).apply()
 
     // Resume points, keyed by the video's URI.
     fun savedPosition(key: String): Long = sp.getLong("pos:$key", 0L)

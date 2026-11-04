@@ -180,6 +180,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private lateinit var postPlayNext: TextView
     private lateinit var postPlayCredits: CountdownPill
     private lateinit var postPlayGo: CountdownPill
+    private lateinit var dimmer: View
     // The episode whose end card was put away (Watch credits, or Back), so it doesn't come straight back.
     private var postPlayDismissedFor = -1
     // Where the end card's count started, and how long it runs.
@@ -386,6 +387,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         applyLook()
         settingsPanels.onLookChanged = { applyLook() }
         displayMode = prefs.displayMode
+        applyDim()
 
         if (!readIntent(intent)) {
             finish()
@@ -1259,6 +1261,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         postPlayNext = findViewById(R.id.post_play_next)
         postPlayCredits = findViewById(R.id.post_play_credits)
         postPlayGo = findViewById(R.id.post_play_go)
+        dimmer = findViewById(R.id.dimmer)
         postPlayGo.countdown = { postPlayProgress() }
         bufferingInfo = findViewById(R.id.buffering_info)
         scrimTop = findViewById(R.id.scrim_top)
@@ -1358,7 +1361,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         add("audio", R.drawable.ic_audio, "Audio") { openAudioPanel(it) }
         add("audioDelay", R.drawable.ic_audio_delay, "Audio delay") { openAudioDelayPanel(it) }
         add("display", R.drawable.ic_display, "Display size") { openDisplayPanel(it) }
-        add("find", R.drawable.ic_search, "Find subtitles") { openFindPanel(it) }
+        add("dim", R.drawable.ic_dim, "Screen dimmer") { openDimPanel(it) }
         add("sleep", R.drawable.ic_sleep, "Sleep timer") { openSleepPanel(it) }
         add("settings", R.drawable.ic_settings, "Settings") { openSettingsPanel(it) }
     }
@@ -1613,7 +1616,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         moreItems["audio"]?.value?.text = audio
         moreItems["audioDelay"]?.value?.text = formatDelay(delays.audioUs)
         moreItems["display"]?.value?.text = DISPLAY_MODES[displayMode]
-        moreItems["find"]?.value?.text = "Search"
+        moreItems["dim"]?.value?.text = prefs.dimLevel.let { if (it == 0) "Off" else "$it" }
         moreItems["sleep"]?.value?.text = sleepLabel()
         moreItems["settings"]?.value?.text = "Settings"
     }
@@ -2566,6 +2569,24 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 refresh()
             }
         }
+    }
+
+    private fun openDimPanel(from: View) = openPanel("Screen dimmer", from) {
+        (0..10).forEach { level ->
+            row(if (level == 0) "Off" else "$level", checked = level == prefs.dimLevel) {
+                prefs.dimLevel = level
+                applyDim()
+                refreshLabels()
+                refresh()
+            }
+        }
+    }
+
+    /** Darkens the film by the chosen level: 8% a step, so 10 leaves a fifth of the light. */
+    private fun applyDim() {
+        val level = prefs.dimLevel
+        dimmer.alpha = level * 0.08f
+        dimmer.visibility = if (level == 0) View.GONE else View.VISIBLE
     }
 
     private fun openSleepPanel(from: View) = openPanel("Sleep timer", from) {

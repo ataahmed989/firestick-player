@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Screen dimmer: a sun turned half down, drawn like the other icons (2-wide round strokes). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:pathData="M12,8a4,4 0,1 1,0 8a4,4 0,1 1,0 -8z" android:strokeColor="#FFFFFFFF" android:strokeWidth="2" android:strokeLineCap="round" android:strokeLineJoin="round" android:fillColor="#00000000" />
+    <path android:pathData="M12,8a4,4 0,0 1,0 8z" android:fillColor="#FFFFFFFF" />
+    <path android:pathData="M12,3v1M12,20v1M3,12h1M20,12h1M5.64,5.64l0.7,0.7M17.66,17.66l0.7,0.7M5.64,18.36l0.7,-0.7M17.66,6.34l0.7,-0.7" android:strokeColor="#FFFFFFFF" android:strokeWidth="2" android:strokeLineCap="round" android:strokeLineJoin="round" android:fillColor="#00000000" />
+</vector>

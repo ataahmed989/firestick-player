@@ -71,6 +71,15 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
+    <!-- Screen dimmer: darkens the film and its subtitles, never the controls or windows above. -->
+    <View
+        android:id="@+id/dimmer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/black"
+        android:alpha="0"
+        android:visibility="gone" />
+
     <LinearLayout
         android:id="@+id/top_bar"
         android:layout_width="match_parent"
@@ -450,7 +459,7 @@
             tools:text="1:12:48" />
     </FrameLayout>
 
-    <!-- Netflix-style end of an episode: what's next, then Watch credits and Next episode (counting down). -->
+    <!-- Netflix-style end of an episode: what's next, then Watch credits and a play button for the next episode (counting down). -->
     <LinearLayout
         android:id="@+id/post_play"
         android:layout_width="wrap_content"
@@ -501,14 +510,13 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginStart="14dp"
+                android:contentDescription="Next episode"
                 android:drawableStart="@drawable/ic_play"
-                android:drawablePadding="8dp"
                 android:fontFamily="@font/figtree_700"
-                android:paddingStart="18dp"
+                android:paddingStart="20dp"
                 android:paddingTop="11dp"
-                android:paddingEnd="22dp"
+                android:paddingEnd="20dp"
                 android:paddingBottom="11dp"
-                android:text="Next episode"
                 android:textSize="16sp" />
         </LinearLayout>
     </LinearLayout>
