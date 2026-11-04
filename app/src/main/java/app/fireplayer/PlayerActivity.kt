@@ -1754,6 +1754,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         // A little room above and below the icons inside the tray.
         val pad = (resources.displayMetrics.density * if (Glass.on) 7 else 3).toInt()
         moreRow.setPadding(moreRow.paddingLeft, pad, moreRow.paddingRight, pad)
+        // The extra room comes out of the gap above, so the icons stay where they were and nothing is cut off.
+        (moreRow.layoutParams as ViewGroup.MarginLayoutParams).topMargin =
+            (resources.displayMetrics.density * if (Glass.on) 2 else 10).toInt()
+        moreRow.requestLayout()
         for (item in moreItems.values) (item.view.findViewById<View>(R.id.more_icon).parent as View).bg(Glass.moreIcon)
         errorBox.bg(Glass.popup)
         (findViewById<FrameLayout>(R.id.preview_card)).foreground = ContextCompat.getDrawable(this, Glass.previewEdge)
