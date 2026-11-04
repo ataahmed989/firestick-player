@@ -64,7 +64,7 @@ class SettingsPanels(
             prefs.glassLook = !prefs.glassLook
             Glass.on = prefs.glassLook
             onLookChanged()
-            root.setBackgroundResource(Glass.panel)
+            Glass.background(root, Glass.Kind.PANEL)
             refresh()
         }
 

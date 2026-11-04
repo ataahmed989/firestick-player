@@ -160,7 +160,8 @@ object FireDialog {
         val buttons = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
         fun button(label: String, onClick: () -> Unit) = rows.base().apply {
             gravity = Gravity.CENTER
-            setBackgroundResource(Glass.pill)
+            // Glass: the same pill in the rows' material, on the window's own glass.
+            Glass.background(this, Glass.Kind.ROW, R.drawable.bg_pill)
             addView(rows.text(label))
             setOnClickListener { onClick() }
         }
@@ -199,7 +200,8 @@ object FireDialog {
         val rows = Rows(activity)
         return LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundResource(Glass.popup)
+            // Glass shows the film dimmed, as the window dims what's behind it.
+            Glass.background(this, Glass.Kind.DIALOG_POPUP)
             setPadding(rows.dp(14), rows.dp(14), rows.dp(14), rows.dp(12))
             addView(TextView(activity).apply {
                 text = title
