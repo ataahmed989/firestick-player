@@ -182,9 +182,11 @@ class SettingsPanels(
                 prefs.openSubtitlesPassword = it; refresh()
             }
         }
-        message("Optional free key from themoviedb.org (Settings, API). Lets the search find subtitles for the exact film or episode.")
-        row("TMDB API key", tmdbStatus ?: if (prefs.tmdbApiKey.isEmpty()) "Optional" else "Saved") {
+        message("Free key from themoviedb.org (Settings, API). TiviMate's films and shows get their English names with it, and the subtitle search finds the exact film or episode.")
+        row("TMDB API key", tmdbStatus ?: if (prefs.tmdbApiKey.isEmpty()) "Not set: needed for TiviMate names" else "Active") {
             SidePanel.prompt(activity, "TMDB API key or read access token", prefs.tmdbApiKey) { key ->
+                // An empty box confirmed by mistake never takes a saved key away
+                if (key.isBlank() && prefs.tmdbApiKey.isNotEmpty()) return@prompt
                 prefs.tmdbApiKey = key
                 // TiviMate's titles start being looked up with it.
                 TitleService.start(activity)
@@ -195,7 +197,7 @@ class SettingsPanels(
                     thread(name = "FirePlayerTmdb", isDaemon = true) {
                         val problem = Tmdb(prefs).check()
                         activity.runOnUiThread {
-                            tmdbStatus = if (problem == null) "Works" else "Not accepted"
+                            tmdbStatus = if (problem == null) "Active" else "Not accepted"
                             tmdbProblem = problem
                             if (isOpen) refresh()
                         }
