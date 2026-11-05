@@ -67,6 +67,13 @@ class SettingsPanels(
             Glass.background(root, Glass.Kind.PANEL)
             refresh()
         }
+        if (prefs.glassLook) {
+            // How often the glass copies the film: faster follows it more closely, slower is lighter on older sticks.
+            val rates = listOf(2, 4, 8)
+            choice("Glass refresh", rates.map { "$it times a second" }, rates.indexOf(prefs.glassRefreshPerSec).let { if (it < 0) 1 else it }) {
+                prefs.glassRefreshPerSec = rates[it]
+            }
+        }
 
         header("Skipping")
         val dpadSteps = listOf(5, 10, 15, 20, 30, 60)

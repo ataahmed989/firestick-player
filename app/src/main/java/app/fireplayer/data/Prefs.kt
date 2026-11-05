@@ -65,6 +65,11 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("glass_look", false)
         set(v) = sp.edit().putBoolean("glass_look", v).apply()
 
+    /** How many times a second the glass copies the playing film (Settings, Look, Glass refresh): 2, 4 or 8. */
+    var glassRefreshPerSec: Int
+        get() = sp.getInt("glass_refresh", 4)
+        set(v) = sp.edit().putInt("glass_refresh", v).apply()
+
     var passthrough: Boolean
         get() = sp.getBoolean("passthrough", true)
         set(v) = sp.edit().putBoolean("passthrough", v).apply()
