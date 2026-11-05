@@ -113,8 +113,8 @@ class TitleService : Service() {
                 continue
             }
             told = false
-            // The player has the TV to itself.
-            if (playing) {
+            // The player has the TV to itself, while it says so: a "stopped" Fire OS refused leaves no beat behind.
+            if (playing && System.currentTimeMillis() - prefs.getLong(PLAYER_BEAT, 0L) < PLAYER_GONE_MS) {
                 sleep(PLAYING_CHECK_MS)
                 continue
             }
@@ -204,6 +204,17 @@ class TitleService : Service() {
                 else if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent)
                 else context.startService(intent)
             }.onFailure { Log.w(TAG, "Couldn't start: $it") }
+        }
+
+        /** How often the player notes that it is on, and how long without a note the server takes it as stopped. */
+        const val BEAT_MS = 30_000L
+        private const val PLAYER_GONE_MS = 90_000L
+        private const val PLAYER_BEAT = "player_beat"
+
+        /** The player is on (see PlayerActivity.playingBeat). */
+        fun playerBeat(context: Context) {
+            context.getSharedPreferences("fireplayer", Context.MODE_MULTI_PROCESS).edit()
+                .putLong(PLAYER_BEAT, System.currentTimeMillis()).apply()
         }
 
         /** While FirePlayer plays, TMDB isn't asked: the player has the TV's attention. */
