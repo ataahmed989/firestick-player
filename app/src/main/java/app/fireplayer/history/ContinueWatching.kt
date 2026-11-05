@@ -1,5 +1,6 @@
 package app.fireplayer.history
 
+import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -130,13 +131,15 @@ object ContinueWatching {
         val link = StreamLink.parse(url) ?: return null
         // An episode moved on from by itself is finished whatever its length was; anything else has to have one.
         if (link.isLive || (!p.finished && p.durationMs <= 0)) return null
+        // An app's own subtitle files (content://) were only lent to that one opening, and would fail the film later.
+        val handOn = p.subtitles.filter { it.first.scheme != ContentResolver.SCHEME_CONTENT }
         val resume = WatchHistory.Resume(
             uri = url,
             type = p.type,
             title = p.rawTitle,
             headers = p.headers,
-            subtitles = p.subtitles.map { it.first.toString() },
-            subtitleNames = p.subtitles.map { it.second },
+            subtitles = handOn.map { it.first.toString() },
+            subtitleNames = handOn.map { it.second },
         )
         val episode = link.kind == StreamLink.Kind.EPISODE || (link.kind == StreamLink.Kind.OTHER && p.shown.season != null)
         val book = titleBook(context)
@@ -146,7 +149,7 @@ object ContinueWatching {
         val position = if (p.positionMs > 30_000) p.positionMs else 0L
         if (!episode) {
             val about = if (server != null && id != null && link.kind == StreamLink.Kind.MOVIE) {
-                book?.about(server, TitleBook.Kind.MOVIE, id)
+                look { book?.about(server, TitleBook.Kind.MOVIE, id) }
             } else null
             val shown = about?.title?.let { TitleInfo.parse(it, null) } ?: p.shown
             val name = shown.searchQuery.ifBlank { shown.title }.takeIf { it != TitleInfo.NO_NAME } ?: return null
@@ -165,8 +168,10 @@ object ContinueWatching {
                 resume = resume,
             )
         }
-        val noted = if (server != null && id != null && link.kind == StreamLink.Kind.EPISODE) book?.episode(server, id) else null
-        val about = noted?.let { book?.about(server!!, TitleBook.Kind.SHOW, it.series) }
+        val noted = if (server != null && id != null && link.kind == StreamLink.Kind.EPISODE) {
+            look { book?.episode(server, id) }
+        } else null
+        val about = noted?.let { look { book?.about(server!!, TitleBook.Kind.SHOW, it.series) } }
         val englishShow = about?.title?.let { TitleInfo.parse(it, null) }
         // A name that's only the episode's number ("S01E03 - Pilot") says nothing of the show.
         val shown = englishShow ?: p.shown.takeIf { it.named }
@@ -215,7 +220,7 @@ object ContinueWatching {
         p.next?.let { (uri, title) ->
             val nextLink = StreamLink.parse(uri.toString())
             val info = TitleInfo.parse(title, uri)
-            val numbered = nextLink?.id?.toIntOrNull()?.let { id -> link.proxied?.let { book?.episode(it, id) } }
+            val numbered = nextLink?.id?.toIntOrNull()?.let { id -> link.proxied?.let { look { book?.episode(it, id) } } }
             return WatchHistory.Next(
                 videoKey = nextLink?.id?.let { "e|${nextLink.server}|$it" } ?: "u|$uri",
                 season = numbered?.season ?: info.season ?: 0,
@@ -225,7 +230,7 @@ object ContinueWatching {
             )
         }
         val server = link.proxied ?: return null
-        val after = noted?.let { book?.episodeAfter(server, it) } ?: return null
+        val after = noted?.let { look { book?.episodeAfter(server, it) } } ?: return null
         // The same link with the next episode's file at the end, the login exactly as it came.
         val extension = after.extension ?: link.extension ?: "mkv"
         val folder = p.uri.encodedPath.orEmpty().substringBeforeLast('/')
@@ -238,6 +243,16 @@ object ContinueWatching {
             episodeTitle = null,
             resume = WatchHistory.Resume(uri = uri.toString(), title = title, headers = resume.headers),
         )
+    }
+
+    /**
+     * What the title database says, or null when it can't be read just now (the title server's own process may be busy
+     * writing to it): the title is then noted by the name it came with, rather than its playing time lost.
+     */
+    private inline fun <T> look(read: () -> T?): T? = try {
+        read()
+    } catch (e: Exception) {
+        null
     }
 
     private fun yearIn(info: TitleInfo): Int? = YEAR.find(info.title)?.groupValues?.get(1)?.toIntOrNull()

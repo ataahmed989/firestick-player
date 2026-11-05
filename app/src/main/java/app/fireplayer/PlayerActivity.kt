@@ -266,6 +266,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     // Seeking
     private var seeking = false
+        set(value) {
+            field = value
+            // Time spent lining up a jump isn't time watched.
+            countPlaying(player?.isPlaying == true)
+        }
     private var seekBaseMs = 0L
     private var seekOffsetMs = 0L
     private var lastNudgeTime = 0L
@@ -324,6 +329,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private var playedMs = 0L
     private var playingSince = 0L
     private var watchNotedAt = 0L
+    // Opened from Glass Home's Continue Watching row: the link is FirePlayer's own, never handed back in a result.
+    private var resumedFromRow = false
     private var pendingAudioId: String? = null
     private var notice = false
     private var pendingNotice: String? = null
@@ -387,6 +394,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
                 return
             }
             setIntent(resumed)
+            resumedFromRow = true
         }
         if (!readIntent(intent)) {
             finish()
@@ -824,14 +832,19 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         val p = player ?: return
         if (!p.isPlaying || resumeDialogShowing || SystemClock.elapsedRealtime() - watchNotedAt < WATCH_NOTE_EVERY_MS) return
         val entry = entries.getOrNull(p.currentMediaItemIndex) ?: return
-        noteWatched(entry, p.currentPosition, p.duration, finished = false, live = p.isCurrentMediaItemLive)
+        val pos = p.currentPosition
+        val dur = p.duration
+        // Not in the last minutes ("watched to the end" on leaving): credits playing on after a finish was noted would
+        // bring the title back. Leaving or moving on notes it, with the time played meanwhile.
+        if (dur != C.TIME_UNSET && dur - pos < 3 * 60_000) return
+        noteWatched(entry, pos, dur, finished = false, live = p.isCurrentMediaItemLive)
     }
 
-    /** Adds up the time the film really plays: not paused, loading or waiting on a jump. */
+    /** Adds up the time the film really plays: not paused, loading, or while a jump is being lined up. */
     private fun countPlaying(isPlaying: Boolean) {
         val now = SystemClock.elapsedRealtime()
         if (playingSince > 0) playedMs += now - playingSince
-        playingSince = if (isPlaying) now else 0L
+        playingSince = if (isPlaying && !seeking) now else 0L
     }
 
     private fun takePlayed(): Long {
@@ -845,7 +858,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         val result = Intent("com.mxtech.intent.result.VIEW")
         // Which episode the position is for, once a list has moved on to the next one. Web links only: handing back a
         // file:// link would crash the app on newer Android.
-        entries.getOrNull(p?.currentMediaItemIndex ?: 0)?.uri?.takeIf { it.scheme == "http" || it.scheme == "https" }
+        // Never for a title opened from Continue Watching: its link (with the provider's login) is FirePlayer's alone.
+        entries.getOrNull(p?.currentMediaItemIndex ?: 0)?.uri
+            ?.takeIf { !resumedFromRow && (it.scheme == "http" || it.scheme == "https") }
             ?.let { result.data = it }
         // A finished video is reported as finished, without a position, as MX Player does.
         if (p != null && !completed) {

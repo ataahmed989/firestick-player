@@ -110,6 +110,8 @@ class WatchHistory(records: List<Record> = emptyList()) {
         val same = records.filter { it.kind == w.kind && it.keys.any { k -> k in w.keys } }
         // Nothing of it yet: only playing starts an entry, and a film played to its end has none to start.
         if (same.isEmpty() && (w.playedMs <= 0 || (w.finished && w.next == null))) return false
+        // Another episode only opened, not played (or one that wouldn't play): the show stays where it was watched.
+        if (w.playedMs <= 0 && !w.finished && same.none { it.videoKey == w.videoKey }) return false
         records.removeAll(same)
         // The same show found once by its id and once by its name: from now on one entry.
         val base = same.firstOrNull()

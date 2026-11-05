@@ -132,6 +132,18 @@ class WatchHistoryTest {
     }
 
     @Test
+    fun anotherEpisodeOnlyOpenedLeavesTheShowAtTheOneWatched() {
+        val h = WatchHistory()
+        h.play(episode(1, 1, 3, 10 * minute))
+        // Opened and left before it played (or it wouldn't play).
+        assertFalse(h.play(episode(1, 1, 1, 0)))
+        assertEquals(3, h.rows().single().episode)
+        // Played at all, it's the one now.
+        assertTrue(h.play(episode(1, 1, 1, 1_000)))
+        assertEquals(1, h.rows().single().episode)
+    }
+
+    @Test
     fun theSameShowByItsIdOrItsNameIsOneEntry() {
         val h = WatchHistory()
         h.play(episode(1, 1, 1, 3 * minute, keys = setOf("n|show1")))
