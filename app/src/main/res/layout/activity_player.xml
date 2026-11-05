@@ -279,6 +279,11 @@
                         android:scaleType="fitCenter"
                         android:src="@drawable/ic_restart"
                         android:tint="@color/sel_on_button" />
+
+                    <TextView
+                        android:id="@+id/restart_label"
+                        style="@style/ButtonLabel"
+                        android:text="Watch from start" />
                 </LinearLayout>
 
                 <LinearLayout
@@ -302,6 +307,11 @@
                         android:scaleType="fitCenter"
                         android:src="@drawable/ic_next"
                         android:tint="@color/sel_on_button" />
+
+                    <TextView
+                        android:id="@+id/next_label"
+                        style="@style/ButtonLabel"
+                        android:text="Next episode" />
                 </LinearLayout>
 
                 <View
@@ -459,7 +469,7 @@
             tools:text="1:12:48" />
     </FrameLayout>
 
-    <!-- Netflix-style end of an episode: what's next, then Watch credits and a play button for the next episode (counting down). -->
+    <!-- Netflix-style end of an episode: what's next, then Watch credits and Next episode (counting down). -->
     <LinearLayout
         android:id="@+id/post_play"
         android:layout_width="wrap_content"
@@ -487,17 +497,22 @@
             android:textColor="@color/text"
             android:textSize="14sp" />
 
+        <!-- Both buttons the same size, that of the larger one (Next episode, with its icon), the words centred in each.
+             Lettering as in the icon row's names (figtree_600). -->
         <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:clipChildren="false"
+            android:measureWithLargestChild="true"
             android:orientation="horizontal">
 
             <app.fireplayer.ui.CountdownPill
                 android:id="@+id/post_play_credits"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:fontFamily="@font/figtree_700"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="match_parent"
+                android:fontFamily="@font/figtree_600"
+                android:gravity="center"
                 android:paddingStart="22dp"
                 android:paddingTop="11dp"
                 android:paddingEnd="22dp"
@@ -507,16 +522,19 @@
 
             <app.fireplayer.ui.CountdownPill
                 android:id="@+id/post_play_go"
-                android:layout_width="wrap_content"
+                android:layout_width="0dp"
+                android:layout_weight="1"
                 android:layout_height="wrap_content"
                 android:layout_marginStart="14dp"
-                android:contentDescription="Next episode"
                 android:drawableStart="@drawable/ic_play"
-                android:fontFamily="@font/figtree_700"
-                android:paddingStart="20dp"
+                android:drawablePadding="8dp"
+                android:fontFamily="@font/figtree_600"
+                android:gravity="center"
+                android:paddingStart="18dp"
                 android:paddingTop="11dp"
-                android:paddingEnd="20dp"
+                android:paddingEnd="22dp"
                 android:paddingBottom="11dp"
+                android:text="Next episode"
                 android:textSize="16sp" />
         </LinearLayout>
     </LinearLayout>

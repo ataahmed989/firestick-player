@@ -1328,19 +1328,31 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         btnSubs.setOnClickListener { openSubtitlesPanel(btnSubs) }
         btnAudio.setOnClickListener { openAudioPanel(btnAudio) }
         focusEffect(btnPlay, 1.08f)
-        focusEffect(btnRestart, 1.08f)
-        focusEffect(btnNext, 1.08f)
+        focusEffect(btnRestart, 1.08f, findViewById(R.id.restart_label))
+        focusEffect(btnNext, 1.08f, findViewById(R.id.next_label))
         focusEffect(btnSubs, 1.04f)
         focusEffect(btnAudio, 1.04f)
         seekBar.onThumbMoved = { placeBubble() }
         timeRemaining.gravity = Gravity.END or Gravity.CENTER_VERTICAL
     }
 
-    /** Selected buttons grow slightly, so moving around feels smooth rather than jumpy. */
-    private fun focusEffect(button: View, scale: Float) {
+    /**
+     * Selected buttons grow slightly, so moving around feels smooth rather than jumpy. A round button's [label] fades in
+     * under it only while it's selected, and grows with it from the button's middle, so it keeps its 4dp gap below the
+     * circle the way the icon row's names do (they grow with their whole item).
+     */
+    private fun focusEffect(button: View, scale: Float, label: View? = null) {
         button.setOnFocusChangeListener { v, hasFocus ->
             val s = if (hasFocus) scale else 1f
             v.animate().scaleX(s).scaleY(s).setDuration(140).start()
+            if (label != null) {
+                label.pivotX = v.left + v.width / 2f - label.left
+                label.pivotY = v.top + v.height / 2f - label.top
+                if (hasFocus) label.visibility = View.VISIBLE
+                label.animate().alpha(if (hasFocus) 1f else 0f).scaleX(s).scaleY(s).setDuration(140)
+                    .withEndAction { if (!v.isFocused) label.visibility = View.INVISIBLE }
+                    .start()
+            }
         }
     }
 
@@ -1481,6 +1493,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             // The count starts with the card, however late in the credits that is.
             postPlayFrom = position
             postPlayCountMs = minOf(POST_PLAY_COUNT_MS, duration - position).coerceAtLeast(1L)
+            countShown = 0f
+            countShownAt = 0L
             postPlayGo.counting = true
             postPlay.alpha = 0f
             postPlay.visibility = View.VISIBLE
@@ -1492,10 +1506,27 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (position >= postPlayFrom + postPlayCountMs && p.playWhenReady) playNextEpisode()
     }
 
-    /** How far the end card's count has got, from where the episode is right now. */
+    // The count as last drawn, and when: the fill glides on its own clock between the player's position updates.
+    private var countShown = 0f
+    private var countShownAt = 0L
+
+    /**
+     * How far the end card's count has got. While playing, it moves at the film's own pace from where it was last
+     * drawn and is pulled gently towards where the player says it is, never backwards: the player's position comes in
+     * small uneven steps, which made the fill shudder. Paused, it shows the player's position exactly.
+     */
     private fun postPlayProgress(): Float {
         val p = player ?: return 0f
-        return (p.currentPosition - postPlayFrom).toFloat() / postPlayCountMs
+        val actual = ((p.currentPosition - postPlayFrom).toFloat() / postPlayCountMs).coerceIn(0f, 1f)
+        val now = SystemClock.uptimeMillis()
+        if (!p.isPlaying || countShownAt == 0L || now - countShownAt > 500) {
+            countShown = actual
+        } else {
+            val glided = countShown + (now - countShownAt) * p.playbackParameters.speed / postPlayCountMs
+            countShown = maxOf(countShown, glided + (actual - glided) * 0.15f).coerceIn(0f, 1f)
+        }
+        countShownAt = now
+        return countShown
     }
 
     private fun hidePostPlay() {

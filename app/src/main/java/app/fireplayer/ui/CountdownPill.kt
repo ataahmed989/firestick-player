@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RectF
 import android.util.AttributeSet
 import android.widget.TextView
@@ -36,6 +37,9 @@ class CountdownPill @JvmOverloads constructor(context: Context, attrs: Attribute
     private var drawn = -1f
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val rect = RectF()
+    private val shape = Path()
+    private val filled = Path()
+    private val cut = Path()
     private val radius = 4 * resources.displayMetrics.density
 
     init {
@@ -62,6 +66,27 @@ class CountdownPill @JvmOverloads constructor(context: Context, attrs: Attribute
         start?.mutate()?.setTint(currentTextColor)
     }
 
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        centerLoneIcon()
+    }
+
+    /**
+     * A button that is only an icon sits its icon in the middle of the pill, rather than at the left edge where a
+     * label would follow it. Only the drawn position moves; the measured size stays the icon's. With words (Next
+     * episode has them), the icon stays in front of them.
+     */
+    private fun centerLoneIcon() {
+        if (!text.isNullOrEmpty()) return
+        val icon = compoundDrawablesRelative[0] ?: return
+        val iconWidth = icon.bounds.width()
+        val room = width - paddingStart - paddingEnd
+        if (iconWidth <= 0 || room <= iconWidth) return
+        val left = (room - iconWidth) / 2
+        icon.setBounds(left, icon.bounds.top, left + iconWidth, icon.bounds.bottom)
+        invalidate()
+    }
+
     override fun onDraw(canvas: Canvas) {
         rect.set(0f, 0f, width.toFloat(), height.toFloat())
         paint.color = when {
@@ -72,12 +97,15 @@ class CountdownPill @JvmOverloads constructor(context: Context, attrs: Attribute
         canvas.drawRoundRect(rect, radius, radius, paint)
         val progress = if (counting) countdown?.invoke()?.coerceIn(0f, 1f) ?: 0f else 0f
         if (progress > 0f) {
-            // The same rounded shape in white, cut off straight where the count has got to.
+            // The same rounded shape in white, cut off straight where the count has got to. Drawn as one smoothed
+            // shape rather than clipped to whole pixels, so its edge glides between pixels instead of stepping.
             paint.color = Color.WHITE
-            canvas.save()
-            canvas.clipRect(0f, 0f, width * progress, height.toFloat())
-            canvas.drawRoundRect(rect, radius, radius, paint)
-            canvas.restore()
+            shape.reset()
+            shape.addRoundRect(rect, radius, radius, Path.Direction.CW)
+            cut.reset()
+            cut.addRect(0f, 0f, width * progress, height.toFloat(), Path.Direction.CW)
+            filled.op(shape, cut, Path.Op.INTERSECT)
+            canvas.drawPath(filled, paint)
         }
         super.onDraw(canvas)
         // Next frame too, for as long as the count moves.
