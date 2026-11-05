@@ -52,8 +52,11 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
     /** Time between copies while the film plays, from Settings (Look, Glass refresh); read each time, so a change applies at once. */
     private val refreshMs: Long get() = 1_000L / prefs.glassRefreshPerSec.coerceIn(1, 8)
 
-    /** Each new copy fades in before the next one lands. */
-    private val crossfadeMs: Float get() = min(CROSSFADE_MS, refreshMs * 0.7f)
+    /**
+     * Each new copy fades in over nearly the whole gap to the next one, so the glass keeps drifting with the film
+     * instead of sitting still and then catching up; it's done just before the next copy lands.
+     */
+    private val crossfadeMs: Float get() = refreshMs * FADE_SHARE
     private val drawables = WeakHashMap<GlassDrawable, Boolean>()
     private val visiting = ArrayList<GlassDrawable>()
     private val location = IntArray(2)
@@ -227,7 +230,10 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
     fun fadeFraction(): Float {
         if (fadeStart == 0L) return 1f
         val f = (SystemClock.uptimeMillis() - fadeStart).toFloat() / crossfadeMs
-        return if (f >= 1f) 1f else max(f, 0f)
+        if (f >= 1f) return 1f
+        if (f <= 0f) return 0f
+        // Eased at both ends, so one fade flows into the next without a visible start or stop.
+        return f * f * (3f - 2f * f)
     }
 
     /** Glass to repaint when a new copy arrives. Kept weakly: rows are thrown away on every key press. */
@@ -739,8 +745,8 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
 
     private companion object {
         const val TICK_SLACK_MS = 30L
-        /** The longest a new copy takes to fade in (shorter when copies come faster). */
-        const val CROSSFADE_MS = 180f
+        /** The share of the gap between copies that a new one takes to fade in. */
+        const val FADE_SHARE = 0.9f
         /** Older than this while playing, a copy isn't shown: it would be another scene. */
         const val STALE_MS = 2_000L
         const val MIN_GAP_MS = 100L
