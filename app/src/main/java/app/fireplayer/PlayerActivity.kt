@@ -1,5 +1,8 @@
 package app.fireplayer
 
+import android.view.animation.DecelerateInterpolator
+import android.widget.FrameLayout
+import android.app.ActivityManager
 import android.content.Intent
 import android.graphics.Paint
 import android.net.Uri
@@ -78,6 +81,8 @@ import app.fireplayer.subs.SubtitlePresets
 import app.fireplayer.subs.SubtitleStyler
 import app.fireplayer.ui.CountdownPill
 import app.fireplayer.ui.FireDialog
+import app.fireplayer.ui.Glass
+import app.fireplayer.ui.GlassBackdrop
 import app.fireplayer.ui.SeekBarView
 import app.fireplayer.ui.SeekPreview
 import app.fireplayer.ui.SettingsPanels
@@ -95,7 +100,7 @@ import kotlin.math.ceil
 import kotlin.math.roundToInt
 
 @OptIn(UnstableApi::class)
-class PlayerActivity : AppCompatActivity(), Player.Listener {
+class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host {
 
     /** One video to play, with any subtitles we were handed or added. */
     private class Entry(
@@ -171,6 +176,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private var player: ExoPlayer? = null
     // Keeps the film's frames evenly paced on a TV switched to the film's refresh rate (see VsyncFix).
     private var vsyncFix: VsyncFix? = null
+    // The blurred film the glass look shows (see GlassBackdrop): this player's own, made once the views are.
+    private var backdrop: GlassBackdrop? = null
+    override val glassBackdrop: GlassBackdrop? get() = backdrop
+    // A jump was made: the glass copies the picture again once the player is ready at the new spot.
+    private var glassAfterSeek = false
     private var assHandler: AssHandler? = null
     private var bufferWait: () -> BufferWait? = { null }
 
@@ -185,6 +195,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private lateinit var postPlayNext: TextView
     private lateinit var postPlayCredits: CountdownPill
     private lateinit var postPlayGo: CountdownPill
+    private lateinit var dimmer: View
     // The episode whose end card was put away (Watch credits, or Back), so it doesn't come straight back.
     private var postPlayDismissedFor = -1
     // Where the end card's count started, and how long it runs.
@@ -334,6 +345,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         set(value) {
             field = value
             displaySwitch.atMs = value
+            suspendGlass()
         }
 
     private var resumeDialogShowing = false
@@ -393,9 +405,18 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             applySubtitleStyle()
         }
         bindViews()
+        // Before applyLook: the glass looks for its film here.
+        backdrop = GlassBackdrop(this, surfaceView)
+        // Another display size moves the picture on screen: the glass's copy of it is out of place.
+        videoFrame.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+            if (left != oldLeft || top != oldTop || right != oldRight || bottom != oldBottom) backdrop?.frameChanged()
+        }
         panel = SidePanel(this)
         buildMoreRow()
+        applyLook()
+        settingsPanels.onLookChanged = { applyLook() }
         displayMode = prefs.displayMode
+        applyDim()
 
         // From Glass Home's Continue Watching row: the title just as its app first opened it, from where it was left.
         val resuming = intent.action == ContinueWatching.ACTION_RESUME
@@ -420,6 +441,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     override fun onStart() {
         super.onStart()
+        backdrop?.start()
         if (entries.isNotEmpty() && player == null) {
             // Back from Home with the TV on another refresh rate: it switches again as the window shows, so the film
             // waits for the picture instead of playing into the blank.
@@ -456,6 +478,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         notice = false
         retryPending = false
         savePosition()
+        // Before the player goes, so no copy is taken of a film being taken down.
+        backdrop?.stop()
         releasePlayer()
         // Paused only for a refresh-rate switch: it plays on when the viewer comes back.
         if (pausedForSwitch) {
@@ -474,6 +498,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         }
         lookupWantedAt = 0L
         handler.removeCallbacksAndMessages(null)
+        // That dropped the end of any refresh-rate wait (glassSettled); onStart starts another if the TV switches again.
+        backdrop?.suspended = false
         // Left with Home: the FirePlayer icon brings this film back for a few minutes (see HomeActivity).
         if (!isFinishing && shown?.get() === this) prefs.leavePlayer(taskId, SystemClock.elapsedRealtime())
     }
@@ -488,6 +514,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             prefs.forgetLeftPlayer()
         }
         pictureText.release()
+        backdrop?.release()
         io.shutdownNow()
         handler.removeCallbacksAndMessages(null)
         FontImport.stopAll()
@@ -750,6 +777,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         vsyncFix?.stop()
         vsyncFix = null
         p.removeListener(this)
+        // Its listener is gone, so the glass won't hear that it stopped playing.
+        backdrop?.playing = false
         p.release()
         assHandler?.release()
         assHandler = null
@@ -899,10 +928,23 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         p?.pause()
         result.putExtra("end_by", if (completed) "playback_completion" else "user")
         setResult(RESULT_OK, result)
-        // Straight back to the app that opened us, without a lingering empty task.
-        if (isTaskRoot) finishAndRemoveTask() else finish()
+        // Straight back to the app that opened us, without a lingering empty task. Opened by another app, the whole
+        // player task goes: a player left in it from before (Home pressed, then Fire OS closed the app, so the newer
+        // one couldn't close it) would otherwise come back and play the old film on Back.
+        if (isTaskRoot || inPlayerTask()) finishAndRemoveTask() else finish()
         @Suppress("DEPRECATION")
         overridePendingTransition(0, android.R.anim.fade_out)
+    }
+
+    /** This player's task was started by a player (opened from another app), not by FirePlayer's own home screen. */
+    private fun inPlayerTask(): Boolean = try {
+        (getSystemService(ACTIVITY_SERVICE) as ActivityManager).appTasks.any { t ->
+            val info = t.taskInfo
+            val id = if (Build.VERSION.SDK_INT >= 29) info.taskId else @Suppress("DEPRECATION") info.persistentId
+            id == taskId && info.baseIntent.component?.className == PlayerActivity::class.java.name
+        }
+    } catch (e: RuntimeException) {
+        false
     }
 
     // ---------------------------------------------------------------------
@@ -920,6 +962,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             hideBuffering()
         }
         if (state == Player.STATE_READY) {
+            if (glassAfterSeek) {
+                glassAfterSeek = false
+                backdrop?.frameChanged()
+            }
             findNextEpisode()
             errorBox.visibility = View.GONE
             waitingSince = 0L
@@ -954,6 +1000,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     override fun onIsPlayingChanged(isPlaying: Boolean) {
         countPlaying(isPlaying)
+        backdrop?.playing = isPlaying
         updatePlayButton()
         updateKeepScreenOn()
         if (isPlaying) scheduleHide() else handler.removeCallbacks(hideControlsRunnable)
@@ -1044,6 +1091,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     override fun onVideoSizeChanged(videoSize: VideoSize) {
         applyDisplayMode()
         updateChips()
+        backdrop?.frameChanged()
+    }
+
+    override fun onRenderedFirstFrame() {
+        // The first picture of a new player or video, or after a jump: the glass copies it.
+        backdrop?.frameChanged()
     }
 
     override fun onCues(cueGroup: CueGroup) {
@@ -1065,6 +1118,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         if (reason == Player.DISCONTINUITY_REASON_SEEK) {
             shownPercent = 0
             percentFrom = SystemClock.elapsedRealtime()
+            glassAfterSeek = true
         }
         // Going back reloads the film from there (nothing behind is kept), so what was lined up to read is stale.
         if (reason == Player.DISCONTINUITY_REASON_SEEK && newPosition.positionMs < oldPosition.positionMs) {
@@ -1323,6 +1377,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         postPlayNext = findViewById(R.id.post_play_next)
         postPlayCredits = findViewById(R.id.post_play_credits)
         postPlayGo = findViewById(R.id.post_play_go)
+        dimmer = findViewById(R.id.dimmer)
         postPlayGo.countdown = { postPlayProgress() }
         bufferingInfo = findViewById(R.id.buffering_info)
         scrimTop = findViewById(R.id.scrim_top)
@@ -1389,20 +1444,31 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         btnSubs.setOnClickListener { openSubtitlesPanel(btnSubs) }
         btnAudio.setOnClickListener { openAudioPanel(btnAudio) }
         focusEffect(btnPlay, 1.08f)
-        focusEffect(btnRestart, 1.08f, findViewById(R.id.restart_tooltip))
-        focusEffect(btnNext, 1.08f, findViewById(R.id.next_tooltip))
+        focusEffect(btnRestart, 1.08f, findViewById(R.id.restart_label))
+        focusEffect(btnNext, 1.08f, findViewById(R.id.next_label))
         focusEffect(btnSubs, 1.04f)
         focusEffect(btnAudio, 1.04f)
         seekBar.onThumbMoved = { placeBubble() }
         timeRemaining.gravity = Gravity.END or Gravity.CENTER_VERTICAL
     }
 
-    /** Selected buttons grow slightly, so moving around feels smooth rather than jumpy. */
-    private fun focusEffect(button: View, scale: Float, tooltip: View? = null) {
+    /**
+     * Selected buttons grow slightly, so moving around feels smooth rather than jumpy. A round button's [label] fades in
+     * under it only while it's selected, and grows with it from the button's middle, so it keeps its 4dp gap below the
+     * circle the way the icon row's names do (they grow with their whole item).
+     */
+    private fun focusEffect(button: View, scale: Float, label: View? = null) {
         button.setOnFocusChangeListener { v, hasFocus ->
             val s = if (hasFocus) scale else 1f
             v.animate().scaleX(s).scaleY(s).setDuration(140).start()
-            tooltip?.visibility = if (hasFocus) View.VISIBLE else View.INVISIBLE
+            if (label != null) {
+                label.pivotX = v.left + v.width / 2f - label.left
+                label.pivotY = v.top + v.height / 2f - label.top
+                if (hasFocus) label.visibility = View.VISIBLE
+                label.animate().alpha(if (hasFocus) 1f else 0f).scaleX(s).scaleY(s).setDuration(140)
+                    .withEndAction { if (!v.isFocused) label.visibility = View.INVISIBLE }
+                    .start()
+            }
         }
     }
 
@@ -1423,7 +1489,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         add("audio", R.drawable.ic_audio, "Audio") { openAudioPanel(it) }
         add("audioDelay", R.drawable.ic_audio_delay, "Audio delay") { openAudioDelayPanel(it) }
         add("display", R.drawable.ic_display, "Display size") { openDisplayPanel(it) }
-        add("find", R.drawable.ic_search, "Find subtitles") { openFindPanel(it) }
+        add("dim", R.drawable.ic_dim, "Screen dimmer") { openDimPanel(it) }
         add("sleep", R.drawable.ic_sleep, "Sleep timer") { openSleepPanel(it) }
         add("settings", R.drawable.ic_settings, "Settings") { openSettingsPanel(it) }
     }
@@ -1545,6 +1611,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             // The count starts with the card, however late in the credits that is.
             postPlayFrom = position
             postPlayCountMs = minOf(POST_PLAY_COUNT_MS, duration - position).coerceAtLeast(1L)
+            countShown = 0f
+            countShownAt = 0L
             postPlayGo.counting = true
             postPlay.alpha = 0f
             postPlay.visibility = View.VISIBLE
@@ -1556,10 +1624,27 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         if (position >= postPlayFrom + postPlayCountMs && p.playWhenReady) playNextEpisode()
     }
 
-    /** How far the end card's count has got, from where the episode is right now. */
+    // The count as last drawn, and when: the fill glides on its own clock between the player's position updates.
+    private var countShown = 0f
+    private var countShownAt = 0L
+
+    /**
+     * How far the end card's count has got. While playing, it moves at the film's own pace from where it was last
+     * drawn and is pulled gently towards where the player says it is, never backwards: the player's position comes in
+     * small uneven steps, which made the fill shudder. Paused, it shows the player's position exactly.
+     */
     private fun postPlayProgress(): Float {
         val p = player ?: return 0f
-        return (p.currentPosition - postPlayFrom).toFloat() / postPlayCountMs
+        val actual = ((p.currentPosition - postPlayFrom).toFloat() / postPlayCountMs).coerceIn(0f, 1f)
+        val now = SystemClock.uptimeMillis()
+        if (!p.isPlaying || countShownAt == 0L || now - countShownAt > 500) {
+            countShown = actual
+        } else {
+            val glided = countShown + (now - countShownAt) * p.playbackParameters.speed / postPlayCountMs
+            countShown = maxOf(countShown, glided + (actual - glided) * 0.15f).coerceIn(0f, 1f)
+        }
+        countShownAt = now
+        return countShown
     }
 
     private fun hidePostPlay() {
@@ -1754,7 +1839,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         moreItems["audio"]?.value?.text = audio
         moreItems["audioDelay"]?.value?.text = formatDelay(delays.audioUs)
         moreItems["display"]?.value?.text = DISPLAY_MODES[displayMode]
-        moreItems["find"]?.value?.text = "Search"
+        moreItems["dim"]?.value?.text = prefs.dimLevel.let { if (it == 0) "Off" else "$it" }
         moreItems["sleep"]?.value?.text = sleepLabel()
         moreItems["settings"]?.value?.text = "Settings"
     }
@@ -1833,6 +1918,19 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         player?.play()
     }
 
+    /**
+     * While the TV changes refresh rate the picture is blank and VsyncFix measures again, so the glass takes no copies
+     * of the film until it has settled (DISPLAY_SETTLE_MS, which outlasts the film's pause for the switch).
+     */
+    private fun suspendGlass() {
+        val b = backdrop ?: return
+        b.suspended = true
+        handler.removeCallbacks(glassSettled)
+        handler.postDelayed(glassSettled, DISPLAY_SETTLE_MS)
+    }
+
+    private val glassSettled = Runnable { backdrop?.suspended = false }
+
     private val rebuildForAss = Runnable {
         if (player != null && builtWithAss != prefs.keepAssStyling) rebuildPlayer()
     }
@@ -1846,7 +1944,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         focusSink.isFocusable = false
         val target = focus ?: btnPlay
         // Coming back from a window opened from the icon row returns to that row.
-        if (target.parent === moreRow) showMoreRow(target) else showMainRow(focusRow = false)
+        if (target.parent === moreRow) showMoreRow(target, animate = false) else showMainRow(focusRow = false, animate = false)
         updateOverlay()
         updateProgress()
         updateClock()
@@ -1867,22 +1965,67 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         handler.removeCallbacks(hideControlsRunnable)
     }
 
-    private fun showMoreRow(focus: View = moreItems.values.first().view) {
+    private fun showMoreRow(focus: View = moreItems.values.first().view, animate: Boolean = true) {
+        val changed = !moreShown
         moreShown = true
-        mainRow.visibility = View.GONE
-        arrowDown.visibility = View.GONE
-        moreRow.visibility = View.VISIBLE
-        arrowUp.visibility = View.VISIBLE
+        swapRows(show = moreRow, hide = mainRow, showArrow = arrowUp, hideArrow = arrowDown, up = true, animate = animate && changed)
         focus.requestFocus()
     }
 
-    private fun showMainRow(focusRow: Boolean = true) {
+    private fun showMainRow(focusRow: Boolean = true, animate: Boolean = true) {
+        val changed = moreShown
         moreShown = false
-        moreRow.visibility = View.GONE
-        arrowUp.visibility = View.GONE
-        mainRow.visibility = View.VISIBLE
-        arrowDown.visibility = View.VISIBLE
+        swapRows(show = mainRow, hide = moreRow, showArrow = arrowDown, hideArrow = arrowUp, up = false, animate = animate && changed)
         if (focusRow) btnPlay.requestFocus()
+    }
+
+    /**
+     * Swaps the button row and the icon row under the arrow. Instead of a hard cut, the old row fades out while it
+     * drifts the way the D-pad pointed and the new one glides in from the other side, so the change reads as one move.
+     * Short enough (220 ms) that a quick second press never waits on it.
+     */
+    private fun swapRows(show: View, hide: View, showArrow: View, hideArrow: View, up: Boolean, animate: Boolean) {
+        val shift = resources.displayMetrics.density * 14f * (if (up) -1 else 1)
+        for (v in listOf(show, hide, showArrow, hideArrow)) v.animate().cancel()
+        show.visibility = View.VISIBLE
+        showArrow.visibility = View.VISIBLE
+        if (!animate) {
+            for (v in listOf(show, showArrow)) { v.alpha = 1f; v.translationY = 0f }
+            for (v in listOf(hide, hideArrow)) { v.visibility = View.GONE; v.alpha = 1f; v.translationY = 0f }
+            return
+        }
+        val ease = DecelerateInterpolator(1.6f)
+        if (show.alpha >= 1f) { show.alpha = 0f; show.translationY = -shift }
+        if (showArrow.alpha >= 1f) showArrow.alpha = 0f
+        show.animate().alpha(1f).translationY(0f).setStartDelay(0).setDuration(220).setInterpolator(ease).start()
+        showArrow.animate().alpha(1f).setStartDelay(80).setDuration(160).setInterpolator(ease).start()
+        hide.animate().alpha(0f).translationY(shift).setStartDelay(0).setDuration(160).setInterpolator(ease).withEndAction {
+            hide.visibility = View.GONE; hide.alpha = 1f; hide.translationY = 0f
+        }.start()
+        hideArrow.animate().alpha(0f).setStartDelay(0).setDuration(100).withEndAction {
+            hideArrow.visibility = View.GONE; hideArrow.alpha = 1f
+        }.start()
+    }
+
+    /** Puts the classic or glass backgrounds on the controls (Settings, Look, Glass look). Padding and sizes stay. */
+    private fun applyLook() {
+        Glass.on = prefs.glassLook
+        Glass.background(btnPlay, Glass.Kind.CIRCLE)
+        Glass.background(btnRestart, Glass.Kind.CIRCLE)
+        Glass.background(btnNext, Glass.Kind.CIRCLE)
+        Glass.background(btnSubs, Glass.Kind.PILL)
+        Glass.background(btnAudio, Glass.Kind.PILL)
+        for (chip in listOf(chipResolution, chipFps, chipAudio)) Glass.background(chip, Glass.Kind.CHIP)
+        // Glass chips cast a shadow below them that their row would cut off; classic chips keep the row as it was.
+        (chips as ViewGroup).apply {
+            clipChildren = !Glass.on
+            clipToPadding = !Glass.on
+        }
+        for (item in moreItems.values) {
+            Glass.background(item.view.findViewById<View>(R.id.more_icon).parent as View, Glass.Kind.MORE_ICON)
+        }
+        Glass.background(errorBox, Glass.Kind.POPUP)
+        (findViewById<FrameLayout>(R.id.preview_card)).foreground = ContextCompat.getDrawable(this, Glass.previewEdge)
     }
 
     /** Which parts of the overlay show: everything, just the time bar while seeking, or nothing. */
@@ -2651,6 +2794,24 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         }
     }
 
+    private fun openDimPanel(from: View) = openPanel("Screen dimmer", from) {
+        (0..10).forEach { level ->
+            row(if (level == 0) "Off" else "$level", checked = level == prefs.dimLevel) {
+                prefs.dimLevel = level
+                applyDim()
+                refreshLabels()
+                refresh()
+            }
+        }
+    }
+
+    /** Darkens the film by the chosen level: 8% a step, so 10 leaves a fifth of the light. */
+    private fun applyDim() {
+        val level = prefs.dimLevel
+        dimmer.alpha = level * 0.08f
+        dimmer.visibility = if (level == 0) View.GONE else View.VISIBLE
+    }
+
     private fun openSleepPanel(from: View) = openPanel("Sleep timer", from) {
         row("Off", checked = sleepEndsAt == 0L && !sleepAtEnd) { setSleep(0); refresh() }
         listOf(15, 30, 45, 60, 90, 120).forEach { min ->
@@ -2856,6 +3017,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         val p = player
         val size = p?.videoSize
         val aspect = if (size == null || size.height == 0) 0f else size.width * size.pixelWidthHeightRatio / size.height
+        val scale = videoFrame.scaleX
         videoFrame.scaleX = 1f
         videoFrame.scaleY = 1f
         when (displayMode) {
@@ -2872,6 +3034,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             5 -> { videoFrame.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT; videoFrame.setAspectRatio(4f / 3f) }
             6 -> { videoFrame.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT; videoFrame.setAspectRatio(21f / 9f) }
         }
+        // Zoom grows the picture without a new layout, which the layout listener wouldn't see.
+        if (videoFrame.scaleX != scale) backdrop?.frameChanged()
     }
 
     // ---------------------------------------------------------------------

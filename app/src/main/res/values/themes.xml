@@ -45,19 +45,27 @@
         <item name="android:fontFamily">@font/figtree_700</item>
     </style>
 
-    <style name="Tooltip">
+    <!-- A round button's name, shown under it only while it's selected (focusEffect). Set like the icon row's names
+         (item_more): plain text, 4dp below the circle, centred under it. -->
+    <style name="ButtonLabel">
         <item name="android:layout_width">wrap_content</item>
         <item name="android:layout_height">wrap_content</item>
         <item name="android:layout_marginTop">4dp</item>
-        <item name="android:background">@drawable/bg_tooltip</item>
-        <item name="android:paddingStart">6dp</item>
-        <item name="android:paddingEnd">6dp</item>
-        <item name="android:paddingTop">2dp</item>
-        <item name="android:paddingBottom">2dp</item>
-        <item name="android:textSize">10sp</item>
-        <item name="android:textColor">@color/text</item>
+        <!-- Hangs out over both sides of its button (half the widest name each), so the name never widens the button's
+             column and the row stays where it is when it shows. -->
+        <item name="android:layout_marginStart">-48dp</item>
+        <item name="android:layout_marginEnd">-48dp</item>
+        <item name="android:ellipsize">end</item>
         <item name="android:fontFamily">@font/figtree_600</item>
+        <item name="android:includeFontPadding">true</item>
+        <item name="android:maxWidth">96dp</item>
+        <item name="android:paddingBottom">2dp</item>
         <item name="android:singleLine">true</item>
+        <item name="android:textColor">@color/text</item>
+        <item name="android:textSize">11sp</item>
+        <item name="android:alpha">0</item>
         <item name="android:visibility">invisible</item>
+        <!-- The button already says what it does. -->
+        <item name="android:importantForAccessibility">no</item>
     </style>
 </resources>

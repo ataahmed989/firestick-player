@@ -60,6 +60,16 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("match_frame_rate", true)
         set(v) = sp.edit().putBoolean("match_frame_rate", v).apply()
 
+    /** The optional see-through glass look for the controls and windows; off keeps the classic look. */
+    var glassLook: Boolean
+        get() = sp.getBoolean("glass_look", false)
+        set(v) = sp.edit().putBoolean("glass_look", v).apply()
+
+    /** How many times a second the glass copies the playing film (Settings, Look, Glass refresh): 2, 4 or 8. */
+    var glassRefreshPerSec: Int
+        get() = sp.getInt("glass_refresh", 4)
+        set(v) = sp.edit().putInt("glass_refresh", v).apply()
+
     var passthrough: Boolean
         get() = sp.getBoolean("passthrough", true)
         set(v) = sp.edit().putBoolean("passthrough", v).apply()
@@ -126,6 +136,11 @@ class Prefs(context: Context) {
     var displayMode: Int
         get() = sp.getInt("display_mode", 0)
         set(v) = sp.edit().putInt("display_mode", v).apply()
+
+    /** Screen dimmer, 0 (off) to 10 (darkest); kept from one film to the next. */
+    var dimLevel: Int
+        get() = sp.getInt("dim_level", 0).coerceIn(0, 10)
+        set(v) = sp.edit().putInt("dim_level", v).apply()
 
     // Resume points, keyed by the video's URI.
     fun savedPosition(key: String): Long = sp.getLong("pos:$key", 0L)

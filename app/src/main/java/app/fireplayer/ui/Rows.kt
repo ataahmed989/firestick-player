@@ -121,11 +121,14 @@ class RowLayout(context: Context, private val colors: ColorStateList?) : LinearL
         for (i in 0 until childCount) {
             when (val child = getChildAt(i)) {
                 is TextView -> if (child.currentTextColor != color) child.setTextColor(color)
-                is ImageView -> if (child.imageTintList?.defaultColor != color) child.imageTintList = ColorStateList.valueOf(color)
+                is ImageView -> if (child.tag != KEEP_COLORS && child.imageTintList?.defaultColor != color) child.imageTintList = ColorStateList.valueOf(color)
             }
         }
     }
 }
+
+/** Tag for a row's image that keeps its own colours (the glass switch) instead of following the text colour. */
+const val KEEP_COLORS = "keepColors"
 
 /** Shared look and D-pad behaviour for the rows in the settings windows and pickers. */
 class Rows(private val context: Context) {
@@ -141,7 +144,7 @@ class Rows(private val context: Context) {
         gravity = Gravity.CENTER_VERTICAL
         isFocusable = true
         isClickable = true
-        setBackgroundResource(R.drawable.bg_row)
+        Glass.background(this, Glass.Kind.ROW)
         minimumHeight = dp(33)
         setPadding(dp(12), dp(6), dp(12), dp(6))
     }
@@ -164,8 +167,9 @@ class Rows(private val context: Context) {
     /**
      * A label on the left, an optional value on the right, and an optional trailing icon.
      * [labelLines] above 1 lets a long label (a subtitle file name) wrap instead of being cut short.
+     * With the glass look an "On" / "Off" value is a switch, unless [asSwitch] is false (a picker's current value).
      */
-    fun build(label: String, value: String?, trailingIcon: Int?, labelLines: Int = 1): LinearLayout {
+    fun build(label: String, value: String?, trailingIcon: Int?, labelLines: Int = 1, asSwitch: Boolean = true): LinearLayout {
         val row = base()
         val labelView = text(label).apply {
             if (labelLines > 1) {
@@ -176,7 +180,23 @@ class Rows(private val context: Context) {
         }
         row.addView(labelView, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         // A long value is shortened rather than pushing the label off the row.
-        if (value != null) row.addView(text(value).apply { alpha = 0.85f; maxWidth = dp(118) })
+        if (Glass.on && asSwitch && (value == "On" || value == "Off")) {
+            // Glass look: on/off settings show a switch instead of the word. It takes the row's state, so an off
+            // switch can turn dark on the white selected row. The on glow reaches past the switch into the row's
+            // padding, so the row mustn't cut it off; nothing is moved or resized for it.
+            row.clipChildren = false
+            row.clipToPadding = false
+            row.addView(ImageView(context).apply {
+                setImageDrawable(Glass.toggle(context, value == "On"))
+                contentDescription = value
+                tag = KEEP_COLORS
+                // Before it's added, so the row passes its state changes on.
+                isDuplicateParentStateEnabled = true
+                layoutParams = LinearLayout.LayoutParams(dp(34), dp(20)).apply { marginStart = dp(8) }
+            })
+        } else if (value != null) {
+            row.addView(text(value).apply { alpha = 0.85f; maxWidth = dp(118) })
+        }
         if (trailingIcon != null) row.addView(icon(trailingIcon, 15))
         return row
     }

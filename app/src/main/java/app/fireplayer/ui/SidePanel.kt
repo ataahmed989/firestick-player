@@ -39,6 +39,7 @@ class SidePanel(private val activity: Activity) {
         this.onClose = onClose
         renderer = render
         title.text = titleText
+        Glass.background(root, Glass.Kind.PANEL)
         root.visibility = View.VISIBLE
         root.alpha = 0f
         root.translationX = rows.dp(24).toFloat()
@@ -147,13 +148,16 @@ class SidePanel(private val activity: Activity) {
 
     /** A setting with several values: shows the current one and opens a small picker window. */
     fun choice(label: String, options: List<String>, selected: Int, onPick: (Int) -> Unit): View {
-        val value = options.getOrNull(selected) ?: ""
-        return row(label, value) {
+        // Always the value in words, even "Off" (no subtitle language): this row opens a picker, it isn't a switch.
+        val row = rows.build(label, options.getOrNull(selected) ?: "", null, asSwitch = false)
+        row.setOnClickListener {
             FireDialog.choose(activity, label, options, selected, besidePanel = true) { index ->
                 if (index != selected) onPick(index)
                 refresh()
             }
         }
+        add(row)
+        return row
     }
 
     /** A row adjusted with left / right on the D-pad, like "Delay  ‹ 0 ms ›". */

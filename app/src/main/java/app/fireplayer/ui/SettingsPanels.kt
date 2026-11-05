@@ -36,6 +36,9 @@ class SettingsPanels(
     private var titlesProgress: List<TitleBook.Progress>? = null
     private var titlesAsked = false
 
+    /** Called when the glass look is turned on or off, so the screen behind can restyle its buttons. */
+    var onLookChanged: () -> Unit = {}
+
     /** Called after a font arrives from the phone (or is removed), so the subtitles can switch to it. */
     var onFontChanged: () -> Unit = {}
 
@@ -54,6 +57,22 @@ class SettingsPanels(
         header("Remote")
         choice("Menu button opens", listOf("Settings", "Subtitle style"), if (prefs.menuOpensStyle) 1 else 0) {
             prefs.menuOpensStyle = it == 1
+        }
+
+        header("Look")
+        row("Glass look", onOff(prefs.glassLook)) {
+            prefs.glassLook = !prefs.glassLook
+            Glass.on = prefs.glassLook
+            onLookChanged()
+            Glass.background(root, Glass.Kind.PANEL)
+            refresh()
+        }
+        if (prefs.glassLook) {
+            // How often the glass copies the film: faster follows it more closely, slower is lighter on older sticks.
+            val rates = listOf(2, 4, 8)
+            choice("Glass refresh", rates.map { "$it times a second" }, rates.indexOf(prefs.glassRefreshPerSec).let { if (it < 0) 1 else it }) {
+                prefs.glassRefreshPerSec = rates[it]
+            }
         }
 
         header("Skipping")
