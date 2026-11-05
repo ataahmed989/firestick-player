@@ -47,8 +47,9 @@ never opened to find it. Settings → TiviMate titles shows how far along each p
 
 FirePlayer keeps a short list of the films and episodes it plays from TiviMate, for Glass Home's Continue Watching
 row. A title joins after five minutes of real playing (over any number of sittings) and leaves once watched to the
-end; a finished episode moves its show on to the next episode when FirePlayer knows it. Live channels are never
-listed. Glass Home only gets each title's name, year, episode, TMDB id and how far along it is; the links (with your
+end; a finished episode moves its show on to the next episode when FirePlayer knows it. A film not watched for 30
+days, and a show not watched for 60, leaves too, and comes back like a new one after another five minutes of playing.
+Live channels are never listed. Glass Home only gets each title's name, year, episode, TMDB id and how far along it is; the links (with your
 provider's login in them) stay in FirePlayer, which opens the title itself when it's picked.
 
 ## Remote

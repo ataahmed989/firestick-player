@@ -7,7 +7,8 @@ package app.fireplayer.history
  *
  * An entry shows once [MIN_PLAYED_MS] of it has really played, over any number of sittings. A finished film leaves
  * the row; a finished episode moves its show on to the next one when that's known, and otherwise leaves too. An entry
- * removed from the row is forgotten, so it comes back only after another [MIN_PLAYED_MS] of playing.
+ * removed from the row is forgotten, so it comes back only after another [MIN_PLAYED_MS] of playing; so is one not
+ * watched for a while ([MOVIE_KEPT_MS], [SHOW_KEPT_MS]: the row then no longer has it, see [expire]).
  */
 class WatchHistory(records: List<Record> = emptyList()) {
 
@@ -105,13 +106,15 @@ class WatchHistory(records: List<Record> = emptyList()) {
 
     /** Notes what was watched; true when the rows changed. [newId] names an entry seen for the first time. */
     fun watched(w: Watch, now: Long, newId: () -> String): Boolean {
-        if (w.keys.isEmpty()) return false
         val before = rows()
+        // One left long ago starts again: only another five minutes of it bring it back.
+        expire(now)
+        if (w.keys.isEmpty()) return rows() != before
         val same = records.filter { it.kind == w.kind && it.keys.any { k -> k in w.keys } }
         // Nothing of it yet: only playing starts an entry, and a film played to its end has none to start.
-        if (same.isEmpty() && (w.playedMs <= 0 || (w.finished && w.next == null))) return false
+        if (same.isEmpty() && (w.playedMs <= 0 || (w.finished && w.next == null))) return rows() != before
         // Another episode only opened, not played (or one that wouldn't play): the show stays where it was watched.
-        if (w.playedMs <= 0 && !w.finished && same.none { it.videoKey == w.videoKey }) return false
+        if (w.playedMs <= 0 && !w.finished && same.none { it.videoKey == w.videoKey }) return rows() != before
         records.removeAll(same)
         // The same show found once by its id and once by its name: from now on one entry.
         val base = same.firstOrNull()
@@ -164,6 +167,18 @@ class WatchHistory(records: List<Record> = emptyList()) {
         return record.shown
     }
 
+    /**
+     * Films not watched for [MOVIE_KEPT_MS] and shows not watched for [SHOW_KEPT_MS] are forgotten, as if removed: the
+     * row no longer has them, and only another [MIN_PLAYED_MS] of playing brings them back. Entries still counting up
+     * to it go the same way, so minutes from long ago don't add up with new ones. True when the rows changed.
+     */
+    fun expire(now: Long): Boolean {
+        val old = records.filter { now - it.lastWatched > if (it.kind == Kind.MOVIE) MOVIE_KEPT_MS else SHOW_KEPT_MS }
+        if (old.isEmpty()) return false
+        records.removeAll(old)
+        return old.any { it.shown }
+    }
+
     /** At most [MAX_SHOWN] films and shows each in the row, and a few more counting up to it; the oldest go. */
     private fun trim() {
         val movies = records.filter { it.shown && it.kind == Kind.MOVIE }
@@ -192,6 +207,9 @@ class WatchHistory(records: List<Record> = emptyList()) {
         /** Real playing time before a title shows. */
         const val MIN_PLAYED_MS = 5 * 60_000L
         const val MAX_SHOWN = 20
+        /** How long a film, and a show, stays in the row without being watched. */
+        const val MOVIE_KEPT_MS = 30 * 24 * 3600_000L
+        const val SHOW_KEPT_MS = 60 * 24 * 3600_000L
         private const val MAX_WAITING = 60
         private const val FORMAT = "continue 1"
         private const val NULL = "\\0"

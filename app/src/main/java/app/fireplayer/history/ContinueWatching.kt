@@ -88,13 +88,13 @@ object ContinueWatching {
     }
 
     /** The rows, newest first. */
-    fun rows(context: Context): List<WatchHistory.Row> = synchronized(lock) { load(context.applicationContext).rows() }
+    fun rows(context: Context): List<WatchHistory.Row> = synchronized(lock) { current(context.applicationContext).rows() }
 
     /** Removes one row; false when there's no such row. */
     fun remove(context: Context, id: String): Boolean {
         val app = context.applicationContext
         val removed = synchronized(lock) {
-            val h = load(app)
+            val h = current(app)
             if (h.record(id) == null) return false
             h.remove(id).also { save(app, h) }
         }
@@ -108,7 +108,7 @@ object ContinueWatching {
      */
     fun resumeIntent(context: Context, id: String?): Intent? {
         if (id.isNullOrEmpty()) return null
-        val record = synchronized(lock) { load(context.applicationContext).record(id) } ?: return null
+        val record = synchronized(lock) { current(context.applicationContext).record(id) } ?: return null
         val resume = record.resume
         val intent = Intent(Intent.ACTION_VIEW).setDataAndType(Uri.parse(resume.uri), resume.type)
         resume.title?.let { intent.putExtra("title", it) }
@@ -280,6 +280,10 @@ object ContinueWatching {
         val text = runCatching { String(file(context).readFully(), Charsets.UTF_8) }.getOrNull()
         WatchHistory.decode(text).also { history = it }
     }
+
+    /** The history without what was left too long ago (see [WatchHistory.expire]), which is then gone from the file too. */
+    private fun current(context: Context): WatchHistory =
+        load(context).also { h -> if (h.expire(System.currentTimeMillis())) save(context, h) }
 
     private fun save(context: Context, h: WatchHistory) {
         val file = file(context)

@@ -211,6 +211,59 @@ class WatchHistoryTest {
     }
 
     @Test
+    fun aFilmLeavesAfterThirtyDaysAndAShowAfterSixtyUnwatched() {
+        val h = WatchHistory()
+        val day = 24 * 60 * minute
+        h.play(movie(1, 10 * minute))
+        h.play(episode(1, 1, 3, 10 * minute))
+        val start = clock
+        assertFalse(h.expire(start + 30 * day - 10))
+        assertEquals(2, h.rows().size)
+        assertTrue(h.expire(start + 30 * day + 1))
+        assertEquals(listOf(Kind.EPISODE), h.rows().map { it.kind })
+        assertFalse(h.expire(start + 60 * day - 10))
+        assertTrue(h.expire(start + 60 * day + 1))
+        assertTrue(h.rows().isEmpty())
+        assertTrue(h.all.isEmpty())
+    }
+
+    @Test
+    fun expiredComesBackOnlyAfterFiveMoreMinutesOfPlaying() {
+        val h = WatchHistory()
+        val day = 24 * 60 * minute
+        h.play(movie(1, 20 * minute))
+        h.play(episode(1, 1, 3, 20 * minute))
+        val film = h.rows().first { it.kind == Kind.MOVIE }.id
+        val show = h.rows().first { it.kind == Kind.EPISODE }.id
+        // Played again for a moment, long after: its old minutes don't count.
+        clock += 61 * day
+        assertTrue(h.play(movie(1, 1 * minute)))
+        assertTrue(h.rows().isEmpty())
+        assertFalse(h.play(episode(1, 1, 4, 4 * minute)))
+        assertTrue(h.rows().isEmpty())
+        assertTrue(h.play(movie(1, 4 * minute)))
+        assertTrue(h.play(episode(1, 1, 4, 1 * minute)))
+        val rows = h.rows()
+        assertEquals(2, rows.size)
+        assertNotEquals(film, rows.first { it.kind == Kind.MOVIE }.id)
+        val back = rows.first { it.kind == Kind.EPISODE }
+        assertNotEquals(show, back.id)
+        assertEquals(4, back.episode)
+    }
+
+    @Test
+    fun watchingKeepsATitleFromExpiring() {
+        val h = WatchHistory()
+        val day = 24 * 60 * minute
+        h.play(movie(1, 10 * minute))
+        clock += 20 * day
+        h.play(movie(1, 1 * minute))
+        clock += 20 * day
+        assertFalse(h.expire(clock))
+        assertEquals(1, h.rows().size)
+    }
+
+    @Test
     fun unreadableTextIsAnEmptyHistory() {
         assertTrue(WatchHistory.decode(null).all.isEmpty())
         assertTrue(WatchHistory.decode("").all.isEmpty())
