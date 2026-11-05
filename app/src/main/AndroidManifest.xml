@@ -130,6 +130,11 @@
                 <data android:pathPattern=".*\\.mpd" />
                 <data android:pathPattern=".*\\.MPD" />
             </intent-filter>
+            <!-- From Glass Home's Continue Watching row: a title watched before, from where it was left (see history/). -->
+            <intent-filter>
+                <action android:name="app.fireplayer.action.RESUME" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
         </activity>
 
         <!--
@@ -157,6 +162,15 @@
                 <action android:name="app.fireplayer.titles.START" />
             </intent-filter>
         </receiver>
+
+        <!--
+            What was watched, for Glass Home's Continue Watching row. It answers only Glass Home and FirePlayer (see
+            history/ContinueProvider.kt), and never gives out where a title plays from.
+        -->
+        <provider
+            android:name=".history.ContinueProvider"
+            android:authorities="app.fireplayer.continue"
+            android:exported="true" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

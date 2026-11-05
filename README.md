@@ -43,6 +43,14 @@ only when TMDB confirms it (by the TMDB id the provider gives, or by its name an
 stays when TMDB isn't sure. The quality tag comes from the provider's name or category ("4K Movies"); videos are
 never opened to find it. Settings → TiviMate titles shows how far along each provider is, and turns it off.
 
+## Continue Watching in Glass Home
+
+FirePlayer keeps a short list of the films and episodes it plays from TiviMate, for Glass Home's Continue Watching
+row. A title joins after five minutes of real playing (over any number of sittings) and leaves once watched to the
+end; a finished episode moves its show on to the next episode when FirePlayer knows it. Live channels are never
+listed. Glass Home only gets each title's name, year, episode, TMDB id and how far along it is; the links (with your
+provider's login in them) stay in FirePlayer, which opens the title itself when it's picked.
+
 ## Remote
 
 | Key | Action |

@@ -32,8 +32,11 @@ class TitleBook(context: Context) : SQLiteOpenHelper(context, "titles.db", null,
         val year: Int,
     )
 
-    /** One of a show's episodes, by its id in the provider's links. */
-    class Episode(val id: Int, val series: Int, val season: Int, val number: Int)
+    /** One of a show's episodes, by its id in the provider's links, and its file's type ("mkv") when the provider said. */
+    class Episode(val id: Int, val series: Int, val season: Int, val number: Int, val extension: String? = null)
+
+    /** One film or show for Continue Watching: its English name (null while it has none), year and TMDB id (0 if not known). */
+    class About(val title: String?, val year: Int, val tmdb: Int)
 
     /** How far along a provider's titles are, for Settings. */
     class Progress(val server: String, val renamed: Int, val kept: Int, val waiting: Int)
@@ -46,7 +49,8 @@ class TitleBook(context: Context) : SQLiteOpenHelper(context, "titles.db", null,
         db.execSQL(
             """CREATE TABLE item(server TEXT NOT NULL, kind INTEGER NOT NULL, id INTEGER NOT NULL, raw TEXT NOT NULL,
                raw_hash INTEGER NOT NULL, tmdb INTEGER NOT NULL, category TEXT, year INTEGER NOT NULL, title TEXT,
-               state INTEGER NOT NULL, checked INTEGER NOT NULL, PRIMARY KEY(server, kind, id)) WITHOUT ROWID""",
+               state INTEGER NOT NULL, checked INTEGER NOT NULL, found INTEGER NOT NULL DEFAULT 0,
+               PRIMARY KEY(server, kind, id)) WITHOUT ROWID""",
         )
         db.execSQL("CREATE INDEX item_state ON item(state, checked)")
         db.execSQL(
@@ -61,11 +65,13 @@ class TitleBook(context: Context) : SQLiteOpenHelper(context, "titles.db", null,
         // Better rules may find what the old ones didn't: titles kept as they were are asked about again.
         if (oldVersion < 2) db.execSQL("UPDATE item SET state = $WAITING, checked = 0 WHERE state = $KEPT")
         if (oldVersion < 3) createEpisodes(db)
+        else if (oldVersion < 4) db.execSQL("ALTER TABLE episode ADD COLUMN extension TEXT")
+        if (oldVersion < 4) db.execSQL("ALTER TABLE item ADD COLUMN found INTEGER NOT NULL DEFAULT 0")
     }
 
     private fun createEpisodes(db: SQLiteDatabase) = db.execSQL(
         """CREATE TABLE IF NOT EXISTS episode(server TEXT NOT NULL, id INTEGER NOT NULL, series INTEGER NOT NULL,
-           season INTEGER NOT NULL, number INTEGER NOT NULL, PRIMARY KEY(server, id)) WITHOUT ROWID""",
+           season INTEGER NOT NULL, number INTEGER NOT NULL, extension TEXT, PRIMARY KEY(server, id)) WITHOUT ROWID""",
     )
 
     /** A show's episodes, as TiviMate (or FirePlayer's next-episode look-up) listed them. */
@@ -74,13 +80,17 @@ class TitleBook(context: Context) : SQLiteOpenHelper(context, "titles.db", null,
         val db = writableDatabase
         db.beginTransaction()
         try {
-            val insert = db.compileStatement("INSERT OR REPLACE INTO episode(server, id, series, season, number) VALUES (?, ?, ?, ?, ?)")
+            val insert = db.compileStatement(
+                "INSERT OR REPLACE INTO episode(server, id, series, season, number, extension) VALUES (?, ?, ?, ?, ?, ?)",
+            )
             for (e in episodes) {
+                insert.clearBindings()
                 insert.bindString(1, server)
                 insert.bindLong(2, e.id.toLong())
                 insert.bindLong(3, e.series.toLong())
                 insert.bindLong(4, e.season.toLong())
                 insert.bindLong(5, e.number.toLong())
+                e.extension?.let { insert.bindString(6, it) } ?: insert.bindNull(6)
                 insert.executeInsert()
             }
             db.setTransactionSuccessful()
@@ -92,9 +102,32 @@ class TitleBook(context: Context) : SQLiteOpenHelper(context, "titles.db", null,
     /** The episode with this id in the provider's links, once its show's episodes were listed. */
     fun episode(server: String, id: Int): Episode? =
         readableDatabase.rawQuery(
-            "SELECT series, season, number FROM episode WHERE server = ? AND id = ?",
+            "SELECT series, season, number, extension FROM episode WHERE server = ? AND id = ?",
             arrayOf(server, id.toString()),
-        ).use { c -> if (c.moveToFirst()) Episode(id, c.getInt(0), c.getInt(1), c.getInt(2)) else null }
+        ).use { c ->
+            if (c.moveToFirst()) Episode(id, c.getInt(0), c.getInt(1), c.getInt(2), if (c.isNull(3)) null else c.getString(3)) else null
+        }
+
+    /** The episode after [e] in its show, by season and number; null when it's the last one listed. */
+    fun episodeAfter(server: String, e: Episode): Episode? =
+        readableDatabase.rawQuery(
+            """SELECT id, season, number, extension FROM episode WHERE server = ? AND series = ?
+               AND (season > ? OR (season = ? AND number > ?)) ORDER BY season, number LIMIT 1""",
+            arrayOf(server, e.series.toString(), e.season.toString(), e.season.toString(), e.number.toString()),
+        ).use { c ->
+            if (c.moveToFirst()) Episode(c.getInt(0), e.series, c.getInt(1), c.getInt(2), if (c.isNull(3)) null else c.getString(3))
+            else null
+        }
+
+    /**
+     * What's known of one title for Continue Watching. Its TMDB id is the one its English name was confirmed with;
+     * for a title renamed before those were kept, the provider's, which the name was most likely confirmed by.
+     */
+    fun about(server: String, kind: Kind, id: Int): About? =
+        readableDatabase.rawQuery(
+            "SELECT title, year, CASE WHEN found > 0 THEN found WHEN state = $RENAMED THEN tmdb ELSE 0 END FROM item WHERE server = ? AND kind = ? AND id = ?",
+            arrayOf(server, kind.code.toString(), id.toString()),
+        ).use { c -> if (c.moveToFirst()) About(if (c.isNull(0)) null else c.getString(0), c.getInt(1), c.getInt(2)) else null }
 
     /** Everything known of a provider's films or shows, by id. Read once per list TiviMate asks for. */
     fun known(server: String, kind: Kind): Map<Int, Known> {
@@ -196,11 +229,14 @@ class TitleBook(context: Context) : SQLiteOpenHelper(context, "titles.db", null,
         return (0 until each).flatMap { i -> lists.mapNotNull { it.getOrNull(i) } }
     }
 
-    /** TMDB's answer for [w]: its English name, or null to keep the provider's. Ignored if the provider renamed it since. */
-    fun answered(w: Waiting, title: String?, now: Long) {
+    /**
+     * TMDB's answer for [w]: its English name, or null to keep the provider's, and the TMDB id it was confirmed by.
+     * Ignored if the provider renamed it since.
+     */
+    fun answered(w: Waiting, title: String?, now: Long, tmdb: Int = 0) {
         writableDatabase.execSQL(
-            "UPDATE item SET title = ?, state = ?, checked = ? WHERE server = ? AND kind = ? AND id = ? AND raw_hash = ?",
-            arrayOf(title, if (title != null) RENAMED else KEPT, now, w.server, w.kind.code, w.id, w.raw.hashCode()),
+            "UPDATE item SET title = ?, state = ?, checked = ?, found = ? WHERE server = ? AND kind = ? AND id = ? AND raw_hash = ?",
+            arrayOf(title, if (title != null) RENAMED else KEPT, now, if (title != null) tmdb else 0, w.server, w.kind.code, w.id, w.raw.hashCode()),
         )
     }
 
@@ -237,8 +273,8 @@ class TitleBook(context: Context) : SQLiteOpenHelper(context, "titles.db", null,
     }
 
     private companion object {
-        // 2: TitleMatcher's better rules; 3: episodes and their shows.
-        const val VERSION = 3
+        // 2: TitleMatcher's better rules; 3: episodes and their shows; 4: episodes' file types, and TMDB ids found.
+        const val VERSION = 4
         const val WAITING = 0
         const val RENAMED = 1
         const val KEPT = 2

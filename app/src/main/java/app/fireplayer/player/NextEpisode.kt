@@ -457,6 +457,12 @@ class NextEpisode(context: Context, private val headers: Map<String, String>) {
             return remembered(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE), link)?.second
         }
 
+        /** The provider's id for the show holding the episode at [uri], when it was found before. */
+        fun rememberedShowId(context: Context, uri: Uri): String? {
+            val link = parse(uri) ?: return null
+            return remembered(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE), link)?.first
+        }
+
         /** (show id, show name) remembered for this episode. */
         private fun remembered(prefs: android.content.SharedPreferences, link: Link): Pair<String, String>? {
             val prefix = "$SHOW_PREFIX${link.base}|${link.user}|"

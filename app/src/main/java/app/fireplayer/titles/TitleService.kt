@@ -132,8 +132,9 @@ class TitleService : Service() {
                 Callable {
                     if (!running || playing || slowDown.get()) return@Callable
                     try {
-                        val name = matcher.englishName(w.raw, w.tmdb, w.year, w.kind == TitleBook.Kind.SHOW, w.category)
-                        book.answered(w, name, now())
+                        val named = matcher.englishName(w.raw, w.tmdb, w.year, w.kind == TitleBook.Kind.SHOW, w.category)
+                        val name = named?.title
+                        book.answered(w, name, now(), named?.tmdb ?: 0)
                         // A few of each batch go in the log, to see how it's going.
                         val n = if (name != null) renamed.incrementAndGet() else kept.incrementAndGet()
                         if (n <= LOGGED_PER_BATCH) Log.i(TAG, "\"${w.raw}\" " + if (name != null) "-> \"$name\"" else "kept")

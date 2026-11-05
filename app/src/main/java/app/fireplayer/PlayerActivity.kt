@@ -26,6 +26,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
+import android.widget.Toast
 import androidx.annotation.OptIn
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -52,6 +53,7 @@ import androidx.media3.exoplayer.source.MediaLoadData
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.SubtitleView
 import app.fireplayer.data.Prefs
+import app.fireplayer.history.ContinueWatching
 import app.fireplayer.player.BufferWait
 import app.fireplayer.player.Delays
 import app.fireplayer.player.DisplaySwitch
@@ -103,6 +105,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         /** The next episode of a show, found with the provider: gets the end-of-episode card. */
         val nextEpisode: Boolean = false,
     ) {
+        /** The subtitles the opening app handed over with it, and their names, to hand over again on resuming. */
+        val handedSubtitles = mutableListOf<Pair<Uri, String?>>()
         /** The provider's name for the show, for an episode that came named only by its number ("S01E03"). */
         var showName: String? = null
             set(value) {
@@ -315,6 +319,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         }
 
     private var resumeDialogShowing = false
+    // Real playing time not yet noted for Continue Watching (see noteWatched), since when it's been playing
+    // (elapsedRealtime; 0 while it isn't), and when it was last noted.
+    private var playedMs = 0L
+    private var playingSince = 0L
+    private var watchNotedAt = 0L
     private var pendingAudioId: String? = null
     private var notice = false
     private var pendingNotice: String? = null
@@ -368,10 +377,23 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         buildMoreRow()
         displayMode = prefs.displayMode
 
+        // From Glass Home's Continue Watching row: the title just as its app first opened it, from where it was left.
+        val resuming = intent.action == ContinueWatching.ACTION_RESUME
+        if (resuming) {
+            val resumed = ContinueWatching.resumeIntent(this, intent.getStringExtra(ContinueWatching.EXTRA_ID))
+            if (resumed == null) {
+                Toast.makeText(this, "This title can't be played from where it was left.", Toast.LENGTH_LONG).show()
+                finish()
+                return
+            }
+            setIntent(resumed)
+        }
         if (!readIntent(intent)) {
             finish()
             return
         }
+        // Straight from there, without asking (also from the start, for a show's next episode).
+        if (resuming && startPositionMs == C.TIME_UNSET) startPositionMs = 0L
         applySubtitleStyle()
     }
 
@@ -402,6 +424,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         // TiviMate's titles aren't looked up on TMDB while a film is on.
         TitleService.playing(this, true)
         prefs.forgetLeftPlayer()
+        watchNotedAt = SystemClock.elapsedRealtime()
     }
 
     override fun onStop() {
@@ -494,6 +517,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         subs.forEachIndexed { i, uri ->
             val name = subNames?.getOrNull(i)
             entries[startIndex].subtitles += subtitleConfig(uri, name, guessLanguage(name))
+            entries[startIndex].handedSubtitles += uri to name
         }
         entries.forEach { it.subtitles += localSubtitles(it.uri) }
 
@@ -699,6 +723,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private fun releasePlayer() {
         val p = player ?: return
         captureState()
+        countPlaying(false)
         vsyncFix?.stop()
         vsyncFix = null
         p.removeListener(this)
@@ -764,6 +789,54 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         val dur = p.duration
         val nearEnd = dur != C.TIME_UNSET && dur - pos < 3 * 60_000
         prefs.savePosition(entry.key, if (pos > 30_000 && !nearEnd && !p.isCurrentMediaItemLive) pos else 0L)
+        noteWatched(entry, pos, dur, finished = nearEnd, live = p.isCurrentMediaItemLive)
+    }
+
+    /**
+     * Notes a film or episode for Glass Home's Continue Watching row (see [ContinueWatching]): where it is, how long it
+     * really played since it was last noted, and whether it was watched to the end. Live channels never.
+     */
+    private fun noteWatched(entry: Entry, positionMs: Long, durationMs: Long, finished: Boolean, live: Boolean) {
+        val played = takePlayed()
+        watchNotedAt = SystemClock.elapsedRealtime()
+        if (live) return
+        val next = entries.getOrNull(entries.indexOf(entry) + 1)?.takeIf { it.nextEpisode }
+        ContinueWatching.watched(
+            applicationContext,
+            ContinueWatching.Played(
+                uri = entry.uri,
+                rawTitle = entry.rawTitle,
+                type = entry.mimeType,
+                headers = intent.getStringArrayExtra("headers")?.toList().orEmpty(),
+                subtitles = entry.handedSubtitles.toList(),
+                shown = entry.info,
+                positionMs = positionMs,
+                durationMs = durationMs.takeIf { it != C.TIME_UNSET } ?: 0L,
+                playedMs = played,
+                finished = finished,
+                next = next?.let { it.uri to it.rawTitle },
+            ),
+        )
+    }
+
+    /** From [postPlayTick]: now and then while it plays, so a crash or a power cut loses little. */
+    private fun noteWhilePlaying() {
+        val p = player ?: return
+        if (!p.isPlaying || resumeDialogShowing || SystemClock.elapsedRealtime() - watchNotedAt < WATCH_NOTE_EVERY_MS) return
+        val entry = entries.getOrNull(p.currentMediaItemIndex) ?: return
+        noteWatched(entry, p.currentPosition, p.duration, finished = false, live = p.isCurrentMediaItemLive)
+    }
+
+    /** Adds up the time the film really plays: not paused, loading or waiting on a jump. */
+    private fun countPlaying(isPlaying: Boolean) {
+        val now = SystemClock.elapsedRealtime()
+        if (playingSince > 0) playedMs += now - playingSince
+        playingSince = if (isPlaying) now else 0L
+    }
+
+    private fun takePlayed(): Long {
+        countPlaying(player?.isPlaying == true)
+        return playedMs.also { playedMs = 0L }
     }
 
     /** Lets TiviMate know where we stopped (MX Player result contract). */
@@ -842,6 +915,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     }
 
     override fun onIsPlayingChanged(isPlaying: Boolean) {
+        countPlaying(isPlaying)
         updatePlayButton()
         updateKeepScreenOn()
         if (isPlaying) scheduleHide() else handler.removeCallbacks(hideControlsRunnable)
@@ -877,7 +951,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         }
         // An episode that played to the end starts from the top next time.
         if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO && now != playingIndex) {
-            entries.getOrNull(playingIndex)?.let { prefs.savePosition(it.key, 0L) }
+            entries.getOrNull(playingIndex)?.let {
+                prefs.savePosition(it.key, 0L)
+                noteWatched(it, 0L, C.TIME_UNSET, finished = true, live = false)
+            }
         }
         // Any other jump being lined up was for the video that was playing, not this one.
         if (seeking) cancelSeek()
@@ -1394,6 +1471,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         override fun run() {
             lookUpWhenFree()
             updatePostPlay()
+            noteWhilePlaying()
             handler.postDelayed(this, 200)
         }
     }
@@ -1458,7 +1536,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         val p = player ?: return
         hidePostPlay()
         // This one was watched to the credits: next time it starts from the top.
-        entries.getOrNull(p.currentMediaItemIndex)?.let { prefs.savePosition(it.key, 0L) }
+        entries.getOrNull(p.currentMediaItemIndex)?.let {
+            prefs.savePosition(it.key, 0L)
+            noteWatched(it, p.currentPosition, p.duration, finished = true, live = p.isCurrentMediaItemLive)
+        }
         p.seekToNextMediaItem()
         p.play()
     }
@@ -2715,6 +2796,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         // Two film drops just after the preview connected, this close together, mean the server cuts one off.
         const val CUT_OFF_PAIR_MS = 60_000L
         const val POST_PLAY_COUNT_MS = 10_000L
+        /** How often what's playing is noted for Continue Watching while it plays. */
+        const val WATCH_NOTE_EVERY_MS = 60_000L
         /** How long a note about previews stays up. */
         const val NOTE_MS = 4_000L
         /** How long a picture subtitle that wasn't read ahead is kept back while it's read. */

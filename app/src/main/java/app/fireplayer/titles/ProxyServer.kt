@@ -241,7 +241,10 @@ class ProxyServer(
             (0 until list.length()).mapNotNull { i ->
                 val ep = list.optJSONObject(i) ?: return@mapNotNull null
                 val id = ep.optString("id").toIntOrNull() ?: return@mapNotNull null
-                TitleBook.Episode(id, series, ep.optString("season").toIntOrNull() ?: 0, ep.optString("episode_num").toIntOrNull() ?: 0)
+                TitleBook.Episode(
+                    id, series, ep.optString("season").toIntOrNull() ?: 0, ep.optString("episode_num").toIntOrNull() ?: 0,
+                    ep.optString("container_extension").takeIf { it.isNotBlank() && it.all(Char::isLetterOrDigit) },
+                )
             }
         }
     }
