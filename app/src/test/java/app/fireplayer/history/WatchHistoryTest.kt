@@ -1,6 +1,8 @@
 package app.fireplayer.history
 
 import app.fireplayer.history.WatchHistory.Kind
+import app.fireplayer.player.NextPick
+import app.fireplayer.player.TitleInfo
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -111,6 +113,43 @@ class WatchHistoryTest {
     }
 
     @Test
+    fun anEpisodeIsNotedByItsRealNumbersAndMovesOnToTheRealNext() {
+        // TiviMate's E11, E12 and E13 of a list with a copy: the provider's E6, E6 again, and E7.
+        val names = listOf("Show 1 S01E11", "Show 1 S01E12", "Show 1 S01E13")
+        val reals = listOf(NextPick.Real(1, 1, 6), NextPick.Real(1, 1, 6), NextPick.Real(1, 1, 7))
+        val shown = names.zip(reals) { n, r -> TitleInfo.parse(n, null).withEpisode(r.season, r.episode) }
+        assertEquals("S1 E6", shown[0].subtitle)
+        val next = NextPick.after(0, reals)!!
+        assertEquals(2, next)
+        fun watch(i: Int, playedMs: Long, finished: Boolean = false) = WatchHistory.Watch(
+            kind = Kind.EPISODE,
+            keys = setOf("s|provider.example:80|1"),
+            videoKey = "e|provider.example:80|${11 + i}",
+            title = shown[i].title,
+            season = shown[i].season!!,
+            episode = shown[i].episode!!,
+            positionMs = 10 * minute,
+            durationMs = 45 * minute,
+            playedMs = playedMs,
+            finished = finished,
+            next = if (finished) {
+                WatchHistory.Next(
+                    "e|provider.example:80|${11 + next}", reals[next].season, reals[next].episode, null,
+                    WatchHistory.Resume("http://provider.example/series/USER/PASS/${11 + next}.mkv"),
+                )
+            } else null,
+            resume = WatchHistory.Resume("http://provider.example/series/USER/PASS/${11 + i}.mkv"),
+        )
+        val h = WatchHistory()
+        h.play(watch(0, 10 * minute))
+        assertEquals(1 to 6, h.rows().single().let { it.season to it.episode })
+        h.play(watch(0, 30 * minute, finished = true))
+        val row = h.rows().single()
+        assertEquals(1 to 7, row.season to row.episode)
+        assertEquals("http://provider.example/series/USER/PASS/13.mkv", h.record(row.id)!!.resume.uri)
+    }
+
+    @Test
     fun aFinishedEpisodeWithNoNextTakesItsShowAway() {
         val h = WatchHistory()
         h.play(episode(1, 1, 10, 10 * minute))
@@ -173,44 +212,6 @@ class WatchHistoryTest {
     }
 
     @Test
-    fun atMostTwentyFilmsAndTwentyShows() {
-        val h = WatchHistory()
-        for (i in 1..25) h.play(movie(i, 6 * minute))
-        for (i in 1..22) h.play(episode(i, 1, 1, 6 * minute))
-        val rows = h.rows()
-        assertEquals(20, rows.count { it.kind == Kind.MOVIE })
-        assertEquals(20, rows.count { it.kind == Kind.EPISODE })
-        // The oldest went.
-        assertFalse(rows.any { it.title == "Film 5" })
-        assertTrue(rows.any { it.title == "Film 6" })
-        assertFalse(rows.any { it.title == "Show 2" })
-    }
-
-    @Test
-    fun keptAsTextAndReadBackTheSame() {
-        val h = WatchHistory()
-        h.play(movie(1, 6 * minute).copy(title = "Tabs\tand\nlines \\ and \u001f"))
-        h.play(
-            episode(2, 1, 1, 2 * minute).copy(
-                episodeTitle = "Pilot",
-                resume = WatchHistory.Resume(
-                    uri = "http://provider.example/series/USER/PASS/1.mkv",
-                    type = null,
-                    title = null,
-                    headers = listOf("User-Agent", "TiviMate/5", "Referer", ""),
-                    subtitles = listOf("http://subs.example/a.srt", "http://subs.example/b.srt"),
-                    subtitleNames = listOf("English", null),
-                ),
-            ),
-        )
-        val text = h.encode()
-        val back = WatchHistory.decode(text)
-        assertEquals(h.all, back.all)
-        assertEquals(text, back.encode())
-        assertEquals(h.rows(), back.rows())
-    }
-
-    @Test
     fun aFilmLeavesAfterThirtyDaysAndAShowAfterSixtyUnwatched() {
         val h = WatchHistory()
         val day = 24 * 60 * minute
@@ -261,6 +262,44 @@ class WatchHistoryTest {
         clock += 20 * day
         assertFalse(h.expire(clock))
         assertEquals(1, h.rows().size)
+    }
+
+    @Test
+    fun atMostTwentyFilmsAndTwentyShows() {
+        val h = WatchHistory()
+        for (i in 1..25) h.play(movie(i, 6 * minute))
+        for (i in 1..22) h.play(episode(i, 1, 1, 6 * minute))
+        val rows = h.rows()
+        assertEquals(20, rows.count { it.kind == Kind.MOVIE })
+        assertEquals(20, rows.count { it.kind == Kind.EPISODE })
+        // The oldest went.
+        assertFalse(rows.any { it.title == "Film 5" })
+        assertTrue(rows.any { it.title == "Film 6" })
+        assertFalse(rows.any { it.title == "Show 2" })
+    }
+
+    @Test
+    fun keptAsTextAndReadBackTheSame() {
+        val h = WatchHistory()
+        h.play(movie(1, 6 * minute).copy(title = "Tabs\tand\nlines \\ and \u001f"))
+        h.play(
+            episode(2, 1, 1, 2 * minute).copy(
+                episodeTitle = "Pilot",
+                resume = WatchHistory.Resume(
+                    uri = "http://provider.example/series/USER/PASS/1.mkv",
+                    type = null,
+                    title = null,
+                    headers = listOf("User-Agent", "TiviMate/5", "Referer", ""),
+                    subtitles = listOf("http://subs.example/a.srt", "http://subs.example/b.srt"),
+                    subtitleNames = listOf("English", null),
+                ),
+            ),
+        )
+        val text = h.encode()
+        val back = WatchHistory.decode(text)
+        assertEquals(h.all, back.all)
+        assertEquals(text, back.encode())
+        assertEquals(h.rows(), back.rows())
     }
 
     @Test

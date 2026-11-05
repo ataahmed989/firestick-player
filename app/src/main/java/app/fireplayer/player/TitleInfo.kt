@@ -21,6 +21,9 @@ data class TitleInfo(
         return copy(title = s.title, searchQuery = s.searchQuery, named = true)
     }
 
+    /** This episode under other numbers: the provider's own, where TiviMate's count its place in the list. */
+    fun withEpisode(season: Int, episode: Int): TitleInfo = copy(subtitle = "S$season E$episode", season = season, episode = episode)
+
     companion object {
         /** The title of a video that came with no name. */
         const val NO_NAME = "Video"

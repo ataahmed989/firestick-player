@@ -8,6 +8,7 @@ import android.os.Parcelable
 import android.util.AtomicFile
 import android.util.Log
 import app.fireplayer.player.NextEpisode
+import app.fireplayer.player.NextPick
 import app.fireplayer.player.TitleInfo
 import app.fireplayer.subs.Tmdb
 import app.fireplayer.titles.TitleBook
@@ -48,8 +49,14 @@ object ContinueWatching {
         /** Real playing time since the player last said. */
         val playedMs: Long,
         val finished: Boolean,
-        /** The episode after it, as the player found it with the provider (see [NextEpisode]): its link and name. */
+        /** Which episode it really is, by the provider's numbers, when the player knows (see [NextPick]). */
+        val real: NextPick.Real? = null,
+        /**
+         * The episode after it, as the player found it with the provider (see [NextEpisode]) or as the real next one in
+         * the list it came with: its link and name, and its real numbers when known.
+         */
         val next: Pair<Uri, String?>?,
+        val nextReal: NextPick.Real? = null,
     )
 
     private const val TAG = "FirePlayerContinue"
@@ -168,9 +175,12 @@ object ContinueWatching {
                 resume = resume,
             )
         }
+        // The provider's numbers for it, not its place in TiviMate's list (which counts copies of an episode too): as the
+        // title server noted them, or as the player knew them when the database couldn't be read just now.
         val noted = if (server != null && id != null && link.kind == StreamLink.Kind.EPISODE) {
-            look { book?.episode(server, id) }
+            look { book?.episode(server, id) } ?: p.real?.let { TitleBook.Episode(id, it.series, it.season, it.episode) }
         } else null
+        val real = noted?.let { NextPick.Real.of(it.series, it.season, it.number) } ?: p.real
         val about = noted?.let { look { book?.about(server!!, TitleBook.Kind.SHOW, it.series) } }
         val englishShow = about?.title?.let { TitleInfo.parse(it, null) }
         // A name that's only the episode's number ("S01E03 - Pilot") says nothing of the show.
@@ -193,8 +203,8 @@ object ContinueWatching {
             videoKey = videoKey,
             title = name,
             year = year,
-            season = noted?.season ?: p.shown.season ?: 0,
-            episode = noted?.number ?: p.shown.episode ?: 0,
+            season = real?.season ?: p.shown.season ?: 0,
+            episode = real?.episode ?: p.shown.episode ?: 0,
             tmdbId = about?.tmdb?.takeIf { it > 0 } ?: cachedTmdb(book, name, year, true),
             positionMs = position,
             durationMs = p.durationMs,
@@ -221,10 +231,11 @@ object ContinueWatching {
             val nextLink = StreamLink.parse(uri.toString())
             val info = TitleInfo.parse(title, uri)
             val numbered = nextLink?.id?.toIntOrNull()?.let { id -> link.proxied?.let { look { book?.episode(it, id) } } }
+                ?.let { NextPick.Real.of(it.series, it.season, it.number) } ?: p.nextReal
             return WatchHistory.Next(
                 videoKey = nextLink?.id?.let { "e|${nextLink.server}|$it" } ?: "u|$uri",
                 season = numbered?.season ?: info.season ?: 0,
-                episode = numbered?.number ?: info.episode ?: 0,
+                episode = numbered?.episode ?: info.episode ?: 0,
                 episodeTitle = null,
                 resume = WatchHistory.Resume(uri = uri.toString(), title = title, headers = resume.headers),
             )

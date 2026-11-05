@@ -61,6 +61,7 @@ import app.fireplayer.player.FpsMeter
 import app.fireplayer.player.FrameRateMatcher
 import app.fireplayer.player.IdleCloseDataSource
 import app.fireplayer.player.NextEpisode
+import app.fireplayer.player.NextPick
 import app.fireplayer.player.PlayerFactory
 import app.fireplayer.player.ServerSwitch
 import app.fireplayer.player.TitleInfo
@@ -120,10 +121,20 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
                 parsed = null
             }
         var englishAsked = false
+        /** For an episode through the title server, which one it really is by the provider's numbers (see [NextPick]). */
+        var real: NextPick.Real? = null
+            set(value) {
+                field = value
+                parsed = null
+            }
+        var realTries = 0
         private var parsed: TitleInfo? = null
         val info: TitleInfo
             get() = parsed ?: english ?: TitleInfo.parse(rawTitle, uri).let { base ->
                 showName?.takeIf { !base.named }?.let { base.withShow(it) } ?: base
+            }.let { base ->
+                // Numbered as the provider numbers it, not by its place in TiviMate's list.
+                real?.takeIf { base.episode != null }?.let { base.withEpisode(it.season, it.episode) } ?: base
             }.also { parsed = it }
         val key: String get() = uri.toString()
     }
@@ -231,6 +242,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
     private var lookupInFlight = false
     // When a look-up was asked for that waits for the film to be well ahead (elapsedRealtime; 0 when none waits).
     private var lookupWantedAt = 0L
+    // The episodes played here, by their real numbers: a copy of one of them further down the list isn't played next.
+    private val watchedReal = HashSet<NextPick.Real>()
     // Times this video's connection was dropped just after the skip preview connected, and when that last happened.
     private var previewCutOffs = 0
     private var lastPreviewCutOffAt = 0L
@@ -707,6 +720,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         refreshLabels()
         // A rebuilt player has no subtitles yet; puts the style example back if its window is open.
         showTextCues()
+        lineUpNext()
+        learnRealEpisodes()
     }
 
     private fun defaultTrackParams(base: TrackSelectionParameters): TrackSelectionParameters {
@@ -808,7 +823,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         val played = takePlayed()
         watchNotedAt = SystemClock.elapsedRealtime()
         if (live) return
-        val next = entries.getOrNull(entries.indexOf(entry) + 1)?.takeIf { it.nextEpisode }
+        // The episode found with the provider, or the one in the list that really is the next (see [lineUpNext]); otherwise
+        // Continue Watching finds it by the title server's numbers itself.
+        val next = entries.getOrNull(entries.indexOf(entry) + 1)?.takeIf { n ->
+            val r = entry.real
+            val nr = n.real
+            n.nextEpisode || (r != null && nr != null && nr.series == r.series && nr > r)
+        }
         ContinueWatching.watched(
             applicationContext,
             ContinueWatching.Played(
@@ -822,7 +843,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
                 durationMs = durationMs.takeIf { it != C.TIME_UNSET } ?: 0L,
                 playedMs = played,
                 finished = finished,
+                real = entry.real,
                 next = next?.let { it.uri to it.rawTitle },
+                nextReal = next?.real,
             ),
         )
     }
@@ -983,6 +1006,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         deviceRetries = 0
         measuredFps = 0f
         fpsMeter.reset()
+        lineUpNext()
         updateTitle()
         refreshLabels()
         // Moving on by itself keeps the picture up, so the episode after this one is looked up from here.
@@ -1361,7 +1385,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
         btnPlay.setOnClickListener { togglePlay() }
         btnRestart.setOnClickListener { player?.seekTo(0); player?.play() }
-        btnNext.setOnClickListener { savePosition(); player?.seekToNextMediaItem(); player?.play() }
+        btnNext.setOnClickListener { lineUpNext(); savePosition(); player?.seekToNextMediaItem(); player?.play() }
         btnSubs.setOnClickListener { openSubtitlesPanel(btnSubs) }
         btnAudio.setOnClickListener { openAudioPanel(btnAudio) }
         focusEffect(btnPlay, 1.08f)
@@ -1477,6 +1501,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
                 entries += entry
                 playing.addMediaItem(mediaItem(entry))
                 updateTitle()
+                learnRealEpisodes()
             }
         }
     }
@@ -1555,6 +1580,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
             prefs.savePosition(it.key, 0L)
             noteWatched(it, p.currentPosition, p.duration, finished = true, live = p.isCurrentMediaItemLive)
         }
+        lineUpNext()
         p.seekToNextMediaItem()
         p.play()
     }
@@ -1618,20 +1644,90 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         val parts = uri.pathSegments.drop(1)
         if (parts.size != 4) return null
         val id = parts[3].substringBeforeLast('.').toIntOrNull() ?: return null
-        val book = titleBook ?: TitleBook(applicationContext).also { titleBook = it }
+        val book = book()
         return when (parts[0].lowercase()) {
             "movie" -> book.title(server, TitleBook.Kind.MOVIE, id)?.let { TitleInfo.parse(it, null) }
             "series" -> {
                 val episode = book.episode(server, id) ?: return null
                 val show = book.title(server, TitleBook.Kind.SHOW, episode.series) ?: return null
-                TitleInfo.parse(show, null).copy(
-                    subtitle = "S${episode.season} E${episode.number}",
-                    season = episode.season,
-                    episode = episode.number,
-                )
+                TitleInfo.parse(show, null).withEpisode(episode.season, episode.number)
             }
             else -> null
         }
+    }
+
+    /** Blocks; on [io]. */
+    private fun book(): TitleBook = titleBook ?: TitleBook(applicationContext).also { titleBook = it }
+
+    /**
+     * Which episode each one in the list really is, by the provider's numbers the title server noted when TiviMate
+     * listed the show (TiviMate numbers them by their place in its list, copies and all), then lines up the real next
+     * one. Episodes that don't come through the title server, or that it hasn't noted, stay unknown.
+     */
+    private fun learnRealEpisodes() {
+        val asking = entries.filter { it.real == null && it.realTries < REAL_TRIES }.mapNotNull { entry ->
+            entry.realTries++
+            val server = TitleProxy.serverIn(entry.uri)
+            val parts = entry.uri.pathSegments.drop(1)
+            val id = parts.getOrNull(3)?.substringBeforeLast('.')?.toIntOrNull()
+            if (server == null || parts.size != 4 || !parts[0].equals("series", true) || id == null) {
+                entry.realTries = REAL_TRIES
+                null
+            } else Triple(entry, server, id)
+        }
+        if (asking.isEmpty()) return
+        io.execute {
+            val found = asking.mapNotNull { (entry, server, id) ->
+                val episode = runCatching { book().episode(server, id) }.getOrNull() ?: return@mapNotNull null
+                NextPick.Real.of(episode.series, episode.season, episode.number)?.let { entry to it }
+            }
+            handler.post {
+                if (isFinishing) return@post
+                // The title server may still be noting the show's episodes TiviMate just listed: asked again in a while.
+                if (found.size < asking.size && asking.any { it.first.realTries < REAL_TRIES }) {
+                    handler.postDelayed({ if (!isFinishing) learnRealEpisodes() }, REAL_AGAIN_MS)
+                }
+                if (found.isEmpty()) return@post
+                found.forEach { (entry, real) -> entry.real = real }
+                lineUpNext()
+                updateTitle()
+            }
+        }
+    }
+
+    /**
+     * Puts the episode to play after this one right after it in the list (see [NextPick]), so Next, the end card,
+     * moving on by itself and Continue Watching all go to the real next episode, not a copy of one already seen; when
+     * only such copies are left, the list ends here. A list whose real numbers aren't known stays just as it came.
+     */
+    private fun lineUpNext() {
+        val p = player
+        if (p != null && p.mediaItemCount != entries.size) return
+        val index = p?.currentMediaItemIndex ?: startIndex
+        val now = entries.getOrNull(index) ?: return
+        now.real?.let { watchedReal += it }
+        val pick = NextPick.after(index, entries.map { it.real }, watchedReal)
+        val changed = when {
+            pick == index + 1 -> false
+            pick == null -> {
+                if (index + 1 < entries.size) {
+                    p?.removeMediaItems(index + 1, entries.size)
+                    entries.subList(index + 1, entries.size).clear()
+                    true
+                } else false
+            }
+            else -> {
+                p?.moveMediaItem(pick, index + 1)
+                entries.add(index + 1, entries.removeAt(pick))
+                true
+            }
+        }
+        // The end card names it by its English name and real number, once known.
+        entries.getOrNull(index + 1)?.let { lookUpEnglishName(it) }
+        if (!changed) return
+        // An end card already up for the one that was next comes back for the new one.
+        if (postPlay.visibility == View.VISIBLE) hidePostPlay()
+        updateTitle()
     }
 
     /** The screen stays on only while the film plays or loads to play; paused, asking or showing an error, it may sleep. */
@@ -2186,7 +2282,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
                 }
                 return true
             }
-            KeyEvent.KEYCODE_MEDIA_NEXT -> { savePosition(); player?.seekToNextMediaItem(); player?.play(); return true }
+            KeyEvent.KEYCODE_MEDIA_NEXT -> { lineUpNext(); savePosition(); player?.seekToNextMediaItem(); player?.play(); return true }
             // The menu button (three lines) goes straight to Settings or Subtitle style, as chosen in Settings;
             // pressed again, it closes the window.
             KeyEvent.KEYCODE_MENU -> {
@@ -2798,6 +2894,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         val YEAR_IN_TITLE = Regex("""\(((?:19|20)\d{2})\)""")
         // The title server notes a show's episodes just after listing them.
         const val EPISODES_NOTED_MS = 1_500L
+        // How often an episode's real numbers are asked for, and how long before asking again.
+        const val REAL_TRIES = 2
+        const val REAL_AGAIN_MS = 20_000L
         // How long the film waits for the TV to change refresh rate.
         const val DISPLAY_SWITCH_PAUSE_MS = 2_000L
         const val POST_PLAY_LEAD_MS = 20_000L

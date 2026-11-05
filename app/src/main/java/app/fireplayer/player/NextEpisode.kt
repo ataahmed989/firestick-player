@@ -125,7 +125,9 @@ class NextEpisode(context: Context, private val headers: Map<String, String>) {
     }
 
     private fun after(link: Link, show: String, episodes: List<Episode>): Next? {
-        val next = episodes.getOrNull(episodes.indexOfFirst { it.id == link.episodeId } + 1)
+        // By the provider's numbers, so a second copy of this episode further down its list isn't taken for the next.
+        val reals = episodes.map { NextPick.Real.of(0, it.season, it.number) }
+        val next = NextPick.after(episodes.indexOfFirst { it.id == link.episodeId }, reals)?.let { episodes[it] }
         if (next == null) {
             status = "This is the last episode your provider has."
             return null
