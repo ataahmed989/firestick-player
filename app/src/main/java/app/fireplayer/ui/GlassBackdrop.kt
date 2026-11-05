@@ -17,6 +17,7 @@ import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
 import androidx.annotation.RequiresApi
+import app.fireplayer.data.Prefs
 import java.util.WeakHashMap
 import kotlin.math.floor
 import kotlin.math.max
@@ -46,6 +47,13 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
 
     private val main = Handler(Looper.getMainLooper())
     private val density = activity.resources.displayMetrics.density
+    private val prefs = Prefs(activity)
+
+    /** Time between copies while the film plays, from Settings (Look, Glass refresh); read each time, so a change applies at once. */
+    private val refreshMs: Long get() = 1_000L / prefs.glassRefreshPerSec.coerceIn(1, 8)
+
+    /** Each new copy fades in before the next one lands. */
+    private val crossfadeMs: Float get() = min(CROSSFADE_MS, refreshMs * 0.7f)
     private val drawables = WeakHashMap<GlassDrawable, Boolean>()
     private val visiting = ArrayList<GlassDrawable>()
     private val location = IntArray(2)
@@ -218,7 +226,7 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
     /** How far the fade to the newest film is, from 0 to 1 (done). */
     fun fadeFraction(): Float {
         if (fadeStart == 0L) return 1f
-        val f = (SystemClock.uptimeMillis() - fadeStart).toFloat() / CROSSFADE_MS
+        val f = (SystemClock.uptimeMillis() - fadeStart).toFloat() / crossfadeMs
         return if (f >= 1f) 1f else max(f, 0f)
     }
 
@@ -232,7 +240,7 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
         if (!started || !copiesPossible()) return
         val now = SystemClock.uptimeMillis()
         if (playing) startTicking(now)
-        if (frames[0] == null || !valid || (playing && now - capturedAt >= REFRESH_MS)) scheduleCapture(0L)
+        if (frames[0] == null || !valid || (playing && now - capturedAt >= refreshMs)) scheduleCapture(0L)
     }
 
     // ---- Scheduling (main thread) ---------------------------------------
@@ -273,10 +281,10 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
             ticking = false
             if (!started || !playing || !copiesPossible() || !anyVisible()) return
             val now = SystemClock.uptimeMillis()
-            val due = if (frames[0] != null && valid) capturedAt + REFRESH_MS else now
+            val due = if (frames[0] != null && valid) capturedAt + refreshMs else now
             val next = if (now >= due - TICK_SLACK_MS) {
                 scheduleCapture(0L)
-                now + REFRESH_MS
+                now + refreshMs
             } else {
                 due
             }
@@ -288,7 +296,7 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
     private fun startTicking(now: Long) {
         if (ticking || !started || !copiesPossible()) return
         ticking = true
-        val due = if (frames[0] != null && valid) capturedAt + REFRESH_MS else now
+        val due = if (frames[0] != null && valid) capturedAt + refreshMs else now
         main.postAtTime(tick, max(due, now))
     }
 
@@ -730,14 +738,12 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
     }
 
     private companion object {
-        /** About four copies a second while the film plays, so the glass keeps up with the picture. */
-        const val REFRESH_MS = 250L
         const val TICK_SLACK_MS = 30L
-        /** Shorter than REFRESH_MS, so each new copy has finished fading in before the next one lands. */
+        /** The longest a new copy takes to fade in (shorter when copies come faster). */
         const val CROSSFADE_MS = 180f
         /** Older than this while playing, a copy isn't shown: it would be another scene. */
         const val STALE_MS = 2_000L
-        const val MIN_GAP_MS = 120L
+        const val MIN_GAP_MS = 100L
         const val CHANGE_DELAY_MS = 150L
         const val HOLD_MS = 1_000L
         const val NO_DATA_RETRY_MS = 500L
