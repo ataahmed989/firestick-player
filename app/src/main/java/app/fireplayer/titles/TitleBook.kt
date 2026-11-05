@@ -67,6 +67,8 @@ class TitleBook(context: Context) : SQLiteOpenHelper(context, "titles.db", null,
         if (oldVersion < 3) createEpisodes(db)
         else if (oldVersion < 4) db.execSQL("ALTER TABLE episode ADD COLUMN extension TEXT")
         if (oldVersion < 4) db.execSQL("ALTER TABLE item ADD COLUMN found INTEGER NOT NULL DEFAULT 0")
+        // A quality tag in round brackets ("- 2021 (4K HDR)") now comes off, so the year is read: asked about again
+        if (oldVersion in 2..4) db.execSQL("UPDATE item SET state = $WAITING, checked = 0 WHERE state = $KEPT")
     }
 
     private fun createEpisodes(db: SQLiteDatabase) = db.execSQL(
@@ -274,7 +276,7 @@ class TitleBook(context: Context) : SQLiteOpenHelper(context, "titles.db", null,
 
     private companion object {
         // 2: TitleMatcher's better rules; 3: episodes and their shows; 4: episodes' file types, and TMDB ids found.
-        const val VERSION = 4
+        const val VERSION = 5
         const val WAITING = 0
         const val RENAMED = 1
         const val KEPT = 2
