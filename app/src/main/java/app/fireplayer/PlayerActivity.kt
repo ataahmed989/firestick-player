@@ -1661,8 +1661,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
 
     /**
      * Which episode each one in the list really is, by the provider's numbers the title server noted when TiviMate
-     * listed the show (TiviMate numbers them by their place in its list, copies and all), then lines up the real next
-     * one. Episodes that don't come through the title server, or that it hasn't noted, stay unknown.
+     * listed the show (TiviMate numbers them by their place in its list, copies and all), then lines up the next one
+     * that isn't a copy. Episodes that don't come through the title server, or that it hasn't noted, stay unknown.
      */
     private fun learnRealEpisodes() {
         val asking = entries.filter { it.real == null && it.realTries < REAL_TRIES }.mapNotNull { entry ->
@@ -1679,7 +1679,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener {
         io.execute {
             val found = asking.mapNotNull { (entry, server, id) ->
                 val episode = runCatching { book().episode(server, id) }.getOrNull() ?: return@mapNotNull null
-                NextPick.Real.of(episode.series, episode.season, episode.number)?.let { entry to it }
+                NextPick.Real.of(episode.series, episode.season, episode.number, entry.rawTitle)?.let { entry to it }
             }
             handler.post {
                 if (isFinishing) return@post

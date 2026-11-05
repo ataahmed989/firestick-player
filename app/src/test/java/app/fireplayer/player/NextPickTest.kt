@@ -49,12 +49,37 @@ class NextPickTest {
     }
 
     @Test
-    fun theRealNextEvenWhenTheListHasItLaterOn() {
+    fun theListKeepsItsOwnOrderPastCopies() {
         // The next season's first after the last of this one, past a copy.
         val reals = listOf(Real(7, 1, 10), Real(7, 1, 10), Real(7, 2, 1))
         assertEquals(2, NextPick.after(0, reals))
-        // Out of order: the real next first; what's passed over stays to come.
-        assertEquals(2, NextPick.after(0, s1(6, 8, 7)))
+        // Without copies, the list's order whatever the numbers: a special in between, a list out of order, a gap.
+        val special = listOf(Real(7, 1, 1), Real(7, 1, 2), Real(7, 0, 1), Real(7, 1, 3))
+        assertEquals(listOf(1, 2, 3, null), allAfter(special))
+        assertEquals(listOf(1, 2, null), allAfter(s1(6, 8, 7)))
+        assertEquals(listOf(1, 2, null), allAfter(s1(5, 7, 9)))
+        // The same numbers in another season aren't copies.
+        val seasons = listOf(Real(7, 1, 1), Real(7, 1, 2), Real(7, 2, 1), Real(7, 2, 2))
+        assertEquals(listOf(1, 2, 3, null), allAfter(seasons))
+        assertEquals(3, NextPick.after(2, seasons, watched = listOf(Real(7, 1, 1), Real(7, 1, 2))))
+    }
+
+    @Test
+    fun twoPartsNumberedTheSameAreTwoEpisodes() {
+        val names = listOf("Show S01E05", "Show S01E06 The End Part 1", "Show S01E07 The End Part 2", "Show S01E08 The End (Pt. 2)")
+        val reals = listOf(5, 6, 6, 6).zip(names) { e, n -> Real.of(7, 1, e, n) }
+        // Part 1, then part 2; the copy of part 2 is passed over.
+        assertEquals(listOf(1, 2, null, null), allAfter(reals))
+        assertEquals(Real(7, 1, 6, 2), Real.of(7, 1, 6, "Part II"))
+        assertEquals(Real(7, 1, 6, 0), Real.of(7, 1, 6, "Partners"))
+        assertEquals(Real(7, 1, 6, 0), Real.of(7, 1, 6, null))
+    }
+
+    @Test
+    fun numbersThatAreAllTheSameSayNothing() {
+        // A provider that numbers every episode of a show alike: the list plays in its order.
+        assertEquals(listOf(1, 2, 3, null), allAfter(s1(1, 1, 1, 1)))
+        assertEquals(listOf(1, 2, null), allAfter(s1(1, null, 1)))
     }
 
     @Test
