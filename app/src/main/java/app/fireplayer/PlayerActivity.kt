@@ -1481,6 +1481,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             // The count starts with the card, however late in the credits that is.
             postPlayFrom = position
             postPlayCountMs = minOf(POST_PLAY_COUNT_MS, duration - position).coerceAtLeast(1L)
+            countShown = 0f
+            countShownAt = 0L
             postPlayGo.counting = true
             postPlay.alpha = 0f
             postPlay.visibility = View.VISIBLE
@@ -1492,10 +1494,27 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (position >= postPlayFrom + postPlayCountMs && p.playWhenReady) playNextEpisode()
     }
 
-    /** How far the end card's count has got, from where the episode is right now. */
+    // The count as last drawn, and when: the fill glides on its own clock between the player's position updates.
+    private var countShown = 0f
+    private var countShownAt = 0L
+
+    /**
+     * How far the end card's count has got. While playing, it moves at the film's own pace from where it was last
+     * drawn and is pulled gently towards where the player says it is, never backwards: the player's position comes in
+     * small uneven steps, which made the fill shudder. Paused, it shows the player's position exactly.
+     */
     private fun postPlayProgress(): Float {
         val p = player ?: return 0f
-        return (p.currentPosition - postPlayFrom).toFloat() / postPlayCountMs
+        val actual = ((p.currentPosition - postPlayFrom).toFloat() / postPlayCountMs).coerceIn(0f, 1f)
+        val now = SystemClock.uptimeMillis()
+        if (!p.isPlaying || countShownAt == 0L || now - countShownAt > 500) {
+            countShown = actual
+        } else {
+            val glided = countShown + (now - countShownAt) * p.playbackParameters.speed / postPlayCountMs
+            countShown = maxOf(countShown, glided + (actual - glided) * 0.15f).coerceIn(0f, 1f)
+        }
+        countShownAt = now
+        return countShown
     }
 
     private fun hidePostPlay() {

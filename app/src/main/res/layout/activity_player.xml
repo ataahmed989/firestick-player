@@ -487,15 +487,18 @@
             android:textColor="@color/text"
             android:textSize="14sp" />
 
+        <!-- Both buttons as wide as the wider one (Watch credits), so the play button isn't a squeezed stub. -->
         <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:clipChildren="false"
+            android:measureWithLargestChild="true"
             android:orientation="horizontal">
 
             <app.fireplayer.ui.CountdownPill
                 android:id="@+id/post_play_credits"
-                android:layout_width="wrap_content"
+                android:layout_width="0dp"
+                android:layout_weight="1"
                 android:layout_height="wrap_content"
                 android:fontFamily="@font/figtree_700"
                 android:paddingStart="22dp"
@@ -507,7 +510,8 @@
 
             <app.fireplayer.ui.CountdownPill
                 android:id="@+id/post_play_go"
-                android:layout_width="wrap_content"
+                android:layout_width="0dp"
+                android:layout_weight="1"
                 android:layout_height="wrap_content"
                 android:layout_marginStart="14dp"
                 android:contentDescription="Next episode"
