@@ -1328,19 +1328,31 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         btnSubs.setOnClickListener { openSubtitlesPanel(btnSubs) }
         btnAudio.setOnClickListener { openAudioPanel(btnAudio) }
         focusEffect(btnPlay, 1.08f)
-        focusEffect(btnRestart, 1.08f)
-        focusEffect(btnNext, 1.08f)
+        focusEffect(btnRestart, 1.08f, findViewById(R.id.restart_label))
+        focusEffect(btnNext, 1.08f, findViewById(R.id.next_label))
         focusEffect(btnSubs, 1.04f)
         focusEffect(btnAudio, 1.04f)
         seekBar.onThumbMoved = { placeBubble() }
         timeRemaining.gravity = Gravity.END or Gravity.CENTER_VERTICAL
     }
 
-    /** Selected buttons grow slightly, so moving around feels smooth rather than jumpy. */
-    private fun focusEffect(button: View, scale: Float) {
+    /**
+     * Selected buttons grow slightly, so moving around feels smooth rather than jumpy. A round button's [label] fades in
+     * under it only while it's selected, and grows with it from the button's middle, so it keeps its 4dp gap below the
+     * circle the way the icon row's names do (they grow with their whole item).
+     */
+    private fun focusEffect(button: View, scale: Float, label: View? = null) {
         button.setOnFocusChangeListener { v, hasFocus ->
             val s = if (hasFocus) scale else 1f
             v.animate().scaleX(s).scaleY(s).setDuration(140).start()
+            if (label != null) {
+                label.pivotX = v.left + v.width / 2f - label.left
+                label.pivotY = v.top + v.height / 2f - label.top
+                if (hasFocus) label.visibility = View.VISIBLE
+                label.animate().alpha(if (hasFocus) 1f else 0f).scaleX(s).scaleY(s).setDuration(140)
+                    .withEndAction { if (!v.isFocused) label.visibility = View.INVISIBLE }
+                    .start()
+            }
         }
     }
 

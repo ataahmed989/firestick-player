@@ -72,8 +72,9 @@ class CountdownPill @JvmOverloads constructor(context: Context, attrs: Attribute
     }
 
     /**
-     * A button that is only an icon (the play button) sits its icon in the middle of the pill, rather than at the
-     * left edge where a label would follow it. Only the drawn position moves; the measured size stays the icon's.
+     * A button that is only an icon sits its icon in the middle of the pill, rather than at the left edge where a
+     * label would follow it. Only the drawn position moves; the measured size stays the icon's. With words (Next
+     * episode has them), the icon stays in front of them.
      */
     private fun centerLoneIcon() {
         if (!text.isNullOrEmpty()) return
