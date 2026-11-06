@@ -27,6 +27,9 @@
     <color name="badge_off_rim">#1FFFFFFF</color>
     <color name="badge_off_focused">#FF5F656B</color>
     <color name="badge_off_fill_focused">#0F000000</color>
+    <!-- Without the glass look, an "Off" setting's word (On uses badge_on). -->
+    <color name="value_off">#FF666C73</color>
+    <color name="value_off_focused">#FF6E747A</color>
     <color name="badge_problem">#FFFF8A80</color>
     <color name="badge_problem_fill">#24FF5A4F</color>
     <color name="badge_problem_rim">#40FF5A4F</color>

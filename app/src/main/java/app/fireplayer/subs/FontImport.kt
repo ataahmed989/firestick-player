@@ -16,6 +16,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.res.ResourcesCompat
 import app.fireplayer.R
 import app.fireplayer.data.Prefs
+import app.fireplayer.ui.FireDialog
 import app.fireplayer.ui.Rows
 import java.io.ByteArrayInputStream
 import java.io.File
@@ -86,6 +87,8 @@ class FontImport(private val activity: Activity, private val prefs: Prefs, priva
             attributes = attributes.apply { width = rows.dp(420) }
         }
         dialog.setOnDismissListener { stop() }
+        // Opened from Settings: the menu button closes it and the settings window.
+        dialog.setOnKeyListener { _, keyCode, event -> FireDialog.passMenuOn(activity, dialog, keyCode, event) }
         dialog.show()
         done.requestFocus()
 

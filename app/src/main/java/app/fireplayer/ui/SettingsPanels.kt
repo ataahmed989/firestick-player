@@ -493,6 +493,7 @@ class SettingsPanels(
                     ),
                     // Starts on the safe answer, so a double press doesn't delete.
                     focus = 1,
+                    fromPanel = true,
                 )
             }
         }

@@ -200,6 +200,15 @@ class Rows(private val context: Context) {
                 isDuplicateParentStateEnabled = true
                 layoutParams = LinearLayout.LayoutParams(dp(34), dp(20)).apply { marginStart = dp(8) }
             })
+        } else if (value != null && asSwitch && (value == "On" || value == "Off")) {
+            // Without the glass look: the word, On in blue and Off in a dull dark gray, each darker on the white
+            // selected row so it stays readable there.
+            row.addView(text(value).apply {
+                tag = KEEP_COLORS
+                // Before it's added, so the row passes its state changes on.
+                isDuplicateParentStateEnabled = true
+                setTextColor(ContextCompat.getColorStateList(context, if (value == "On") R.color.sel_value_on else R.color.sel_value_off))
+            })
         } else if (value != null) {
             row.addView(text(value).apply { alpha = 0.85f; maxWidth = dp(118) })
         }

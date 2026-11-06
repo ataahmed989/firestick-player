@@ -34,6 +34,8 @@ class HomeActivity : AppCompatActivity() {
     private lateinit var settingsPanels: SettingsPanels
     private lateinit var panel: SidePanel
     private lateinit var list: LinearLayout
+    private lateinit var styleRow: View
+    private lateinit var settingsRow: View
     private var consumeBackUp = false
     /** The look the rows were given, so a switch made in the player meanwhile shows here too. */
     private var lookOn = false
@@ -49,12 +51,12 @@ class HomeActivity : AppCompatActivity() {
         list = findViewById(R.id.home_list)
 
         val first = addRow("Open a link", R.drawable.ic_link) { openLink() }
-        addRow("Subtitle style", R.drawable.ic_sub_style) { from ->
+        styleRow = addRow("Subtitle style", R.drawable.ic_sub_style) { from ->
             openPanel("Subtitle style", from) {
                 settingsPanels.renderSubtitleStyle(this, onStyleChanged = {}, onAssChanged = {})
             }
         }
-        addRow("Settings", R.drawable.ic_settings) { from ->
+        settingsRow = addRow("Settings", R.drawable.ic_settings) { from ->
             openPanel("Settings", from) { settingsPanels.renderSettings(this) }
         }
         first.requestFocus()
@@ -117,6 +119,15 @@ class HomeActivity : AppCompatActivity() {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        // The menu button (three lines) opens Settings, or Subtitle style as chosen in Settings, as in the player;
+        // pressed again, it closes the window.
+        if (event.keyCode == KeyEvent.KEYCODE_MENU && ::settingsRow.isInitialized) {
+            if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                if (panel.isOpen) panel.close()
+                else (if (Prefs(this).menuOpensStyle) styleRow else settingsRow).performClick()
+            }
+            return true
+        }
         if (event.keyCode == KeyEvent.KEYCODE_BACK) {
             if (event.action == KeyEvent.ACTION_DOWN && panel.isOpen) {
                 consumeBackUp = true
