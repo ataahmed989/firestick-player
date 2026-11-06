@@ -1448,8 +1448,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         focusEffect(btnPlay, 1.08f)
         focusEffect(btnRestart, 1.08f, findViewById(R.id.restart_label))
         focusEffect(btnNext, 1.08f, findViewById(R.id.next_label))
-        focusEffect(btnSubs, 1.04f)
-        focusEffect(btnAudio, 1.04f)
+        focusEffect(btnSubs, 1.04f, findViewById(R.id.subs_name))
+        focusEffect(btnAudio, 1.04f, findViewById(R.id.audio_name))
         seekBar.onThumbMoved = { placeBubble() }
         timeRemaining.gravity = Gravity.END or Gravity.CENTER_VERTICAL
     }

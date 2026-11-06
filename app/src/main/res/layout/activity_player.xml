@@ -319,11 +319,19 @@
                     android:layout_height="1dp"
                     android:layout_weight="1" />
 
+                <!-- The pills' names show while selected, as under the round buttons. -->
+                <LinearLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:clipChildren="false"
+                    android:gravity="center_horizontal"
+                    android:orientation="vertical">
+
                 <LinearLayout
                     android:id="@+id/btn_subs"
                     android:layout_width="wrap_content"
                     android:layout_height="39dp"
-                    android:layout_marginTop="6dp"
                     android:background="@drawable/bg_pill"
                     android:focusable="true"
                     android:gravity="center_vertical"
@@ -350,12 +358,25 @@
                         tools:text="English" />
                 </LinearLayout>
 
+                    <TextView
+                        android:id="@+id/subs_name"
+                        style="@style/ButtonLabel"
+                        android:text="Subtitles" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="9dp"
+                    android:layout_marginTop="6dp"
+                    android:clipChildren="false"
+                    android:gravity="center_horizontal"
+                    android:orientation="vertical">
+
                 <LinearLayout
                     android:id="@+id/btn_audio"
                     android:layout_width="wrap_content"
                     android:layout_height="39dp"
-                    android:layout_marginStart="9dp"
-                    android:layout_marginTop="6dp"
                     android:background="@drawable/bg_pill"
                     android:focusable="true"
                     android:gravity="center_vertical"
@@ -380,6 +401,12 @@
                         android:textColor="@color/sel_on_button"
                         android:textSize="13sp"
                         tools:text="English" />
+                </LinearLayout>
+
+                    <TextView
+                        android:id="@+id/audio_name"
+                        style="@style/ButtonLabel"
+                        android:text="Audio" />
                 </LinearLayout>
             </LinearLayout>
 
