@@ -63,6 +63,7 @@ kotlin {
 
 dependencies {
     implementation(libs.androidx.core.ktx)
+    implementation(libs.zxing.core)
     implementation(libs.androidx.appcompat)
     implementation(libs.media3.exoplayer)
     implementation(libs.media3.exoplayer.hls)

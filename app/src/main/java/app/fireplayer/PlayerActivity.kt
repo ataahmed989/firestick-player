@@ -58,6 +58,7 @@ import androidx.media3.ui.SubtitleView
 import app.fireplayer.data.Prefs
 import app.fireplayer.history.ContinueWatching
 import app.fireplayer.player.BufferWait
+import app.fireplayer.player.DecoderCheck
 import app.fireplayer.player.Delays
 import app.fireplayer.player.DisplaySwitch
 import app.fireplayer.player.FpsMeter
@@ -324,6 +325,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private var waitingSince = 0L
     private var roundStartedAt = 0L
     private var retryPending = false
+    /** Cancels the wait for the decoder list (see [DecoderCheck]); null when not waiting. */
+    private var decoderWait: (() -> Unit)? = null
+    /** The decoder service is stuck, so no player is built and the error says to restart the TV. */
+    private var decoderStuck = false
     private val retryRunnable = object : Runnable {
         override fun run() {
             // A refresh-rate switch that began after this was scheduled (the next video's) has to settle first.
@@ -404,6 +409,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             if (old.isTaskRoot && old.taskId != taskId) old.finishAndRemoveTask() else old.finish()
         }
         shown = WeakReference(this)
+        // Usually answered in a tenth of a second, before the player is built.
+        DecoderCheck.ask()
         setContentView(R.layout.activity_player)
         prefs = Prefs(this)
         presets = SubtitlePresets(prefs)
@@ -487,6 +494,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     override fun onStop() {
         super.onStop()
+        decoderWait?.invoke()
+        decoderWait = null
         handler.removeCallbacks(playingBeat)
         TitleService.playing(this, false)
         commitSeek()
@@ -712,6 +721,22 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     // Player
 
     private fun initPlayer() {
+        // Every way of building a player comes here: none is built until the decoder list is in, or it would wait on
+        // a stuck decoder service forever.
+        if (!DecoderCheck.answered) {
+            if (decoderWait == null) {
+                buffering.visibility = View.VISIBLE
+                decoderWait = DecoderCheck.whenAnswered(DECODER_STUCK_MS, ready = {
+                    decoderWait = null
+                    if (decoderStuck) {
+                        decoderStuck = false
+                        errorBox.visibility = View.GONE
+                    }
+                    if (player == null && !isFinishing && !isDestroyed) initPlayer()
+                }, stuck = { showDecoderStuck() })
+            }
+            return
+        }
         val vsync = VsyncFix(this)
         val built = PlayerFactory.build(
             context = this,
@@ -847,6 +872,19 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private fun rebuildPlayer() {
         releasePlayer()
         initPlayer()
+    }
+
+    /** The decoder service hasn't answered: say so once, instead of a spinner that never ends. */
+    private fun showDecoderStuck() {
+        if (decoderStuck || isFinishing) return
+        decoderStuck = true
+        hideBuffering()
+        updateTitle()
+        errorText.text = "Fire TV's video decoder is stuck, so no app can play video right now."
+        errorHint.text = "Restart the Fire TV: Settings > My Fire TV > Restart (or hold Select and Play/Pause for 5 seconds)."
+        errorBox.visibility = View.VISIBLE
+        hideControls()
+        updateKeepScreenOn()
     }
 
     private fun askToResume(positionMs: Long) {
@@ -2148,6 +2186,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val width = (screenSubtitles.width - screenSubtitles.paddingLeft - screenSubtitles.paddingRight - inset).coerceAtLeast(1)
         var rows = 0
         for (cue in cues) {
+            // Lines the file places elsewhere (Position "As in the file") don't stack at the bottom.
+            if (cue.line != Cue.DIMEN_UNSET) continue
             val text = cue.text ?: continue
             rows += if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 StaticLayout.Builder.obtain(text, 0, text.length, paint, width).setIncludePad(true).build().lineCount
@@ -2526,7 +2566,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // OK on the error tries again, unless the controls are up and another button is chosen (Settings, Subtitles).
         if (errorBox.visibility == View.VISIBLE && isOk && (!controlsShown || currentFocus === btnPlay)) {
             // Nothing to try again with a link of a kind the player can't open: OK leaves, as Back does.
-            if (cannotOpen) {
+            if (cannotOpen || decoderStuck) {
                 if (event.repeatCount == 0) finishWithResult()
                 return true
             }
@@ -3128,6 +3168,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         const val REAL_AGAIN_MS = 20_000L
         // How long the film waits for the TV to change refresh rate.
         const val DISPLAY_SWITCH_PAUSE_MS = 2_000L
+        /** How long the decoder list may take before the player says the decoder service is stuck. */
+        private const val DECODER_STUCK_MS = 10_000L
         const val POST_PLAY_LEAD_MS = 20_000L
         // A next-episode look-up starts with this much of the film loaded, after this long at most, and no later than
         // this long before the end card.

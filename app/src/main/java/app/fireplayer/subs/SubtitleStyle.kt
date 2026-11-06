@@ -38,6 +38,11 @@ data class SubtitleStyle(
     val shadow: ShadowStrength = ShadowStrength.MEDIUM,
     /** Only used with the outline edge. */
     val outlineColor: Int = Color.BLACK,
+    /**
+     * Position "As in the file": lines the subtitle file places elsewhere (at the top, on one side, at a set spot)
+     * stay there in this style's look; ordinary bottom lines still sit at [bottom].
+     */
+    val filePosition: Boolean = false,
 ) {
     /** Same look, whatever it's called. */
     fun looksLike(other: SubtitleStyle) = copy(name = "") == other.copy(name = "")
@@ -55,6 +60,7 @@ data class SubtitleStyle(
         .put("boxRounded", boxRounded)
         .put("shadow", shadow.name)
         .put("outlineColor", outlineColor)
+        .put("filePosition", filePosition)
 
     companion object {
         const val NETFLIX_NAME = "Netflix"
@@ -104,6 +110,7 @@ data class SubtitleStyle(
             shadow = runCatching { ShadowStrength.valueOf(o.optString("shadow")) }
                 .getOrDefault(ShadowStrength.MEDIUM),
             outlineColor = o.optInt("outlineColor", Color.BLACK),
+            filePosition = o.optBoolean("filePosition", false),
         )
 
         fun colorLabel(color: Int): String =

@@ -448,8 +448,11 @@ class SettingsPanels(
             }.indent()
         }
         val bottoms = SubtitleStyle.BOTTOMS
-        choice("Position", bottoms.map { positionLabel(it) }, bottoms.indexOf(nearest(bottoms, style.bottom))) { i ->
-            presets.editActive { it.copy(bottom = bottoms[i]) }; onStyleChanged()
+        // The last choice keeps the file's own placement for lines it puts elsewhere ("As in the file").
+        val positionNow = if (style.filePosition) bottoms.size else bottoms.indexOf(nearest(bottoms, style.bottom))
+        choice("Position", bottoms.map { positionLabel(it) } + FILE_POSITION, positionNow) { i ->
+            presets.editActive { if (i == bottoms.size) it.copy(filePosition = true) else it.copy(bottom = bottoms[i], filePosition = false) }
+            onStyleChanged()
         }
         val fonts = SubtitleFont.entries
         choice("Font", fonts.map { fontLabel(it) }, fonts.indexOf(style.font)) { i ->
@@ -528,6 +531,7 @@ class SettingsPanels(
     }
 
     companion object {
+        const val FILE_POSITION = "As in the file"
         fun onOff(on: Boolean) = if (on) "On" else "Off"
 
         private const val ACTIVE = "Active"
