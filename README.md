@@ -29,7 +29,7 @@ TiviMate → Settings → Playback → External player → **FirePlayer**. Then 
 FirePlayer can give TiviMate its films and shows under their English names from TMDB, as **The Matrix (1999) [4K]**,
 and TiviMate's search then finds them by those names.
 
-1. FirePlayer → Settings → Online subtitles → add your **TMDB API key** (or read access token).
+1. FirePlayer → Settings → Online subtitles and TMDB API → add your **TMDB API key** (or read access token).
 2. In TiviMate: Settings → Playlists → a playlist → **Xtream Codes parameters** → **Server address**. Put
    `http://127.0.0.1:8000/` in front of what's there, so `http://proxpanel.fans:80` becomes
    `http://127.0.0.1:8000/proxpanel.fans:80`, then **Apply changes**. A new playlist is added the same way.

@@ -184,7 +184,7 @@ class SettingsPanels(
             }
         }
 
-        header("Online subtitles")
+        header("Online subtitles and TMDB API")
         keyRow("OpenSubtitles API key", KeyStore.Key.OPENSUBTITLES, whereFrom = "From opensubtitles.com › API consumers")
         // Optional: signing in raises how many subtitles can be downloaded a day.
         keyRow("OpenSubtitles username", KeyStore.Key.OPENSUBTITLES_USER, whereFrom = OPTIONAL_HINT)
@@ -215,6 +215,14 @@ class SettingsPanels(
             }
         }
         tmdbProblem?.let { message("$it.") }
+        // TMDB asks apps that use its API to say so.
+        view(TextView(activity).apply {
+            text = TMDB_NOTICE
+            setTextColor(color(R.color.text_muted))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+            setLineSpacing(2f * density, 1f)
+            alpha = 0.8f
+        }, top = 3, bottom = 4)
 
         header("App")
         row("Check for updates", updateStatus ?: "Version ${updater.installedName}") {
@@ -270,7 +278,7 @@ class SettingsPanels(
             refresh()
         }
         when {
-            !prefs.keys.isSet(KeyStore.Key.TMDB) -> message("Needs a TMDB API key (Online subtitles).")
+            !prefs.keys.isSet(KeyStore.Key.TMDB) -> message("Needs a TMDB API key (Online subtitles and TMDB API).")
             checkNote != null -> message(checkNote!!)
         }
     }
@@ -322,7 +330,7 @@ class SettingsPanels(
         return view
     }
 
-    /** What TiviMate needs to be set up: the server address to give each playlist; and TMDB's notice. */
+    /** What TiviMate needs to be set up: the server address to give each playlist. */
     private fun titleDetails(): View {
         val muted = color(R.color.text_muted)
         fun line(value: CharSequence, sp: Float, color: Int, font: Int? = null) = TextView(activity).apply {
@@ -349,8 +357,6 @@ class SettingsPanels(
             setPadding(dp(12), dp(9), dp(12), dp(10))
             addView(line("Server address for each TiviMate playlist:", 11.5f, muted), params(0))
             addView(line(address, 13f, color(R.color.text), R.font.figtree_700), params(3))
-            // TMDB asks apps that use its API to say so.
-            addView(line(TMDB_NOTICE, 10.5f, muted).apply { alpha = 0.8f }, params(9))
         }
     }
 
