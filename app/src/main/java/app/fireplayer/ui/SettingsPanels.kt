@@ -1,8 +1,23 @@
 package app.fireplayer.ui
 
 import android.app.Activity
+import android.graphics.drawable.GradientDrawable
+import android.os.Handler
+import android.os.Looper
+import android.os.Process
+import android.os.SystemClock
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.style.ForegroundColorSpan
+import android.util.TypedValue
 import android.view.View
 import android.view.ViewGroup
+import android.widget.LinearLayout
+import android.widget.TextView
+import androidx.core.content.ContextCompat
+import androidx.core.content.res.ResourcesCompat
+import app.fireplayer.R
+import app.fireplayer.data.KeyStore
 import app.fireplayer.data.Prefs
 import app.fireplayer.player.NextEpisode
 import app.fireplayer.subs.FontImport
@@ -17,14 +32,20 @@ import app.fireplayer.titles.TitleProxy
 import app.fireplayer.titles.TitleService
 import app.fireplayer.update.Updater
 import java.util.Locale
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import kotlin.concurrent.thread
 import kotlin.math.roundToInt
 
-/** The Settings and Subtitle style windows, shared by the player and the home screen. */
+/**
+ * The Settings and Subtitle style windows, shared by the player and the home screen. [inPlayer]: opened over a film,
+ * while which TiviMate's titles wait.
+ */
 class SettingsPanels(
     private val activity: Activity,
     private val prefs: Prefs,
     private val presets: SubtitlePresets,
+    private val inPlayer: Boolean = false,
 ) {
 
     private val updater = Updater(activity)
@@ -32,9 +53,31 @@ class SettingsPanels(
     // How the last TMDB key check went: the row's value, and what TMDB said when it said no.
     private var tmdbStatus: String? = null
     private var tmdbProblem: String? = null
-    // How far TiviMate's titles are, read when Settings opens.
-    private var titlesProgress: List<TitleBook.Progress>? = null
-    private var titlesAsked = false
+
+    // TiviMate titles, for one opening of the window: whether the set-up details are shown (hidden at first), and
+    // what "Check playlists now" said.
+    private var titlesSession = -1
+    private var detailsShown = false
+    private var arrowTurned = false
+    private var checkValue: String? = null
+    private var checkNote: String? = null
+
+    // TiviMate titles' counts, read off the main thread every few seconds while they're on screen. The book is opened
+    // and closed on the reader's thread only.
+    private val main = Handler(Looper.getMainLooper())
+    private val reader: ExecutorService by lazy {
+        Executors.newSingleThreadExecutor { r ->
+            // Below the film's own threads, when Settings is open over one.
+            Thread({ Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND); r.run() }, "FirePlayerTitles")
+                .apply { isDaemon = true }
+        }
+    }
+    private var book: TitleBook? = null
+    private var titleCounts: List<TitleBook.Progress>? = null
+    private var countsReadAt = 0L
+    private var reading = false
+    private var statusOnScreen: TitleStatusView? = null
+    private var statusViews = 0
 
     /** Called when the glass look is turned on or off, so the screen behind can restyle its buttons. */
     var onLookChanged: () -> Unit = {}
@@ -45,13 +88,18 @@ class SettingsPanels(
     /** Languages offered as defaults; English first. */
     private val languages = listOf("en", "ar", "es", "fr", "de", "it", "pt", "hi", "ur", "tr", "ja", "ko", "zh")
 
-    private fun count(n: Int) = String.format(Locale.US, "%,d", n)
+    private val density = activity.resources.displayMetrics.density
+
+    private fun dp(value: Int) = (value * density).toInt()
+
+    private fun color(res: Int) = ContextCompat.getColor(activity, res)
 
     fun languageName(code: String): String =
         if (code.isEmpty()) "Off" else Locale(code).getDisplayLanguage(Locale.ENGLISH)
 
+    /** The font sent from the phone, by its name, or null while the built-in one is used. */
     private val importedFontName: String?
-        get() = prefs.customFontName.takeIf { it.isNotEmpty() && FontImport.customFontFile(activity).exists() }
+        get() = if (FontImport.customFontFile(activity).exists()) prefs.customFontName.ifEmpty { "Font from your phone" } else null
 
     fun renderSettings(panel: SidePanel) = with(panel) {
         header("Remote")
@@ -90,7 +138,7 @@ class SettingsPanels(
         row("Preview while skipping", onOff(prefs.seekPreviews)) {
             prefs.seekPreviews = !prefs.seekPreviews; refresh()
         }
-        if (prefs.seekPreviews) message("Uses a second connection to the server. Turn it off if your IPTV plan allows only one.")
+        if (prefs.seekPreviews) message("Uses a second connection to the server.")
 
         header("Defaults")
         val subLanguages = languages + ""
@@ -117,47 +165,18 @@ class SettingsPanels(
             prefs.passthrough = !prefs.passthrough; refresh()
         }
 
-        header("TiviMate titles")
-        message("Films and shows in TiviMate under their English names from TMDB, as \"The Matrix (1999) [4K]\", and found by those names in TiviMate's search.")
-        row("English titles in TiviMate", onOff(prefs.tivimateTitles)) {
-            prefs.tivimateTitles = !prefs.tivimateTitles
-            TitleService.start(activity)
-            refresh()
-        }
-        if (prefs.tivimateTitles) {
-            if (prefs.tmdbApiKey.isEmpty()) message("Add a TMDB key (under Online subtitles) for the names to be looked up.")
-            message(
-                "In TiviMate: Settings, Playlists, a playlist, Xtream Codes parameters. Put http://127.0.0.1:${TitleProxy.PORT}/ " +
-                    "in front of the server address: ${TitleProxy.addressFor("proxpanel.fans:80")}.",
-            )
-            titlesProgress?.forEach { p ->
-                message(
-                    "${p.server}: ${count(p.renamed)} renamed, ${count(p.kept)} kept as they are" +
-                        if (p.waiting > 0) ", ${count(p.waiting)} still to look up" else "",
-                )
-            }
-            if (!titlesAsked) {
-                titlesAsked = true
-                thread(name = "FirePlayerTitles", isDaemon = true) {
-                    val progress = runCatching { TitleBook(activity).use { it.progress() } }.getOrNull()
-                    activity.runOnUiThread {
-                        titlesProgress = progress
-                        if (isOpen && !progress.isNullOrEmpty()) refresh()
-                    }
-                }
-            }
-        }
+        renderTitles(this)
 
         header("Subtitle font")
-        message(importedFontName?.let { "Using $it from your phone." } ?: "Using the built-in font.")
-        row("Send a font from your phone") {
+        val fontSet = importedFontName != null
+        badgeRow("Font from your phone", activeOrNot(fontSet), if (fontSet) Rows.Badge.ACTIVE else Rows.Badge.INACTIVE) {
             FontImport(activity, prefs) {
                 onFontChanged()
                 if (isOpen) refresh()
             }.show()
         }
-        if (importedFontName != null) {
-            row("Go back to the built-in font") {
+        if (fontSet) {
+            row("Use the built-in font") {
                 FontImport.customFontFile(activity).delete()
                 prefs.customFontName = ""
                 onFontChanged()
@@ -166,48 +185,36 @@ class SettingsPanels(
         }
 
         header("Online subtitles")
-        message("Free key from opensubtitles.com (Profile, API consumers).")
-        row("OpenSubtitles API key", if (prefs.openSubtitlesApiKey.isEmpty()) "Add" else "Saved") {
-            SidePanel.prompt(activity, "OpenSubtitles API key", prefs.openSubtitlesApiKey) {
-                prefs.openSubtitlesApiKey = it; refresh()
-            }
+        keyRow("OpenSubtitles API key", KeyStore.Key.OPENSUBTITLES, whereFrom = "From opensubtitles.com › API consumers")
+        // Optional: signing in raises how many subtitles can be downloaded a day.
+        keyRow("OpenSubtitles username", KeyStore.Key.OPENSUBTITLES_USER, whereFrom = OPTIONAL_HINT)
+        keyRow("OpenSubtitles password", KeyStore.Key.OPENSUBTITLES_PASSWORD, whereFrom = OPTIONAL_HINT, password = true)
+        val tmdbBadge = when (tmdbStatus) {
+            CHECKING -> CHECKING to Rows.Badge.BUSY
+            NOT_ACCEPTED -> NOT_ACCEPTED to Rows.Badge.PROBLEM
+            else -> activeOrNot(prefs.keys.isSet(KeyStore.Key.TMDB)).let { it to if (it == ACTIVE) Rows.Badge.ACTIVE else Rows.Badge.INACTIVE }
         }
-        row("OpenSubtitles username", prefs.openSubtitlesUser.ifEmpty { "Optional" }) {
-            SidePanel.prompt(activity, "OpenSubtitles username", prefs.openSubtitlesUser) {
-                prefs.openSubtitlesUser = it; refresh()
-            }
-        }
-        row("OpenSubtitles password", if (prefs.openSubtitlesPassword.isEmpty()) "Optional" else "Saved") {
-            SidePanel.prompt(activity, "OpenSubtitles password", "", password = true) {
-                prefs.openSubtitlesPassword = it; refresh()
-            }
-        }
-        message("Free key from themoviedb.org (Settings, API). TiviMate's films and shows get their English names with it, and the subtitle search finds the exact film or episode.")
-        row("TMDB API key", tmdbStatus ?: if (prefs.tmdbApiKey.isEmpty()) "Not set: needed for TiviMate names" else "Active") {
-            SidePanel.prompt(activity, "TMDB API key or read access token", prefs.tmdbApiKey) { key ->
-                // An empty box confirmed by mistake never takes a saved key away
-                if (key.isBlank() && prefs.tmdbApiKey.isNotEmpty()) return@prompt
-                prefs.tmdbApiKey = key
-                // TiviMate's titles start being looked up with it.
-                TitleService.start(activity)
-                tmdbProblem = null
-                tmdbStatus = if (prefs.tmdbApiKey.isEmpty()) null else "Checking…"
-                refresh()
-                if (prefs.tmdbApiKey.isNotEmpty()) {
-                    thread(name = "FirePlayerTmdb", isDaemon = true) {
-                        val problem = Tmdb(prefs).check()
-                        activity.runOnUiThread {
-                            tmdbStatus = if (problem == null) "Active" else "Not accepted"
-                            tmdbProblem = problem
-                            if (isOpen) refresh()
-                        }
-                    }
+        keyRow(
+            "TMDB API key",
+            KeyStore.Key.TMDB,
+            whereFrom = "From themoviedb.org › Settings › API",
+            title = "TMDB API key or read access token",
+            badge = tmdbBadge,
+        ) {
+            // TiviMate's titles start being looked up with it.
+            TitleService.start(activity)
+            tmdbProblem = null
+            tmdbStatus = CHECKING
+            thread(name = "FirePlayerTmdb", isDaemon = true) {
+                val problem = Tmdb(prefs).check()
+                activity.runOnUiThread {
+                    tmdbStatus = if (problem == null) ACTIVE else NOT_ACCEPTED
+                    tmdbProblem = problem
+                    if (isOpen) refresh()
                 }
             }
         }
         tmdbProblem?.let { message("$it.") }
-        // TMDB asks apps that use its API to say so.
-        if (prefs.tmdbApiKey.isNotEmpty()) message("This product uses the TMDB API but is not endorsed or certified by TMDB.")
 
         header("App")
         row("Check for updates", updateStatus ?: "Version ${updater.installedName}") {
@@ -219,6 +226,159 @@ class SettingsPanels(
             }
         }
     }
+
+    /**
+     * TiviMate's English titles: the switch, with an arrow beside it for the set-up details (hidden each time the
+     * window opens); under it, while on, how far the titles are and a button that sets the server to work now.
+     */
+    private fun renderTitles(panel: SidePanel) = with(panel) {
+        header("TiviMate titles")
+        if (session != titlesSession) {
+            titlesSession = session
+            detailsShown = false
+            checkValue = null
+            checkNote = null
+        }
+        val turned = arrowTurned
+        arrowTurned = false
+        rowWithArrow(
+            "English titles in TiviMate",
+            onOff(prefs.tivimateTitles),
+            expanded = detailsShown,
+            turned = turned,
+            onClick = {
+                prefs.tivimateTitles = !prefs.tivimateTitles
+                TitleService.start(activity)
+                checkValue = null
+                checkNote = null
+                refresh()
+            },
+            onArrow = {
+                detailsShown = !detailsShown
+                arrowTurned = true
+                refresh()
+            },
+        )
+        if (prefs.tivimateTitles) view(titleStatus(), top = 6, bottom = 4)
+        if (detailsShown) view(titleDetails(), top = 4, bottom = 4)
+        if (!prefs.tivimateTitles) return@with
+        row("Check playlists now", checkValue) {
+            if (prefs.keys.isSet(KeyStore.Key.TMDB)) {
+                TitleService.checkNow(activity)
+                if (inPlayer) checkNote = "Starts once the film is closed." else checkValue = "Started"
+            }
+            refresh()
+        }
+        when {
+            !prefs.keys.isSet(KeyStore.Key.TMDB) -> message("Needs a TMDB API key (Online subtitles).")
+            checkNote != null -> message(checkNote!!)
+        }
+    }
+
+    /** The bar and counts under TiviMate's switch, kept up to date every few seconds while on screen. */
+    private fun titleStatus(): View {
+        val view = TitleStatusView(activity)
+        view.show(titleCounts, animate = false)
+        val tick = object : Runnable {
+            override fun run() {
+                if (!view.isAttachedToWindow) return
+                main.postDelayed(this, STATUS_EVERY_MS)
+                if (reading) return
+                reading = true
+                reader.execute {
+                    val counts = runCatching {
+                        (book ?: TitleBook(activity.applicationContext).also { book = it }).progress()
+                    }.getOrNull()
+                    main.post {
+                        reading = false
+                        countsReadAt = SystemClock.uptimeMillis()
+                        if (counts != null) titleCounts = counts
+                        statusOnScreen?.show(titleCounts, animate = true)
+                    }
+                }
+            }
+        }
+        view.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(v: View) {
+                statusViews++
+                statusOnScreen = view
+                // Counts read a moment ago (the window was only redrawn) are shown until they're due again.
+                val due = if (titleCounts == null) 0L
+                else (countsReadAt + STATUS_EVERY_MS - SystemClock.uptimeMillis()).coerceIn(0L, STATUS_EVERY_MS)
+                main.postDelayed(tick, due)
+            }
+
+            override fun onViewDetachedFromWindow(v: View) {
+                main.removeCallbacks(tick)
+                if (statusOnScreen === view) statusOnScreen = null
+                if (--statusViews == 0) {
+                    reader.execute {
+                        runCatching { book?.close() }
+                        book = null
+                    }
+                }
+            }
+        })
+        return view
+    }
+
+    /** What TiviMate needs to be set up: the server address to give each playlist; and TMDB's notice. */
+    private fun titleDetails(): View {
+        val muted = color(R.color.text_muted)
+        fun line(value: CharSequence, sp: Float, color: Int, font: Int? = null) = TextView(activity).apply {
+            text = value
+            setTextColor(color)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, sp)
+            setLineSpacing(2f * density, 1f)
+            font?.let { typeface = ResourcesCompat.getFont(activity, it) }
+        }
+        val address = SpannableStringBuilder("http://127.0.0.1:${TitleProxy.PORT}/").apply {
+            val start = length
+            append("your-server:port")
+            setSpan(ForegroundColorSpan(muted), start, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+        fun params(top: Int) = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            .apply { topMargin = dp(top) }
+        return LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable().apply {
+                cornerRadius = dp(if (Glass.on) 14 else 9).toFloat()
+                setColor(color(if (Glass.on) R.color.details_fill_glass else R.color.details_fill))
+                if (Glass.on) setStroke(dp(1).coerceAtLeast(1), color(R.color.details_rim_glass))
+            }
+            setPadding(dp(12), dp(9), dp(12), dp(10))
+            addView(line("Server address for each TiviMate playlist:", 11.5f, muted), params(0))
+            addView(line(address, 13f, color(R.color.text), R.font.figtree_700), params(3))
+            // TMDB asks apps that use its API to say so.
+            addView(line(TMDB_NOTICE, 10.5f, muted).apply { alpha = 0.8f }, params(9))
+        }
+    }
+
+    /**
+     * A key or sign-in row: "Active" in blue once saved, "Inactive" in gray before ([badge] in its place, such as
+     * the TMDB check's). Its box starts empty, so a saved key is never shown, and says where to get one (or that one
+     * is saved); confirmed empty, it leaves a saved key as it is. [onSaved] follows a new one.
+     */
+    private fun SidePanel.keyRow(
+        label: String,
+        key: KeyStore.Key,
+        whereFrom: String,
+        password: Boolean = false,
+        title: String = label,
+        badge: Pair<String, Rows.Badge>? = null,
+        onSaved: () -> Unit = {},
+    ) {
+        val set = prefs.keys.isSet(key)
+        val (text, style) = badge ?: (activeOrNot(set) to if (set) Rows.Badge.ACTIVE else Rows.Badge.INACTIVE)
+        badgeRow(label, text, style) {
+            SidePanel.prompt(activity, title, "", password = password, hint = if (set) SAVED_HINT else whereFrom) { typed ->
+                if (prefs.keys.save(key, typed)) onSaved()
+                refresh()
+            }
+        }
+    }
+
+    private fun activeOrNot(set: Boolean) = if (set) ACTIVE else INACTIVE
 
     /**
      * [onStyleChanged] repaints the subtitles; [onAssChanged] rebuilds the player
@@ -362,6 +522,15 @@ class SettingsPanels(
 
     companion object {
         fun onOff(on: Boolean) = if (on) "On" else "Off"
+
+        private const val ACTIVE = "Active"
+        private const val INACTIVE = "Inactive"
+        private const val CHECKING = "Checking…"
+        private const val NOT_ACCEPTED = "Not accepted"
+        private const val SAVED_HINT = "Saved · type a new one to replace it"
+        private const val OPTIONAL_HINT = "Optional · more downloads a day"
+        private const val TMDB_NOTICE = "This product uses the TMDB API but is not endorsed or certified by TMDB."
+        private const val STATUS_EVERY_MS = 2_500L
 
         fun formatStep(sec: Int): String =
             if (sec < 60) "$sec s" else "${sec / 60}:${"%02d".format(sec % 60)}"

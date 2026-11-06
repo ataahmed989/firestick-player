@@ -105,7 +105,15 @@ class ProxyServer(
                 else -> respond(output, 302, "Found", listOf("Location" to upstream), null)
             }
         } catch (e: Exception) {
-            Log.i(TAG, "${request.method} $server$rest${ACTION.find(query)?.let { " (${it.groupValues[1]})" }.orEmpty()} failed: $e")
+            // Only the kind of request: a film's or channel's path holds the account's name and password.
+            val kind = rest.trimStart('/').substringBefore('/')
+            val what = when {
+                rest.endsWith(".php") || rest == "/" -> rest
+                kind in LINK_KINDS -> "/$kind/…"
+                else -> "/…"
+            }
+            val why = e.javaClass.simpleName + (e.message?.let { ": " + it.replace(LINK, "…") } ?: "")
+            Log.i(TAG, "${request.method} $server$what${ACTION.find(query)?.let { " (${it.groupValues[1]})" }.orEmpty()} failed: $why")
             runCatching { respondText(output, 502, "The provider couldn't be reached.") }
         }
     }
@@ -337,6 +345,10 @@ class ProxyServer(
         val YEAR = Regex("""(19|20)\d{2}""")
         // Only the action goes in the log, never the login around it.
         val ACTION = Regex("""(?:^|&)action=([A-Za-z_]+)""")
+        // A link in an error's message, which can carry the login too.
+        val LINK = Regex("""https?://\S+""")
+        // The first part of a video's path that can go in the log; a live channel's may be the account's name instead.
+        val LINK_KINDS = setOf("movie", "series", "live", "timeshift")
         val HOP_HEADERS = setOf("host", "connection", "accept-encoding", "content-length", "transfer-encoding", "keep-alive")
     }
 }

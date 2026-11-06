@@ -3,11 +3,11 @@ package app.fireplayer.data
 import android.content.Context
 import android.content.SharedPreferences
 
-/** All user settings, stored in one SharedPreferences file. */
+/** All user settings, stored in one SharedPreferences file; the keys and sign-in in one of their own ([KeyStore]). */
 class Prefs(context: Context) {
 
     private val sp: SharedPreferences =
-        context.applicationContext.getSharedPreferences("fireplayer", Context.MODE_PRIVATE)
+        context.applicationContext.getSharedPreferences(KeyStore.OLD_FILE, Context.MODE_PRIVATE)
 
     init {
         forgetPlayerMatches()
@@ -82,22 +82,17 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("keep_ass", true)
         set(v) = sp.edit().putBoolean("keep_ass", v).apply()
 
-    var openSubtitlesApiKey: String
-        get() = sp.getString("os_api_key", "") ?: ""
-        set(v) = sp.edit().putString("os_api_key", v.trim()).apply()
+    /** The user's keys and sign-in, kept in a file of their own and saved with [KeyStore.save]. */
+    val keys: KeyStore = KeyStore.of(context)
 
-    var openSubtitlesUser: String
-        get() = sp.getString("os_user", "") ?: ""
-        set(v) = sp.edit().putString("os_user", v.trim()).apply()
+    val openSubtitlesApiKey: String get() = keys[KeyStore.Key.OPENSUBTITLES]
 
-    var openSubtitlesPassword: String
-        get() = sp.getString("os_pass", "") ?: ""
-        set(v) = sp.edit().putString("os_pass", v).apply()
+    val openSubtitlesUser: String get() = keys[KeyStore.Key.OPENSUBTITLES_USER]
+
+    val openSubtitlesPassword: String get() = keys[KeyStore.Key.OPENSUBTITLES_PASSWORD]
 
     /** The user's own TMDB key (the short API key or the long read access token), "" for none. */
-    var tmdbApiKey: String
-        get() = sp.getString("tmdb_key", "") ?: ""
-        set(v) = sp.edit().putString("tmdb_key", v.trim()).apply()
+    val tmdbApiKey: String get() = keys[KeyStore.Key.TMDB]
 
     /**
      * The player used to rename films with TMDB and kept every match here. TiviMate now gets the names already right

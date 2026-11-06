@@ -200,9 +200,10 @@ class TitleBook(context: Context) : SQLiteOpenHelper(context, "titles.db", null,
     /**
      * Titles to ask TMDB about: new ones, ones whose last try failed a while ago, and, now and then, ones TMDB
      * wasn't sure of (it learns new titles). Every provider in turn, so a small playlist never waits behind a big
-     * one; of each, shows first, then the newest films (the highest ids).
+     * one; of each, shows first, then the newest films (the highest ids). A try that failed before [retrySince] (when
+     * Settings asked to check now) is tried again at once.
      */
-    fun waiting(now: Long, limit: Int): List<Waiting> {
+    fun waiting(now: Long, limit: Int, retrySince: Long = 0): List<Waiting> {
         val db = readableDatabase
         val servers = db.rawQuery("SELECT DISTINCT server FROM item", null).use { c ->
             buildList { while (c.moveToNext()) add(c.getString(0)) }
@@ -216,7 +217,7 @@ class TitleBook(context: Context) : SQLiteOpenHelper(context, "titles.db", null,
                    LEFT JOIN category c ON c.server = i.server AND c.kind = i.kind AND c.id = i.category
                    WHERE i.server = ? AND ((i.state = $WAITING AND i.checked < ?) OR (i.state = $KEPT AND i.checked < ?))
                    ORDER BY i.kind DESC, i.id DESC LIMIT $each""",
-                arrayOf(server, (now - RETRY_FAILED_S).toString(), (now - RETRY_KEPT_S).toString()),
+                arrayOf(server, maxOf(now - RETRY_FAILED_S, retrySince).toString(), (now - RETRY_KEPT_S).toString()),
             ).use { c ->
                 while (c.moveToNext()) {
                     list += Waiting(

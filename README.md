@@ -41,7 +41,8 @@ through. Only the names in the lists of films and shows change; videos, live cha
 the provider, and categories, artwork, episodes, favourites and watch history stay as they are. A title is renamed
 only when TMDB confirms it (by the TMDB id the provider gives, or by its name and year), so the provider's own name
 stays when TMDB isn't sure. The quality tag comes from the provider's name or category ("4K Movies"); videos are
-never opened to find it. Settings → TiviMate titles shows how far along each provider is, and turns it off.
+never opened to find it. Settings → TiviMate titles shows how far along each provider is, turns it off, and with
+**Check playlists now** looks up what's waiting at once; the arrow beside the switch shows the server address.
 
 ## Continue Watching in Glass Home
 

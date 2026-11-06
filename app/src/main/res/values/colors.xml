@@ -12,4 +12,33 @@
     <color name="chip_fill">#26FFFFFF</color>
     <color name="tooltip_fill">#B3000000</color>
     <color name="black">#FF000000</color>
+
+    <!--
+        Badges on the key rows (Settings): Active in blue, Inactive in faded gray, a problem in soft red. On the white
+        selected row each turns darker, on a pale pill, so it stays readable.
+    -->
+    <color name="badge_on">#FF62A0FF</color>
+    <color name="badge_on_fill">#293D8BFF</color>
+    <color name="badge_on_rim">#4D3D8BFF</color>
+    <color name="badge_on_focused">#FF1556C9</color>
+    <color name="badge_on_fill_focused">#243D8BFF</color>
+    <color name="badge_off">#FF80868D</color>
+    <color name="badge_off_fill">#12FFFFFF</color>
+    <color name="badge_off_rim">#1FFFFFFF</color>
+    <color name="badge_off_focused">#FF5F656B</color>
+    <color name="badge_off_fill_focused">#0F000000</color>
+    <color name="badge_problem">#FFFF8A80</color>
+    <color name="badge_problem_fill">#24FF5A4F</color>
+    <color name="badge_problem_rim">#40FF5A4F</color>
+    <color name="badge_problem_focused">#FFB3261E</color>
+    <color name="badge_problem_fill_focused">#1AFF5A4F</color>
+
+    <!-- The slim bar under TiviMate's titles switch: a faint track and a blue fill. -->
+    <color name="progress_track">#24FFFFFF</color>
+    <color name="progress_track_glass">#33FFFFFF</color>
+    <color name="progress_fill_end">#FF6AA8FF</color>
+    <!-- The box with TiviMate's set-up details. -->
+    <color name="details_fill">#0FFFFFFF</color>
+    <color name="details_fill_glass">#14FFFFFF</color>
+    <color name="details_rim_glass">#1FFFFFFF</color>
 </resources>

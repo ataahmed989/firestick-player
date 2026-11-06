@@ -128,13 +128,14 @@ object FireDialog {
         return dialog
     }
 
-    /** Type a value, such as a preset name. */
+    /** Type a value, such as a preset name. [hint] shows in the empty box, as where to find a key. */
     fun prompt(
         activity: Activity,
         title: String,
         initial: String,
         password: Boolean = false,
         inputType: Int = InputType.TYPE_CLASS_TEXT,
+        hint: String? = null,
         onDone: (String) -> Unit,
     ) {
         if (gone(activity)) return
@@ -145,6 +146,7 @@ object FireDialog {
         val input = EditText(activity).apply {
             setText(initial)
             setSelection(initial.length)
+            if (hint != null) this.hint = hint
             setSingleLine()
             setBackgroundResource(R.drawable.bg_input)
             setPadding(rows.dp(12), rows.dp(9), rows.dp(12), rows.dp(9))

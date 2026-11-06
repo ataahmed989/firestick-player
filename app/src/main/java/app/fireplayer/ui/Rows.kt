@@ -5,6 +5,8 @@ import android.content.Context
 import android.content.res.ColorStateList
 import android.graphics.Rect
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.StateListDrawable
 import android.text.TextUtils
 import android.util.AttributeSet
 import android.util.TypedValue
@@ -120,21 +122,25 @@ class RowLayout(context: Context, private val colors: ColorStateList?) : LinearL
         val color = list.getColorForState(drawableState, list.defaultColor)
         for (i in 0 until childCount) {
             when (val child = getChildAt(i)) {
-                is TextView -> if (child.currentTextColor != color) child.setTextColor(color)
+                is TextView -> if (child.tag != KEEP_COLORS && child.currentTextColor != color) child.setTextColor(color)
                 is ImageView -> if (child.tag != KEEP_COLORS && child.imageTintList?.defaultColor != color) child.imageTintList = ColorStateList.valueOf(color)
             }
         }
     }
 }
 
-/** Tag for a row's image that keeps its own colours (the glass switch) instead of following the text colour. */
+/** Tag for a row's image or text that keeps its own colours (the glass switch, a badge) instead of the text colour. */
 const val KEEP_COLORS = "keepColors"
+
+/** Tag for a row and the small button beside it ([SidePanel.rowWithArrow]): the D-pad goes up and down past both. */
+const val ROW_PAIR = "rowPair"
 
 /** Shared look and D-pad behaviour for the rows in the settings windows and pickers. */
 class Rows(private val context: Context) {
 
     val density = context.resources.displayMetrics.density
     private val font600: Typeface? = ResourcesCompat.getFont(context, R.font.figtree_600)
+    private val font700: Typeface? by lazy { ResourcesCompat.getFont(context, R.font.figtree_700) }
     val textColors = ContextCompat.getColorStateList(context, R.color.sel_text_row)
 
     fun dp(value: Int) = (value * density).toInt()
@@ -201,6 +207,57 @@ class Rows(private val context: Context) {
         return row
     }
 
+    /** How a [badge] looks: set (blue), not set (faded gray), refused (soft red), or being checked (gray). */
+    enum class Badge { ACTIVE, INACTIVE, PROBLEM, BUSY }
+
+    /**
+     * A small pill on the right of a row saying how a setting stands ("Active", "Inactive"). It follows the row's
+     * state: on the white selected row its colours turn darker, so the blue stays readable there.
+     */
+    fun badge(label: String, style: Badge): TextView {
+        fun color(res: Int) = ContextCompat.getColor(context, res)
+        val (textRes, fillRes, rimRes) = when (style) {
+            Badge.ACTIVE -> Triple(R.color.badge_on, R.color.badge_on_fill, R.color.badge_on_rim)
+            Badge.PROBLEM -> Triple(R.color.badge_problem, R.color.badge_problem_fill, R.color.badge_problem_rim)
+            Badge.INACTIVE, Badge.BUSY -> Triple(R.color.badge_off, R.color.badge_off_fill, R.color.badge_off_rim)
+        }
+        val (focusedTextRes, focusedFillRes) = when (style) {
+            Badge.ACTIVE -> R.color.badge_on_focused to R.color.badge_on_fill_focused
+            Badge.PROBLEM -> R.color.badge_problem_focused to R.color.badge_problem_fill_focused
+            Badge.INACTIVE, Badge.BUSY -> R.color.badge_off_focused to R.color.badge_off_fill_focused
+        }
+        fun pill(fillColor: Int, rimColor: Int?) = GradientDrawable().apply {
+            cornerRadius = dp(10).toFloat()
+            setColor(fillColor)
+            // The glass look's pills have a light rim, like its other glass shapes.
+            if (rimColor != null) setStroke(dp(1).coerceAtLeast(1), rimColor)
+        }
+        val focused = intArrayOf(android.R.attr.state_focused)
+        return TextView(context).apply {
+            text = label
+            tag = KEEP_COLORS
+            // Before it's added, so the row passes its state changes on.
+            isDuplicateParentStateEnabled = true
+            typeface = font700
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            letterSpacing = 0.02f
+            includeFontPadding = false
+            isSingleLine = true
+            gravity = Gravity.CENTER
+            minWidth = dp(54)
+            setPadding(dp(8), dp(3), dp(8), dp(3))
+            setTextColor(ColorStateList(arrayOf(focused, intArrayOf()), intArrayOf(color(focusedTextRes), color(textRes))))
+            background = StateListDrawable().apply {
+                setEnterFadeDuration(140)
+                setExitFadeDuration(140)
+                addState(focused, pill(color(focusedFillRes), null))
+                addState(intArrayOf(), pill(color(fillRes), if (Glass.on) color(rimRes) else null))
+            }
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                .apply { marginStart = dp(8) }
+        }
+    }
+
     fun listParams(top: Int = 2, bottom: Int = 2) = LinearLayout.LayoutParams(
         ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
     ).apply {
@@ -216,7 +273,10 @@ class Rows(private val context: Context) {
         fun verticalNav(list: ViewGroup, row: View, keyCode: Int, event: KeyEvent): Boolean {
             if (keyCode != KeyEvent.KEYCODE_DPAD_UP && keyCode != KeyEvent.KEYCODE_DPAD_DOWN) return false
             if (event.action != KeyEvent.ACTION_DOWN) return true
-            val rows = (0 until list.childCount).map { list.getChildAt(it) }.filter { it.isFocusable && it.isShown }
+            // A row paired with a small button counts once, as its row.
+            val rows = (0 until list.childCount).map { list.getChildAt(it) }
+                .mapNotNull { if (it.tag == ROW_PAIR) (it as? ViewGroup)?.getChildAt(0) else it }
+                .filter { it.isFocusable && it.isShown }
             val index = rows.indexOf(row)
             if (index < 0 || rows.size < 2) return true
             val down = keyCode == KeyEvent.KEYCODE_DPAD_DOWN
