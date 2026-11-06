@@ -168,6 +168,17 @@ class WatchHistory(records: List<Record> = emptyList()) {
     }
 
     /**
+     * Gives an entry the TMDB id found for it after it was noted (see [ContinueWatching]); the rest of it, and its place
+     * in the row, stay as they were. True when the entry is there and had another id.
+     */
+    fun setTmdbId(id: String, tmdbId: Int): Boolean {
+        val i = records.indexOfFirst { it.id == id }
+        if (i < 0 || records[i].tmdbId == tmdbId) return false
+        records[i] = records[i].copy(tmdbId = tmdbId)
+        return true
+    }
+
+    /**
      * Films not watched for [MOVIE_KEPT_MS] and shows not watched for [SHOW_KEPT_MS] are forgotten, as if removed: the
      * row no longer has them, and only another [MIN_PLAYED_MS] of playing brings them back. Entries still counting up
      * to it go the same way, so minutes from long ago don't add up with new ones. True when the rows changed.

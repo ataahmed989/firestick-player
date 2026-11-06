@@ -314,6 +314,31 @@ class WatchHistoryTest {
     }
 
     @Test
+    fun aTmdbIdFoundLaterIsGivenToItsEntryAndTheRestStays() {
+        val h = WatchHistory()
+        h.play(episode(1, 1, 8, 10 * minute).copy(tmdbId = 0))
+        h.play(movie(2, 10 * minute))
+        val show = h.all.first { it.kind == Kind.EPISODE }
+        assertEquals(0, show.tmdbId)
+        val before = h.all
+        assertTrue(h.setTmdbId(show.id, 33880))
+        assertEquals(show.copy(tmdbId = 33880), h.record(show.id))
+        // Its place in the row, and the other entries, stay as they were.
+        assertEquals(before.map { it.id }, h.all.map { it.id })
+        assertEquals(before.filter { it.id != show.id }, h.all.filter { it.id != show.id })
+        assertEquals(33880, h.rows().first { it.id == show.id }.tmdbId)
+        // The same id again, or an entry that isn't there: nothing changes.
+        assertFalse(h.setTmdbId(show.id, 33880))
+        assertFalse(h.setTmdbId("nope", 1))
+        // Kept, and not lost when it's watched again without one.
+        val back = WatchHistory.decode(h.encode())
+        assertEquals(33880, back.record(show.id)!!.tmdbId)
+        back.play(episode(1, 1, 9, 2 * minute).copy(tmdbId = 0))
+        assertEquals(33880, back.record(show.id)!!.tmdbId)
+        assertEquals(9, back.record(show.id)!!.episode)
+    }
+
+    @Test
     fun rowsNeverCarryTheLink() {
         val h = WatchHistory()
         h.play(movie(1, 6 * minute))

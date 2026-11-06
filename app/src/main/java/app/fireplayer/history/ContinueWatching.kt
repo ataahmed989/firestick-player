@@ -5,8 +5,10 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Parcelable
+import android.os.SystemClock
 import android.util.AtomicFile
 import android.util.Log
+import app.fireplayer.data.KeyStore
 import app.fireplayer.player.NextEpisode
 import app.fireplayer.player.NextPick
 import app.fireplayer.player.TitleInfo
@@ -25,7 +27,8 @@ import java.util.concurrent.Executors
  * FirePlayer's own, kept out of backups; the rows only say what the title is and how far along.
  *
  * Films and shows are named as the player shows them: under their English names from the title server when it knows
- * them ([TitleBook]), with their TMDB ids, otherwise as read from the name they came with.
+ * them ([TitleBook]), with their TMDB ids, otherwise as read from the name they came with. One the title server has no
+ * TMDB id for is asked about here once it's noted ([tmdbOf]), so Glass Home has its artwork too.
  */
 object ContinueWatching {
     const val AUTHORITY = "app.fireplayer.continue"
@@ -67,10 +70,19 @@ object ContinueWatching {
     private val lock = Any()
     private var history: WatchHistory? = null
     private var book: TitleBook? = null
+    private val lookup = TmdbLookup { SystemClock.elapsedRealtime() }
     private val random = SecureRandom()
     // One at a time and in order, and not dropped when the player closes just after.
     private val worker = Executors.newSingleThreadExecutor { r ->
         Thread(r, "ContinueWatching").apply {
+            isDaemon = true
+            priority = Thread.MIN_PRIORITY
+        }
+    }
+    // Asking TMDB can take a while (a timeout, without a network): on a thread of its own, so what was watched is kept
+    // straight away and never waits for it, also when the player closes just after.
+    private val tmdbWorker = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "ContinueWatchingTmdb").apply {
             isDaemon = true
             priority = Thread.MIN_PRIORITY
         }
@@ -82,11 +94,16 @@ object ContinueWatching {
         worker.execute {
             try {
                 val watch = watchOf(app, played) ?: return@execute
-                val changed = synchronized(lock) {
+                val (changed, row) = synchronized(lock) {
                     val h = load(app)
-                    h.watched(watch, System.currentTimeMillis(), ::newId).also { save(app, h) }
+                    val changed = h.watched(watch, System.currentTimeMillis(), ::newId).also { save(app, h) }
+                    // Its row as it is now, if it has one.
+                    val its = h.all.firstOrNull { it.kind == watch.kind && it.keys.any { k -> k in watch.keys } }
+                    changed to its?.takeIf { it.shown }?.row()
                 }
                 if (changed) app.contentResolver.notifyChange(ITEMS, null)
+                // Kept already; without a TMDB id it's looked up now, meanwhile.
+                row?.let { lookUp(app, listOf(it)) }
             } catch (e: Exception) {
                 // Only the kind of failure: a message may hold the link, and with it the login.
                 Log.w(TAG, "Couldn't note what was watched: ${e.javaClass.simpleName}")
@@ -94,8 +111,16 @@ object ContinueWatching {
         }
     }
 
-    /** The rows, newest first. */
-    fun rows(context: Context): List<WatchHistory.Row> = synchronized(lock) { current(context.applicationContext).rows() }
+    /**
+     * The rows, newest first. Those without a TMDB id (noted before one could be found) are looked up meanwhile
+     * ([lookUp]): not here, as Glass Home waits for the rows.
+     */
+    fun rows(context: Context): List<WatchHistory.Row> {
+        val app = context.applicationContext
+        val rows = synchronized(lock) { current(app).rows() }
+        lookUp(app, rows)
+        return rows
+    }
 
     /** Removes one row; false when there's no such row. */
     fun remove(context: Context, id: String): Boolean {
@@ -279,6 +304,72 @@ object ContinueWatching {
         return runCatching { Tmdb({ "" }, memory).cached(name, year.takeIf { it > 0 }, show)?.id }.getOrNull() ?: 0
     }
 
+    /**
+     * The TMDB id for a film or show named like this: the one TiviMate's titles were matched with before, or else the
+     * one TMDB is sure of when asked now, as the title server would ([Tmdb.verify]; once while FirePlayer runs, see
+     * [TmdbLookup]). 0 when there's none; null when TMDB couldn't be asked (no TMDB key, or it can't be reached just
+     * now). Blocks; on [tmdbWorker].
+     */
+    private fun tmdbOf(context: Context, book: TitleBook?, name: String, year: Int, show: Boolean): Int? {
+        cachedTmdb(book, name, year, show).takeIf { it > 0 }?.let { return it }
+        val key = tmdbKey(context).ifEmpty { return null }
+        val tmdb = Tmdb({ key }, memoryOf(book))
+        // Not sure of it a few days ago (here or in the title server): TMDB isn't asked again yet.
+        return lookup.id(name, year, show) { n, y, s ->
+            if (tmdb.recentlyMissed(n, y, s)) null else tmdb.verify(n, y, s)?.id
+        }
+    }
+
+    /** Of these rows, those without a TMDB id that aren't being looked up already are looked up on [tmdbWorker]. */
+    private fun lookUp(context: Context, rows: List<WatchHistory.Row>) {
+        val unknown = lookup.toLookUp(rows)
+        if (unknown.isNotEmpty()) tmdbWorker.execute { fillTmdb(context, unknown) }
+    }
+
+    /**
+     * Rows without a TMDB id: each is looked up ([tmdbOf]) and, when found, its entry has it from now on and Glass Home
+     * is told, so it draws the artwork. Those TMDB couldn't be asked about are looked up again on a later read (see
+     * [TmdbLookup.fill]). On [tmdbWorker].
+     */
+    private fun fillTmdb(context: Context, rows: List<WatchHistory.Row>) {
+        // Without a key nothing is asked: they're looked up once there is one.
+        if (tmdbKey(context).isEmpty()) return lookup.lookUpAgain(rows)
+        val book = titleBook(context)
+        try {
+            val idOf = { row: WatchHistory.Row ->
+                tmdbOf(context, book, row.title, row.year, row.kind == WatchHistory.Kind.EPISODE)
+            }
+            lookup.fill(rows, idOf) { row, id ->
+                val changed = synchronized(lock) {
+                    val h = load(context)
+                    // Not one it got meanwhile, by being watched.
+                    h.record(row.id)?.tmdbId == 0 && h.setTmdbId(row.id, id).also { if (it) save(context, h) }
+                }
+                if (changed) context.contentResolver.notifyChange(ITEMS, null)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Couldn't look up TMDB ids: ${e.javaClass.simpleName}")
+        }
+    }
+
+    /** The user's own TMDB key from Settings, "" for none. */
+    private fun tmdbKey(context: Context): String =
+        runCatching { KeyStore.of(context)[KeyStore.Key.TMDB] }.getOrDefault("")
+
+    /**
+     * TMDB's answers as the title server keeps them, so one found here is known after a restart too. Its database may
+     * be busy in the title server's process just now: that answer then just isn't kept.
+     */
+    private fun memoryOf(book: TitleBook?) = object : Tmdb.Memory {
+        override fun get(key: String): String? = book?.let { runCatching { it.tmdbMemory.get(key) }.getOrNull() }
+
+        override fun put(key: String, value: String) {
+            book?.let { runCatching { it.tmdbMemory.put(key, value) } }
+        }
+    }
+
+    // Both from [worker] and [tmdbWorker]: one TitleBook for both.
+    @Synchronized
     private fun titleBook(context: Context): TitleBook? =
         book ?: runCatching { TitleBook(context) }.getOrNull()?.also { book = it }
 
