@@ -530,7 +530,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
      */
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        if (!openingOwn && !isFinishing && player?.playWhenReady == true) finishWithResult(animate = false)
+        // Playing, or only paused for the TV's refresh-rate switch (it plays on after that)
+        if (!openingOwn && !isFinishing && (player?.playWhenReady == true || pausedForSwitch)) finishWithResult(animate = false)
     }
 
     override fun startActivity(intent: Intent, options: Bundle?) {
