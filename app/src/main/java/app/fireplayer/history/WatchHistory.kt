@@ -110,7 +110,12 @@ class WatchHistory(records: List<Record> = emptyList()) {
         // One left long ago starts again: only another five minutes of it bring it back.
         expire(now)
         if (w.keys.isEmpty()) return rows() != before
-        val same = records.filter { it.kind == w.kind && it.keys.any { k -> k in w.keys } }
+        // Shows the provider tells apart by their ids stay apart, even with the same name ("Shogun" of 1980 and 2024)
+        val showIds = w.keys.filter { it.startsWith(SHOW_KEY) }.toSet()
+        val same = records.filter { r ->
+            r.kind == w.kind && r.keys.any { k -> k in w.keys } &&
+                (showIds.isEmpty() || r.keys.none { it.startsWith(SHOW_KEY) && it !in showIds })
+        }
         // Nothing of it yet: only playing starts an entry, and a film played to its end has none to start.
         if (same.isEmpty() && (w.playedMs <= 0 || (w.finished && w.next == null))) return rows() != before
         // Another episode only opened, not played (or one that wouldn't play): the show stays where it was watched.
@@ -216,6 +221,8 @@ class WatchHistory(records: List<Record> = emptyList()) {
 
     companion object {
         /** Real playing time before a title shows. */
+        /** How a show's provider id begins among its keys (see ContinueWatching). */
+        const val SHOW_KEY = "s|"
         const val MIN_PLAYED_MS = 5 * 60_000L
         const val MAX_SHOWN = 20
         /** How long a film, and a show, stays in the row without being watched. */

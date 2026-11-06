@@ -348,4 +348,20 @@ class WatchHistoryTest {
             assertFalse(row.toString().contains("http"))
         }
     }
+
+    @Test
+    fun showsWithTheSameNameButDifferentProviderIdsStayApart() {
+        val h = WatchHistory()
+        fun ep(series: String, video: String) = WatchHistory.Watch(
+            kind = WatchHistory.Kind.EPISODE, keys = setOf("s|host:80|$series", "n|shogun"), videoKey = video, title = "Shogun",
+            season = 1, episode = 1, positionMs = 600_000, durationMs = 3_000_000, playedMs = 6 * 60_000,
+            resume = WatchHistory.Resume("http://host/series/$video.mkv"),
+        )
+        var n = 0
+        h.watched(ep("1", "a"), 1_000, { "id${n++}" })
+        h.watched(ep("2", "b"), 2_000, { "id${n++}" })
+        assertEquals("two shows, two rows", 2, h.rows().size)
+        h.watched(ep("1", "c"), 3_000, { "id${n++}" })
+        assertEquals("the first show again: still two rows", 2, h.rows().size)
+    }
 }
