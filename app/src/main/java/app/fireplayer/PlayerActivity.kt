@@ -881,7 +881,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         )
     }
 
-    /** From [postPlayTick]: now and then while it plays, so a crash or a power cut loses little. */
+    /** From [postPlayTick]: now and then while it plays, so a crash, a power cut or Fire OS stopping it loses little. */
     private fun noteWhilePlaying() {
         val p = player ?: return
         if (!p.isPlaying || resumeDialogShowing || SystemClock.elapsedRealtime() - watchNotedAt < WATCH_NOTE_EVERY_MS) return
@@ -891,6 +891,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // Not in the last minutes ("watched to the end" on leaving): credits playing on after a finish was noted would
         // bring the title back. Leaving or moving on notes it, with the time played meanwhile.
         if (dur != C.TIME_UNSET && dur - pos < 3 * 60_000) return
+        // The resume point too: behind Home, Fire OS stops FirePlayer outright when memory is short, without onStop.
+        if (pos > 30_000 && !p.isCurrentMediaItemLive) prefs.savePosition(entry.key, pos)
         noteWatched(entry, pos, dur, finished = false, live = p.isCurrentMediaItemLive)
     }
 
