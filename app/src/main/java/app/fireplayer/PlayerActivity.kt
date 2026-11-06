@@ -269,6 +269,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private var cannotOpen = false
     // The most the buffering line has shown during this wait, so it never counts backwards.
     private var shownPercent = 0
+    /** Brought back by Android after FirePlayer was closed: closes without playing (see onCreate). */
+    private var stale = false
+    /** The player is opening a screen of its own (the update's installer): not leaving the film. */
+    private var openingOwn = false
     // When the latest jump was made (elapsedRealtime): a reading of the wait from before it is about the old spot.
     private var percentFrom = 0L
     private var startPositionMs = C.TIME_UNSET
@@ -381,6 +385,17 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Brought back by Android after Fire OS closed FirePlayer (its task shown again), or from the recent apps: the
+        // film it had is over, and it never starts again by itself. It closes at once, before anything else, so a
+        // film playing now is left alone.
+        val oldRun = savedInstanceState != null && savedInstanceState.getLong(STATE_PROCESS) != PROCESS_MARK
+        if (oldRun || (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0) {
+            stale = true
+            if (isTaskRoot || inPlayerTask()) finishAndRemoveTask() else finish()
+            @Suppress("DEPRECATION")
+            overridePendingTransition(0, 0)
+            return
+        }
         // A player left open behind (TiviMate reopened, or Home pressed instead of Back) would be where Back lands
         // after this one, showing the episode watched before. Only the newest stays, so Back goes to TiviMate.
         shown?.get()?.takeIf { it !== this && !it.isFinishing }?.let { old ->
@@ -467,7 +482,6 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // TiviMate's titles aren't looked up on TMDB while a film is on.
         TitleService.playing(this, true)
         handler.post(playingBeat)
-        prefs.forgetLeftPlayer()
         watchNotedAt = SystemClock.elapsedRealtime()
     }
 
@@ -502,18 +516,46 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         handler.removeCallbacksAndMessages(null)
         // That dropped the end of any refresh-rate wait (glassSettled); onStart starts another if the TV switches again.
         backdrop?.suspended = false
-        // Left with Home: the FirePlayer icon brings this film back for a few minutes (see HomeActivity).
-        if (!isFinishing && shown?.get() === this) prefs.leavePlayer(taskId, SystemClock.elapsedRealtime())
+    }
+
+    override fun onResume() {
+        super.onResume()
+        openingOwn = false
+    }
+
+    /**
+     * Home (or another app opened over it) while the film plays: it ends as with Back, so nothing is left behind to
+     * start again later, and the app that opened it gets the position. A paused film stays (the screensaver comes
+     * this way too, and a paused film never starts by itself); so does one opening a screen of its own (an update).
+     */
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (!openingOwn && !isFinishing && player?.playWhenReady == true) finishWithResult(animate = false)
+    }
+
+    override fun startActivity(intent: Intent, options: Bundle?) {
+        openingOwn = true
+        try {
+            super.startActivity(intent, options)
+        } catch (e: RuntimeException) {
+            openingOwn = false
+            throw e
+        }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putLong(STATE_PROCESS, PROCESS_MARK)
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        if (stale) return
         io.execute { titleBook?.close() }
         // One replaced by a newer player leaves the screen's mode to that one.
         if (shown?.get() === this) {
             shown = null
             frameRateMatcher.reset()
-            prefs.forgetLeftPlayer()
         }
         pictureText.release()
         backdrop?.release()
@@ -909,7 +951,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     /** Lets TiviMate know where we stopped (MX Player result contract). */
-    private fun finishWithResult() {
+    private fun finishWithResult(animate: Boolean = true) {
         val p = player
         val result = Intent("com.mxtech.intent.result.VIEW")
         // Which episode the position is for, once a list has moved on to the next one. Web links only: handing back a
@@ -936,8 +978,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // player task goes: a player left in it from before (Home pressed, then Fire OS closed the app, so the newer
         // one couldn't close it) would otherwise come back and play the old film on Back.
         if (isTaskRoot || inPlayerTask()) finishAndRemoveTask() else finish()
-        @Suppress("DEPRECATION")
-        overridePendingTransition(0, android.R.anim.fade_out)
+        // Leaving with Home, Fire OS's own animation stays
+        if (animate) {
+            @Suppress("DEPRECATION")
+            overridePendingTransition(0, android.R.anim.fade_out)
+        }
     }
 
     /** This player's task was started by a player (opened from another app), not by FirePlayer's own home screen. */
@@ -3059,6 +3104,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     companion object {
         // The player screen opened last.
         private var shown: WeakReference<PlayerActivity>? = null
+        private const val STATE_PROCESS = "fireplayer.process"
+        /** Different in each run of the app: a saved state with another mark comes from a run Fire OS has closed. */
+        private val PROCESS_MARK = SystemClock.elapsedRealtimeNanos()
 
         val VIDEO_EXTENSIONS = setOf("mkv", "mp4", "m4v", "avi", "mov", "ts", "m2ts", "webm", "wmv", "flv", "mpg", "mpeg")
         val SUBTITLE_EXTENSIONS = setOf("srt", "ass", "ssa", "vtt", "ttml", "dfxp")
