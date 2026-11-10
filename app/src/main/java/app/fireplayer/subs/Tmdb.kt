@@ -185,6 +185,77 @@ class Tmdb(private val key: () -> String, private val memory: Memory) {
         return Details(id, name, year, names)
     }
 
+    /** One episode of a show as TMDB lists it. [still] is a picture from it, ready to load. */
+    class TvEpisode(
+        val id: Int,
+        val season: Int,
+        val number: Int,
+        val name: String,
+        val overview: String,
+        val still: String?,
+        val runtime: Int,
+        val airDate: String,
+    )
+
+    /** A season's episodes in order; empty when TMDB has no such season. Blocks. */
+    fun season(showId: Int, season: Int): List<TvEpisode> {
+        val text = try {
+            request("tv/$showId/season/$season", listOf("language" to "en-US"))
+        } catch (e: HttpError) {
+            if (e.code == 404) return emptyList()
+            throw e
+        }
+        val list = JSONObject(text).optJSONArray("episodes") ?: return emptyList()
+        return (0 until list.length()).mapNotNull { list.optJSONObject(it) }.map { e ->
+            TvEpisode(
+                id = e.optInt("id"),
+                season = e.optInt("season_number", season),
+                number = e.optInt("episode_number"),
+                name = e.optString("name"),
+                overview = e.optString("overview"),
+                still = e.optString("still_path").takeIf { it.startsWith("/") }?.let { "$IMAGES/w300$it" },
+                runtime = e.optInt("runtime"),
+                airDate = e.optString("air_date"),
+            )
+        }
+    }
+
+    /** The numbers of a show's seasons, specials (season 0) left out. Blocks. */
+    fun seasonNumbers(showId: Int): List<Int> {
+        val seasons = JSONObject(request("tv/$showId", listOf("language" to "en-US"))).optJSONArray("seasons") ?: return emptyList()
+        return (0 until seasons.length()).mapNotNull { seasons.optJSONObject(it)?.optInt("season_number", -1) }
+            .filter { it > 0 }.sorted()
+    }
+
+    /** A film or show found by a search typed in by hand (Fix match). */
+    class Hit(val id: Int, val show: Boolean, val name: String, val year: String?, val poster: String?) {
+        val label: String get() = if (year != null) "$name ($year)" else name
+    }
+
+    /** Films and shows by that name, as TMDB ranks them. Blocks. */
+    fun search(query: String, shows: Boolean?): List<Hit> {
+        val path = when (shows) {
+            true -> "search/tv"
+            false -> "search/movie"
+            null -> "search/multi"
+        }
+        val results = search(path, query, null)
+        return (0 until results.length()).mapNotNull { results.optJSONObject(it) }.mapNotNull { item ->
+            val show = when (shows) {
+                null -> when (item.optString("media_type")) {
+                    "tv" -> true
+                    "movie" -> false
+                    else -> return@mapNotNull null
+                }
+                else -> shows
+            }
+            val name = item.optString(if (show) "name" else "title").ifEmpty { return@mapNotNull null }
+            val year = item.optString(if (show) "first_air_date" else "release_date").take(4).takeIf { it.length == 4 }
+            val poster = item.optString("poster_path").takeIf { it.startsWith("/") }?.let { "$IMAGES/w154$it" }
+            Hit(item.optInt("id"), show, name, year, poster)
+        }
+    }
+
     /** Only letters and digits, without "the", "a" or "an" in front, as [Details.names] are written. */
     fun simplify(s: String): String = simple(s)
 
@@ -358,6 +429,7 @@ class Tmdb(private val key: () -> String, private val memory: Memory) {
         // Matches saved under older rules ("The Office (UK)" as the US show) aren't used; they're asked again.
         const val MATCH_RULES = 4
         const val MISSED = "-"
+        const val IMAGES = "https://image.tmdb.org/t/p"
         const val MISS_KEPT_S = 3 * 24 * 3600L
         // Words this short at the end of a name may be tags ("xyz", "vf2"); longer ones are taken as part of it.
         const val MAX_TAG_LENGTH = 4

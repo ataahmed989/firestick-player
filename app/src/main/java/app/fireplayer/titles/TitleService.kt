@@ -148,7 +148,14 @@ class TitleService : Service() {
             }
             val batch = runCatching { book.waiting(now(), BATCH, retrySince = checkAsked) }.getOrElse { emptyList() }
             // Now and then, and when everything is done: how far each provider is.
-            if (batches++ % PROGRESS_EVERY == 0 || batch.isEmpty()) logProgress()
+            if (batches++ % PROGRESS_EVERY == 0 || batch.isEmpty()) {
+                // A playlist taken out of TiviMate: its English names go too.
+                runCatching { book.gone(now()) }.getOrNull()?.forEach { server ->
+                    Log.i(TAG, "$server hasn't been asked about for a week: its titles are forgotten")
+                    runCatching { book.forget(server) }
+                }
+                logProgress()
+            }
             if (batch.isEmpty()) {
                 sleep(IDLE_MS)
                 continue

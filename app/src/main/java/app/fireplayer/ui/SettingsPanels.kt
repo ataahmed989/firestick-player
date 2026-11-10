@@ -74,6 +74,8 @@ class SettingsPanels(
     }
     private var book: TitleBook? = null
     private var titleCounts: List<TitleBook.Progress>? = null
+    // The window showing them, redrawn when the playlists are first read.
+    private var titlesPanel: SidePanel? = null
     private var countsReadAt = 0L
     private var reading = false
     private var statusOnScreen: TitleStatusView? = null
@@ -240,6 +242,7 @@ class SettingsPanels(
      * window opens); under it, while on, how far the titles are and a button that sets the server to work now.
      */
     private fun renderTitles(panel: SidePanel) = with(panel) {
+        titlesPanel = panel
         header("TiviMate titles")
         if (session != titlesSession) {
             titlesSession = session
@@ -281,6 +284,24 @@ class SettingsPanels(
             !prefs.keys.isSet(KeyStore.Key.TMDB) -> message("Needs a TMDB API key (Online subtitles and TMDB API).")
             checkNote != null -> message(checkNote!!)
         }
+        // Each playlist's English names; one taken out of TiviMate is forgotten by itself after a week, or here now.
+        val playlists = titleCounts.orEmpty()
+        if (playlists.isNotEmpty()) {
+            header("Playlists")
+            playlists.forEach { p ->
+                row(p.server, "${p.renamed} renamed") {
+                    FireDialog.choose(activity, p.server, listOf("Delete its English names", "Keep them"), 1, besidePanel = true) { pick ->
+                        if (pick != 0) return@choose
+                        titleCounts = titleCounts?.filter { it.server != p.server }
+                        refresh()
+                        reader.execute {
+                            runCatching { (book ?: TitleBook(activity.applicationContext).also { book = it }).forget(p.server) }
+                        }
+                    }
+                }
+            }
+            message("Removed a playlist from TiviMate? Its English names are deleted here a week after TiviMate last used it, or now from this list.")
+        }
     }
 
     /** The bar and counts under TiviMate's switch, kept up to date every few seconds while on screen. */
@@ -300,7 +321,9 @@ class SettingsPanels(
                     main.post {
                         reading = false
                         countsReadAt = SystemClock.uptimeMillis()
+                        val first = titleCounts == null
                         if (counts != null) titleCounts = counts
+                        if (first && !counts.isNullOrEmpty()) titlesPanel?.refresh()
                         statusOnScreen?.show(titleCounts, animate = true)
                     }
                 }
