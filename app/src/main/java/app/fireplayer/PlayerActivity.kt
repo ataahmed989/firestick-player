@@ -1559,7 +1559,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         focusEffect(btnEpisodes, 1.08f, findViewById(R.id.episodes_label))
         episodesSheet = EpisodesSheet(this, root).apply {
             onPlay = { ep -> playEpisode(ep) }
-            onClosed = { showControls(btnEpisodes) }
+            onClosed = { fadeSubtitles(true); showControls(btnEpisodes) }
         }
         focusEffect(btnPlay, 1.08f)
         focusEffect(btnRestart, 1.08f, findViewById(R.id.restart_label))
@@ -3106,8 +3106,16 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
     }
 
+    /** Subtitles would show through the episode cards; they step aside while the sheet is up. */
+    private fun fadeSubtitles(shown: Boolean) {
+        val alpha = if (shown) 1f else 0f
+        screenSubtitles.animate().alpha(alpha).setDuration(150).start()
+        frameSubtitles.animate().alpha(alpha).setDuration(150).start()
+    }
+
     private fun openEpisodes() {
         hideControls()
+        fadeSubtitles(false)
         episodesSheet.open("Looking up this show's episodes…")
         val entry = currentEntry() ?: return
         if (guideEpisode(entry) != null) {
