@@ -3,8 +3,11 @@ package app.fireplayer.ui
 import android.app.Activity
 import android.text.InputType
 import android.util.TypedValue
+import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
+import android.view.ViewGroup
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.content.ContextCompat
@@ -29,6 +32,10 @@ class SidePanel(private val activity: Activity) {
 
     val isOpen: Boolean get() = root.visibility == View.VISIBLE
 
+    /** Counts the times a window was opened, so a choice kept "while it's open" can start afresh the next time. */
+    var session = 0
+        private set
+
     init {
         // About a third of the screen, as in the design.
         val width = (activity.resources.displayMetrics.widthPixels * 0.31f).toInt()
@@ -38,6 +45,7 @@ class SidePanel(private val activity: Activity) {
     fun open(titleText: String, onClose: (() -> Unit)? = null, render: SidePanel.() -> Unit) {
         this.onClose = onClose
         renderer = render
+        session++
         title.text = titleText
         Glass.background(root, Glass.Kind.PANEL)
         root.visibility = View.VISIBLE
@@ -90,8 +98,12 @@ class SidePanel(private val activity: Activity) {
         root.isFocusable = false
     }
 
+    /** The rows the D-pad can reach, in order; a row with a button beside it gives both. */
     private fun focusables(): List<View> =
-        (0 until list.childCount).map { list.getChildAt(it) }.filter { it.isFocusable }
+        (0 until list.childCount).map { list.getChildAt(it) }.flatMap { child ->
+            if (child.tag == ROW_PAIR && child is ViewGroup) (0 until child.childCount).map { child.getChildAt(it) }
+            else listOf(child)
+        }.filter { it.isFocusable }
 
     fun focusRow(index: Int) {
         val focusRows = focusables()
@@ -146,6 +158,143 @@ class SidePanel(private val activity: Activity) {
         return row
     }
 
+    /**
+     * A row whose value is a small badge saying how the setting stands: "Active" in blue, "Inactive" in faded gray
+     * ([Rows.badge]).
+     */
+    fun badgeRow(label: String, badge: String, style: Rows.Badge, onClick: () -> Unit): View {
+        val row = rows.build(label, null, null)
+        row.addView(rows.badge(badge, style))
+        row.setOnClickListener { onClick() }
+        add(row)
+        return row
+    }
+
+    /**
+     * A row with a small arrow button beside it, which shows or hides what belongs to it ([expanded]: pointing
+     * down, otherwise right). Right on the D-pad reaches the arrow, Left goes back; up and down pass both.
+     * [turned] turns the arrow from where it was, after a press.
+     */
+    fun rowWithArrow(
+        label: String,
+        value: String?,
+        expanded: Boolean,
+        turned: Boolean,
+        onClick: () -> Unit,
+        onArrow: () -> Unit,
+    ): View {
+        val row = rows.build(label, value, null)
+        row.setOnClickListener { onClick() }
+        val chevron = ImageView(activity).apply {
+            setImageResource(R.drawable.ic_chevron_down)
+            imageTintList = rows.textColors
+            val to = if (expanded) 0f else -90f
+            rotation = if (turned) (if (expanded) -90f else 0f) else to
+            if (turned) animate().rotation(to).setDuration(180).start()
+        }
+        val arrow = rows.base().apply {
+            gravity = Gravity.CENTER
+            setPadding(0, 0, 0, 0)
+            minimumHeight = 0
+            contentDescription = if (expanded) "Hide details" else "Show details"
+            addView(chevron, LinearLayout.LayoutParams(rows.dp(15), rows.dp(15)))
+            setOnClickListener { onArrow() }
+        }
+        val pair = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            tag = ROW_PAIR
+            // The glass switch's glow reaches past its row.
+            clipChildren = false
+            clipToPadding = false
+        }
+        pair.addView(row, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        pair.addView(arrow, LinearLayout.LayoutParams(rows.dp(36), ViewGroup.LayoutParams.MATCH_PARENT).apply {
+            marginStart = rows.dp(6)
+        })
+        row.setOnKeyListener { _, keyCode, event ->
+            when (keyCode) {
+                KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                    if (event.action == KeyEvent.ACTION_DOWN) arrow.requestFocus()
+                    true
+                }
+                KeyEvent.KEYCODE_DPAD_LEFT -> true
+                else -> Rows.verticalNav(list, row, keyCode, event)
+            }
+        }
+        arrow.setOnKeyListener { _, keyCode, event ->
+            when (keyCode) {
+                KeyEvent.KEYCODE_DPAD_LEFT -> {
+                    if (event.action == KeyEvent.ACTION_DOWN) row.requestFocus()
+                    true
+                }
+                KeyEvent.KEYCODE_DPAD_RIGHT -> true
+                // Up and down go on from the row, as if from it.
+                else -> Rows.verticalNav(list, row, keyCode, event)
+            }
+        }
+        list.addView(pair, rows.listParams())
+        return row
+    }
+
+    /**
+     * A row that shows or hides what's under it: an arrow pointing down while closed and up while open, and a small
+     * [badge] saying how it stands (see [Rows.badge]).
+     */
+    fun dropdownRow(label: String, badge: String?, style: Rows.Badge, open: Boolean, onClick: () -> Unit): View {
+        val row = rows.build(label, null, null)
+        if (badge != null) row.addView(rows.badge(badge, style))
+        row.addView(ImageView(activity).apply {
+            setImageResource(R.drawable.ic_chevron_down)
+            imageTintList = rows.textColors
+            rotation = if (open) 180f else 0f
+            layoutParams = LinearLayout.LayoutParams(rows.dp(15), rows.dp(15)).apply { marginStart = rows.dp(8) }
+        })
+        row.setOnClickListener { onClick() }
+        add(row)
+        return row
+    }
+
+    /**
+     * A search result: its name (up to two lines), a line of small notes under it, and a value on the right (a match
+     * score). The notes follow the row's colours, dark on the white selected row.
+     */
+    fun resultRow(title: String, notes: String, value: String?, onClick: () -> Unit): View {
+        val row = rows.base()
+        val column = RowLayout(activity, rows.textColors).apply {
+            orientation = LinearLayout.VERTICAL
+            // Takes the row's state, so its texts are recoloured with it.
+            isDuplicateParentStateEnabled = true
+            addView(rows.text(title).apply {
+                isSingleLine = false
+                maxLines = 2
+                setLineSpacing(1f * rows.density, 1f)
+            })
+            if (notes.isNotEmpty()) addView(rows.text(notes).apply {
+                isSingleLine = false
+                maxLines = 2
+                alpha = 0.8f
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                    .apply { topMargin = rows.dp(2) }
+            })
+        }
+        row.addView(column, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        if (value != null) row.addView(rows.text(value).apply {
+            typeface = ResourcesCompat.getFont(activity, R.font.figtree_700)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                .apply { marginStart = rows.dp(8) }
+        })
+        row.setOnClickListener { onClick() }
+        add(row)
+        return row
+    }
+
+    /** Something shown in the list that isn't a row, such as a progress bar: the D-pad passes it by. */
+    fun view(view: View, top: Int = 2, bottom: Int = 2) {
+        list.addView(view, rows.listParams(top, bottom))
+    }
+
     /** A setting with several values: shows the current one and opens a small picker window. */
     fun choice(label: String, options: List<String>, selected: Int, onPick: (Int) -> Unit): View {
         // Always the value in words, even "Off" (no subtitle language): this row opens a picker, it isn't a switch.
@@ -191,14 +340,15 @@ class SidePanel(private val activity: Activity) {
     }
 
     companion object {
-        /** A small text-entry window; the Fire TV keyboard opens for it. */
+        /** A small text-entry window; the Fire TV keyboard opens for it. [hint] shows in the empty box. */
         fun prompt(
             activity: Activity,
             title: String,
             initial: String,
             password: Boolean = false,
             inputType: Int = InputType.TYPE_CLASS_TEXT,
+            hint: String? = null,
             onDone: (String) -> Unit,
-        ) = FireDialog.prompt(activity, title, initial, password, inputType, onDone)
+        ) = FireDialog.prompt(activity, title, initial, password, inputType, hint, onDone)
     }
 }

@@ -26,5 +26,9 @@ class QualityTest {
         val dashed = TitleInfo.parse("Gangs of Wasseypur - Part 1 - 2012", null)
         assertEquals("Gangs of Wasseypur - Part 1 (2012)", dashed.title)
         assertEquals("K.O. (2025)", TitleInfo.parse("K.O. - 2025", null).title)
+        // The tag in round brackets too, after a dashed year (a provider's French name)
+        val french = TitleInfo.parse("Shang-Chi et la Légende des Dix Anneaux - 2021 (4K HDR)", null)
+        assertEquals("Shang-Chi et la Légende des Dix Anneaux (2021)", french.title)
+        assertEquals("Shang-Chi et la Légende des Dix Anneaux", french.searchQuery)
     }
 }

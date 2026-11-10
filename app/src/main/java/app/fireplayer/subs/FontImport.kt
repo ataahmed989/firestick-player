@@ -10,12 +10,15 @@ import android.os.Looper
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.Window
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.content.ContextCompat
 import androidx.core.content.res.ResourcesCompat
 import app.fireplayer.R
 import app.fireplayer.data.Prefs
+import app.fireplayer.ui.FireDialog
+import app.fireplayer.ui.QrCode
 import app.fireplayer.ui.Rows
 import java.io.ByteArrayInputStream
 import java.io.File
@@ -60,14 +63,29 @@ class FontImport(private val activity: Activity, private val prefs: Prefs, priva
         }
         val status = label("Waiting for your phone…", 12f, muted, R.font.figtree_500)
         box.addView(label("Send a font from your phone", 16f, text, R.font.figtree_700), rows.listParams(0, 6))
+        val link = address?.let { "http://$it:$PORT" }
         box.addView(
-            label("On your phone, connected to the same Wi-Fi, open this address and choose the font file or zip.", 12f, muted, R.font.figtree_500),
+            label(
+                if (link != null) "On your phone, connected to the same Wi-Fi, scan the code with the camera or open this address, then choose the font file or zip."
+                else "On your phone, connected to the same Wi-Fi, open this address and choose the font file or zip.",
+                12f, muted, R.font.figtree_500,
+            ),
             rows.listParams(0, 14),
         )
-        box.addView(
-            label(if (address != null) "http://$address:$PORT" else "Connect the Fire TV to Wi-Fi first", 22f, accent, R.font.figtree_700),
-            rows.listParams(0, 14),
-        )
+        // Beside the address, so the window gets wider instead of taller than a TV screen.
+        val linkRow = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+        }
+        if (link != null) {
+            val qr = runCatching { QrCode.bitmap(link, rows.dp(150)) }.getOrNull()
+            if (qr != null) linkRow.addView(
+                ImageView(activity).apply { setImageBitmap(qr) },
+                LinearLayout.LayoutParams(qr.width, qr.height).apply { rightMargin = rows.dp(20) },
+            )
+        }
+        linkRow.addView(label(link ?: "Connect the Fire TV to Wi-Fi first", 22f, accent, R.font.figtree_700))
+        box.addView(linkRow, rows.listParams(0, 14))
         box.addView(status, rows.listParams(0, 12))
         val done = rows.base().apply {
             gravity = Gravity.CENTER
@@ -83,9 +101,11 @@ class FontImport(private val activity: Activity, private val prefs: Prefs, priva
         dialog.window?.apply {
             setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
             setDimAmount(0.25f)
-            attributes = attributes.apply { width = rows.dp(420) }
+            attributes = attributes.apply { width = rows.dp(if (address != null) 560 else 420) }
         }
         dialog.setOnDismissListener { stop() }
+        // Opened from Settings: the menu button closes it and the settings window.
+        dialog.setOnKeyListener { _, keyCode, event -> FireDialog.passMenuOn(activity, dialog, keyCode, event) }
         dialog.show()
         done.requestFocus()
 

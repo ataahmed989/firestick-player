@@ -29,7 +29,7 @@ TiviMate → Settings → Playback → External player → **FirePlayer**. Then 
 FirePlayer can give TiviMate its films and shows under their English names from TMDB, as **The Matrix (1999) [4K]**,
 and TiviMate's search then finds them by those names.
 
-1. FirePlayer → Settings → Online subtitles → add your **TMDB API key** (or read access token).
+1. FirePlayer → Settings → Online subtitles and TMDB API → add your **TMDB API key** (or read access token).
 2. In TiviMate: Settings → Playlists → a playlist → **Xtream Codes parameters** → **Server address**. Put
    `http://127.0.0.1:8000/` in front of what's there, so `http://proxpanel.fans:80` becomes
    `http://127.0.0.1:8000/proxpanel.fans:80`, then **Apply changes**. A new playlist is added the same way.
@@ -41,7 +41,17 @@ through. Only the names in the lists of films and shows change; videos, live cha
 the provider, and categories, artwork, episodes, favourites and watch history stay as they are. A title is renamed
 only when TMDB confirms it (by the TMDB id the provider gives, or by its name and year), so the provider's own name
 stays when TMDB isn't sure. The quality tag comes from the provider's name or category ("4K Movies"); videos are
-never opened to find it. Settings → TiviMate titles shows how far along each provider is, and turns it off.
+never opened to find it. Settings → TiviMate titles shows how far along each provider is, turns it off, and with
+**Check playlists now** looks up what's waiting at once; the arrow beside the switch shows the server address.
+
+## Continue Watching in Glass Home
+
+FirePlayer keeps a short list of the films and episodes it plays from TiviMate, for Glass Home's Continue Watching
+row. A title joins after five minutes of real playing (over any number of sittings) and leaves once watched to the
+end; a finished episode moves its show on to the next episode when FirePlayer knows it. A film not watched for 30
+days, and a show not watched for 60, leaves too, and comes back like a new one after another five minutes of playing.
+Live channels are never listed. Glass Home only gets each title's name, year, episode, TMDB id and how far along it is; the links (with your
+provider's login in them) stay in FirePlayer, which opens the title itself when it's picked.
 
 ## Remote
 

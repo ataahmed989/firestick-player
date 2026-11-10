@@ -10,11 +10,14 @@ import kotlin.math.abs
  */
 class TitleMatcher(private val tmdb: Tmdb) {
 
+    /** The name for TiviMate, and the TMDB id of the title TMDB confirmed. */
+    class Named(val title: String, val tmdb: Int)
+
     /**
      * [raw] is the provider's name, [tmdbId] the TMDB id it gave (0 for none), [year] the year it gave elsewhere (0
      * for none) and [category] the name of the category it's in.
      */
-    fun englishName(raw: String, tmdbId: Int, year: Int, show: Boolean, category: String?): String? {
+    fun englishName(raw: String, tmdbId: Int, year: Int, show: Boolean, category: String?): Named? {
         val info = TitleInfo.parse(raw, null)
         val name = info.searchQuery.trim()
         if (name.isEmpty()) return null
@@ -25,17 +28,18 @@ class TitleMatcher(private val tmdb: Tmdb) {
         val readings = listOf(name to wantedYear) +
             listOfNotNull(bare?.let { name.substring(0, it.range.first).trim() to it.groupValues[1].toInt() })
         val match = readings.firstNotNullOfOrNull { (n, y) -> if (tmdbId > 0) byId(tmdbId, n, y, show) else null }
-            ?: readings.firstNotNullOfOrNull { (n, y) -> tmdb.verify(n, y, show)?.let { Found(it.name, it.year) } }
+            ?: readings.firstNotNullOfOrNull { (n, y) -> tmdb.verify(n, y, show)?.let { Found(it.name, it.year, it.id) } }
             ?: return null
         val quality = Quality.of(raw, category)
-        return buildString {
+        val title = buildString {
             append(match.name)
             match.year?.let { append(" (").append(it).append(')') }
             quality?.let { append(" [").append(it).append(']') }
         }
+        return Named(title, match.id)
     }
 
-    private class Found(val name: String, val year: String?)
+    private class Found(val name: String, val year: String?, val id: Int)
 
     /**
      * The title the provider says this is, when TMDB has it under this very name in some language (its English,
@@ -49,7 +53,7 @@ class TitleMatcher(private val tmdb: Tmdb) {
         if (!fits(first.year, year, show)) return null
         val details = if (agrees(first.names, wanted, year != null)) first
         else tmdb.details(id, show, allNames = true)?.takeIf { agrees(it.names, wanted, year != null) } ?: return null
-        return Found(details.name, details.year)
+        return Found(details.name, details.year, id)
     }
 
     /**

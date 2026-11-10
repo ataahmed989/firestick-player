@@ -3,11 +3,11 @@ package app.fireplayer.data
 import android.content.Context
 import android.content.SharedPreferences
 
-/** All user settings, stored in one SharedPreferences file. */
+/** All user settings, stored in one SharedPreferences file; the keys and sign-in in one of their own ([KeyStore]). */
 class Prefs(context: Context) {
 
     private val sp: SharedPreferences =
-        context.applicationContext.getSharedPreferences("fireplayer", Context.MODE_PRIVATE)
+        context.applicationContext.getSharedPreferences(KeyStore.OLD_FILE, Context.MODE_PRIVATE)
 
     init {
         forgetPlayerMatches()
@@ -65,6 +65,11 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("glass_look", false)
         set(v) = sp.edit().putBoolean("glass_look", v).apply()
 
+    /** How many times a second the glass copies the playing film (Settings, Look, Glass refresh): 2, 4 or 8. */
+    var glassRefreshPerSec: Int
+        get() = sp.getInt("glass_refresh", 4)
+        set(v) = sp.edit().putInt("glass_refresh", v).apply()
+
     var passthrough: Boolean
         get() = sp.getBoolean("passthrough", true)
         set(v) = sp.edit().putBoolean("passthrough", v).apply()
@@ -77,22 +82,17 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("keep_ass", true)
         set(v) = sp.edit().putBoolean("keep_ass", v).apply()
 
-    var openSubtitlesApiKey: String
-        get() = sp.getString("os_api_key", "") ?: ""
-        set(v) = sp.edit().putString("os_api_key", v.trim()).apply()
+    /** The user's keys and sign-in, kept in a file of their own and saved with [KeyStore.save]. */
+    val keys: KeyStore = KeyStore.of(context)
 
-    var openSubtitlesUser: String
-        get() = sp.getString("os_user", "") ?: ""
-        set(v) = sp.edit().putString("os_user", v.trim()).apply()
+    val openSubtitlesApiKey: String get() = keys[KeyStore.Key.OPENSUBTITLES]
 
-    var openSubtitlesPassword: String
-        get() = sp.getString("os_pass", "") ?: ""
-        set(v) = sp.edit().putString("os_pass", v).apply()
+    val openSubtitlesUser: String get() = keys[KeyStore.Key.OPENSUBTITLES_USER]
+
+    val openSubtitlesPassword: String get() = keys[KeyStore.Key.OPENSUBTITLES_PASSWORD]
 
     /** The user's own TMDB key (the short API key or the long read access token), "" for none. */
-    var tmdbApiKey: String
-        get() = sp.getString("tmdb_key", "") ?: ""
-        set(v) = sp.edit().putString("tmdb_key", v.trim()).apply()
+    val tmdbApiKey: String get() = keys[KeyStore.Key.TMDB]
 
     /**
      * The player used to rename films with TMDB and kept every match here. TiviMate now gets the names already right
@@ -144,19 +144,6 @@ class Prefs(context: Context) {
         val editor = sp.edit()
         if (positionMs <= 0L) editor.remove("pos:$key") else editor.putLong("pos:$key", positionMs)
         editor.apply()
-    }
-
-    // The player left behind by Home: its task, and when it was left (elapsedRealtime), so the app icon can bring it
-    // back for a few minutes.
-    fun leavePlayer(taskId: Int, at: Long) = sp.edit().putInt("left_task", taskId).putLong("left_at", at).apply()
-
-    fun forgetLeftPlayer() = sp.edit().remove("left_task").remove("left_at").apply()
-
-    /** The task of a player left less than [withinMs] ago, or null. */
-    fun leftPlayerTask(now: Long, withinMs: Long): Int? {
-        val task = sp.getInt("left_task", -1)
-        val ago = now - sp.getLong("left_at", Long.MIN_VALUE / 2)
-        return task.takeIf { it != -1 && ago in 0..withinMs }
     }
 
     /** Name of the subtitle font sent from the phone, or "" when there isn't one. */

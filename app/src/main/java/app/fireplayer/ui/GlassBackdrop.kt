@@ -17,7 +17,9 @@ import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
 import androidx.annotation.RequiresApi
+import app.fireplayer.data.Prefs
 import java.util.WeakHashMap
+import kotlin.math.abs
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
@@ -32,7 +34,8 @@ import kotlin.math.sqrt
  * One per player, not shared: a new player opens before the old one closes, and the old one's onStop and
  * onDestroy must not stop the new one's copies. Copies are only taken while glass is drawn, so with the glass
  * look off nothing here runs. Everything happens on the main thread except the copy and the blur, which run on
- * the "FirePlayerGlass" thread.
+ * the "FirePlayerGlass" thread. Between copies a tiny one checks for a camera cut ([probeTick]), so a new shot
+ * reaches the glass at once instead of at the next refresh.
  */
 class GlassBackdrop(private val activity: Activity, private val surfaceView: SurfaceView) {
 
@@ -44,8 +47,22 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
     /** Two looks of the film: very soft and dimmed for windows, less blurred and brighter for the controls. */
     enum class Kind { PANEL, CONTROL }
 
-    private val main = Handler(Looper.getMainLooper())
+    /** Its callback takes the probes' answers: messages, not posted lambdas, so a probe makes nothing new. */
+    private val main = Handler(Looper.getMainLooper(), Handler.Callback { msg ->
+        if (msg.what == MSG_PROBED) onProbed(msg.arg1, msg.arg2, msg.obj)
+        true
+    })
     private val density = activity.resources.displayMetrics.density
+    private val prefs = Prefs(activity)
+
+    /** Time between copies while the film plays, from Settings (Look, Glass refresh); read each time, so a change applies at once. */
+    private val refreshMs: Long get() = 1_000L / prefs.glassRefreshPerSec.coerceIn(1, 8)
+
+    /**
+     * Each new copy fades in over nearly the whole gap to the next one, so the glass keeps drifting with the film
+     * instead of sitting still and then catching up; it's done just before the next copy lands.
+     */
+    private val crossfadeMs: Float get() = refreshMs * FADE_SHARE
     private val drawables = WeakHashMap<GlassDrawable, Boolean>()
     private val visiting = ArrayList<GlassDrawable>()
     private val location = IntArray(2)
@@ -89,8 +106,20 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
     private var requestId = 0
     private var lastRequestAt = 0L
     private var ticking = false
+    private var captureAt = 0L
     private var thread: HandlerThread? = null
     private var worker: Handler? = null
+
+    private var probeLooping = false
+    private var probeInFlight = false
+    private var probeFailures = 0
+    private var probesOff = false
+    /** The copy now asked for follows a camera cut. */
+    private var cutRequested = false
+    /** The newest copy followed a cut, so it fades in over CUT_FADE_MS rather than most of the gap. */
+    private var fastFade = false
+    /** The [copySignature] of the picture the glass shows, which probes are compared with. Never changed once made. */
+    private var shownSignature: IntArray? = null
 
     // The worker thread's own state.
     private var copyBitmap: Bitmap? = null
@@ -102,6 +131,15 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
     private var temp = IntArray(0)
     private var copying = false
     private var queued: Job? = null
+    private var probeBitmap: Bitmap? = null
+    /** A PixelCopy.OnPixelCopyFinishedListener (Android 7), made once: probes come ten times a second. */
+    private var probeListener: Any? = null
+    private var probing = false
+    private var probeGen = 0
+    private var probeRef: IntArray? = null
+    private val samples = IntArray(PROBE_WIDTH * PROBE_HEIGHT)
+    private val sampleRows = IntArray(COPY_WIDTH * 2)
+    private val probeSignature = IntArray(SIGNATURE_SIZE)
 
     private val surfaceCallback = object : SurfaceHolder.Callback {
         override fun surfaceCreated(holder: SurfaceHolder) = surfaceReady()
@@ -187,8 +225,13 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
         cancelCapture()
         main.removeCallbacks(tick)
         main.removeCallbacks(watchdog)
+        main.removeCallbacks(probeTick)
+        main.removeCallbacks(probeWatchdog)
+        main.removeMessages(MSG_PROBED)
         ticking = false
         inFlight = false
+        probeLooping = false
+        probeInFlight = false
         noDataTries = 0
         blocked = false
         dropFrames(fade = false, now = 0L)
@@ -218,8 +261,12 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
     /** How far the fade to the newest film is, from 0 to 1 (done). */
     fun fadeFraction(): Float {
         if (fadeStart == 0L) return 1f
-        val f = (SystemClock.uptimeMillis() - fadeStart).toFloat() / CROSSFADE_MS
-        return if (f >= 1f) 1f else max(f, 0f)
+        val length = if (fastFade) CUT_FADE_MS.toFloat() else crossfadeMs
+        val f = (SystemClock.uptimeMillis() - fadeStart).toFloat() / length
+        if (f >= 1f) return 1f
+        if (f <= 0f) return 0f
+        // Eased at both ends, so one fade flows into the next without a visible start or stop.
+        return f * f * (3f - 2f * f)
     }
 
     /** Glass to repaint when a new copy arrives. Kept weakly: rows are thrown away on every key press. */
@@ -232,7 +279,7 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
         if (!started || !copiesPossible()) return
         val now = SystemClock.uptimeMillis()
         if (playing) startTicking(now)
-        if (frames[0] == null || !valid || (playing && now - capturedAt >= REFRESH_MS)) scheduleCapture(0L)
+        if (frames[0] == null || !valid || (playing && now - capturedAt >= refreshMs)) scheduleCapture(0L)
     }
 
     // ---- Scheduling (main thread) ---------------------------------------
@@ -254,17 +301,21 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
         // Never right after a change (the new picture may not be up yet), nor more often than MIN_GAP_MS.
         val at = maxOf(now + delay, lastRequestAt + MIN_GAP_MS, changedAt + CHANGE_DELAY_MS)
         capturePending = true
+        captureAt = at
         main.postAtTime(captureRunnable, at)
     }
 
     private fun cancelCapture() {
         main.removeCallbacks(captureRunnable)
         capturePending = false
+        cutRequested = false
     }
 
     private val captureRunnable = Runnable {
         capturePending = false
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && !inFlight && canCapture()) requestCapture()
+        val cut = cutRequested
+        cutRequested = false
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && !inFlight && canCapture()) requestCapture(cut)
     }
 
     /** While the film plays under glass that's on screen: a new copy every second. */
@@ -273,10 +324,10 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
             ticking = false
             if (!started || !playing || !copiesPossible() || !anyVisible()) return
             val now = SystemClock.uptimeMillis()
-            val due = if (frames[0] != null && valid) capturedAt + REFRESH_MS else now
+            val due = if (frames[0] != null && valid) capturedAt + refreshMs else now
             val next = if (now >= due - TICK_SLACK_MS) {
                 scheduleCapture(0L)
-                now + REFRESH_MS
+                now + refreshMs
             } else {
                 due
             }
@@ -286,10 +337,92 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
     }
 
     private fun startTicking(now: Long) {
+        startProbing(now)
         if (ticking || !started || !copiesPossible()) return
         ticking = true
-        val due = if (frames[0] != null && valid) capturedAt + REFRESH_MS else now
+        val due = if (frames[0] != null && valid) capturedAt + refreshMs else now
         main.postAtTime(tick, max(due, now))
+    }
+
+    // ---- Cut probe (main thread) -----------------------------------------
+
+    /**
+     * Beside [tick], under the same conditions: every PROBE_MS a tiny copy is compared with the picture the glass
+     * shows. A camera cut or a big flash then gets a copy at once, rather than up to a whole refresh later.
+     */
+    private val probeTick = object : Runnable {
+        override fun run() {
+            probeLooping = false
+            if (!started || !playing || probesOff || !copiesPossible() || !anyVisible()) return
+            val now = SystemClock.uptimeMillis()
+            requestProbe(now)
+            probeLooping = true
+            main.postAtTime(this, now + PROBE_MS)
+        }
+    }
+
+    private fun startProbing(now: Long) {
+        if (probeLooping || probesOff || !started || !copiesPossible()) return
+        probeLooping = true
+        main.postAtTime(probeTick, now + PROBE_MS)
+    }
+
+    /** No probe while a copy is on its way or about due (that copy shows the cut anyway), or nothing is shown. */
+    private fun requestProbe(now: Long) {
+        val ref = shownSignature ?: return
+        val handler = worker ?: return
+        if (probeInFlight || inFlight || !valid || !canCapture() || !drawableAt(now)) return
+        if (capturePending && captureAt - now < PROBE_LEAD_MS) return
+        if (now >= capturedAt + refreshMs - PROBE_LEAD_MS) return
+        probeInFlight = true
+        main.postDelayed(probeWatchdog, WATCHDOG_MS)
+        handler.obtainMessage(MSG_PROBE, generation, 0, ref).sendToTarget()
+    }
+
+    /** A probe that never answers counts as a stuck copy, as in [watchdog]. */
+    private val probeWatchdog = Runnable {
+        if (probeInFlight) {
+            probeInFlight = false
+            if (++stuckCopies >= 2) disable()
+        }
+    }
+
+    /** Back on the main thread with a probe's answer; [ref] is the signature it was compared with. */
+    private fun onProbed(gen: Int, code: Int, ref: Any?) {
+        if (!started || gen != generation) return
+        probeInFlight = false
+        main.removeCallbacks(probeWatchdog)
+        when (code) {
+            COPY_SUCCESS, PROBE_CUT -> {
+                stuckCopies = 0
+                probeFailures = 0
+                // Only if the glass still shows the picture it was compared with, and no copy is on its way.
+                if (code == PROBE_CUT && ref === shownSignature && playing && valid && !inFlight) cut()
+            }
+            // A timeout held up the TV's drawing, as for a copy: never again for this player.
+            COPY_TIMEOUT -> disable()
+            // Usually the surface going away mid-probe; if it keeps failing, the regular copies carry on alone.
+            FAILED -> if (++probeFailures >= PROBE_FAILURES) stopProbing()
+            // Nothing shown, no surface, or busy: the regular copies deal with those, and the next probe tries again.
+            COPY_NO_DATA, COPY_SOURCE_INVALID, NO_SURFACE, PROBE_BUSY -> Unit
+            else -> if (++unknownErrors >= 2) disable()
+        }
+    }
+
+    private fun stopProbing() {
+        probesOff = true
+        main.removeCallbacks(probeTick)
+        probeLooping = false
+    }
+
+    /**
+     * The film cut to another shot: a copy now (MIN_GAP_MS and CHANGE_DELAY_MS still apply), faded in over
+     * CUT_FADE_MS, and the regular copies count on from it.
+     */
+    private fun cut() {
+        cancelCapture()
+        scheduleCapture(0L)
+        cutRequested = capturePending
     }
 
     private fun scheduleExpiry() {
@@ -328,6 +461,8 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
             frames[i] = null
         }
         fadeStart = if (fade) now else 0L
+        fastFade = false
+        shownSignature = null
         valid = false
         holdUntil = 0L
         main.removeCallbacks(expiry)
@@ -340,7 +475,11 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
         cancelCapture()
         main.removeCallbacks(tick)
         main.removeCallbacks(watchdog)
+        main.removeCallbacks(probeTick)
+        main.removeCallbacks(probeWatchdog)
         ticking = false
+        probeLooping = false
+        probeInFlight = false
         if (frames[0] != null) {
             val now = SystemClock.uptimeMillis()
             dropFrames(fade = drawableAt(now) && anyVisible(), now = now)
@@ -389,9 +528,10 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
         val controlSigma: Float,
         val topScrim: Float,
         val bottomScrim: Float,
+        val cut: Boolean,
     )
 
-    private fun buildJob(): Job? {
+    private fun buildJob(cut: Boolean): Job? {
         val root = activity.window?.decorView ?: return null
         val w = root.width
         val h = root.height
@@ -435,12 +575,13 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
             controlSigma = CONTROL_BLUR_DP * density / kx,
             topScrim = TOP_SCRIM_DP * density,
             bottomScrim = BOTTOM_SCRIM_DP * density,
+            cut = cut,
         )
     }
 
     @RequiresApi(Build.VERSION_CODES.N)
-    private fun requestCapture() {
-        val job = buildJob() ?: return
+    private fun requestCapture(cut: Boolean) {
+        val job = buildJob(cut) ?: return
         val handler = worker ?: startWorker()
         inFlight = true
         lastRequestAt = job.at
@@ -453,7 +594,14 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
         val t = HandlerThread("FirePlayerGlass", Process.THREAD_PRIORITY_BACKGROUND)
         t.start()
         thread = t
-        return Handler(t.looper).also { worker = it }
+        // Probes come as messages, like their answers (see [main]).
+        return Handler(t.looper, Handler.Callback { msg ->
+            val ref = msg.obj as? IntArray
+            if (msg.what == MSG_PROBE && ref != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                probe(msg.arg1, ref, msg.target)
+            }
+            true
+        }).also { worker = it }
     }
 
     /**
@@ -496,8 +644,9 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
         if (job.gen == generation) {
             if (result == COPY_SUCCESS) {
                 try {
+                    val signature = copySignature(dest)
                     val looks = blurred(job, dest)
-                    answer(job, COPY_SUCCESS, looks[0], looks[1])
+                    answer(job, COPY_SUCCESS, looks[0], looks[1], signature)
                 } catch (e: RuntimeException) {
                     answer(job, FAILED, null, null)
                 } catch (e: OutOfMemoryError) {
@@ -517,12 +666,12 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
         copy(job, handler)
     }
 
-    private fun answer(job: Job, code: Int, panel: Bitmap?, control: Bitmap?) {
-        main.post { onResult(job, code, panel, control) }
+    private fun answer(job: Job, code: Int, panel: Bitmap?, control: Bitmap?, signature: IntArray? = null) {
+        main.post { onResult(job, code, panel, control, signature) }
     }
 
     /** Back on the main thread with a copy, or why there's none. */
-    private fun onResult(job: Job, code: Int, panel: Bitmap?, control: Bitmap?) {
+    private fun onResult(job: Job, code: Int, panel: Bitmap?, control: Bitmap?, signature: IntArray?) {
         if (!started || job.gen != generation) return
         // An answer the watchdog already gave up on leaves the newer copy waiting.
         if (job.id == requestId) {
@@ -534,7 +683,7 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
                 noDataTries = 0
                 stuckCopies = 0
                 if (panel != null && control != null && job.serial == changeSerial) {
-                    store(job, panel, control)
+                    store(job, panel, control, signature)
                 } else if (anyVisible()) {
                     // Taken before the picture changed: take it again.
                     scheduleCapture(0L)
@@ -554,11 +703,22 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
         }
     }
 
-    private fun store(job: Job, panel: Bitmap, control: Bitmap) {
+    private fun store(job: Job, panel: Bitmap, control: Bitmap, signature: IntArray?) {
         val now = SystemClock.uptimeMillis()
         // The new film fades in over what glass shows now; over the dark fill if the old one wasn't shown.
         val shown = drawableAt(now)
-        for (i in frames.indices) fadingFrom[i] = if (shown) frames[i] else null
+        // A copy landing while the last one is still fading in (after a cut) starts from the blend on screen,
+        // not from the newer picture alone, so the glass never jumps.
+        val f = fadeFraction()
+        for (i in frames.indices) {
+            val from = fadingFrom[i]
+            val to = frames[i]
+            fadingFrom[i] = when {
+                !shown -> null
+                f < 1f && from != null && to != null -> blend(from, to, f) ?: to
+                else -> to
+            }
+        }
         frames[Kind.PANEL.ordinal] = panel
         frames[Kind.CONTROL.ordinal] = control
         screenScale = job.kx
@@ -570,9 +730,152 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
         holdUntil = 0L
         blocked = false
         fadeStart = now
+        fastFade = job.cut
+        shownSignature = signature
         scheduleExpiry()
         if (playing) startTicking(now)
         invalidateAll()
+    }
+
+    private var blendA = IntArray(0)
+    private var blendB = IntArray(0)
+
+    /** [from] faded [f] of the way to [to], as a new picture (copies are small: a few milliseconds, only after a cut). */
+    private fun blend(from: Bitmap, to: Bitmap, f: Float): Bitmap? {
+        val w = to.width
+        val h = to.height
+        if (from.width != w || from.height != h) return null
+        val n = w * h
+        if (blendA.size < n) {
+            blendA = IntArray(n)
+            blendB = IntArray(n)
+        }
+        from.getPixels(blendA, 0, w, 0, 0, w, h)
+        to.getPixels(blendB, 0, w, 0, 0, w, h)
+        val t = (f * 256f).toInt().coerceIn(0, 256)
+        for (i in 0 until n) {
+            val a = blendA[i]
+            val b = blendB[i]
+            val r = ((a shr 16) and 0xFF) + ((((b shr 16) and 0xFF) - ((a shr 16) and 0xFF)) * t shr 8)
+            val g = ((a shr 8) and 0xFF) + ((((b shr 8) and 0xFF) - ((a shr 8) and 0xFF)) * t shr 8)
+            val bl = (a and 0xFF) + (((b and 0xFF) - (a and 0xFF)) * t shr 8)
+            blendA[i] = (0xFF shl 24) or (r shl 16) or (g shl 8) or bl
+        }
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        out.setPixels(blendA, 0, w, 0, 0, w, h)
+        return out
+    }
+
+    // ---- Cut probe (worker thread) ---------------------------------------
+
+    /** A tiny copy, one at a time and never beside a full copy, compared with [ref] once it arrives. */
+    @RequiresApi(Build.VERSION_CODES.N)
+    private fun probe(gen: Int, ref: IntArray, handler: Handler) {
+        // Asked for before stop(): the main thread has already forgotten it.
+        if (gen != generation) return
+        if (probing || copying) {
+            reply(gen, PROBE_BUSY, ref)
+            return
+        }
+        val surface = surfaceView.holder.surface
+        if (surface == null || !surface.isValid) {
+            reply(gen, NO_SURFACE, ref)
+            return
+        }
+        try {
+            val dest = probeBitmap
+                ?: Bitmap.createBitmap(PROBE_WIDTH, PROBE_HEIGHT, Bitmap.Config.ARGB_8888).also { probeBitmap = it }
+            val listener = probeListener as? PixelCopy.OnPixelCopyFinishedListener
+                ?: PixelCopy.OnPixelCopyFinishedListener { result -> probed(result) }.also { probeListener = it }
+            probing = true
+            probeGen = gen
+            probeRef = ref
+            PixelCopy.request(surfaceView, dest, listener, handler)
+        } catch (e: RuntimeException) {
+            // The surface went away between the check and the copy.
+            probing = false
+            probeRef = null
+            reply(gen, FAILED, ref)
+        } catch (e: OutOfMemoryError) {
+            probing = false
+            probeRef = null
+            reply(gen, FAILED, ref)
+        }
+    }
+
+    private fun probed(result: Int) {
+        probing = false
+        val ref = probeRef ?: return
+        probeRef = null
+        val gen = probeGen
+        if (gen != generation) return
+        var code = result
+        val dest = probeBitmap
+        if (result == COPY_SUCCESS && dest != null) {
+            code = try {
+                dest.getPixels(samples, 0, PROBE_WIDTH, 0, 0, PROBE_WIDTH, PROBE_HEIGHT)
+                cellSums(samples, probeSignature)
+                if (difference(probeSignature, ref) >= CUT_THRESHOLD) PROBE_CUT else COPY_SUCCESS
+            } catch (e: RuntimeException) {
+                FAILED
+            }
+        }
+        reply(gen, code, ref)
+    }
+
+    private fun reply(gen: Int, code: Int, ref: IntArray) {
+        main.obtainMessage(MSG_PROBED, gen, code, ref).sendToTarget()
+    }
+
+    /**
+     * What a probe would have seen of a full copy: each of its 12 x 12 blocks sampled in the middle, as PixelCopy
+     * samples the film for a probe. An average of the whole block would differ from a probe on busy film.
+     */
+    private fun copySignature(copy: Bitmap): IntArray {
+        val stepX = COPY_WIDTH / PROBE_WIDTH
+        val stepY = COPY_HEIGHT / PROBE_HEIGHT
+        val midX = stepX / 2 - 1
+        for (y in 0 until PROBE_HEIGHT) {
+            copy.getPixels(sampleRows, 0, COPY_WIDTH, 0, y * stepY + stepY / 2 - 1, COPY_WIDTH, 2)
+            for (x in 0 until PROBE_WIDTH) {
+                val i = x * stepX + midX
+                samples[y * PROBE_WIDTH + x] = OPAQUE or
+                    (mean4(sampleRows, i, 16) shl 16) or (mean4(sampleRows, i, 8) shl 8) or mean4(sampleRows, i, 0)
+            }
+        }
+        // A new one each copy: the main thread keeps it while the copy is shown.
+        return IntArray(SIGNATURE_SIZE).also { cellSums(samples, it) }
+    }
+
+    /** One colour's mean over the 2 x 2 pixels at [i] of [sampleRows]' two rows, rounded. */
+    private fun mean4(rows: IntArray, i: Int, shift: Int): Int {
+        val j = COPY_WIDTH + i
+        val sum = ((rows[i] shr shift) and 0xFF) + ((rows[i + 1] shr shift) and 0xFF) +
+            ((rows[j] shr shift) and 0xFF) + ((rows[j + 1] shr shift) and 0xFF)
+        return (sum + 2) shr 2
+    }
+
+    /** The red, green and blue sums of each grid cell of a probe-sized picture. */
+    private fun cellSums(px: IntArray, out: IntArray) {
+        out.fill(0)
+        for (y in 0 until PROBE_HEIGHT) {
+            val cellRow = (y / CELL_HEIGHT) * GRID_WIDTH
+            val row = y * PROBE_WIDTH
+            for (x in 0 until PROBE_WIDTH) {
+                val c = px[row + x]
+                val k = (cellRow + x / CELL_WIDTH) * 3
+                out[k] += (c shr 16) and 0xFF
+                out[k + 1] += (c shr 8) and 0xFF
+                out[k + 2] += c and 0xFF
+            }
+        }
+    }
+
+    /** The mean difference of the cells' colours, from 0 (the same) to 1 (black against white). */
+    private fun difference(a: IntArray, b: IntArray): Float {
+        var sum = 0
+        for (i in a.indices) sum += abs(a[i] - b[i])
+        return sum / (a.size * CELL_WIDTH * CELL_HEIGHT * 255f)
     }
 
     // ---- Blur (worker thread) --------------------------------------------
@@ -730,19 +1033,48 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
     }
 
     private companion object {
-        /** About four copies a second while the film plays, so the glass keeps up with the picture. */
-        const val REFRESH_MS = 250L
         const val TICK_SLACK_MS = 30L
-        /** Shorter than REFRESH_MS, so each new copy has finished fading in before the next one lands. */
-        const val CROSSFADE_MS = 180f
+        /** The share of the gap between copies that a new one takes to fade in. */
+        const val FADE_SHARE = 0.9f
         /** Older than this while playing, a copy isn't shown: it would be another scene. */
         const val STALE_MS = 2_000L
-        const val MIN_GAP_MS = 120L
+        const val MIN_GAP_MS = 100L
         const val CHANGE_DELAY_MS = 150L
         const val HOLD_MS = 1_000L
         const val NO_DATA_RETRY_MS = 500L
         const val NO_DATA_TRIES = 3
         const val WATCHDOG_MS = 5_000L
+
+        /**
+         * How often a probe looks for a cut while the film plays: soon enough that the glass changes with the new
+         * shot, and cheap, as a probe is only PROBE_WIDTH x PROBE_HEIGHT pixels with no blur.
+         */
+        const val PROBE_MS = 100L
+        /** No probe when a copy is due this soon: that copy shows the cut anyway. */
+        const val PROBE_LEAD_MS = 60L
+        /**
+         * How far the cells' colours must move, as a share of full range, to count as a cut. A pan or someone
+         * walking through moves these coarse averages a few percent between copies; a new shot or a big flash moves
+         * them well past this. A cut it misses is between shots alike enough that the blurred glass barely changes.
+         */
+        const val CUT_THRESHOLD = 0.12f
+        /** A copy after a cut fades in this fast: the slow fade would dissolve the old shot into the new one. */
+        const val CUT_FADE_MS = 160L
+        /** After this many probes in a row fail, none for this player; the regular copies carry on. */
+        const val PROBE_FAILURES = 3
+
+        /** A probe's size: each pixel is exactly a 12 x 12 block of a full copy, so the two compare like for like. */
+        const val PROBE_WIDTH = 32
+        const val PROBE_HEIGHT = 18
+        /** Compared as 8 x 6 cells of 4 x 3 probe pixels: coarse, so motion inside a cell averages out. */
+        const val GRID_WIDTH = 8
+        const val GRID_HEIGHT = 6
+        const val CELL_WIDTH = PROBE_WIDTH / GRID_WIDTH
+        const val CELL_HEIGHT = PROBE_HEIGHT / GRID_HEIGHT
+        const val SIGNATURE_SIZE = GRID_WIDTH * GRID_HEIGHT * 3
+
+        const val MSG_PROBE = 1
+        const val MSG_PROBED = 2
 
         /** Copied a little larger than the blurred film, then shrunk smoothly: straight from 4K it would sparkle. */
         const val COPY_WIDTH = 384
@@ -755,6 +1087,8 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
         const val COPY_SOURCE_INVALID = 4
         const val NO_SURFACE = 100
         const val FAILED = 101
+        const val PROBE_CUT = 102
+        const val PROBE_BUSY = 103
 
         const val PANEL_BLUR_DP = 20f
         const val CONTROL_BLUR_DP = 11f

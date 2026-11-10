@@ -93,12 +93,23 @@ class SubtitleStyler(private val context: Context) {
 
     /**
      * Turns whatever text cues are showing into one cue, centred at the bottom of the screen like Netflix,
-     * so overlapping lines stack instead of drawing over each other.
+     * so overlapping lines stack instead of drawing over each other. With Position "As in the file", lines the
+     * file places elsewhere keep that place (lines sharing a place still stack) and only ordinary bottom lines move.
      */
     fun normalize(cues: List<Cue>): List<Cue> {
         // ASS shapes (a logo, a box behind a sign) come through as their drawing commands; they're not text.
         val shown = cues.filter { cue -> cue.text?.let { !DRAWING.matches(it) } ?: false }
         if (shown.isEmpty()) return emptyList()
+        if (!style.filePosition) return listOf(merge(shown, keepPlace = false))
+        val (bottom, placed) = shown.partition { isOrdinaryBottom(it) }
+        val out = ArrayList<Cue>()
+        if (bottom.isNotEmpty()) out += merge(bottom, keepPlace = false)
+        placed.groupBy { listOf(it.line, it.lineType, it.lineAnchor, it.position, it.positionAnchor, it.textAlignment) }
+            .values.forEach { out += merge(it, keepPlace = true) }
+        return out
+    }
+
+    private fun merge(shown: List<Cue>, keepPlace: Boolean): Cue {
         val text = SpannableStringBuilder()
         shown.forEachIndexed { i, cue ->
             if (i > 0) text.append('\n')
@@ -133,20 +144,21 @@ class SubtitleStyler(private val context: Context) {
                 0, text.length, Spanned.SPAN_INCLUSIVE_INCLUSIVE,
             )
         }
-        val cue = shown[0].buildUpon()
+        val builder = shown[0].buildUpon()
             .setText(text)
-            .setLine(Cue.DIMEN_UNSET, Cue.LINE_TYPE_FRACTION)
-            .setLineAnchor(Cue.TYPE_UNSET)
-            .setPosition(Cue.DIMEN_UNSET)
-            .setPositionAnchor(Cue.TYPE_UNSET)
-            .setSize(Cue.DIMEN_UNSET)
             .setTextSize(Cue.DIMEN_UNSET, Cue.TYPE_UNSET)
-            .setTextAlignment(Layout.Alignment.ALIGN_CENTER)
-            .setMultiRowAlignment(null)
-            .setVerticalType(Cue.TYPE_UNSET)
             .clearWindowColor()
-            .build()
-        return listOf(cue)
+        if (!keepPlace) {
+            builder.setLine(Cue.DIMEN_UNSET, Cue.LINE_TYPE_FRACTION)
+                .setLineAnchor(Cue.TYPE_UNSET)
+                .setPosition(Cue.DIMEN_UNSET)
+                .setPositionAnchor(Cue.TYPE_UNSET)
+                .setSize(Cue.DIMEN_UNSET)
+                .setTextAlignment(Layout.Alignment.ALIGN_CENTER)
+                .setMultiRowAlignment(null)
+                .setVerticalType(Cue.TYPE_UNSET)
+        }
+        return builder.build()
     }
 
     private var recolorSource: Bitmap? = null
@@ -254,3 +266,17 @@ class SubtitleStyler(private val context: Context) {
 
 /** Text that is only ASS vector drawing commands ("m 0 0 l 100 0 100 40 0 40"). */
 private val DRAWING = Regex("""\s*m\s+-?\d+(\.\d+)?\s+-?\d+(\.\d+)?(\s+([mnlbspc]|-?\d+(\.\d+)?))*\s*""")
+
+/**
+ * Whether the file leaves this line at the ordinary bottom-centre place, so the chosen bottom height applies.
+ * SubRip and WebVTT lines without a placement have no line set; Media3's SSA parser gives every bottom-centre
+ * line (\an2) a line of 0.95 anchored at its end, and SubRip's {\an2} gives 0.92. A line the file puts at the top,
+ * on one side or at a set spot counts as placed.
+ */
+internal fun isOrdinaryBottom(cue: Cue): Boolean {
+    val centred = cue.position == Cue.DIMEN_UNSET ||
+        (cue.positionAnchor != Cue.ANCHOR_TYPE_START && cue.positionAnchor != Cue.ANCHOR_TYPE_END && kotlin.math.abs(cue.position - 0.5f) < 0.02f)
+    if (!centred) return false
+    if (cue.line == Cue.DIMEN_UNSET) return true
+    return cue.lineType == Cue.LINE_TYPE_FRACTION && cue.lineAnchor == Cue.ANCHOR_TYPE_END && cue.line >= 0.85f
+}

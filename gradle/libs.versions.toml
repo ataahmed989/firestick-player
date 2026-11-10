@@ -3,6 +3,7 @@ agp = "8.13.1"
 kotlin = "2.2.0"
 media3 = "1.8.0"
 assMedia = "0.5.1"
+zxing = "3.5.3"
 ffmpegDecoder = "1.8.0+1"
 coreKtx = "1.16.0"
 appcompat = "1.7.1"
@@ -16,6 +17,7 @@ media3-exoplayer = { group = "androidx.media3", name = "media3-exoplayer", versi
 media3-exoplayer-hls = { group = "androidx.media3", name = "media3-exoplayer-hls", version.ref = "media3" }
 media3-exoplayer-dash = { group = "androidx.media3", name = "media3-exoplayer-dash", version.ref = "media3" }
 media3-ui = { group = "androidx.media3", name = "media3-ui", version.ref = "media3" }
+zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing" }
 ass-media = { group = "io.github.peerless2012", name = "ass-media", version.ref = "assMedia" }
 ffmpeg-decoder = { group = "org.jellyfin.media3", name = "media3-ffmpeg-decoder", version.ref = "ffmpegDecoder" }
 # Bundled model: Fire TV has no Google Play services to download one.

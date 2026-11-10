@@ -68,7 +68,7 @@ object FireDialog {
 
         val screenWidth = activity.resources.displayMetrics.widthPixels
         val width = (screenWidth * 0.22f).toInt().coerceAtLeast(rows.dp(190))
-        show(dialog, box, width) { params ->
+        show(activity, dialog, box, width, menuPassesOn = true) { params ->
             if (besidePanel) {
                 // Just left of the settings window (31% of the screen plus its margin).
                 params.gravity = Gravity.END or Gravity.CENTER_VERTICAL
@@ -90,6 +90,8 @@ object FireDialog {
         onDismiss: (() -> Unit)? = null,
         focus: Int = 0,
         busy: Boolean = false,
+        /** Opened from a settings window: the menu button closes both (see [show]). */
+        fromPanel: Boolean = false,
     ): Dialog? {
         if (gone(activity)) return null
         val rows = Rows(activity)
@@ -123,18 +125,19 @@ object FireDialog {
             (box.getChildAt(0).layoutParams as? ViewGroup.MarginLayoutParams)?.bottomMargin = rows.dp(2)
         }
         dialog.setOnDismissListener { if (!answered) onDismiss?.invoke() }
-        show(dialog, box, rows.dp(260)) {}
+        show(activity, dialog, box, rows.dp(260), menuPassesOn = fromPanel) {}
         list.getChildAt(focus.coerceIn(0, (answers.size - 1).coerceAtLeast(0)))?.requestFocus()
         return dialog
     }
 
-    /** Type a value, such as a preset name. */
+    /** Type a value, such as a preset name. [hint] shows in the empty box, as where to find a key. */
     fun prompt(
         activity: Activity,
         title: String,
         initial: String,
         password: Boolean = false,
         inputType: Int = InputType.TYPE_CLASS_TEXT,
+        hint: String? = null,
         onDone: (String) -> Unit,
     ) {
         if (gone(activity)) return
@@ -145,6 +148,7 @@ object FireDialog {
         val input = EditText(activity).apply {
             setText(initial)
             setSelection(initial.length)
+            if (hint != null) this.hint = hint
             setSingleLine()
             setBackgroundResource(R.drawable.bg_input)
             setPadding(rows.dp(12), rows.dp(9), rows.dp(12), rows.dp(9))
@@ -184,7 +188,7 @@ object FireDialog {
                 false
             }
         }
-        show(dialog, box, rows.dp(320)) {}
+        show(activity, dialog, box, rows.dp(320), menuPassesOn = true) {}
         input.requestFocus()
     }
 
@@ -212,7 +216,33 @@ object FireDialog {
         }
     }
 
-    private fun show(dialog: Dialog, box: View, width: Int, place: (WindowManager.LayoutParams) -> Unit) {
+    /**
+     * The menu button (three lines) on a small window that [passMenuOn] covers: the window closes and the press goes
+     * on to the screen underneath, which closes its settings window, or opens Settings when none is open. True when
+     * it was the menu button.
+     */
+    fun passMenuOn(activity: Activity, dialog: Dialog, keyCode: Int, event: KeyEvent): Boolean {
+        if (keyCode != KeyEvent.KEYCODE_MENU) return false
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && dialog.isShowing) {
+            dialog.cancel()
+            activity.dispatchKeyEvent(event)
+        }
+        return true
+    }
+
+    /**
+     * [menuPassesOn]: a window opened from Settings (a list of choices, a box to type in), or a link typed in on the
+     * home screen, which the menu button closes along with the settings window (see [passMenuOn]). The resume
+     * question and the update's windows keep the menu button to themselves.
+     */
+    private fun show(
+        activity: Activity,
+        dialog: Dialog,
+        box: View,
+        width: Int,
+        menuPassesOn: Boolean,
+        place: (WindowManager.LayoutParams) -> Unit,
+    ) {
         dialog.setContentView(box)
         val window = dialog.window ?: return
         window.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
@@ -223,6 +253,7 @@ object FireDialog {
         place(params)
         window.attributes = params
         dialog.setOnKeyListener { _, keyCode, event ->
+            if (menuPassesOn && passMenuOn(activity, dialog, keyCode, event)) return@setOnKeyListener true
             // Swallow the Back key-up too, so it doesn't reach the window underneath.
             keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP && !dialog.isShowing
         }

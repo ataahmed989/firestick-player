@@ -21,6 +21,9 @@ data class TitleInfo(
         return copy(title = s.title, searchQuery = s.searchQuery, named = true)
     }
 
+    /** This episode under other numbers: the provider's own, where TiviMate's count its place in the list. */
+    fun withEpisode(season: Int, episode: Int): TitleInfo = copy(subtitle = "S$season E$episode", season = season, episode = episode)
+
     companion object {
         /** The title of a video that came with no name. */
         const val NO_NAME = "Video"
@@ -31,7 +34,7 @@ data class TitleInfo(
         private val bracketYearRegex = Regex("""[(\[]((?:19|20)\d{2})[)\]]""")
         private val dashYearRegex = Regex("""\s+[-–]\s+((?:19|20)\d{2})\s*$""")
         // As app.fireplayer.titles.Quality writes it.
-        private val qualityEndRegex = Regex("""\s*\[(?:4K|1080p|720p|HD|SD)(?: HDR)?]\s*$""")
+        private val qualityEndRegex = Regex("""\s*(?:\[(?:4K|1080p|720p|HD|SD)(?: HDR)?]|\((?:4K|1080p|720p|HD|SD)(?: HDR)?\))\s*$""")
 
         // Release tags and everything after them. Needs a space before it, so the title itself survives.
         private const val JUNK = """2160p|1080p|720p|480p|4k|uhd|hdr10?\+?|web-?dl|webrip|bluray|brrip|remux|x26[45]|""" +

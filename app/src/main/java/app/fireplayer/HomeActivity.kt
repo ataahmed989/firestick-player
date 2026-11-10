@@ -1,11 +1,8 @@
 package app.fireplayer
 
-import android.app.ActivityManager
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
-import android.os.SystemClock
 import android.text.InputType
 import android.util.TypedValue
 import android.view.Gravity
@@ -34,6 +31,8 @@ class HomeActivity : AppCompatActivity() {
     private lateinit var settingsPanels: SettingsPanels
     private lateinit var panel: SidePanel
     private lateinit var list: LinearLayout
+    private lateinit var styleRow: View
+    private lateinit var settingsRow: View
     private var consumeBackUp = false
     /** The look the rows were given, so a switch made in the player meanwhile shows here too. */
     private var lookOn = false
@@ -42,19 +41,18 @@ class HomeActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         val prefs = Prefs(this)
         Glass.on = prefs.glassLook
-        if (backToPlayer(prefs)) return
         setContentView(R.layout.activity_home)
         settingsPanels = SettingsPanels(this, prefs, SubtitlePresets(prefs))
         panel = SidePanel(this)
         list = findViewById(R.id.home_list)
 
         val first = addRow("Open a link", R.drawable.ic_link) { openLink() }
-        addRow("Subtitle style", R.drawable.ic_sub_style) { from ->
+        styleRow = addRow("Subtitle style", R.drawable.ic_sub_style) { from ->
             openPanel("Subtitle style", from) {
                 settingsPanels.renderSubtitleStyle(this, onStyleChanged = {}, onAssChanged = {})
             }
         }
-        addRow("Settings", R.drawable.ic_settings) { from ->
+        settingsRow = addRow("Settings", R.drawable.ic_settings) { from ->
             openPanel("Settings", from) { settingsPanels.renderSettings(this) }
         }
         first.requestFocus()
@@ -70,7 +68,7 @@ class HomeActivity : AppCompatActivity() {
 
     override fun onRestart() {
         super.onRestart()
-        if (backToPlayer(Prefs(this)) || !::list.isInitialized || lookOn == Glass.on) return
+        if (!::list.isInitialized || lookOn == Glass.on) return
         // The look was switched in the player while this screen was behind it.
         applyLook()
         if (panel.isOpen) {
@@ -93,30 +91,16 @@ class HomeActivity : AppCompatActivity() {
         (panel.root.parent as? ViewGroup)?.clipChildren = !Glass.on
     }
 
-    /**
-     * A film left with Home a few minutes ago comes straight back where it was, instead of this screen. The player
-     * lives in a task of its own (so Back goes to TiviMate), which the app icon wouldn't otherwise find.
-     */
-    private fun backToPlayer(prefs: Prefs): Boolean {
-        val task = prefs.leftPlayerTask(SystemClock.elapsedRealtime(), RESUME_WINDOW_MS) ?: return false
-        val am = getSystemService(ACTIVITY_SERVICE) as ActivityManager
-        val alive = am.appTasks.any { t ->
-            runCatching { t.taskInfo.let { if (Build.VERSION.SDK_INT >= 29) it.taskId else @Suppress("DEPRECATION") it.persistentId } }
-                .getOrNull() == task
-        }
-        if (!alive) {
-            prefs.forgetLeftPlayer()
-            return false
-        }
-        am.moveTaskToFront(task, 0)
-        // Nothing of this screen stays behind the film, so Back from it doesn't land here.
-        if (isTaskRoot) finishAndRemoveTask() else finish()
-        @Suppress("DEPRECATION")
-        overridePendingTransition(0, 0)
-        return true
-    }
-
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        // The menu button (three lines) opens Settings, or Subtitle style as chosen in Settings, as in the player;
+        // pressed again, it closes the window.
+        if (event.keyCode == KeyEvent.KEYCODE_MENU && ::settingsRow.isInitialized) {
+            if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                if (panel.isOpen) panel.close()
+                else (if (Prefs(this).menuOpensStyle) styleRow else settingsRow).performClick()
+            }
+            return true
+        }
         if (event.keyCode == KeyEvent.KEYCODE_BACK) {
             if (event.action == KeyEvent.ACTION_DOWN && panel.isOpen) {
                 consumeBackUp = true
@@ -205,7 +189,5 @@ class HomeActivity : AppCompatActivity() {
     companion object {
         /** Link types the player can open; others (rtsp://, rtmp://) would need extra modules. */
         private val PLAYABLE_SCHEMES = setOf("http", "https", "file", "content")
-        /** How long after Home the app icon still brings the film back; later it opens this screen as before. */
-        private const val RESUME_WINDOW_MS = 5 * 60_000L
     }
 }

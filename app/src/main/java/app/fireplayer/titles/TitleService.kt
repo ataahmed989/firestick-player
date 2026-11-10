@@ -11,8 +11,10 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.Process
+import android.os.SystemClock
 import android.util.Log
 import app.fireplayer.R
+import app.fireplayer.data.KeyStore
 import app.fireplayer.subs.Tmdb
 import java.io.IOException
 import java.util.concurrent.Callable
@@ -27,7 +29,7 @@ import java.util.concurrent.atomic.AtomicInteger
  *
  * Names TMDB has confirmed go into the lists as they pass ([ProxyServer]); new titles are asked about in the
  * background, a few at a time and never while FirePlayer is playing, and have their English names from TiviMate's next
- * playlist update.
+ * playlist update. Settings' "Check playlists now" wakes it at once ([checkNow]).
  */
 class TitleService : Service() {
 
@@ -36,6 +38,10 @@ class TitleService : Service() {
     private val lock = Object()
     @Volatile private var playing = false
     @Volatile private var running = true
+    // A wake that came while the loop was busy: its next rest is skipped, so the wake isn't lost.
+    private var woken = false
+    // When Settings last asked to check now (seconds): what failed before then is tried again at once.
+    @Volatile private var checkAsked = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -49,7 +55,14 @@ class TitleService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_PLAYING) playing = intent.getBooleanExtra(EXTRA_PLAYING, false)
+        when (intent?.action) {
+            ACTION_PLAYING -> playing = intent.getBooleanExtra(EXTRA_PLAYING, false)
+            ACTION_CHECK -> {
+                checkAsked = now()
+                Log.i(TAG, "Check asked for in Settings")
+            }
+        }
+        // Whatever the loop is resting for, it looks again; a film on or no key still keep it waiting.
         wake()
         return START_STICKY
     }
@@ -61,9 +74,15 @@ class TitleService : Service() {
         super.onDestroy()
     }
 
-    private fun wake() = synchronized(lock) { lock.notifyAll() }
+    private fun wake() = synchronized(lock) {
+        woken = true
+        lock.notifyAll()
+    }
 
-    private fun sleep(ms: Long) = synchronized(lock) { if (running) lock.wait(ms) }
+    private fun sleep(ms: Long) = synchronized(lock) {
+        if (running && !woken && ms > 0) lock.wait(ms)
+        woken = false
+    }
 
     private fun startInForeground() {
         val manager = getSystemService(NotificationManager::class.java)
@@ -89,12 +108,14 @@ class TitleService : Service() {
     // ---------------------------------------------------------------------
     // Asking TMDB
 
-    private val prefs get() = getSharedPreferences("fireplayer", Context.MODE_MULTI_PROCESS)
+    @Suppress("DEPRECATION")
+    private val prefs get() = getSharedPreferences(KeyStore.OLD_FILE, Context.MODE_MULTI_PROCESS)
 
     private fun matchLoop() {
         Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
-        // Read again each time: the key is changed in the app, which is another process.
-        val tmdb = Tmdb({ prefs.getString("tmdb_key", "").orEmpty().trim() }, book.tmdbMemory)
+        // Read again each time: the key is saved in the app, which is another process.
+        val keys = KeyStore.reading(this)
+        val tmdb = Tmdb({ keys[KeyStore.Key.TMDB] }, book.tmdbMemory)
         val matcher = TitleMatcher(tmdb)
         val pool = Executors.newFixedThreadPool(ASKING_AT_ONCE) { r ->
             Thread {
@@ -104,7 +125,14 @@ class TitleService : Service() {
         }
         var told = false
         var batches = 0
+        // After TMDB said too many requests (or no to the key), when it's asked again: a wake doesn't cut this short.
+        var slowUntil = 0L
         while (running) {
+            val resting = slowUntil - SystemClock.elapsedRealtime()
+            if (resting > 0) {
+                sleep(resting)
+                continue
+            }
             if (!tmdb.isConfigured) {
                 if (!told) Log.i(TAG, "No TMDB key in FirePlayer's Settings yet; titles wait for one")
                 told = true
@@ -113,14 +141,21 @@ class TitleService : Service() {
                 continue
             }
             told = false
-            // The player has the TV to itself.
-            if (playing) {
+            // The player has the TV to itself, while it says so: a "stopped" Fire OS refused leaves no beat behind.
+            if (playing && System.currentTimeMillis() - prefs.getLong(PLAYER_BEAT, 0L) < PLAYER_GONE_MS) {
                 sleep(PLAYING_CHECK_MS)
                 continue
             }
-            val batch = runCatching { book.waiting(now(), BATCH) }.getOrElse { emptyList() }
+            val batch = runCatching { book.waiting(now(), BATCH, retrySince = checkAsked) }.getOrElse { emptyList() }
             // Now and then, and when everything is done: how far each provider is.
-            if (batches++ % PROGRESS_EVERY == 0 || batch.isEmpty()) logProgress()
+            if (batches++ % PROGRESS_EVERY == 0 || batch.isEmpty()) {
+                // A playlist taken out of TiviMate: its English names go too.
+                runCatching { book.gone(now()) }.getOrNull()?.forEach { server ->
+                    Log.i(TAG, "$server hasn't been asked about for a week: its titles are forgotten")
+                    runCatching { book.forget(server) }
+                }
+                logProgress()
+            }
             if (batch.isEmpty()) {
                 sleep(IDLE_MS)
                 continue
@@ -132,8 +167,9 @@ class TitleService : Service() {
                 Callable {
                     if (!running || playing || slowDown.get()) return@Callable
                     try {
-                        val name = matcher.englishName(w.raw, w.tmdb, w.year, w.kind == TitleBook.Kind.SHOW, w.category)
-                        book.answered(w, name, now())
+                        val named = matcher.englishName(w.raw, w.tmdb, w.year, w.kind == TitleBook.Kind.SHOW, w.category)
+                        val name = named?.title
+                        book.answered(w, name, now(), named?.tmdb ?: 0)
                         // A few of each batch go in the log, to see how it's going.
                         val n = if (name != null) renamed.incrementAndGet() else kept.incrementAndGet()
                         if (n <= LOGGED_PER_BATCH) Log.i(TAG, "\"${w.raw}\" " + if (name != null) "-> \"$name\"" else "kept")
@@ -154,7 +190,7 @@ class TitleService : Service() {
             }
             runCatching { pool.invokeAll(tasks) }
             Log.i(TAG, "TMDB: ${renamed.get()} renamed, ${kept.get()} kept of ${batch.size}" + if (slowDown.get()) ", slowing down" else "")
-            if (slowDown.get()) sleep(SLOW_DOWN_MS)
+            if (slowDown.get()) slowUntil = SystemClock.elapsedRealtime() + SLOW_DOWN_MS
         }
         pool.shutdownNow()
     }
@@ -183,6 +219,7 @@ class TitleService : Service() {
         private const val CHANNEL = "titles"
         private const val NOTIFICATION_ID = 8000
         private const val ACTION_PLAYING = "app.fireplayer.titles.PLAYING"
+        private const val ACTION_CHECK = "app.fireplayer.titles.CHECK"
         private const val EXTRA_PLAYING = "playing"
         // TMDB allows about 50 requests a second; this stays well under it.
         private const val ASKING_AT_ONCE = 3
@@ -203,6 +240,27 @@ class TitleService : Service() {
                 else if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent)
                 else context.startService(intent)
             }.onFailure { Log.w(TAG, "Couldn't start: $it") }
+        }
+
+        /**
+         * Settings' "Check playlists now": the server stops resting and looks up what's waiting at once, trying again
+         * what failed before. It still waits while a film is on, and for a TMDB key. Only when the server is on.
+         */
+        fun checkNow(context: Context) {
+            if (!isOn(context)) return
+            runCatching { context.startService(Intent(context, TitleService::class.java).setAction(ACTION_CHECK)) }
+                .onFailure { Log.w(TAG, "Couldn't ask for a check: $it") }
+        }
+
+        /** How often the player notes that it is on, and how long without a note the server takes it as stopped. */
+        const val BEAT_MS = 30_000L
+        private const val PLAYER_GONE_MS = 90_000L
+        private const val PLAYER_BEAT = "player_beat"
+
+        /** The player is on (see PlayerActivity.playingBeat). */
+        fun playerBeat(context: Context) {
+            context.getSharedPreferences("fireplayer", Context.MODE_MULTI_PROCESS).edit()
+                .putLong(PLAYER_BEAT, System.currentTimeMillis()).apply()
         }
 
         /** While FirePlayer plays, TMDB isn't asked: the player has the TV's attention. */

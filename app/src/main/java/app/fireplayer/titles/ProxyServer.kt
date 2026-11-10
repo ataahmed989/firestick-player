@@ -105,7 +105,15 @@ class ProxyServer(
                 else -> respond(output, 302, "Found", listOf("Location" to upstream), null)
             }
         } catch (e: Exception) {
-            Log.i(TAG, "${request.method} $server$rest${ACTION.find(query)?.let { " (${it.groupValues[1]})" }.orEmpty()} failed: $e")
+            // Only the kind of request: a film's or channel's path holds the account's name and password.
+            val kind = rest.trimStart('/').substringBefore('/')
+            val what = when {
+                rest.endsWith(".php") || rest == "/" -> rest
+                kind in LINK_KINDS -> "/$kind/…"
+                else -> "/…"
+            }
+            val why = e.javaClass.simpleName + (e.message?.let { ": " + it.replace(LINK, "…") } ?: "")
+            Log.i(TAG, "${request.method} $server$what${ACTION.find(query)?.let { " (${it.groupValues[1]})" }.orEmpty()} failed: $why")
             runCatching { respondText(output, 502, "The provider couldn't be reached.") }
         }
     }
@@ -113,7 +121,15 @@ class ProxyServer(
     // ---------------------------------------------------------------------
     // The provider's API
 
+    // When each provider was last noted as asked about, so the database is written about once an hour each.
+    private val seenNoted = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
     private fun api(request: Request, server: String, upstream: String, query: String, output: OutputStream) {
+        val now = System.currentTimeMillis() / 1000
+        if (now - (seenNoted[server] ?: 0L) > 3600) {
+            seenNoted[server] = now
+            runCatching { book.seen(server, now) }
+        }
         val params = Uri.parse("http://x/?$query")
         val action = params.getQueryParameter("action")
         val started = System.currentTimeMillis()
@@ -241,7 +257,10 @@ class ProxyServer(
             (0 until list.length()).mapNotNull { i ->
                 val ep = list.optJSONObject(i) ?: return@mapNotNull null
                 val id = ep.optString("id").toIntOrNull() ?: return@mapNotNull null
-                TitleBook.Episode(id, series, ep.optString("season").toIntOrNull() ?: 0, ep.optString("episode_num").toIntOrNull() ?: 0)
+                TitleBook.Episode(
+                    id, series, ep.optString("season").toIntOrNull() ?: 0, ep.optString("episode_num").toIntOrNull() ?: 0,
+                    ep.optString("container_extension").takeIf { it.isNotBlank() && it.all(Char::isLetterOrDigit) },
+                )
             }
         }
     }
@@ -334,6 +353,10 @@ class ProxyServer(
         val YEAR = Regex("""(19|20)\d{2}""")
         // Only the action goes in the log, never the login around it.
         val ACTION = Regex("""(?:^|&)action=([A-Za-z_]+)""")
+        // A link in an error's message, which can carry the login too.
+        val LINK = Regex("""https?://\S+""")
+        // The first part of a video's path that can go in the log; a live channel's may be the account's name instead.
+        val LINK_KINDS = setOf("movie", "series", "live", "timeshift")
         val HOP_HEADERS = setOf("host", "connection", "accept-encoding", "content-length", "transfer-encoding", "keep-alive")
     }
 }
