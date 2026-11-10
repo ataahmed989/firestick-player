@@ -236,6 +236,60 @@ class SidePanel(private val activity: Activity) {
         return row
     }
 
+    /**
+     * A row that shows or hides what's under it: an arrow pointing down while closed and up while open, and a small
+     * [badge] saying how it stands (see [Rows.badge]).
+     */
+    fun dropdownRow(label: String, badge: String?, style: Rows.Badge, open: Boolean, onClick: () -> Unit): View {
+        val row = rows.build(label, null, null)
+        if (badge != null) row.addView(rows.badge(badge, style))
+        row.addView(ImageView(activity).apply {
+            setImageResource(R.drawable.ic_chevron_down)
+            imageTintList = rows.textColors
+            rotation = if (open) 180f else 0f
+            layoutParams = LinearLayout.LayoutParams(rows.dp(15), rows.dp(15)).apply { marginStart = rows.dp(8) }
+        })
+        row.setOnClickListener { onClick() }
+        add(row)
+        return row
+    }
+
+    /**
+     * A search result: its name (up to two lines), a line of small notes under it, and a value on the right (a match
+     * score). The notes follow the row's colours, dark on the white selected row.
+     */
+    fun resultRow(title: String, notes: String, value: String?, onClick: () -> Unit): View {
+        val row = rows.base()
+        val column = RowLayout(activity, rows.textColors).apply {
+            orientation = LinearLayout.VERTICAL
+            // Takes the row's state, so its texts are recoloured with it.
+            isDuplicateParentStateEnabled = true
+            addView(rows.text(title).apply {
+                isSingleLine = false
+                maxLines = 2
+                setLineSpacing(1f * rows.density, 1f)
+            })
+            if (notes.isNotEmpty()) addView(rows.text(notes).apply {
+                isSingleLine = false
+                maxLines = 2
+                alpha = 0.8f
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                    .apply { topMargin = rows.dp(2) }
+            })
+        }
+        row.addView(column, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        if (value != null) row.addView(rows.text(value).apply {
+            typeface = ResourcesCompat.getFont(activity, R.font.figtree_700)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                .apply { marginStart = rows.dp(8) }
+        })
+        row.setOnClickListener { onClick() }
+        add(row)
+        return row
+    }
+
     /** Something shown in the list that isn't a row, such as a progress bar: the D-pad passes it by. */
     fun view(view: View, top: Int = 2, bottom: Int = 2) {
         list.addView(view, rows.listParams(top, bottom))

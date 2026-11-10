@@ -59,6 +59,7 @@ class TitleBook(context: Context) : SQLiteOpenHelper(context, "titles.db", null,
         )
         db.execSQL("CREATE TABLE tmdb(key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID")
         createEpisodes(db)
+        createSeen(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -69,6 +70,50 @@ class TitleBook(context: Context) : SQLiteOpenHelper(context, "titles.db", null,
         if (oldVersion < 4) db.execSQL("ALTER TABLE item ADD COLUMN found INTEGER NOT NULL DEFAULT 0")
         // A quality tag in round brackets ("- 2021 (4K HDR)") now comes off, so the year is read: asked about again
         if (oldVersion in 2..4) db.execSQL("UPDATE item SET state = $WAITING, checked = 0 WHERE state = $KEPT")
+        if (oldVersion < 6) {
+            createSeen(db)
+            // Providers already listed count as asked about now, so none is taken for gone the day this comes in.
+            db.execSQL("INSERT OR IGNORE INTO seen(server, at) SELECT DISTINCT server, ${System.currentTimeMillis() / 1000} FROM item")
+        }
+    }
+
+    private fun createSeen(db: SQLiteDatabase) =
+        db.execSQL("CREATE TABLE IF NOT EXISTS seen(server TEXT PRIMARY KEY, at INTEGER NOT NULL) WITHOUT ROWID")
+
+    /** TiviMate asked about this provider's lists just now (seconds): its playlist is still there. */
+    fun seen(server: String, now: Long) {
+        writableDatabase.insertWithOnConflict("seen", null, ContentValues().apply {
+            put("server", server)
+            put("at", now)
+        }, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    /**
+     * Providers whose playlist seems gone from TiviMate: not asked about for [idleS] while TiviMate has asked about
+     * another one within [activeS] (so it's in use, and only that playlist stopped). Seconds.
+     */
+    fun gone(now: Long, idleS: Long = GONE_AFTER_S, activeS: Long = IN_USE_S): List<String> {
+        val all = HashMap<String, Long>()
+        readableDatabase.rawQuery("SELECT server, at FROM seen", null).use { c ->
+            while (c.moveToNext()) all[c.getString(0)] = c.getLong(1)
+        }
+        readableDatabase.rawQuery("SELECT DISTINCT server FROM item", null).use { c ->
+            while (c.moveToNext()) all.putIfAbsent(c.getString(0), now)
+        }
+        if (all.values.none { now - it < activeS }) return emptyList()
+        return all.filter { now - it.value >= idleS }.keys.toList()
+    }
+
+    /** Forgets everything kept for a provider: its English names, categories and episodes. */
+    fun forget(server: String) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            for (table in listOf("item", "category", "episode", "seen")) db.delete(table, "server = ?", arrayOf(server))
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
     }
 
     private fun createEpisodes(db: SQLiteDatabase) = db.execSQL(
@@ -277,12 +322,16 @@ class TitleBook(context: Context) : SQLiteOpenHelper(context, "titles.db", null,
 
     private companion object {
         // 2: TitleMatcher's better rules; 3: episodes and their shows; 4: episodes' file types, and TMDB ids found.
-        const val VERSION = 5
+        // 6: when TiviMate last asked about each provider, so a playlist taken out of TiviMate is forgotten here too.
+        const val VERSION = 6
         const val WAITING = 0
         const val RENAMED = 1
         const val KEPT = 2
         // A failed try (TMDB unreachable) is tried again after this; a title TMDB wasn't sure of, after a month.
         const val RETRY_FAILED_S = 10 * 60L
         const val RETRY_KEPT_S = 30 * 24 * 3600L
+        // TiviMate refreshes a playlist's lists at least daily while it's used.
+        const val GONE_AFTER_S = 7 * 24 * 3600L
+        const val IN_USE_S = 2 * 24 * 3600L
     }
 }

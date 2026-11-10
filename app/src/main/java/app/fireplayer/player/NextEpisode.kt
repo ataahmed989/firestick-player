@@ -28,8 +28,11 @@ import java.util.Locale
  */
 class NextEpisode(context: Context, private val headers: Map<String, String>) {
 
-    /** The show this episode belongs to, by the provider's name for it, and the episode after it (null if none). */
-    class Found(val showName: String, val next: Next?)
+    /**
+     * The show this episode belongs to, by the provider's name for it, and the episode after it (null if none); also
+     * the provider's id for the show and all its episodes, for the Episodes list (see [ShowGuide]).
+     */
+    class Found(val showName: String, val next: Next?, val seriesId: String, val series: Series)
 
     class Next(val uri: Uri, val title: String)
 
@@ -46,7 +49,8 @@ class NextEpisode(context: Context, private val headers: Map<String, String>) {
         val base get() = "$scheme://$authority" + (server?.let { "/$it" } ?: "")
     }
 
-    private class Episode(
+    /** One of a show's episodes as the provider lists it. */
+    class Episode(
         val id: String,
         val extension: String,
         val season: Int,
@@ -54,10 +58,18 @@ class NextEpisode(context: Context, private val headers: Map<String, String>) {
         val title: String,
         /** When the provider added it (seconds), 0 when it doesn't say. */
         val added: Long,
+        /** What the provider says about it, when it does: its story, a picture, its length (seconds), when it aired. */
+        val plot: String = "",
+        val image: String? = null,
+        val durationSecs: Int = 0,
+        val airDate: String = "",
     )
 
-    /** One show: its episodes in watching order, and its name from the show's own details when the list has none. */
-    private class Series(val name: String?, val episodes: List<Episode>)
+    /**
+     * One show: its episodes in watching order, its name from the show's own details when the list has none, and the
+     * TMDB id and year the provider gives for it (0 when it doesn't).
+     */
+    class Series(val name: String?, val episodes: List<Episode>, val tmdb: Int = 0, val year: Int = 0)
 
     /** [modified] is when the provider last changed the show (seconds), usually when its latest episode came in. */
     private class Show(val id: String, val name: String, val title: String, val modified: Long) {
@@ -121,7 +133,7 @@ class NextEpisode(context: Context, private val headers: Map<String, String>) {
         remember(link, seriesId, name, series.episodes)
         // The name it came with reads best; one that was only its number gets the provider's name for the show.
         val shown = if (named) show else TitleInfo.parse(name, null).title
-        return Found(name, after(link, shown, series.episodes))
+        return Found(name, after(link, shown, series.episodes), seriesId, series)
     }
 
     private fun after(link: Link, show: String, episodes: List<Episode>): Next? {
@@ -244,6 +256,7 @@ class NextEpisode(context: Context, private val headers: Map<String, String>) {
         val episodes = seasons.sortedBy { it.first }.flatMap { (season, list) ->
             seasonItems(list).mapIndexedNotNull { i, e ->
                 val id = e.str("id") ?: return@mapIndexedNotNull null
+                val info = e.optJSONObject("info")
                 Episode(
                     id = id,
                     extension = e.str("container_extension") ?: "mkv",
@@ -251,10 +264,18 @@ class NextEpisode(context: Context, private val headers: Map<String, String>) {
                     number = e.str("episode_num")?.toIntOrNull() ?: (i + 1),
                     title = e.str("title").orEmpty(),
                     added = e.str("added")?.toLongOrNull() ?: 0L,
+                    plot = info?.str("plot").orEmpty(),
+                    image = info?.str("movie_image")?.takeIf { it.startsWith("http") },
+                    durationSecs = info?.str("duration_secs")?.toIntOrNull() ?: 0,
+                    airDate = info?.str("releasedate") ?: info?.str("air_date").orEmpty(),
                 )
             }.sortedBy { it.number }
         }
-        return Series(root.optJSONObject("info")?.str("name"), episodes)
+        val about = root.optJSONObject("info")
+        val tmdb = (about?.str("tmdb") ?: about?.str("tmdb_id"))?.toIntOrNull() ?: 0
+        val year = (about?.str("year") ?: about?.str("releaseDate") ?: about?.str("release_date"))
+            ?.let { YEAR.find(it)?.value?.toIntOrNull() } ?: 0
+        return Series(about?.str("name"), episodes, tmdb, year)
     }
 
     /** A season's episodes, which come as a list, as episodes keyed "0", "1"…, or (just one) as that episode. */
@@ -449,6 +470,28 @@ class NextEpisode(context: Context, private val headers: Map<String, String>) {
 
         /** Whether [uri] is a provider's episode link the next episode can be found from. */
         fun canFind(uri: Uri): Boolean = parse(uri) != null
+
+        /** The provider's id of the episode at [uri] ("12345" in ".../series/USER/PASSWORD/12345.mkv"). */
+        fun episodeId(uri: Uri): String? = parse(uri)?.episodeId
+
+        /**
+         * The provider a link plays from, as its address reads: "premium-pro2.com:8789". Through FirePlayer's title
+         * server, the provider it stands for. Null for anything that isn't on the internet (a file on the TV).
+         */
+        fun portal(uri: Uri): String? {
+            val scheme = uri.scheme?.lowercase()
+            if (scheme != "http" && scheme != "https") return null
+            return TitleProxy.serverIn(uri) ?: uri.encodedAuthority?.substringAfterLast('@')?.takeIf { it.isNotEmpty() }
+        }
+
+        /** Another episode of the same show: the same link with that episode's file at the end, the login as it came. */
+        fun episodeUri(current: Uri, id: String, extension: String): Uri {
+            val folder = current.encodedPath.orEmpty().substringBeforeLast('/')
+            return current.buildUpon().encodedPath("$folder/${Uri.encode(id)}.${Uri.encode(extension)}").build()
+        }
+
+        /** Where a show's episode list is kept between plays: by provider, login and show. */
+        fun showKey(uri: Uri, seriesId: String): String? = parse(uri)?.let { "${it.base}|${it.user}|$seriesId" }
 
         /** Whether [uri] looks like a provider's episode at all ("…/series/…"). */
         fun isEpisodeLink(uri: Uri): Boolean = uri.pathSegments.any { it.equals("series", true) }

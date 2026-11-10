@@ -121,7 +121,15 @@ class ProxyServer(
     // ---------------------------------------------------------------------
     // The provider's API
 
+    // When each provider was last noted as asked about, so the database is written about once an hour each.
+    private val seenNoted = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
     private fun api(request: Request, server: String, upstream: String, query: String, output: OutputStream) {
+        val now = System.currentTimeMillis() / 1000
+        if (now - (seenNoted[server] ?: 0L) > 3600) {
+            seenNoted[server] = now
+            runCatching { book.seen(server, now) }
+        }
         val params = Uri.parse("http://x/?$query")
         val action = params.getQueryParameter("action")
         val started = System.currentTimeMillis()

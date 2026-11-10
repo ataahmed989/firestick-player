@@ -101,6 +101,32 @@ key KEYCODE_MEDIA_PLAY_PAUSE
 pid=$(adb shell pidof $PKG | tr -d '\r')
 adb logcat -d -v time ${pid:+--pid=$pid} | grep -E "Ocr|OCR|Subtitle|PGS|Pgs|ExoPlayerImpl|AndroidRuntime" | tail -300 > "$OUT/logcat-pgs.txt"
 
+# A show's episode from the small provider served alongside: its name beside the numbers, the provider's chip,
+# Episodes, and This episode in Settings. The look-up waits for the film to be well ahead, so this waits too.
+movie "http://10.0.2.2:8000/series/demo/demo/2003.mkv" "EN - Breaking Bad (2008) - S02E03 - Bit by a Dead Bee"
+shot 16-episode-playing 25
+key KEYCODE_DPAD_UP
+shot 17-episode-controls 1.5
+# Right from Play: Watch from start, Next episode, Episodes.
+key KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT
+shot 17b-episodes-button 1
+key KEYCODE_DPAD_CENTER
+shot 18-episodes 4
+key KEYCODE_DPAD_RIGHT
+shot 18b-episodes-next-card 1.5
+key KEYCODE_DPAD_UP
+shot 18c-episodes-seasons 1
+key KEYCODE_DPAD_LEFT
+shot 18d-episodes-season-1 1.5
+key KEYCODE_BACK
+key KEYCODE_MENU
+shot 19-this-episode 1.5
+key KEYCODE_DPAD_CENTER
+shot 20-this-episode-open 1.5
+key KEYCODE_BACK
+pid=$(adb shell pidof $PKG | tr -d '\r')
+adb logcat -d -v time ${pid:+--pid=$pid} | grep -E "FirePlayerNext|FirePlayerGuide|AndroidRuntime" | tail -100 > "$OUT/logcat-episodes.txt"
+
 # Coming back to the same film asks where to start.
 movie "http://10.0.2.2:8000/movie.mkv" "EN - 4K UHD - Dune: Part Two (2024)"
 shot 13-resume 6

@@ -11,8 +11,25 @@ import java.util.Locale
 /** Minimal client for the opensubtitles.com REST API. All calls block; run them off the main thread. */
 class OpenSubtitles(private val prefs: Prefs) {
 
-    /** [episode] is "S1 E8" when the site says which episode the subtitles are for. */
-    data class Result(val fileId: Long, val release: String, val language: String, val downloads: Int, val episode: String?)
+    /**
+     * [episode] is "S1 E8" when the site says which episode the subtitles are for ([season] and [number] too, else
+     * 0). [fps] is the frame rate they were timed for (0 when not said), [hashMatch] whether they were made for this
+     * very file (see [MovieHash]), [machine] whether machine or AI translated.
+     */
+    data class Result(
+        val fileId: Long,
+        val release: String,
+        val language: String,
+        val downloads: Int,
+        val episode: String?,
+        val season: Int = 0,
+        val number: Int = 0,
+        val fps: Float = 0f,
+        val hashMatch: Boolean = false,
+        val machine: Boolean = false,
+        val trusted: Boolean = false,
+        val hearingImpaired: Boolean = false,
+    )
 
     // VIP accounts are sent to their own server when they sign in.
     private var base = "https://api.opensubtitles.com/api/v1"
@@ -29,8 +46,18 @@ class OpenSubtitles(private val prefs: Prefs) {
      * Subtitles in [language] for [query], or for a show's [season] and [episode]. With [tmdbId] (the film's, or the
      * show's when [show]) the site is asked for exactly that one; when it has nothing under the id, the name is tried.
      */
-    fun search(query: String, language: String, season: Int?, episode: Int?, tmdbId: Int?, show: Boolean): List<Result> {
+    fun search(
+        query: String,
+        language: String,
+        season: Int?,
+        episode: Int?,
+        tmdbId: Int?,
+        show: Boolean,
+        movieHash: String? = null,
+    ): List<Result> {
         val params = sortedMapOf<String, String>()
+        // Marks the subtitles made for this very file; the rest still come.
+        movieHash?.let { params["moviehash"] = it }
         if (language.isNotEmpty()) params["languages"] = siteLanguages(language)
         params["type"] = if (show) "episode" else "movie"
         if (show) {
@@ -64,6 +91,13 @@ class OpenSubtitles(private val prefs: Prefs) {
                 language = attrs.optString("language"),
                 downloads = attrs.optInt("download_count"),
                 episode = if (s > 0 && e > 0) "S$s E$e" else null,
+                season = s.coerceAtLeast(0),
+                number = e.coerceAtLeast(0),
+                fps = attrs.optDouble("fps", 0.0).toFloat().takeIf { !it.isNaN() } ?: 0f,
+                hashMatch = attrs.optBoolean("moviehash_match", false),
+                machine = attrs.optBoolean("machine_translated", false) || attrs.optBoolean("ai_translated", false),
+                trusted = attrs.optBoolean("from_trusted", false),
+                hearingImpaired = attrs.optBoolean("hearing_impaired", false),
             )
         }
         return out.sortedByDescending { it.downloads }

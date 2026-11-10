@@ -173,6 +173,14 @@
                     android:id="@+id/chip_audio"
                     style="@style/Chip"
                     tools:text="5.1" />
+
+                <TextView
+                    android:id="@+id/chip_portal"
+                    style="@style/Chip"
+                    android:drawableStart="@drawable/ic_server"
+                    android:drawablePadding="4dp"
+                    android:gravity="center_vertical"
+                    tools:text="premium-pro2.com:8789" />
             </LinearLayout>
 
             <TextView
@@ -312,6 +320,34 @@
                         android:id="@+id/next_label"
                         style="@style/ButtonLabel"
                         android:text="Next episode" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/episodes_group"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="9dp"
+                    android:layout_marginTop="6dp"
+                    android:clipChildren="false"
+                    android:gravity="center_horizontal"
+                    android:orientation="vertical"
+                    android:visibility="gone">
+
+                    <ImageButton
+                        android:id="@+id/btn_episodes"
+                        android:layout_width="39dp"
+                        android:layout_height="39dp"
+                        android:background="@drawable/bg_circle"
+                        android:contentDescription="Episodes"
+                        android:padding="10dp"
+                        android:scaleType="fitCenter"
+                        android:src="@drawable/ic_episodes"
+                        android:tint="@color/sel_on_button" />
+
+                    <TextView
+                        android:id="@+id/episodes_label"
+                        style="@style/ButtonLabel"
+                        android:text="Episodes" />
                 </LinearLayout>
 
                 <View
