@@ -93,6 +93,9 @@ class SettingsPanels(
     /** Called after a font arrives from the phone (or is removed), so the subtitles can switch to it. */
     var onFontChanged: () -> Unit = {}
 
+    /** Subtitle auto sync was turned on or off. */
+    var onAutoSyncChanged: () -> Unit = {}
+
     /** Languages offered as defaults; English first. */
     private val languages = listOf("en", "ar", "es", "fr", "de", "it", "pt", "hi", "ur", "tr", "ja", "ko", "zh")
 
@@ -216,6 +219,12 @@ class SettingsPanels(
         }
 
         header("Online subtitles and TMDB API")
+        row("Auto sync subtitles", onOff(prefs.autoSync)) {
+            prefs.autoSync = !prefs.autoSync
+            onAutoSyncChanged()
+            refresh()
+        }
+        message("Lines up subtitles from Search online with the speech, by itself.")
         keyRow("OpenSubtitles API key", KeyStore.Key.OPENSUBTITLES, whereFrom = "From opensubtitles.com › API consumers")
         // Optional: signing in raises how many subtitles can be downloaded a day.
         keyRow("OpenSubtitles username", KeyStore.Key.OPENSUBTITLES_USER, whereFrom = OPTIONAL_HINT)
