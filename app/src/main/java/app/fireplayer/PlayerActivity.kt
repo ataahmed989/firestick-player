@@ -1862,7 +1862,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // Next episode when there's one to play; else Exit, but only where the credits surely run to the end (a scene
         // after them, or not knowing, means no Exit).
         val nextOk = next?.nextEpisode == true && prefs.playNextEpisode
-        val exitAt = if (!nextOk && next == null && prefs.skipIntro) inCredits(parts?.exitAt) else null
+        // An episode whose next one is still being looked for (or not looked for yet) may have one: no Exit meanwhile.
+        val current = entries.getOrNull(index)
+        val nextUnknown = current != null && prefs.playNextEpisode && findsNextEpisode &&
+            (current.info.episode != null || NextEpisode.isEpisodeLink(current.uri)) &&
+            (lookupInFlight || nextLookedUpFor != current.key)
+        val exitAt = if (!nextOk && next == null && !nextUnknown && prefs.skipIntro) inCredits(parts?.exitAt) else null
         val exit = !nextOk && exitAt != null
         val auto = nextOk && inCredits(parts?.exitAt) != null
         val showAt = if (exit) exitAt!! else credits ?: Long.MAX_VALUE

@@ -57,6 +57,17 @@ class SkipRulesTest {
     }
 
     @Test
+    fun introDbCreditsEndingWithTheFileVouchForIt() {
+        // X-Men '97 S1E1: TMDB has no length for it; IntroDB's credits end at 1830.17 s, the file is 1830 s long.
+        val file = 1_830_000L
+        assertTrue(SkipRules.outroAnchors(IntroDbSegment(1_712_510, 1_830_170, 1.0), file))
+        assertTrue(SkipRules.introDb(Part.INTRO, IntroDbSegment(4_000, 75_000, 1.0), false, SkipRules.outroAnchors(IntroDbSegment(1_712_510, 1_830_170, 1.0), file), file) is Pick.Found)
+        // A file 40 s longer (an ad bumper, another cut): not vouched for.
+        assertTrue(!SkipRules.outroAnchors(IntroDbSegment(1_712_510, 1_830_170, 1.0), file + 40_000))
+        assertTrue(!SkipRules.outroAnchors(null, file))
+    }
+
+    @Test
     fun introDbFillsOnlyWhatSkipDbLeftOpen() {
         val skip = mapOf(
             Part.INTRO to SkipRules.skipDb(Part.INTRO, SkipDbSegment(61_000, 91_000, "exact", 0, 0.9), length),
