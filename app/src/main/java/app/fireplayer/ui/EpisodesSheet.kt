@@ -62,7 +62,7 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
         setPadding(dp(42), dp(34), dp(42), dp(14))
     }
     private val title = text(22f, font700, color(R.color.text)).apply { text = "Episodes" }
-    // Where the episodes come from, as a pod like the player's info pods, beside the seasons.
+    // Where the episodes come from, as a pod like the player's info pods.
     private val source = text(10f, font700, color(R.color.text)).apply {
         setPadding(dp(6), dp(2), dp(6), dp(2))
     }
@@ -111,19 +111,18 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
             addView(title, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         }
         sheet.addView(head, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        // The seasons, and on the same line at the right the source pod: low, just above the episodes.
-        val seasonsLine = LinearLayout(activity).apply {
+        sheet.addView(seasonsScroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10) })
+        sheet.addView(status, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(16) })
+        // Where the episodes come from and how many, as pods just over the covers, like the info pods over the time bar.
+        val pods = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            clipChildren = false
-            clipToPadding = false
-            addView(seasonsScroll, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            addView(source, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(12) })
+            setPadding(dp(4), 0, 0, 0)
+            addView(source, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(count, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(5) })
         }
-        sheet.addView(seasonsLine, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10) })
-        sheet.addView(status, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(16) })
-        sheet.addView(cardsScroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) })
+        sheet.addView(pods, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(12) })
+        sheet.addView(cardsScroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = 0 })
         root.addView(sheet, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
         host.addView(root, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
     }
@@ -173,7 +172,7 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
             Glass.background(pod, Glass.Kind.CHIP)
             pod.visibility = View.VISIBLE
         }
-        source.text = guide.portal
+        source.text = "From ${guide.portal}"
         count.text = "$episodes episode" + if (episodes == 1) "" else "s"
         status.visibility = View.GONE
         val now = guide.episode(playing)
