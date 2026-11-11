@@ -292,6 +292,25 @@ object SyncMatcher {
     fun rAt(h: Heard, subs: Lines, delayMs: Long): Double = rAtLag(h, subs.ys, lagOf(delayMs))
 
     /**
+     * How far the overlap at [delayMs] (within 100 ms either way) stands above the overlaps of all the shifts within
+     * [centerMs] ± [rangeMs], in standard deviations. For a delay found on another stretch, whether [h] bears it out on
+     * its own: it's one shift named beforehand, not the best of thousands, so a much lower bar than [Result.z] means a lot.
+     */
+    fun zAt(h: Heard, subs: Lines, delayMs: Long, centerMs: Long, rangeMs: Long): Double {
+        val first = lagOf(centerMs - rangeMs)
+        val lags = lagOf(centerMs + rangeMs) - first + 1
+        val rs = DoubleArray(lags) { rAtLag(h, subs.ys, first + it) }
+        val mean = rs.average()
+        var sd = 0.0
+        for (r in rs) sd += (r - mean) * (r - mean)
+        sd = sqrt(sd / lags)
+        val k = lagOf(delayMs) - first
+        var r = Double.NEGATIVE_INFINITY
+        for (j in k - 1..k + 1) if (j in 0 until lags) r = maxOf(r, rs[j])
+        return if (sd > 0 && r.isFinite()) (r - mean) / sd else 0.0
+    }
+
+    /**
      * What each block of [h] adds to the overlap with the lines shown [delayMs] later: above 0 on the whole where that
      * delay fits, around 0 where it doesn't. Added up along the film, it shows where a delay stops fitting.
      */

@@ -82,7 +82,10 @@ class OffsetTrackerTest {
                 assertEquals(p.story(), 1, p.moves.size)
                 assertFalse(p.story(), p.tracker.segments.any { near(1_400 + 45_000, it.delayMs, 1_000) })
                 val took = p.moves[0].toMs - ad.toMs
-                println("one break (format hints $hints, seed $seed): +15 s found ${took / 1000} s after it, from ${OffsetTracker.clock(p.moves[0].atMs)} (ads ${OffsetTracker.clock(ad.fromMs)}-${OffsetTracker.clock(ad.toMs)})")
+                println("one break (format hints $hints, seed $seed): +15 s found ${took / 1000} s after it, from ${OffsetTracker.clock(p.moves[0].atMs)}, " +
+                    "proven on ${OffsetTracker.clock(p.moves[0].fromMs)}-${OffsetTracker.clock(p.moves[0].toMs)} (ads ${OffsetTracker.clock(ad.fromMs)}-${OffsetTracker.clock(ad.toMs)})")
+                // The proof is the talking after the break, not the break itself (nor what came before it).
+                assertTrue(p.story(), p.moves[0].fromMs >= ad.toMs - 5_000)
                 // This made-up film talks sparsely (about 6 lines a minute): SyncMatcher wants 12 lines and 30 s of talking.
                 assertTrue("took ${took / 1000} s\n${p.story()}", took <= if (hints) 4 * min else 6 * min)
             }
@@ -103,7 +106,10 @@ class OffsetTrackerTest {
             val p = Playback(film, OffsetTracker(film.subs), formatHints = hints)
             p.play(film.lengthMs)
             assertFollows(film, p)
-            for (m in p.moves) println("several breaks (format hints $hints): $m")
+            for (m in p.moves) {
+                println("several breaks (format hints $hints): $m")
+                film.ads.lastOrNull { it.fromMs <= m.toMs }?.let { assertTrue(p.story(), m.fromMs >= it.toMs - 5_000) }
+            }
         }
     }
 
@@ -213,6 +219,111 @@ class OffsetTrackerTest {
     }
 
     @Test
+    fun aChangeFoundRunningIntoAStretchFoundRightBefore() {
+        // 45-60 min played first with the delay from the start (right there, after a cut that undoes an earlier ad),
+        // then back to 42-44 min: the +60 s found there runs into the stretch already found right. Steps fall anywhere
+        // in a second, as on the TV. (These seeds all threw here once.)
+        var moved = 0
+        for (seed in listOf(2L, 5L, 7L, 8L, 9L, 11L)) for (back in listOf(42 * min, 42 * min + 30_000, 43 * min, 43 * min + 30_000, 44 * min)) {
+            val film = FakeFilm.make(seed, minutes = 70, delayMs = 0, breaks = listOf(
+                Break(20 * min, adMs = 60_000),
+                Break(44 * min, adMs = 0, skipMs = 60_000, linesInSkip = true),
+            ))
+            val p = Playback(film, OffsetTracker(film.subs), formatHints = false)
+            p.play(6 * min)
+            p.seek(45 * min + 370)
+            p.play(60 * min)
+            p.seek(back + 370)
+            p.play(52 * min)
+            val segs = p.tracker.segments
+            assertTrue("$segs", segs.zipWithNext().all { (a, b) -> a.fromMs < b.fromMs })
+            assertTrue(p.story(), segs.all { near(0, it.delayMs, 400) || near(60_000, it.delayMs, 400) })
+            // Where it was found right with no delay, it still has none.
+            assertTrue(p.story(), near(0, p.tracker.delayAt(46 * min), 400))
+            if (p.moves.isNotEmpty()) {
+                moved++
+                assertTrue(p.story(), near(60_000, p.tracker.delayAt(back + 30_000), 400))
+            }
+        }
+        println("a change running into a stretch found right: $moved of 30 runs moved, all in order")
+        assertTrue(moved >= 5)
+    }
+
+    @Test
+    fun smallChangesAfterABreakAreFollowedWithoutFlipFlopping() {
+        // A break the subtitles allow for all but half a second of (or 0.6 s too much): too close to the delay in use
+        // for a wide margin, so agreeing matches carry it; once changed it stays changed, and before the break stays.
+        for (shift in listOf(450L, -600L)) for (seed in 1L..3L) {
+            val film = FakeFilm.make(seed, minutes = 50, delayMs = 0, breaks = listOf(Break(20 * min, adMs = 30_000, skipMs = 30_000 - shift)))
+            val p = Playback(film, OffsetTracker(film.subs))
+            val applied = ArrayList<Long>()
+            while (p.posMs < film.lengthMs) {
+                p.play(minOf(p.posMs + 30_000, film.lengthMs))
+                p.tracker.delayAt(p.posMs)?.let { applied += it }
+            }
+            // Where half a second takes over can't be told as closely as for a bigger change: the two delays differ
+            // only at the edges of lines.
+            assertFollows(film, p, slackMs = 60_000)
+            val first = applied.indexOfFirst { near(shift, it, 150) }
+            assertTrue(p.story(), first >= 0)
+            assertTrue("$applied\n${p.story()}", applied.drop(first).all { near(shift, it, 200) })
+            assertTrue(p.story(), near(0, p.tracker.delayAt(10 * min), 150))
+            println("small change $shift ms (seed $seed): found ${(p.moves.firstOrNull()?.toMs ?: 0) / 1000 - 20 * 60} s after 20:00, segments ${p.tracker.segments}")
+        }
+    }
+
+    @Test
+    fun aChangeBeyondTheRangeSearchedIsNotGuessed() {
+        // 4 or 5 minutes of ads the subtitles don't allow for: the right delay is beyond the 3 minutes searched. No
+        // delay is made up (the subtitles stay as they were), and the checks that keep coming out unsure are spaced out.
+        for (seed in 1L..4L) {
+            val ad = if (seed % 2 == 0L) 240_000L else 300_000L
+            val film = FakeFilm.make(seed, minutes = 65, delayMs = 0, breaks = listOf(Break(12 * min, adMs = ad)))
+            val p = Playback(film, OffsetTracker(film.subs), formatHints = seed <= 2)
+            p.play(film.lengthMs)
+            assertTrue(p.story(), p.moves.isEmpty())
+            assertTrue(p.story(), p.tracker.segments.all { near(0, it.delayMs, 400) })
+            val late = p.decisions.count { it.outcome != Outcome.WAIT && it.toMs > 35 * min }
+            println("${ad / 1000} s of ads (seed $seed): ${p.matches} matches in all, $late in the last 30 min, nothing moved")
+            // Every 15 s of talking would be over 100.
+            assertTrue(p.story(), late <= 20)
+        }
+    }
+
+    @Test
+    fun aDelayFoundElsewhereIsBorneOutByFreshTalking() {
+        // What the second of two agreeing matches rests on: on talking the first didn't have, the right delay stands
+        // out from the shifts 3 minutes either way; a wrong one, named beforehand, rarely does.
+        for (talk in listOf(10_000L, 20_000L)) {
+            var right = 0
+            var wrong = 0
+            var n = 0
+            for (seed in 1L..4L) {
+                val film = FakeFilm.make(seed, minutes = 60, delayMs = 0)
+                val tl = SpeechTimeline()
+                for (f in 0 until (film.lengthMs / 10).toInt()) tl.mark(f, film.talking.get(f))
+                val rnd = java.util.Random(seed)
+                var t = 5 * min
+                while (t < 55 * min) {
+                    var e = t
+                    while (tl.speech.get((t / 10).toInt(), (e / 10).toInt()).cardinality() * 10L < talk) e += 1_000
+                    val h = SyncMatcher.heard(tl.speech, tl.heard, (t / 10).toInt(), (e / 10).toInt())!!
+                    val inUse = -45_000L
+                    var other: Long
+                    do { other = inUse - 175_000 + rnd.nextInt(350_000) } while (abs(other) < 3_000)
+                    if (SyncMatcher.zAt(h, film.subs, 0, inUse, OffsetTracker.RANGE_MS) >= 2.0) right++
+                    if (SyncMatcher.zAt(h, film.subs, other, inUse, OffsetTracker.RANGE_MS) >= 2.0) wrong++
+                    n++
+                    t += 30_000
+                }
+            }
+            println("on ${talk / 1000} s of fresh talking: the right delay stands out ${right * 100 / n}% of the time, a wrong one ${"%.1f".format(wrong * 100.0 / n)}% ($n tries)")
+            assertTrue(wrong * 20 <= n)
+            if (talk >= 20_000) assertTrue(right * 10 >= n * 8)
+        }
+    }
+
+    @Test
     fun seekingIntoFilmNotHeardYetAfterABreak() {
         val film = FakeFilm.make(seed = 70, minutes = 60, delayMs = 500, breaks = listOf(Break(25 * min, adMs = 50_000, skipMs = 30_000)))
         val after = 20_500L
@@ -242,7 +353,7 @@ class OffsetTrackerTest {
     }
 
     @Test
-    fun resyncRelearnsFromWhatWasHeardAndCarriesOn() {
+    fun resyncRelearnsAndCarriesOn() {
         val film = FakeFilm.make(
             seed = 80, minutes = 70, delayMs = 0,
             breaks = listOf(Break(15 * min, adMs = 30_000), Break(45 * min, adMs = 50_000, skipMs = 30_000)),
@@ -251,16 +362,18 @@ class OffsetTrackerTest {
         p.play(25 * min)
         assertEquals(p.story(), 2, p.tracker.segments.size)
 
-        // Resync at 25 min: what was heard since the last break is used again, so it's sure again almost at once.
-        p.tracker.relearn(p.posMs, centerMs = p.tracker.delayAt(p.posMs)!!)
+        // Resync at 25 min, though the delay was right: the viewer turned it down, so talking heard before the press
+        // doesn't bring it back; talking after it does (the subtitles stay as they are meanwhile).
+        val at = p.posMs
+        p.tracker.relearn(at, centerMs = p.tracker.delayAt(at)!!, p.timeline)
         assertTrue(p.tracker.learning)
         // Listening starts again a moment later than where it stopped (the sound waiting in between is let go).
-        p.seek(p.posMs + 400)
-        val at = p.posMs
-        p.play(28 * min)
+        p.seek(at + 400)
+        p.play(30 * min)
         val learned = p.decisions.last { it.outcome == Outcome.LEARNED }
-        println("resync: sure again ${(learned.toMs - at) / 1000} s after")
-        assertTrue(p.story(), learned.toMs - at <= 30_000)
+        println("resync on a delay that was right: sure again ${(learned.toMs - at) / 1000} s after, from talking after the press")
+        assertTrue(p.story(), learned.fromMs >= at)
+        assertTrue(p.story(), learned.toMs - at <= 3 * min)
         assertTrue(p.story(), near(30_000, learned.delayMs))
 
         // It carries on following: the next break is found.
@@ -274,11 +387,58 @@ class OffsetTrackerTest {
     }
 
     @Test
+    fun resyncSoonAfterABreakNotFoundYet() {
+        // Subtitles right until 30 s of ads they don't allow for, with no format change to hint at it: the viewer sees
+        // them late after it and presses Resync before the tracker has found it. The late delay mustn't come back from
+        // what was heard before the break; the right one is found as soon as the talking after it allows.
+        val took = ArrayList<Long>()
+        for (seed in 1L..4L) for (after in listOf(30_000L, 60_000L, 90_000L)) {
+            val film = FakeFilm.make(seed, minutes = 40, delayMs = 0, breaks = listOf(Break(20 * min, adMs = 30_000)))
+            val ad = film.ads.single()
+            val p = Playback(film, OffsetTracker(film.subs), formatHints = false)
+            p.play(ad.toMs + after)
+            val at = p.posMs
+            val turnedDown = p.tracker.delayAt(at)!!
+            if (near(30_000, turnedDown, 400)) continue
+            p.tracker.relearn(at, turnedDown, p.timeline)
+            p.seek(at + 400)
+            p.play(at + 6 * min)
+            val since = p.decisions.filter { it.toMs > at }
+            assertFalse(p.story(), since.any { it.outcome == Outcome.LEARNED && near(turnedDown, it.delayMs, 400) })
+            val right = since.first { (it.outcome == Outcome.LEARNED || it.outcome == Outcome.MOVED) && near(30_000, p.tracker.delayAt(it.toMs), 400) }
+            took += right.toMs - at
+        }
+        println("resync ${listOf(30, 60, 90)} s after a break not found yet (4 films): right again ${took.map { it / 1000 }} s after the press")
+        assertTrue("$took", took.size >= 8)
+        assertTrue("$took", took.max() <= 5 * min)
+    }
+
+    @Test
+    fun otherSubtitlesSoonAfterABreakFitWhereTheFilmIs() {
+        // Other subtitles picked 1.5 or 2.5 min after a break nobody found yet: they carry on with what was heard, and
+        // are lined up for where the film is now, not for before the break.
+        val learnedFor = ArrayList<String>()
+        for (seed in 1L..6L) for (after in listOf(90_000L, 150_000L)) {
+            val film = FakeFilm.make(seed, minutes = 40, delayMs = 0, breaks = listOf(Break(20 * min, adMs = 45_000)))
+            val ad = film.ads.single()
+            val before = Playback(film, OffsetTracker(film.subs), formatHints = false)
+            before.play(ad.toMs + after)
+            val p = Playback(film, OffsetTracker(film.subs), formatHints = false, timeline = before.timeline, startMs = before.posMs)
+            p.seek(before.posMs)
+            p.play(before.posMs + 4 * min)
+            val learned = p.decisions.first { it.outcome == Outcome.LEARNED }
+            learnedFor += "${SyncMatcher.formatShift(learned.delayMs)} ${(learned.toMs - before.posMs) / 1000}s"
+            assertTrue(p.story(), near(45_000, p.tracker.delayAt(p.posMs), 400))
+        }
+        println("other subtitles after a break: learned $learnedFor after the switch")
+    }
+
+    @Test
     fun resyncWithNothingHeardListensAfresh() {
         val film = FakeFilm.make(seed = 81, minutes = 30, delayMs = 3_000)
         val tracker = OffsetTracker(film.subs, listOf(Segment(0, 9_000)))
-        tracker.relearn(10 * min, centerMs = 9_000)
         val p = Playback(film, tracker)
+        tracker.relearn(10 * min, centerMs = 9_000, p.timeline)
         p.seek(10 * min)
         p.play(20 * min)
         assertTrue(p.story(), near(3_000, tracker.delayAt(15 * min)))
@@ -337,12 +497,23 @@ class OffsetTrackerTest {
             SyncMatcher.rAt(h, film.subs, 1_000)
             return SyncMatcher.match(h, film.subs, 1_000, OffsetTracker.RANGE_MS)
         }
-        repeat(10) { once() }
+        // The most one check does: a first sure match confirmed at once from what was heard, which also matches all
+        // but the latest 20 s of talking (about 3.5 min) and weighs the delay on that latest talking (about 45 s).
+        val mid = (63 * min + 15_000) / 10
+        fun most() {
+            once()
+            SyncMatcher.match(SyncMatcher.heard(tl.speech, tl.heard, from, mid.toInt())!!, film.subs, 1_000, OffsetTracker.RANGE_MS)
+            SyncMatcher.zAt(SyncMatcher.heard(tl.speech, tl.heard, mid.toInt(), to)!!, film.subs, 1_000, 1_000, OffsetTracker.RANGE_MS)
+        }
+        repeat(10) { once(); most() }
         val times = (1..20).map { val t0 = System.nanoTime(); once(); (System.nanoTime() - t0) / 1e6 }.sorted()
+        val mostTimes = (1..20).map { val t0 = System.nanoTime(); most(); (System.nanoTime() - t0) / 1e6 }.sorted()
         val r = once()
         assertTrue("$r", r.confident && near(1_000, r.delayMs, 200))
-        println("one check (4 min heard, ±3 min): median ${"%.1f".format(times[10])} ms, worst ${"%.1f".format(times.last())} ms")
+        println("one check (4 min heard, ±3 min): median ${"%.1f".format(times[10])} ms, worst ${"%.1f".format(times.last())} ms; " +
+            "confirming at once as well: median ${"%.1f".format(mostTimes[10])} ms")
         assertTrue("median ${times[10]} ms", times[10] < 200)
+        assertTrue("median ${mostTimes[10]} ms", mostTimes[10] < 400)
 
         // A whole 90 min film followed, matching included.
         val f2 = FakeFilm.make(seed = 101, minutes = 90, delayMs = 0, breaks = listOf(Break(30 * min, adMs = 45_000), Break(60 * min, adMs = 60_000)))

@@ -4,6 +4,8 @@ import android.os.Handler
 import android.os.Looper
 import android.os.Process
 import android.os.SystemClock
+import android.system.Os
+import android.system.OsConstants
 import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.C
@@ -28,13 +30,16 @@ import kotlin.math.abs
  * the earlier delay back. It's kept per subtitle file and film, so the same pair is lined up at once next time.
  *
  * A delay set by hand always wins ([handOff]): it's one delay for the whole film, and auto sync stays out of it for
- * these subtitles. [resync] forgets that and everything found, finds the delay again around where the film is (from
- * what was heard since the last break, so often at once), then carries on following. [undo] puts back the delay from
- * before auto sync and leaves it off for these subtitles.
+ * these subtitles. [resync] forgets that and everything found and finds the delay again around where the film is,
+ * then carries on following. The viewer has said the delay in use is wrong there, so that one only comes back on
+ * talking heard after the press; another is taken from what was heard since the timing last changed, often at once.
+ * [undo] puts back the delay from before auto sync and leaves it off for these subtitles.
  *
- * Kept light for the Fire TV Stick: one background thread at low priority, a 10 ms on/off mark of talking (about
- * 90 KB for two hours), nothing listened to beyond what plays, matching at most every 15 s of film and usually every
- * few minutes, and it backs off while the picture drops frames. What it costs is logged every few minutes (tag AutoSync).
+ * Kept light for the Fire TV Stick: one background thread at low priority (and FFmpeg's decode thread, when the sound
+ * goes out undecoded, at the same), 10 ms marks of what was heard and of talking (about 180 KB for two hours),
+ * nothing listened to beyond what plays, matching at most every 15 s of film and usually every few minutes (less often
+ * while nothing heard fits), and it backs off while the picture drops frames. What it costs is logged every few
+ * minutes (tag AutoSync).
  */
 @OptIn(UnstableApi::class)
 class AutoSync(
@@ -139,8 +144,8 @@ class AutoSync(
     }
 
     /**
-     * Throws away what was found (and a delay set by hand), finds the delay again around where the film is, from what
-     * was heard since the last break if there's enough, else from what's heard next, then follows the film as before.
+     * Throws away what was found (and a delay set by hand), finds the delay again around where the film is, then
+     * follows the film as before. Meanwhile the delay stays as it is. See [OffsetTracker.relearn] for what's reused.
      */
     fun resync() {
         val f = file ?: return
@@ -281,8 +286,26 @@ class AutoSync(
         worker = Thread({ listen() }, "FirePlayerSync").apply { isDaemon = true; start() }
     }
 
-    /** On the worker thread: reads the sound pieces, marks talking, and lets the tracker match as more is heard. */
+    /**
+     * On the worker thread. Nothing may escape it: an exception there would take the whole app down. [release]
+     * interrupting it ends it; anything else that goes wrong stops listening, and what was found stays in use.
+     */
     private fun listen() {
+        try {
+            listenLoop()
+        } catch (_: InterruptedException) {
+        } catch (t: Throwable) {
+            Log.e(TAG, "Listening stopped", t)
+            job?.let { stopped(it, "Couldn't line up with the speech. Try Resync, or set the delay by hand.") }
+        }
+    }
+
+    /** Reads the sound pieces, marks talking, and lets the tracker match as more is heard. */
+    private fun listenLoop() {
+        // Threads started from here (FFmpeg's decode thread in SideAudioDecoder) take this thread's Java priority, not
+        // the nice value set below, so they'd run at normal priority next to playback. On Android, Java priority 4 is
+        // nice 10, the same as THREAD_PRIORITY_BACKGROUND.
+        Thread.currentThread().priority = Thread.NORM_PRIORITY - 1
         Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
         // Kept while the film is the same (another subtitle file, Resync): what was heard is used again.
         val timeline = SpeechTimeline()
@@ -335,107 +358,130 @@ class AutoSync(
             buf.position(start)
         }
 
-        while (!Thread.currentThread().isInterrupted) {
-            val current = job
-            if (current == null) {
-                // Nothing to do: the decoder is let go, and the thread waits.
-                decoder?.release(); decoder = null; decoderKind = null
-                try { Thread.sleep(500) } catch (_: InterruptedException) { break }
-                continue
-            }
-            if (current.generation != gen) {
-                gen = current.generation
-                if (current.filmKey != filmKey) {
-                    timeline.clear()
-                    filmKey = current.filmKey
-                    tracker = null
+        // However the loop ends, the side decoder (and its thread) is let go.
+        try {
+            while (!Thread.currentThread().isInterrupted) {
+                val current = job
+                if (current == null) {
+                    // Nothing to do: the decoder is let go, and the thread waits.
+                    decoder?.release(); decoder = null; decoderKind = null
+                    try { Thread.sleep(500) } catch (_: InterruptedException) { break }
+                    continue
                 }
-                // Resync with the same subtitles keeps the tracker's idea of where breaks were, to start from the last.
-                val t = tracker?.takeIf { current.relearnAtMs != null && it.lines === current.lines }
-                    ?: OffsetTracker(current.lines, current.segments, current.centerMs, current.rangeMs)
-                current.relearnAtMs?.let { t.relearn(it, current.centerMs) }
-                tracker = t
-                cursor = -1.0
-                played = 0
-                // Resync tries at once, with what was heard already.
-                stepAt = if (current.relearnAtMs != null) -TRY_EVERY_FRAMES else 0
-                lastKind = null
-                decoder?.flush()
-            }
-            val wait = backOffUntil - SystemClock.elapsedRealtime()
-            if (wait > 0) {
-                try { Thread.sleep(minOf(wait, 1_000)) } catch (_: InterruptedException) { break }
-                continue
-            }
-            cost.maybeLog(timeline, current.lines, tracker)
-            val piece = tap.take(500) ?: continue
-            try {
-                val kind = piece.kind ?: continue
-                // The sound changing format in the middle of the film (ads are often encoded differently): a hint.
-                val was = lastKind
-                if (was != null && was !== kind && !sameSound(was, kind) && cursor >= 0 && abs(piece.filmUs / 10_000.0 - cursor) <= JUMP_FRAMES) {
-                    tracker?.hint(piece.filmUs / 1000, OffsetTracker.Hint.FORMAT)
-                    Log.i(TAG, "sound format changed at ${OffsetTracker.clock(piece.filmUs / 1000)}: a hint to check the timing")
+                if (current.generation != gen) {
+                    gen = current.generation
+                    if (current.filmKey != filmKey) {
+                        timeline.clear()
+                        filmKey = current.filmKey
+                        tracker = null
+                    }
+                    // Resync with the same subtitles keeps the tracker's idea of where breaks were, to start from the last.
+                    val t = tracker?.takeIf { current.relearnAtMs != null && it.lines === current.lines }
+                        ?: OffsetTracker(current.lines, current.segments, current.centerMs, current.rangeMs)
+                    current.relearnAtMs?.let { t.relearn(it, current.centerMs, timeline) }
+                    tracker = t
+                    cursor = -1.0
+                    played = 0
+                    // Resync tries at once, with what was heard already.
+                    stepAt = if (current.relearnAtMs != null) -TRY_EVERY_FRAMES else 0
+                    lastKind = null
+                    decoder?.flush()
                 }
-                lastKind = kind
-                if (!kind.encoded) {
-                    feed(ByteBuffer.wrap(piece.bytes, 0, piece.size), piece.filmUs, kind.channels, kind.sampleRate, kind.pcmEncoding == C.ENCODING_PCM_FLOAT)
-                } else {
-                    if (decoderKind !== kind) {
-                        decoder?.release()
-                        decoder = null
-                        decoderKind = kind
-                        if (SideAudioDecoder.canDecode(kind.format.sampleMimeType)) {
-                            decoder = runCatching { SideAudioDecoder(kind.format) }.onFailure { Log.w(TAG, "No side decoder", it) }.getOrNull()
+                val wait = backOffUntil - SystemClock.elapsedRealtime()
+                if (wait > 0) {
+                    try { Thread.sleep(minOf(wait, 1_000)) } catch (_: InterruptedException) { break }
+                    continue
+                }
+                cost.maybeLog(timeline, current.lines, tracker)
+                // Waiting here is where release() usually finds the thread: its interrupt ends listening.
+                val piece = try { tap.take(500) } catch (_: InterruptedException) { break } ?: continue
+                try {
+                    val kind = piece.kind ?: continue
+                    // The sound changing format in the middle of the film (ads are often encoded differently): a hint.
+                    val was = lastKind
+                    if (was != null && was !== kind && !sameSound(was, kind) && cursor >= 0 && abs(piece.filmUs / 10_000.0 - cursor) <= JUMP_FRAMES) {
+                        tracker?.hint(piece.filmUs / 1000, OffsetTracker.Hint.FORMAT)
+                        Log.i(TAG, "sound format changed at ${OffsetTracker.clock(piece.filmUs / 1000)}: a hint to check the timing")
+                    }
+                    lastKind = kind
+                    if (!kind.encoded) {
+                        feed(ByteBuffer.wrap(piece.bytes, 0, piece.size), piece.filmUs, kind.channels, kind.sampleRate, kind.pcmEncoding == C.ENCODING_PCM_FLOAT)
+                    } else {
+                        if (decoderKind !== kind) {
+                            decoder?.release()
+                            decoder = null
+                            decoderKind = kind
+                            if (SideAudioDecoder.canDecode(kind.format.sampleMimeType)) {
+                                val before = threadIds()
+                                decoder = runCatching { SideAudioDecoder(kind.format) }.onFailure { Log.w(TAG, "No side decoder", it) }.getOrNull()
+                                // Its decode thread, for what it costs.
+                                cost.decoderThreads = threadIds() - before
+                            }
+                            if (decoder == null) stopped(current, CANT_HEAR)
                         }
-                        if (decoder == null) cantHear(current)
-                    }
-                    val d = decoder ?: continue
-                    var tries = 0
-                    while (!d.queue(piece.bytes, piece.size, piece.filmUs) && tries++ < 50) {
+                        val d = decoder ?: continue
+                        var tries = 0
+                        while (!d.queue(piece.bytes, piece.size, piece.filmUs) && tries++ < 50) {
+                            d.drain { pcm, ch, rate, us -> feed(pcm, us, ch, rate, false) }
+                            Thread.sleep(2)
+                        }
                         d.drain { pcm, ch, rate, us -> feed(pcm, us, ch, rate, false) }
-                        Thread.sleep(2)
                     }
-                    d.drain { pcm, ch, rate, us -> feed(pcm, us, ch, rate, false) }
+                } catch (_: InterruptedException) {
+                    break
+                } catch (t: Throwable) {
+                    // A decoder that fails stays failed for this sound; the film plays on regardless.
+                    Log.w(TAG, "Listening failed", t)
+                    decoder?.release(); decoder = null
+                    stopped(current, CANT_HEAR)
+                } finally {
+                    tap.recycle(piece)
                 }
-            } catch (_: InterruptedException) {
-                break
-            } catch (t: Throwable) {
-                // A decoder that fails stays failed for this sound; the film plays on regardless.
-                Log.w(TAG, "Listening failed", t)
-                decoder?.release(); decoder = null
-                cantHear(current)
-            } finally {
-                tap.recycle(piece)
-            }
 
-            if (job !== current || cursor < 0) continue
-            val tr = tracker ?: continue
-            if (played - stepAt < TRY_EVERY_FRAMES) continue
-            val playedMs = (played - maxOf(stepAt, 0L)) * 10
-            stepAt = played
-            val cpu0 = SystemClock.currentThreadTimeMillis()
-            val d = tr.step(timeline, (cursor * 10).toLong(), playedMs)
-            if (d.outcome != Outcome.WAIT) {
-                cost.matched(SystemClock.currentThreadTimeMillis() - cpu0)
-                Log.i(TAG, d.toString())
-            }
-            when (d.outcome) {
-                Outcome.LEARNED, Outcome.MOVED, Outcome.TUNED -> main.post { decided(current, d) }
-                Outcome.GAVE_UP -> {
-                    jobRef.compareAndSet(current, null)
-                    main.post { notFound(current) }
+                if (job !== current || cursor < 0) continue
+                val tr = tracker ?: continue
+                if (played - stepAt < TRY_EVERY_FRAMES) continue
+                val playedMs = (played - maxOf(stepAt, 0L)) * 10
+                stepAt = played
+                val cpu0 = SystemClock.currentThreadTimeMillis()
+                // A mistake in the tracker must not take the film down: listening stops, what was found stays in use.
+                val d = try {
+                    tr.step(timeline, (cursor * 10).toLong(), playedMs)
+                } catch (t: Exception) {
+                    Log.e(TAG, "Tracking failed at ${OffsetTracker.clock((cursor * 10).toLong())}", t)
+                    stopped(current, "Couldn't line up with the speech. Try Resync, or set the delay by hand.")
+                    continue
                 }
-                else -> {}
+                if (d.outcome != Outcome.WAIT) {
+                    cost.matched(SystemClock.currentThreadTimeMillis() - cpu0)
+                    Log.i(TAG, d.toString())
+                }
+                when (d.outcome) {
+                    Outcome.LEARNED, Outcome.MOVED, Outcome.TUNED -> main.post { decided(current, d) }
+                    Outcome.GAVE_UP -> {
+                        jobRef.compareAndSet(current, null)
+                        main.post { notFound(current) }
+                    }
+                    else -> {}
+                }
             }
+        } finally {
+            runCatching { decoder?.release() }
         }
-        decoder?.release()
     }
 
-    /** What listening costs, logged every few minutes, to check it on the TV: this thread's processor time and memory. */
+    /**
+     * What listening costs, logged every few minutes, to check it on the TV: processor time of this thread, of FFmpeg's
+     * decode thread when the sound goes out undecoded (it runs on its own thread), and of the whole player for scale;
+     * matching; sound pieces dropped; memory.
+     */
     private inner class Cost {
         private var since = SystemClock.elapsedRealtime()
         private var cpuSince = SystemClock.currentThreadTimeMillis()
+        private var processSince = Process.getElapsedCpuTime()
+        // The side decoder's threads (ids in this process), and their processor time at the last line.
+        var decoderThreads: Set<Int> = emptySet()
+        private val decoderSince = HashMap<Int, Long>()
         private var droppedSince = tap.dropped
         private var backOffsSince = backOffs
         private var matches = 0
@@ -452,16 +498,29 @@ class AutoSync(
             val wall = SystemClock.elapsedRealtime() - since
             if (wall < COST_EVERY_MS) return
             val cpu = SystemClock.currentThreadTimeMillis() - cpuSince
+            val process = Process.getElapsedCpuTime() - processSince
+            // Threads gone since (the decoder let go) count nothing more, nor any other thread that started meanwhile.
+            var decoderMs = 0L
+            for (tid in decoderThreads) {
+                if (threadName(tid)?.startsWith(DECODE_THREAD) != true) continue
+                val now = threadCpuMs(tid) ?: continue
+                decoderMs += now - (decoderSince[tid] ?: 0L)
+                decoderSince[tid] = now
+            }
+            decoderSince.keys.retainAll(decoderThreads)
             val kb = (timeline.speech.size() + timeline.heard.size()) / 8 / 1024 + lines.frames.size() / 8 / 1024 + lines.ys.size * 8 / 1024
+            fun share(ms: Long) = "%.2f%%".format(java.util.Locale.ROOT, ms * 100.0 / wall)
             Log.i(
                 TAG,
-                "cost over ${wall / 1000} s: listening thread ${cpu} ms of processor (${"%.2f".format(java.util.Locale.ROOT, cpu * 100.0 / wall)}% of one core), " +
+                "cost over ${wall / 1000} s, processor (% of one core): listening thread $cpu ms ${share(cpu)}, " +
+                    "side decoder $decoderMs ms ${share(decoderMs)}, whole player $process ms ${share(process)}; " +
                     "matching $matches × ${if (matches > 0) matchMs / matches else 0} ms (worst $worstMs ms), " +
                     "sound pieces dropped ${tap.dropped - droppedSince}, frame-drop back-offs ${backOffs - backOffsSince}, " +
                     "memory ~$kb KB, segments ${tracker?.segments?.size ?: 0}",
             )
             since = SystemClock.elapsedRealtime()
             cpuSince = SystemClock.currentThreadTimeMillis()
+            processSince = Process.getElapsedCpuTime()
             droppedSince = tap.dropped
             backOffsSince = backOffs
             matches = 0
@@ -470,13 +529,13 @@ class AutoSync(
         }
     }
 
-    private fun cantHear(current: Job) {
+    /** Listening for [current] stops (from the worker thread). Still learning: [text] says why. Already following: what was found stays in use. */
+    private fun stopped(current: Job, text: String) {
         jobRef.compareAndSet(current, null)
         main.post {
             if (current.generation != generation) return@post
             tap.listening = false
-            // Still learning: say so. Already following: what was found stays in use.
-            if (segments.isEmpty()) setState(State.NOT_SYNCED, "Can't listen to this film's sound. Set the delay by hand.")
+            if (segments.isEmpty()) setState(State.NOT_SYNCED, text)
         }
     }
 
@@ -526,6 +585,25 @@ class AutoSync(
         private const val COST_EVERY_MS = 5 * 60_000L
         // Nobody sees less than this, so the delay isn't nudged for it.
         private const val MIN_MOVE_US = 150_000L
+
+        private const val CANT_HEAR = "Can't listen to this film's sound. Set the delay by hand."
+        // Clock ticks per second in /proc times.
+        private val TICKS = runCatching { Os.sysconf(OsConstants._SC_CLK_TCK) }.getOrDefault(100L).coerceAtLeast(1L)
+
+        /** This process's threads, by id. */
+        private fun threadIds(): Set<Int> = File("/proc/self/task").list()?.mapNotNull { it.toIntOrNull() }?.toSet() ?: emptySet()
+
+        // The name Media3 gives FFmpeg's decode thread ("ExoPlayer:SimpleDecoder"), as the system keeps it: 15 letters.
+        private const val DECODE_THREAD = "ExoPlayer:Simpl"
+
+        private fun threadName(tid: Int): String? = runCatching { File("/proc/self/task/$tid/comm").readText().trim() }.getOrNull()
+
+        /** Processor time (ms) thread [tid] of this process has used, or null when it's gone. */
+        private fun threadCpuMs(tid: Int): Long? = runCatching {
+            // After the thread's name (in brackets, may hold spaces), utime and stime are the 12th and 13th fields.
+            val f = File("/proc/self/task/$tid/stat").readText().substringAfterLast(')').trim().split(' ')
+            (f[11].toLong() + f[12].toLong()) * 1000 / TICKS
+        }.getOrNull()
 
         /** The same sound as before (a new format object for it says nothing). */
         private fun sameSound(a: SpeechTap.Kind, b: SpeechTap.Kind) =

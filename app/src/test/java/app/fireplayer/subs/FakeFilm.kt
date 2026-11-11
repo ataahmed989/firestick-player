@@ -115,11 +115,17 @@ class FakeFilm private constructor(
 /**
  * Plays a [FakeFilm] through an [OffsetTracker] the way [AutoSync]'s listening thread does: marks each 10 ms heard,
  * steps every 15 s of film played, says when the sound's format changes (at each ad's start and end, if [formatHints])
- * and when playing jumps.
+ * and when playing jumps. Like the listening thread, it steps at any 10 ms, not on whole seconds: pieces of 1.01 s.
+ * Another subtitle file for the same film carries on with the [timeline] heard so far.
  */
-class Playback(val film: FakeFilm, val tracker: OffsetTracker, private val formatHints: Boolean = true) {
-    val timeline = SpeechTimeline()
-    var posMs = 0L
+class Playback(
+    val film: FakeFilm,
+    val tracker: OffsetTracker,
+    private val formatHints: Boolean = true,
+    val timeline: SpeechTimeline = SpeechTimeline(),
+    startMs: Long = 0,
+) {
+    var posMs = startMs
         private set
     private var sinceStep = 0L
     val decisions = ArrayList<OffsetTracker.Decision>()
@@ -128,7 +134,7 @@ class Playback(val film: FakeFilm, val tracker: OffsetTracker, private val forma
 
     fun play(toMs: Long) {
         while (posMs < toMs) {
-            val end = minOf(posMs + 1_000, toMs)
+            val end = minOf(posMs + 1_010, toMs)
             if (formatHints) for (ad in film.ads) {
                 if (ad.fromMs in posMs until end) tracker.hint(ad.fromMs, OffsetTracker.Hint.FORMAT)
                 if (ad.toMs in posMs until end) tracker.hint(ad.toMs, OffsetTracker.Hint.FORMAT)
