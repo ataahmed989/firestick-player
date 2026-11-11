@@ -34,6 +34,13 @@ class CountdownPill @JvmOverloads constructor(context: Context, attrs: Attribute
             refreshColors()
         }
 
+    /** Always drawn as the chosen button (white, dark text): for a button that is the only thing on screen. */
+    var chosen = false
+        set(value) {
+            field = value
+            refreshColors()
+        }
+
     private var drawn = -1f
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val rect = RectF()
@@ -50,7 +57,7 @@ class CountdownPill @JvmOverloads constructor(context: Context, attrs: Attribute
     }
 
     private fun refreshColors() {
-        val light = counting || isFocused
+        val light = counting || isFocused || chosen
         setTextColor(if (light) DARK else Color.WHITE)
         compoundDrawablesRelative.forEach { it?.mutate()?.setTint(currentTextColor) }
         invalidate()
@@ -90,7 +97,7 @@ class CountdownPill @JvmOverloads constructor(context: Context, attrs: Attribute
     override fun onDraw(canvas: Canvas) {
         rect.set(0f, 0f, width.toFloat(), height.toFloat())
         paint.color = when {
-            isFocused && !counting -> Color.WHITE
+            (isFocused || chosen) && !counting -> Color.WHITE
             counting -> PALE_COUNTING
             else -> PALE
         }

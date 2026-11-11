@@ -1501,6 +1501,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         postPlayCredits = findViewById(R.id.post_play_credits)
         postPlayGo = findViewById(R.id.post_play_go)
         skipButton = findViewById(R.id.skip_button)
+        skipButton.chosen = true
         skipButton.setOnClickListener { skipPart() }
         dimmer = findViewById(R.id.dimmer)
         postPlayGo.countdown = { postPlayProgress() }
