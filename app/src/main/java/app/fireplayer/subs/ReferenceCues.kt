@@ -22,6 +22,27 @@ class ReferenceCues(val info: Info) {
         val hearingImpaired: Boolean,
         val picture: Boolean,
     ) {
+        /**
+         * The track as a choice to keep (for a show, so its other episodes use it too): its language, name and kind,
+         * not its number in the file, which other episodes may not share.
+         */
+        val key: String
+            get() = listOf(language ?: "und", label.orEmpty(), if (picture) "pictures" else "text", if (hearingImpaired) "sdh" else "")
+                .joinToString("|")
+
+        /** For people: "Spanish", "Spanish (Castilian)", "English SDH", "French (pictures)". */
+        fun name(): String {
+            val lang = language?.takeIf { it.isNotBlank() && it != "und" }
+                ?.let { java.util.Locale.forLanguageTag(it).getDisplayLanguage(java.util.Locale.ENGLISH).takeIf { n -> n.isNotBlank() && n != it } ?: it }
+            val base = when {
+                lang == null -> label?.takeIf { it.isNotBlank() } ?: "Unknown language"
+                label.isNullOrBlank() || label.equals(lang, ignoreCase = true) -> lang
+                label.contains(lang, ignoreCase = true) -> label
+                else -> "$lang ($label)"
+            }
+            return base + (if (hearingImpaired && !SDH.containsMatchIn(base)) " SDH" else "") + (if (picture) " (pictures)" else "")
+        }
+
         override fun toString() = buildString {
             append(language ?: "und")
             if (picture) append(" pictures")

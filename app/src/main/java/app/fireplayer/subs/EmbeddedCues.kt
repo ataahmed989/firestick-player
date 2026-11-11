@@ -96,11 +96,26 @@ class EmbeddedCues {
          * loaded. Cues are only trusted up to a few seconds before where loading has got to (the file stores them
          * among the pictures and sound of about when they start). Null while there's no track worth using.
          */
-        fun snapshot(): Snapshot? = synchronized(this) {
+        fun snapshot(): Snapshot? = snapshot(null)
+
+        /**
+         * As [snapshot], with the track whose [ReferenceCues.Info.key] is [key] when there is one (and it isn't down to
+         * a few lines), else the one [ReferenceCues.choose] picks.
+         */
+        fun snapshot(key: String?): Snapshot? = synchronized(this) {
             val covered = covered()
             val total = covered.sumOf { it[1] - it[0] }
-            val chosen = ReferenceCues.choose(tracks.values.toList(), total) ?: return@synchronized null
+            val chosen = key?.let { k -> tracks.values.firstOrNull { it.info.key == k } }
+                ?.takeIf { total < ReferenceCues.MIN_COVERED_MS || it.perMinute(total) >= ReferenceCues.MIN_PER_MINUTE }
+                ?: ReferenceCues.choose(tracks.values.toList(), total) ?: return@synchronized null
             Snapshot(chosen.info, chosen.intervals(runTo), covered, if (runFrom >= 0) runFrom else -1, runTo, version, chosen.count)
+        }
+
+        /** Every track that could be lined up against (not forced, not down to a few lines), with its cues so far. */
+        fun candidates(): List<Track> = synchronized(this) {
+            val total = covered().sumOf { it[1] - it[0] }
+            tracks.values.filter { !it.info.forced && (total < ReferenceCues.MIN_COVERED_MS || it.perMinute(total) >= ReferenceCues.MIN_PER_MINUTE) }
+                .map { Track(it.info, it.intervals(runTo), it.count) }
         }
 
         /** The stretches of film loaded (ms), each trusted up to [SETTLE_MS] before its end. */
@@ -124,6 +139,9 @@ class EmbeddedCues {
         /** For the log: each track and its cues so far. */
         fun describe(): String = synchronized(this) { tracks.values.joinToString { "${it.info}: ${it.count} cues" } }
     }
+
+    /** One of a film's tracks as it stands: its cues (start-end, ms) so far. */
+    class Track(val info: ReferenceCues.Info, val cues: List<LongArray>, val count: Int)
 
     /** One look at a [Source]: see [Source.snapshot]. Times in ms. */
     class Snapshot(

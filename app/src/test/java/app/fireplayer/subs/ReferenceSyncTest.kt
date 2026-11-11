@@ -304,6 +304,81 @@ class ReferenceSyncTest {
     }
 
     @Test
+    fun goingBackIntoAStretchSkippedPlacesTheChangeInIt() {
+        // As on the Max: loaded to about 10:00, a jump ten minutes ahead finds the break's new delay, a jump back five
+        // finds it again; the break (12:01-12:46 here) was never loaded. Until it is, the stretch skipped keeps the delay
+        // before; going back into it, the change goes into the break itself, before the lines after it show (the
+        // track loads ahead, so it's placed once the lines after the break are loaded, not guessed from those before).
+        for (seed in seeds) {
+            val film = bumpers(seed)
+            val run = Loading(film, ownTrack(film, seed, "language"), info(), OffsetTracker(film.subs, knownJumps = listOf(15_000L), clean = true), aheadMs = 90_000)
+            run.play(8 * min + 20_000)
+            run.seek(18 * min + 20_000)
+            run.play(19 * min + 20_000)
+            run.seek(14 * min + 20_000)
+            run.play(15 * min + 30_000)
+            val before = run.tracker.segments
+            val ad = film.ads[0]
+            // Nothing heard between: the earlier delay holds up to where it was found again.
+            assertTrue("seed $seed: $before", near(film.truthAt(0), run.tracker.delayAt(11 * min)))
+            assertTrue("seed $seed: $before", near(film.truthAt(ad.toMs), run.tracker.delayAt(14 * min + 30_000)))
+            run.seek(11 * min + 30_000)
+            run.play(ad.toMs - 5_000)
+            val after = run.tracker.segments
+            val change = after.first { near(film.truthAt(ad.toMs), it.delayMs) }.fromMs
+            val story = run.decisions.filter { it.second.outcome != OffsetTracker.Outcome.WAIT }.takeLast(8).joinToString("\n") { "  ${it.first / 1000}: ${it.second}" }
+            assertTrue("seed $seed: change at ${OffsetTracker.clock(change)}, ad ${OffsetTracker.clock(ad.fromMs)}-${OffsetTracker.clock(ad.toMs)}: $after\n$story",
+                change in ad.fromMs - 5_000..ad.toMs + 5_000)
+        }
+    }
+
+    @Test
+    fun anotherFilmsSubtitlesLineUpNothing() {
+        // The file's track is for something else (another episode): nothing is learnt from it, or only now and then a
+        // delay nobody could tell from chance, which the talking would then turn down; never with a strong match.
+        var learned = 0
+        for (seed in seeds) {
+            val film = bumpers(seed)
+            val other = bumpers(seed + 100)
+            val run = Loading(film, ownTrack(other, seed, "language"), info(), OffsetTracker(film.subs, clean = true))
+            run.play(20 * min)
+            if (run.decisions.any { it.second.outcome == OffsetTracker.Outcome.LEARNED }) learned++
+        }
+        println("another film's subtitles as the film's own: learnt something in $learned of ${seeds.count()}")
+        assertEquals(0, learned)
+    }
+
+    @Test
+    fun tracksAreRankedByHowWellTheyLineUp() {
+        for (seed in 1L..4L) {
+            val film = bumpers(seed)
+            val other = bumpers(seed + 100)
+            val source = EmbeddedCues.Source("film")
+            val tracks = listOf(
+                1 to (ReferenceCues.Info("1", "pt", null, false, false, false) to ownTrack(film, seed, "language")),
+                2 to (ReferenceCues.Info("2", "es", null, false, false, false) to ownTrack(film, seed + 50, "language")),
+                3 to (ReferenceCues.Info("3", "en", "English SDH", false, true, false) to ownTrack(film, seed, "sdh")),
+                4 to (ReferenceCues.Info("4", "de", null, false, false, false) to ownTrack(other, seed, "language")),
+                5 to (ReferenceCues.Info("5", "fr", null, true, false, false) to ownTrack(film, seed, "language").filterIndexed { i, _ -> i % 9 == 0 }),
+            )
+            for ((id, t) in tracks) source.track(id, t.first)
+            source.tracksKnown = true
+            for (at in 0 until 6 * 60 step 1) {
+                val ms = at * 1_000L
+                for ((id, t) in tracks) for (c in t.second) if (c.startMs >= ms && c.startMs < ms + 1_000) source.cue(id, c.startMs, c.endMs - c.startMs, 1, listOf(c.text!!))
+                source.loaded(ms + 1_000)
+            }
+            val ranked = ReferenceSync.rank(source.candidates(), source.covered(), source.loading().second, film.subs, 0, SyncMatcher.RANGE_MS, listOf("en", "es"))
+            val names = ranked.map { it.info.language }
+            println("seed $seed ranked: ${ranked.joinToString("; ")}")
+            // Forced left out; the other film's last and weak; regular before SDH; Spanish (preferred) before Portuguese.
+            assertEquals("$ranked", listOf("es", "pt", "en", "de"), names)
+            assertEquals(ReferenceSync.Strength.WEAK, ranked.last().strength)
+            assertTrue("$ranked", ranked.take(2).all { it.strength == ReferenceSync.Strength.STRONG })
+        }
+    }
+
+    @Test
     fun aPictureNeverClearedEndsAtTheNext() {
         val cues = ReferenceCues(info(picture = true))
         cues.add(1_000, null, 1, emptyList())
