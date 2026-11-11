@@ -76,10 +76,12 @@ object SkipTimes {
         }
     }
 
-    private fun introDbPicks(o: JSONObject, duration: Long, runtimeAgrees: Boolean): Map<Part, Pick> {
+    private fun introDbPicks(o: JSONObject, duration: Long, tmdbAgrees: Boolean): Map<Part, Pick> {
         fun seg(name: String) = o.optJSONObject(name)?.let {
             SkipRules.IntroDbSegment(it.optLong("start_ms", -1), it.optLong("end_ms", -1), it.optDouble("confidence", 0.0))
         }
+        // TMDB's length agreeing, or IntroDB's own credits ending where this file does.
+        val runtimeAgrees = tmdbAgrees || SkipRules.outroAnchors(seg("outro"), duration)
         return mapOf(
             Part.INTRO to SkipRules.introDb(Part.INTRO, seg("intro"), o.optBoolean("no_intro"), runtimeAgrees, duration),
             Part.RECAP to SkipRules.introDb(Part.RECAP, seg("recap"), o.optBoolean("no_recap"), runtimeAgrees, duration),

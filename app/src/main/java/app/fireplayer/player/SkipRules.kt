@@ -39,6 +39,7 @@ object SkipRules {
     const val INTRODB_MIN_CONFIDENCE = 0.5
     // TMDB gives whole minutes, sometimes rounded either way.
     const val RUNTIME_SLACK_MS = 90_000L
+    const val OUTRO_ANCHOR_MS = 5_000L
     // An end a little past the file's (rounding) is taken as its end.
     private const val END_SLACK_MS = 2_000L
     private const val OPENING_MAX_MS = 5 * 60_000L
@@ -79,6 +80,14 @@ object SkipRules {
     /** True when TMDB's length (whole minutes) agrees with the file's. */
     fun runtimeAgrees(tmdbMinutes: Int, duration: Long): Boolean =
         tmdbMinutes > 0 && duration > 0 && Math.abs(duration - tmdbMinutes * 60_000L) <= RUNTIME_SLACK_MS
+
+    /**
+     * True when IntroDB's credits end where this file ends (within [OUTRO_ANCHOR_MS]): its times were taken on a file
+     * as long as this one, which counts like TMDB's length agreeing (TMDB often has no length for an episode).
+     */
+    fun outroAnchors(outro: IntroDbSegment?, duration: Long): Boolean =
+        outro != null && duration > 0 && outro.confidence >= INTRODB_MIN_CONFIDENCE &&
+            Math.abs(duration - outro.end) <= OUTRO_ANCHOR_MS
 
     /** Times that make sense for this part of a file [duration] long; anything else is rejected. */
     fun fits(part: Part, start: Long, end: Long, duration: Long): Pick {
