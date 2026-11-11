@@ -2555,6 +2555,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             if (Glass.on) Glass.background(pill, Glass.Kind.PILL) else pill.background = null
             pill.glass = Glass.on
         }
+        // The end card's buttons the same way, round like the other glass buttons; classic keeps Netflix's flat shape.
+        for (pill in listOf(postPlayCredits, postPlayGo)) {
+            if (Glass.on) Glass.background(pill, Glass.Kind.PILL) else pill.background = null
+            pill.glass = Glass.on
+            pill.pod = Glass.on
+        }
         (findViewById<FrameLayout>(R.id.preview_card)).foreground = ContextCompat.getDrawable(this, Glass.previewEdge)
     }
 
