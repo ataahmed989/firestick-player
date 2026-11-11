@@ -105,10 +105,20 @@ class ShowGuide(
                 )
             }
             ShowGuide(key, o.optString("series"), o.optString("portal"), o.optString("show"), o.optString("search"), o.optInt("tmdb"), episodes)
-        }.onFailure { Log.i(TAG, "Couldn't read a kept guide: $it") }.getOrNull()
+        // Only the kind of failure: a JSON error's message carries the text read, and the guide's key has the login
+        }.onFailure { Log.i(TAG, "Couldn't read a kept guide (${it.javaClass.simpleName})") }.getOrNull()
 
+        /** When the guide for [key] was kept (as [System.currentTimeMillis]); 0 when there's none. */
+        fun savedAt(context: Context, key: String): Long = runCatching { guideFile(context, key).lastModified() }.getOrDefault(0L)
+
+        /** Written whole to a file beside it, then moved over it: a guide read meanwhile is the old one or the new, never half of one. */
         private fun keep(context: Context, guide: ShowGuide) {
-            runCatching { guideFile(context, guide.key).writeText(guide.toJson().toString()) }
+            runCatching {
+                val file = guideFile(context, guide.key)
+                val part = File(file.parentFile, "${file.name}.${Thread.currentThread().id}.part")
+                part.writeText(guide.toJson().toString())
+                if (!part.renameTo(file)) part.delete()
+            }
         }
 
         /**

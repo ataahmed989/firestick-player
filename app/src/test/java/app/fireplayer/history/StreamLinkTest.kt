@@ -58,4 +58,28 @@ class StreamLinkTest {
         val link = StreamLink.parse("http://USER:PASS@provider.example:8080/movie/USER/PASS/1.mkv")!!
         assertEquals("provider.example:8080", link.server)
     }
+
+    @Test
+    fun theSourceIsTheProvidersAddressWithoutTheLogin() {
+        assertEquals("tv.example.com:8080", StreamLink.parse("http://tv.example.com:8080/series/USER/PASS/456.mkv")!!.source)
+        val withLogin = StreamLink.parse("http://USER:PASS@tv.example.com:8080/movie/USER/PASS/1.mkv")!!.source!!
+        assertEquals("tv.example.com:8080", withLogin)
+        assertFalse(withLogin.contains("USER") || withLogin.contains("PASS"))
+        // Through the title server: the provider it stands for, not the title server.
+        assertEquals("tv.example.com:8080", StreamLink.parse("http://127.0.0.1:8000/tv.example.com:8080/series/USER/PASS/456.mkv")!!.source)
+        // As the address reads: no port when it has none, its letters as written.
+        assertEquals("tv.example.com", StreamLink.parse("https://tv.example.com/movie/USER/PASS/1.mp4")!!.source)
+        assertEquals("TV.example.com:8080", StreamLink.parse("http://TV.example.com:8080/movie/USER/PASS/1.mp4")!!.source)
+        assertEquals("tv.example.com:8080", StreamLink.parse("http://tv.example.com:8080/live/USER/PASS/7.ts?token=x")!!.source)
+    }
+
+    @Test
+    fun onlyAProvidersEpisodeByItsNumberListsItsShow() {
+        assertTrue(StreamLink.parse("http://tv.example.com:8080/series/USER/PASS/456.mkv")!!.listsEpisodes)
+        assertTrue(StreamLink.parse("http://127.0.0.1:8000/tv.example.com:8080/series/USER/PASS/456.mkv")!!.listsEpisodes)
+        assertFalse(StreamLink.parse("http://tv.example.com:8080/movie/USER/PASS/456.mkv")!!.listsEpisodes)
+        assertFalse(StreamLink.parse("http://tv.example.com:8080/live/USER/PASS/456.ts")!!.listsEpisodes)
+        assertFalse(StreamLink.parse("http://tv.example.com:8080/series/a/USER/PASS/456.mkv")!!.listsEpisodes)
+        assertFalse(StreamLink.parse("http://tv.example.com:8080/series/USER/PASS/abc.mkv")!!.listsEpisodes)
+    }
 }

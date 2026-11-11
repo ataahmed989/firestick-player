@@ -60,6 +60,7 @@ import androidx.media3.ui.SubtitleView
 import app.fireplayer.data.Dimmer
 import app.fireplayer.data.Prefs
 import app.fireplayer.history.ContinueWatching
+import app.fireplayer.history.ShowEpisodes
 import app.fireplayer.history.WatchHistory
 import app.fireplayer.player.BufferWait
 import app.fireplayer.player.DecoderCheck
@@ -570,12 +571,18 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         displayMode = prefs.displayMode
         applyDim()
 
-        // From Glass Home's Continue Watching row: the title just as its app first opened it, from where it was left.
-        val resuming = intent.action == ContinueWatching.ACTION_RESUME
+        // From Glass Home's Continue Watching row: the title just as its app first opened it, from where it was left; or
+        // another episode of its show, chosen in Glass Home's Episodes window.
+        val chosenEpisode = intent.action == ContinueWatching.ACTION_PLAY_EPISODE
+        val resuming = intent.action == ContinueWatching.ACTION_RESUME || chosenEpisode
         if (resuming) {
-            val resumed = ContinueWatching.resumeIntent(this, intent.getStringExtra(ContinueWatching.EXTRA_ID))
+            val id = intent.getStringExtra(ContinueWatching.EXTRA_ID)
+            val resumed = if (chosenEpisode) {
+                ContinueWatching.episodeIntent(this, id, intent.getStringExtra(ContinueWatching.EXTRA_EPISODE_ID))
+            } else ContinueWatching.resumeIntent(this, id)
             if (resumed == null) {
-                Toast.makeText(this, "This title can't be played from where it was left.", Toast.LENGTH_LONG).show()
+                val why = if (chosenEpisode) "This episode can't be played just now." else "This title can't be played from where it was left."
+                Toast.makeText(this, why, Toast.LENGTH_LONG).show()
                 finish()
                 return
             }
@@ -598,7 +605,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
      */
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        if (stale || (intent.data == null && intent.action != ContinueWatching.ACTION_RESUME)) return
+        val fromRow = intent.action == ContinueWatching.ACTION_RESUME || intent.action == ContinueWatching.ACTION_PLAY_EPISODE
+        if (stale || (intent.data == null && !fromRow)) return
         replaced = true
         setIntent(intent)
         // The old film is silenced now; the rebuilt player reads the new intent from the start.
@@ -2032,8 +2040,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val next = g.episodes
             .filter { it.id != here.id && (it.season > here.season || (it.season == here.season && it.number > here.number)) }
             .minWithOrNull(compareBy({ it.season }, { it.number })) ?: return false
-        val name = g.searchName.ifEmpty { last.info.title }
-        val raw = String.format(Locale.ROOT, "%s S%02dE%02d %s", name, next.season, next.number, next.name).trim()
+        val raw = ShowEpisodes.title(g.searchName.ifEmpty { last.info.title }, next)
         val entry = Entry(NextEpisode.episodeUri(last.uri, next.id, next.extension), raw, null, nextEpisode = true)
         attachSaved(entry, chooseOn = false)
         entries += entry
@@ -4245,8 +4252,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             entries.removeAt(i)
             p.removeMediaItem(i)
         }
-        val name = guide?.searchName ?: current.info.title
-        val raw = String.format(Locale.ROOT, "%s S%02dE%02d %s", name, ep.season, ep.number, ep.name).trim()
+        val raw = ShowEpisodes.title(guide?.searchName ?: current.info.title, ep)
         val entry = Entry(NextEpisode.episodeUri(current.uri, ep.id, ep.extension), raw, null, nextEpisode = true)
         attachSaved(entry, chooseOn = false)
         entries += entry

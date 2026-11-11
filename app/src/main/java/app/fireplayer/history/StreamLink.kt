@@ -17,10 +17,24 @@ class StreamLink private constructor(
     val extension: String?,
     /** The provider's server when the link goes through FirePlayer's title server, which then knows its titles. */
     val proxied: String?,
+    private val authority: String,
 ) {
     enum class Kind { MOVIE, EPISODE, LIVE, OTHER }
 
     val isLive get() = kind == Kind.LIVE
+
+    /**
+     * The provider as FirePlayer's own Source row reads it ("tv.example.com:8080", or without a port when the link has
+     * none), the same as [app.fireplayer.player.NextEpisode.portal]: never the login, the path or the scheme. Null when
+     * there's no address to show.
+     */
+    val source: String? get() = (proxied ?: authority.substringAfterLast('@')).takeIf { it.isNotEmpty() }
+
+    /**
+     * Whether it's a provider's episode whose show FirePlayer can list (".../series/USER/PASS/123.mkv", also through
+     * the title server), as [app.fireplayer.player.NextEpisode] needs it.
+     */
+    val listsEpisodes: Boolean get() = kind == Kind.EPISODE && id.orEmpty().let { it.isNotEmpty() && it.all(Char::isDigit) }
 
     companion object {
         private val VOD = mapOf("movie" to Kind.MOVIE, "series" to Kind.EPISODE)
@@ -50,7 +64,7 @@ class StreamLink private constructor(
                 parts.size == 3 && id.isNotEmpty() && id.all { it.isDigit() } -> Kind.LIVE
                 else -> Kind.OTHER
             }
-            return StreamLink(server, kind, id.takeIf { kind == Kind.MOVIE || kind == Kind.EPISODE }, extension, proxied)
+            return StreamLink(server, kind, id.takeIf { kind == Kind.MOVIE || kind == Kind.EPISODE }, extension, proxied, authority)
         }
 
         /** "Host:80" for "user:pass@HOST", with the scheme's port when it has none. */

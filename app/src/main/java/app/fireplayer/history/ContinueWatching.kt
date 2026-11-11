@@ -9,8 +9,11 @@ import android.os.SystemClock
 import android.util.AtomicFile
 import android.util.Log
 import app.fireplayer.data.KeyStore
+import app.fireplayer.data.Prefs
+import app.fireplayer.player.MatchFixes
 import app.fireplayer.player.NextEpisode
 import app.fireplayer.player.NextPick
+import app.fireplayer.player.ShowGuide
 import app.fireplayer.player.TitleInfo
 import app.fireplayer.subs.Tmdb
 import app.fireplayer.titles.TitleBook
@@ -19,14 +22,19 @@ import java.io.File
 import java.security.SecureRandom
 import java.text.Normalizer
 import java.util.Locale
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.Callable
 import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 
 /**
  * FirePlayer's side of Glass Home's Continue Watching row. The player notes what it plays ([watched]); Glass Home reads
- * the rows and removes them through [ContinueProvider], and plays one again with [ACTION_RESUME]. What it takes to play
- * again (the link, with the provider's login in it, and the headers and names the opening app sent) stays in a file of
- * FirePlayer's own, kept out of backups; the rows only say what the title is and how far along.
+ * the rows and removes them through [ContinueProvider], and plays one again with [ACTION_RESUME]. For a show it also
+ * lists every episode ([episodes]) and plays the one chosen ([ACTION_PLAY_EPISODE]). What it takes to play again (the
+ * link, with the provider's login in it, and the headers and names the opening app sent) stays in a file of
+ * FirePlayer's own, kept out of backups; the rows only say what the title is, how far along, and the provider's address.
  *
  * Films and shows are named as the player shows them: under their English names from the title server when it knows
  * them ([TitleBook]), with their TMDB ids, otherwise as read from the name they came with. One the title server has no
@@ -36,7 +44,10 @@ object ContinueWatching {
     const val AUTHORITY = "app.fireplayer.continue"
     val ITEMS: Uri = Uri.parse("content://$AUTHORITY/items")
     const val ACTION_RESUME = "app.fireplayer.action.RESUME"
+    /** Another episode of a row's show, by the provider's id for it ([EXTRA_EPISODE_ID], from [episodes]). */
+    const val ACTION_PLAY_EPISODE = "app.fireplayer.action.PLAY_EPISODE"
     const val EXTRA_ID = "app.fireplayer.extra.CONTINUE_ID"
+    const val EXTRA_EPISODE_ID = "app.fireplayer.extra.EPISODE_ID"
 
     /** One video as the player saw it, taken on the main thread; [watched] works out the rest. */
     class Played(
@@ -70,6 +81,12 @@ object ContinueWatching {
 
     private const val TAG = "FirePlayerContinue"
     private const val FILE = "continue_watching.txt"
+    /** How long Glass Home waits for a show's episodes before it gets the ones kept from before. */
+    private const val LIST_WAIT_S = 20L
+    /** How many of Glass Home's asks for a show's episodes wait for a free thread. */
+    private const val LIST_QUEUE = 4
+    /** A show's guide kept this recently is listed as it is, without asking the provider again. */
+    private const val GUIDE_YOUNG_MS = 10 * 60_000L
     private val YEAR = Regex("""\(((?:19|20)\d{2})\)""")
     private val MARKS = Regex("""\p{M}+""")
 
@@ -85,6 +102,14 @@ object ContinueWatching {
             priority = Thread.MIN_PRIORITY
         }
     }
+    // Glass Home's asks for a show's episodes. One that takes longer than it waits still finishes, and its guide is kept
+    // for the next time. Only a few wait their turn: with the provider out of reach each can take minutes, and one more
+    // is listed from those kept straight away rather than pile up behind them.
+    private val lister = ThreadPoolExecutor(2, 2, 30, TimeUnit.SECONDS, ArrayBlockingQueue(LIST_QUEUE)) { r ->
+        Thread(r, "ContinueEpisodes").apply { isDaemon = true }
+    }.apply { allowCoreThreadTimeOut(true) }
+    // The asks still running, by row and episode, so asking again waits on the same one.
+    private val asks = HashMap<String, Future<ShowGuide?>>()
     // Asking TMDB can take a while (a timeout, without a network): on a thread of its own, so what was watched is kept
     // straight away and never waits for it, also when the player closes just after.
     private val tmdbWorker = Executors.newSingleThreadExecutor { r ->
@@ -170,14 +195,83 @@ object ContinueWatching {
      */
     fun resumeIntent(context: Context, id: String?): Intent? {
         if (id.isNullOrEmpty()) return null
-        // Played and closed a moment ago: what the player noted last is kept first, so the row plays the episode and
-        // place it shows now, never the one before.
+        awaitNotes()
+        val record = synchronized(lock) { current(context.applicationContext).record(id) } ?: return null
+        return resumeIntentOf(record)
+    }
+
+    /**
+     * Every episode of the show a row is at, for Glass Home's Episodes window ([ShowEpisodes]): the same ones FirePlayer's
+     * Episodes sheet lists, the provider asked for them now and paired with TMDB's the first time. Empty when they can't
+     * be listed: no such row, a film or a link of another shape, or the provider out of reach with none kept from
+     * before. Blocks, for at most [LIST_WAIT_S] (then those kept from before): never on the main thread.
+     */
+    fun episodes(context: Context, id: String): List<ShowEpisodes.Row> {
+        val app = context.applicationContext
+        return try {
+            val record = synchronized(lock) { current(app).record(id) } ?: return emptyList()
+            if (record.kind != WatchHistory.Kind.EPISODE || StreamLink.parse(record.resume.uri)?.listsEpisodes != true) {
+                return emptyList()
+            }
+            val uri = Uri.parse(record.resume.uri)
+            // One kept a moment ago is listed at once, never behind asks still waiting on the provider.
+            val kept = guideOf(app, record, uri, fresh = false)?.takeIf { young(app, it) }
+            val guide = kept ?: try {
+                asking(app, record, uri).get(LIST_WAIT_S, TimeUnit.SECONDS)
+            } catch (e: Exception) {
+                Log.w(TAG, "Listing the show's episodes from those kept: ${e.javaClass.simpleName}")
+                guideOf(app, record, uri, fresh = false)
+            } ?: return emptyList()
+            val prefs = Prefs(app)
+            ShowEpisodes.rows(guide.episodes, NextEpisode.episodeId(uri), record.positionMs) {
+                prefs.savedPosition(NextEpisode.episodeUri(uri, it.id, it.extension).toString())
+            }
+        } catch (e: Exception) {
+            // Only the kind of failure: a message may hold the link, and with it the login.
+            Log.w(TAG, "Couldn't list the show's episodes: ${e.javaClass.simpleName}")
+            emptyList()
+        }
+    }
+
+    /**
+     * The player's own intent for an episode of the show a row is at, chosen in Glass Home's Episodes window by the
+     * provider's id for it ([episodes]): the row's own episode as [resumeIntent] has it; another one as FirePlayer's
+     * Episodes sheet plays it, the same link with that episode's file at the end (the login and the opening app's
+     * headers as they came), from where FirePlayer left it, else the start. Null when there's no such row, or the
+     * episode isn't in the show's guide kept here.
+     */
+    fun episodeIntent(context: Context, id: String?, episodeId: String?): Intent? {
+        if (id.isNullOrEmpty() || episodeId.isNullOrEmpty() || !episodeId.all { it.isDigit() }) return null
+        awaitNotes()
+        val app = context.applicationContext
+        val record = synchronized(lock) { current(app).record(id) } ?: return null
+        if (record.kind != WatchHistory.Kind.EPISODE) return null
+        val uri = Uri.parse(record.resume.uri)
+        if (NextEpisode.episodeId(uri) == episodeId) return resumeIntentOf(record)
+        val guide = guideOf(app, record, uri, fresh = false) ?: return null
+        val ep = guide.episode(episodeId) ?: return null
+        val target = NextEpisode.episodeUri(uri, ep.id, ep.extension)
+        // Its link ends in its own file type, so the type the row's episode came with is left out; so are its subtitles.
+        val intent = Intent(Intent.ACTION_VIEW).setData(target)
+        intent.putExtra("title", ShowEpisodes.title(guide.searchName.ifEmpty { record.title }, ep))
+        if (record.resume.headers.isNotEmpty()) intent.putExtra("headers", record.resume.headers.toTypedArray())
+        intent.putExtra("position", Prefs(app).savedPosition(target.toString()))
+        return intent
+    }
+
+    /**
+     * Played and closed a moment ago: what the player noted last is kept first, so the row plays the episode and place
+     * it shows now, never the one before.
+     */
+    private fun awaitNotes() {
         try {
             worker.submit {}.get(3, TimeUnit.SECONDS)
         } catch (e: Exception) {
             Log.w(TAG, "Resuming before what was watched was kept: ${e.javaClass.simpleName}")
         }
-        val record = synchronized(lock) { current(context.applicationContext).record(id) } ?: return null
+    }
+
+    private fun resumeIntentOf(record: WatchHistory.Record): Intent {
         val resume = record.resume
         val intent = Intent(Intent.ACTION_VIEW).setDataAndType(Uri.parse(resume.uri), resume.type)
         resume.title?.let { intent.putExtra("title", it) }
@@ -189,6 +283,58 @@ object ContinueWatching {
         }
         intent.putExtra("position", record.positionMs)
         return intent
+    }
+
+    /**
+     * The guide ([ShowGuide]) of the show holding the row's episode at [uri]. The one kept from before; with [fresh], one
+     * kept in the last [GUIDE_YOUNG_MS], or else the provider is asked for the show's episodes now (as the player does)
+     * and they're paired with TMDB's and kept, so the player shows their names at once; the one kept from before when
+     * that fails. Null when there's none with the row's episode. Blocks on the network when [fresh].
+     */
+    private fun guideOf(context: Context, record: WatchHistory.Record, uri: Uri, fresh: Boolean): ShowGuide? {
+        val episodeId = NextEpisode.episodeId(uri) ?: return null
+        val server = StreamLink.parse(record.resume.uri)?.server
+        val showId = runCatching { NextEpisode.rememberedShowId(context, uri) }.getOrNull()
+            ?: server?.let { ShowEpisodes.showIdIn(record.keys, it) }
+        val key = showId?.let { NextEpisode.showKey(uri, it) }
+        val saved = key?.let { ShowGuide.saved(context, it) }?.takeIf { it.episode(episodeId) != null }
+        if (!fresh || (saved != null && young(context, saved))) return saved
+        val found = runCatching {
+            NextEpisode(context, headersOf(record.resume.headers)).find(uri, record.resume.title, record.title)
+        }.getOrNull() ?: return saved
+        val foundKey = NextEpisode.showKey(uri, found.seriesId) ?: return saved
+        val portal = NextEpisode.portal(uri) ?: return saved
+        val tmdb = Tmdb({ tmdbKey(context) }, memoryOf(titleBook(context)))
+        return runCatching { ShowGuide.build(context, foundKey, portal, found, tmdb, MatchFixes(context)) }
+            .onFailure { Log.w(TAG, "Couldn't pair the show's episodes: ${it.javaClass.simpleName}") }
+            .getOrNull()?.takeIf { it.episode(episodeId) != null } ?: saved
+    }
+
+    /** Kept in the last [GUIDE_YOUNG_MS]. */
+    private fun young(context: Context, guide: ShowGuide): Boolean =
+        System.currentTimeMillis() - ShowGuide.savedAt(context, guide.key) in 0 until GUIDE_YOUNG_MS
+
+    /**
+     * The ask for the show's episodes of a row at its episode: the one still running, when Glass Home asks again (Retry)
+     * before it's done, else a new one on [lister]. Throws when [lister] has as many waiting as it takes.
+     */
+    private fun asking(context: Context, record: WatchHistory.Record, uri: Uri): Future<ShowGuide?> {
+        val key = "${record.id}|${NextEpisode.episodeId(uri)}"
+        synchronized(asks) {
+            asks.values.removeAll { it.isDone }
+            return asks.getOrPut(key) { lister.submit(Callable { guideOf(context, record, uri, fresh = true) }) }
+        }
+    }
+
+    /** Name, value, name, value… as the opening app sent them. */
+    private fun headersOf(list: List<String>): Map<String, String> {
+        val map = LinkedHashMap<String, String>()
+        var i = 0
+        while (i + 1 < list.size) {
+            map[list[i]] = list[i + 1]
+            i += 2
+        }
+        return map
     }
 
     // ---------------------------------------------------------------------

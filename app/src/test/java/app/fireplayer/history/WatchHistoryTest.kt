@@ -340,6 +340,32 @@ class WatchHistoryTest {
     }
 
     @Test
+    fun rowsSayTheProviderAndWhetherTheShowsEpisodesCanBeListed() {
+        val h = WatchHistory()
+        h.play(movie(1, 6 * minute).copy(resume = WatchHistory.Resume("http://USER:PASS@tv.example.com:8080/movie/USER/PASS/1.mkv")))
+        h.play(episode(1, 1, 2, 6 * minute).copy(resume = WatchHistory.Resume("http://tv.example.com:8080/series/USER/PASS/456.mkv")))
+        h.play(
+            episode(2, 1, 1, 6 * minute, keys = setOf("s|tv.example.com:80|2"))
+                .copy(resume = WatchHistory.Resume("http://127.0.0.1:8000/tv.example.com/series/USER/PASS/789.mkv")),
+        )
+        h.play(episode(3, 1, 1, 6 * minute, keys = setOf("n|show3")).copy(resume = WatchHistory.Resume("https://cdn.example/a/b.mkv")))
+        val rows = h.rows().associateBy { it.title }
+        assertEquals("tv.example.com:8080", rows.getValue("Film 1").source)
+        assertFalse(rows.getValue("Film 1").hasEpisodes)
+        assertEquals("tv.example.com:8080", rows.getValue("Show 1").source)
+        assertTrue(rows.getValue("Show 1").hasEpisodes)
+        assertEquals("tv.example.com", rows.getValue("Show 2").source)
+        assertTrue(rows.getValue("Show 2").hasEpisodes)
+        // Not a provider's episode link: named, but its show can't be listed.
+        assertEquals("cdn.example", rows.getValue("Show 3").source)
+        assertFalse(rows.getValue("Show 3").hasEpisodes)
+        for (row in rows.values) {
+            assertFalse(row.toString().contains("USER"))
+            assertFalse(row.toString().contains("PASS"))
+        }
+    }
+
+    @Test
     fun rowsNeverCarryTheLink() {
         val h = WatchHistory()
         h.play(movie(1, 6 * minute))

@@ -129,9 +129,13 @@
                 <data android:pathPattern=".*\\.mpd" />
                 <data android:pathPattern=".*\\.MPD" />
             </intent-filter>
-            <!-- From Glass Home's Continue Watching row: a title watched before, from where it was left (see history/). -->
+            <!--
+                From Glass Home's Continue Watching row: a title watched before, from where it was left, or another episode
+                of its show chosen in Glass Home's Episodes window (see history/).
+            -->
             <intent-filter>
                 <action android:name="app.fireplayer.action.RESUME" />
+                <action android:name="app.fireplayer.action.PLAY_EPISODE" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
