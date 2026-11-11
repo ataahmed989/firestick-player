@@ -69,6 +69,7 @@ class GlassDrawable(context: Context, val style: Glass.Kind, private val backdro
     private var bakePlain: Bitmap? = null
     private var bakeFocused: Bitmap? = null
     private val bakePaint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private val bakeFocusedPaint = Paint(Paint.FILTER_BITMAP_FLAG)
     private val filmPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private val fallbackPaint = Paint(Paint.ANTI_ALIAS_FLAG)
 
@@ -88,15 +89,48 @@ class GlassDrawable(context: Context, val style: Glass.Kind, private val backdro
     private val location = IntArray(2)
     private var registered = false
 
-    init {
+    /**
+     * How dark what lies over the film is just here, so the film in this glass matches what's around it: the
+     * Episodes sheet's shade, say (0 none, 1 black). Only the film darkens; the rim and glaze stay, so the glass
+     * still shows.
+     */
+    var backdropDim = 0f
+        set(v) {
+            val c = v.coerceIn(0f, 1f)
+            if (field == c) return
+            field = c
+            invalidateSelf()
+        }
+
+    // The dimming the filters were made for, so they're made again only when it changes.
+    private val dimmable = Glass.inPlayer(context)
+    private var filtersFor = Float.NaN
+    private var filtersForBackdrop = Float.NaN
+
+    private fun updateFilters() {
+        val glass = if (dimmable) Glass.dim else 0f
+        if (glass == filtersFor && backdropDim == filtersForBackdrop) return
+        filtersFor = glass
+        filtersForBackdrop = backdropDim
         // A FireDialog dims what's behind it by a quarter, so its glass shows the film dimmed the same.
-        if (style == Glass.Kind.DIALOG_POPUP) filmPaint.colorFilter = LightingColorFilter(DIALOG_DIM, 0)
+        val dialog = if (style == Glass.Kind.DIALOG_POPUP) DIALOG_LIGHT else 1f
+        filmPaint.colorFilter = light((1f - glass) * (1f - backdropDim) * dialog)
+        bakePaint.colorFilter = light(1f - glass)
+        bakeFocusedPaint.colorFilter = light(1f - glass / 2f)
+    }
+
+    /** A filter keeping [share] of the light (colour only; see-through parts stay as see-through). */
+    private fun light(share: Float): ColorFilter? {
+        if (share >= 0.999f) return null
+        val c = (255 * share.coerceIn(0f, 1f)).roundToInt()
+        return LightingColorFilter(Color.rgb(c, c, c), 0)
     }
 
     override fun draw(canvas: Canvas) {
         val b = bounds
         if (b.width() <= 0 || b.height() <= 0) return
         if (b != laidOut) layOut(b)
+        updateFilters()
         val now = SystemClock.uptimeMillis()
         val a = alphaValue / 255f
         if (source != null) drawFilm(canvas, source, a)
@@ -226,8 +260,9 @@ class GlassDrawable(context: Context, val style: Glass.Kind, private val backdro
                 if (focusedLook) bakeFocused = it else bakePlain = it
             }
         val pad = if (focusedLook) padFocused else padPlain
-        bakePaint.alpha = (255 * strength).roundToInt()
-        canvas.drawBitmap(bake, (laidOut.left - pad).toFloat(), (laidOut.top - pad).toFloat(), bakePaint)
+        val paint = if (focusedLook) bakeFocusedPaint else bakePaint
+        paint.alpha = (255 * strength).roundToInt()
+        canvas.drawBitmap(bake, (laidOut.left - pad).toFloat(), (laidOut.top - pad).toFloat(), paint)
     }
 
     /** The view this is drawn in, through any drawables that hold it. */
@@ -665,7 +700,7 @@ private val PANEL_FALLBACK_TOP = 0xE01A1D24.toInt()
 private val PANEL_FALLBACK_BOTTOM = 0xE80C0E12.toInt()
 private const val PANEL_FALLBACK_ALPHA = 0.89f
 private val CONTROL_FALLBACK = 0x40000000
-private val DIALOG_DIM = 0xBFBFBF
+private const val DIALOG_LIGHT = 0xBF / 255f
 
 private val PANEL_SHADOW = Shadow(0x59000000, 6f, 12f)
 private val CONTROL_SHADOW = Shadow(0x4D000000, 4f, 6f)
