@@ -45,7 +45,8 @@ object SubtitleTimes {
 
     private val SRT = Regex("""(?:(\d{1,2}):)?(\d{1,2}):(\d{2})[,.](\d{1,3})\s*-->\s*(?:(\d{1,2}):)?(\d{1,2}):(\d{2})[,.](\d{1,3})""")
     private val ASS = Regex("""^Dialogue:\s*[^,]*,(\d+):(\d{2}):(\d{2})[.,](\d{1,3}),(\d+):(\d{2}):(\d{2})[.,](\d{1,3}),([^,]*),(?:[^,]*,){5}(.*)$""")
-    private val TAGS = Regex("""\{[^}]*}|<[^>]*>""")
+    // Every literal brace escaped: Android's regex engine (ICU) rejects a bare "}", which desktop Java lets through.
+    private val TAGS = Regex("""\{[^}]*\}|<[^>]*>""")
     // Lines that aren't anyone talking: sound notes ("[door slams]", "(MUSIC)") and song lyrics ("♪ ... ♪").
     private val NOT_TALK = Regex("""^[\s\-]*(\[[^\]]*]|\([^)]*\)|[♪♫#*].*)[\s.]*$""")
 
