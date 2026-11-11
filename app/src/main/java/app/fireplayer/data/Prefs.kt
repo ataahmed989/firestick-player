@@ -168,7 +168,12 @@ class Prefs(context: Context) {
 
     fun saveSyncedDelay(key: String, ms: Long) = sp.edit().putLong("sync|$key", ms).apply()
 
-    fun forgetSyncedDelay(key: String) = sp.edit().remove("sync|$key").apply()
+    fun forgetSyncedDelay(key: String) = sp.edit().remove("sync|$key").remove("sync|$key|at").apply()
+
+    // ...and by film position once the timing changed along the film (an ad break): see OffsetTracker.encode.
+    fun syncedSegments(key: String): String? = sp.getString("sync|$key|at", null)
+
+    fun saveSyncedSegments(key: String, text: String) = sp.edit().putString("sync|$key|at", text).apply()
 
     /** A delay set by hand for a downloaded subtitle on one video, used again when it's chosen another time. */
     fun handDelayMs(key: String): Long? = if (sp.contains("subdelay|$key")) sp.getLong("subdelay|$key", 0L) else null
