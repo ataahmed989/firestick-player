@@ -22,9 +22,10 @@ import java.io.File
 import java.security.SecureRandom
 import java.text.Normalizer
 import java.util.Locale
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
-import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.Future
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 
@@ -82,6 +83,8 @@ object ContinueWatching {
     private const val FILE = "continue_watching.txt"
     /** How long Glass Home waits for a show's episodes before it gets the ones kept from before. */
     private const val LIST_WAIT_S = 20L
+    /** How many of Glass Home's asks for a show's episodes wait for a free thread. */
+    private const val LIST_QUEUE = 4
     /** A show's guide kept this recently is listed as it is, without asking the provider again. */
     private const val GUIDE_YOUNG_MS = 10 * 60_000L
     private val YEAR = Regex("""\(((?:19|20)\d{2})\)""")
@@ -100,10 +103,13 @@ object ContinueWatching {
         }
     }
     // Glass Home's asks for a show's episodes. One that takes longer than it waits still finishes, and its guide is kept
-    // for the next time.
-    private val lister = ThreadPoolExecutor(2, 2, 30, TimeUnit.SECONDS, LinkedBlockingQueue()) { r ->
+    // for the next time. Only a few wait their turn: with the provider out of reach each can take minutes, and one more
+    // is listed from those kept straight away rather than pile up behind them.
+    private val lister = ThreadPoolExecutor(2, 2, 30, TimeUnit.SECONDS, ArrayBlockingQueue(LIST_QUEUE)) { r ->
         Thread(r, "ContinueEpisodes").apply { isDaemon = true }
     }.apply { allowCoreThreadTimeOut(true) }
+    // The asks still running, by row and episode, so asking again waits on the same one.
+    private val asks = HashMap<String, Future<ShowGuide?>>()
     // Asking TMDB can take a while (a timeout, without a network): on a thread of its own, so what was watched is kept
     // straight away and never waits for it, also when the player closes just after.
     private val tmdbWorker = Executors.newSingleThreadExecutor { r ->
@@ -208,9 +214,10 @@ object ContinueWatching {
                 return emptyList()
             }
             val uri = Uri.parse(record.resume.uri)
-            val asked = lister.submit(Callable { guideOf(app, record, uri, fresh = true) })
-            val guide = try {
-                asked.get(LIST_WAIT_S, TimeUnit.SECONDS)
+            // One kept a moment ago is listed at once, never behind asks still waiting on the provider.
+            val kept = guideOf(app, record, uri, fresh = false)?.takeIf { young(app, it) }
+            val guide = kept ?: try {
+                asking(app, record, uri).get(LIST_WAIT_S, TimeUnit.SECONDS)
             } catch (e: Exception) {
                 Log.w(TAG, "Listing the show's episodes from those kept: ${e.javaClass.simpleName}")
                 guideOf(app, record, uri, fresh = false)
@@ -291,9 +298,7 @@ object ContinueWatching {
             ?: server?.let { ShowEpisodes.showIdIn(record.keys, it) }
         val key = showId?.let { NextEpisode.showKey(uri, it) }
         val saved = key?.let { ShowGuide.saved(context, it) }?.takeIf { it.episode(episodeId) != null }
-        if (!fresh) return saved
-        val age = saved?.let { System.currentTimeMillis() - ShowGuide.savedAt(context, it.key) }
-        if (saved != null && age != null && age in 0 until GUIDE_YOUNG_MS) return saved
+        if (!fresh || (saved != null && young(context, saved))) return saved
         val found = runCatching {
             NextEpisode(context, headersOf(record.resume.headers)).find(uri, record.resume.title, record.title)
         }.getOrNull() ?: return saved
@@ -303,6 +308,22 @@ object ContinueWatching {
         return runCatching { ShowGuide.build(context, foundKey, portal, found, tmdb, MatchFixes(context)) }
             .onFailure { Log.w(TAG, "Couldn't pair the show's episodes: ${it.javaClass.simpleName}") }
             .getOrNull()?.takeIf { it.episode(episodeId) != null } ?: saved
+    }
+
+    /** Kept in the last [GUIDE_YOUNG_MS]. */
+    private fun young(context: Context, guide: ShowGuide): Boolean =
+        System.currentTimeMillis() - ShowGuide.savedAt(context, guide.key) in 0 until GUIDE_YOUNG_MS
+
+    /**
+     * The ask for the show's episodes of a row at its episode: the one still running, when Glass Home asks again (Retry)
+     * before it's done, else a new one on [lister]. Throws when [lister] has as many waiting as it takes.
+     */
+    private fun asking(context: Context, record: WatchHistory.Record, uri: Uri): Future<ShowGuide?> {
+        val key = "${record.id}|${NextEpisode.episodeId(uri)}"
+        synchronized(asks) {
+            asks.values.removeAll { it.isDone }
+            return asks.getOrPut(key) { lister.submit(Callable { guideOf(context, record, uri, fresh = true) }) }
+        }
     }
 
     /** Name, value, name, value… as the opening app sent them. */
