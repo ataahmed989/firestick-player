@@ -64,6 +64,20 @@ class Handler(SimpleHTTPRequestHandler):
             if action == "get_series_info":
                 return self.send_json(series_info())
             return self.send_json({"user_info": {"auth": 1, "active_cons": "0", "max_connections": "2"}})
+        # A stand-in for OpenSubtitles' search (only the screenshot build asks here), with long release names.
+        if url.path == "/os/subtitles":
+            def sub(i, release, downloads, fps=23.976):
+                return {"id": str(i), "attributes": {
+                    "release": release, "language": "en", "download_count": downloads, "fps": fps,
+                    "files": [{"file_id": 9000 + i, "file_name": release + ".srt"}],
+                    "feature_details": {"season_number": 1, "episode_number": 1}}}
+            return self.send_json({"data": [
+                sub(1, "Legion.S01E01.PROPER.HDTV.x264-KILLERS", 165000),
+                sub(2, "Legion.S01E01.HDTV.x264-FLEET", 53000),
+                sub(3, "Legion.S01E01.1080p.WEB-DL.DD5.1.H264-RARBG", 47000),
+                sub(4, "Legion.S01E01.HDTV.x264-FLEET", 174000),
+                sub(5, "Legion.S01E01.720p.HDTV.x264-KILLERS", 12000, 25.0),
+            ]})
         # Every episode plays the test film, with chapters.
         if re.match(r"^/series/[^/]+/[^/]+/\d+\.mkv$", url.path):
             self.path = "/episode.mkv"

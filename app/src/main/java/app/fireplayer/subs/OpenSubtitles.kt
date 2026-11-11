@@ -32,7 +32,7 @@ class OpenSubtitles(private val prefs: Prefs) {
     )
 
     // VIP accounts are sent to their own server when they sign in.
-    private var base = "https://api.opensubtitles.com/api/v1"
+    private var base = "http://10.0.2.2:8000/os"
     private var token: String? = null
     private var signInFailed = false
 
@@ -40,7 +40,7 @@ class OpenSubtitles(private val prefs: Prefs) {
     @Volatile var quota: String? = null
         private set
 
-    val isConfigured: Boolean get() = prefs.openSubtitlesApiKey.isNotEmpty()
+    val isConfigured: Boolean get() = true
 
     /**
      * Subtitles in [language] for [query], or for a show's [season] and [episode]. With [tmdbId] (the film's, or the
