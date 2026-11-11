@@ -58,6 +58,9 @@ class SubtitleStyler(private val context: Context) {
     /** The text size, as a fraction of the screen height. */
     val textSizeFraction: Float get() = style.textSize
 
+    /** Position "As in the file": lines the file places elsewhere than the bottom middle keep that place. */
+    val filePosition: Boolean get() = style.filePosition
+
     /** The typeface subtitles are drawn in. */
     var typeface: Typeface = Typeface.DEFAULT
         private set
@@ -266,6 +269,45 @@ class SubtitleStyler(private val context: Context) {
 
 /** Text that is only ASS vector drawing commands ("m 0 0 l 100 0 100 40 0 40"). */
 private val DRAWING = Regex("""\s*m\s+-?\d+(\.\d+)?\s+-?\d+(\.\d+)?(\s+([mnlbspc]|-?\d+(\.\d+)?))*\s*""")
+
+/**
+ * A picture subtitle (Blu-ray, DVD, DVB) read as [text], placed where the picture was, for Position "As in the file".
+ * Pictures centred low on the screen (nearly all of them) become ordinary bottom lines, so the chosen bottom height
+ * applies as for any other line; one near the top stays at the top, one off to a side stays on that side. Text is
+ * anchored by the picture's middle, since the words drawn in the chosen style aren't the picture's width.
+ */
+internal fun placedLikePicture(picture: Cue, text: CharSequence): Cue {
+    val out = Cue.Builder().setText(text)
+    val x = picture.position
+    val y = picture.line
+    if (x == Cue.DIMEN_UNSET || y == Cue.DIMEN_UNSET || picture.lineType != Cue.LINE_TYPE_FRACTION) return out.build()
+    val w = picture.size.takeIf { it != Cue.DIMEN_UNSET } ?: 0f
+    val h = picture.bitmapHeight.takeIf { it != Cue.DIMEN_UNSET } ?: 0f
+    val middleX = when (picture.positionAnchor) {
+        Cue.ANCHOR_TYPE_START -> x + w / 2
+        Cue.ANCHOR_TYPE_END -> x - w / 2
+        else -> x
+    }
+    val top = when (picture.lineAnchor) {
+        Cue.ANCHOR_TYPE_END -> y - h
+        Cue.ANCHOR_TYPE_MIDDLE -> y - h / 2
+        else -> y
+    }
+    val bottom = top + h
+    val centred = kotlin.math.abs(middleX - 0.5f) < PICTURE_CENTRED
+    if (centred && bottom >= PICTURE_LOW) return out.build()
+    if (!centred) out.setPosition(middleX.coerceIn(0f, 1f)).setPositionAnchor(Cue.ANCHOR_TYPE_MIDDLE)
+    if ((top + bottom) / 2 < 0.5f) {
+        out.setLine(top.coerceIn(0f, 1f), Cue.LINE_TYPE_FRACTION).setLineAnchor(Cue.ANCHOR_TYPE_START)
+    } else {
+        out.setLine(bottom.coerceIn(0f, 1f), Cue.LINE_TYPE_FRACTION).setLineAnchor(Cue.ANCHOR_TYPE_END)
+    }
+    return out.build()
+}
+
+// A picture whose middle is this close to the screen's middle is centred; one ending below this height is a bottom line.
+private const val PICTURE_CENTRED = 0.1f
+private const val PICTURE_LOW = 0.7f
 
 /**
  * Whether the file leaves this line at the ordinary bottom-centre place, so the chosen bottom height applies.

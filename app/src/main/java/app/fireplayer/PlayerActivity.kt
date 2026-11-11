@@ -5,6 +5,8 @@ import android.widget.FrameLayout
 import android.app.ActivityManager
 import android.content.Intent
 import android.graphics.Paint
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -65,6 +67,7 @@ import app.fireplayer.player.Delays
 import app.fireplayer.player.DisplaySwitch
 import app.fireplayer.player.FpsMeter
 import app.fireplayer.player.FrameRateMatcher
+import app.fireplayer.player.FreezeWatch
 import app.fireplayer.player.IdleCloseDataSource
 import app.fireplayer.player.NextEpisode
 import app.fireplayer.player.MatchFixes
@@ -73,10 +76,12 @@ import app.fireplayer.player.ShowGuide
 import app.fireplayer.player.SpeechTap
 import app.fireplayer.player.PlayerFactory
 import app.fireplayer.player.ServerSwitch
+import app.fireplayer.player.ThreadBeat
 import app.fireplayer.player.TitleInfo
 import app.fireplayer.player.VsyncFix
 import app.fireplayer.player.XtreamAccount
 import app.fireplayer.subs.AutoSync
+import app.fireplayer.subs.EmbeddedCues
 import app.fireplayer.subs.FontImport
 import app.fireplayer.subs.MovieHash
 import app.fireplayer.subs.SavedSubtitles
@@ -89,6 +94,7 @@ import app.fireplayer.titles.TitleService
 import app.fireplayer.subs.PictureText
 import app.fireplayer.subs.SubtitlePresets
 import app.fireplayer.subs.SubtitleStyler
+import app.fireplayer.subs.placedLikePicture
 import app.fireplayer.ui.CountdownPill
 import app.fireplayer.player.SkipTimes
 import app.fireplayer.player.MkvChapters
@@ -198,6 +204,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private val delays = Delays()
     // Subtitle auto sync: listens to a copy of the sound while it lines downloaded subtitles up (see AutoSync).
     private val speechTap = SpeechTap()
+    // The timing of the film's own subtitle tracks as they load: auto sync lines downloaded subtitles up against it.
+    private val embeddedCues = EmbeddedCues()
     private lateinit var autoSync: AutoSync
     // The Subtitle delay window is open, so auto sync's news shows in it at once.
     private var delayPanelOpen = false
@@ -333,6 +341,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private var audioRecalledFor: String? = null
     // The film was paused for the TV to change refresh rate, and goes on by itself afterwards.
     private var pausedForSwitch = false
+    // The film stood still while meant to be playing (see FreezeWatch): paused for a moment, and played again by itself.
+    private var pausedForFreeze = false
+    private val freezeWatch = FreezeWatch { SystemClock.elapsedRealtime() }
+    /** Whether the current player's own thread still answers; one per player. */
+    private var threadBeat: ThreadBeat? = null
+    // The next quiet retry builds a new player instead of loading again (a film that froze).
+    private var rebuildOnRetry = false
+    // The error shown is for a film that froze and couldn't be started again: OK builds a new player.
+    private var frozeOut = false
     // A sleep timer's time left while the player is away; it only counts down on screen.
     private var sleepRemainingMs = 0L
     // The link is of a kind the player can't open at all, so OK can't try again.
@@ -362,6 +379,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     /** Whether the current player was built with libass ("Keep embedded styling" on). */
     private var builtWithAss = false
     private var matchedFpsForIndex = -1
+    // The video the TV wouldn't stay on the film's rate for: not asked again (see rematchFrameRate). And how often it was
+    // asked again for the video playing.
+    private var refusedForIndex = -1
+    private var rematches = 0
     private var displayMode = 0
 
     // Seeking
@@ -410,7 +431,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             }
             retryPending = false
             roundStartedAt = SystemClock.elapsedRealtime()
-            player?.prepare()
+            if (rebuildOnRetry) {
+                // A new thread, in case the old one is what's stuck.
+                rebuildOnRetry = false
+                rebuildPlayer()
+            } else {
+                player?.prepare()
+            }
         }
     }
     // Sound or a decoder the device couldn't start, counted apart: these can fail again right after
@@ -511,8 +538,18 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 refreshLabels()
                 if (delayPanelOpen && panel.isOpen) panel.refresh()
             },
+            // The show this episode is of, when TMDB knows it: a bumper's jump found here is tried first in its others.
+            showKey = {
+                val g = guide
+                val entry = currentEntry()
+                if (g != null && g.tmdbId > 0 && entry != null && guideEpisode(entry) != null) "tmdb:${g.tmdbId}" else null
+            },
+            embedded = embeddedCues,
+            filmUri = { player?.currentMediaItem?.localConfiguration?.uri?.toString() },
         )
         autoSync.onMappingChanged = { syncMappingChanged() }
+        // A line held back for auto sync is shown once it's lined up (or has waited long enough).
+        autoSync.onHoldEnded = { showCues() }
         settingsPanels.onAutoSyncChanged = { autoSync.setOn(prefs.autoSync); followSubtitle() }
         settingsPanels.onFontChanged = {
             styler.reloadImportedFont()
@@ -631,6 +668,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         backdrop?.stop()
         releasePlayer()
         pausedForSwitch = false
+        pausedForFreeze = false
+        freezeWatch.reset()
         if (!isFinishing) stoppedAt = SystemClock.elapsedRealtime()
         if (sleepEndsAt > 0) {
             sleepRemainingMs = (sleepEndsAt - SystemClock.elapsedRealtime()).coerceAtLeast(1L)
@@ -660,8 +699,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
      */
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        // Playing, or only paused for the TV's refresh-rate switch (it plays on after that)
-        if (!openingOwn && !isFinishing && (player?.playWhenReady == true || pausedForSwitch)) finishWithResult(animate = false)
+        // Playing, or only paused for the TV's refresh-rate switch or to get a frozen film going (it plays on after that)
+        if (!openingOwn && !isFinishing && (player?.playWhenReady == true || pausedForSwitch || pausedForFreeze)) {
+            finishWithResult(animate = false)
+        }
     }
 
     override fun startActivity(intent: Intent, options: Bundle?) {
@@ -895,10 +936,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             vsync = vsync,
             displaySwitch = displaySwitch,
             speechTap = speechTap,
+            embeddedCues = embeddedCues,
         )
         vsyncFix = vsync.also { it.start() }
+        // The TV's mode can change under the film (turned on, reconnected): its rate is asked for again then.
+        frameRateMatcher.watch { rematchFrameRate() }
         val p = built.player
         player = p
+        threadBeat = ThreadBeat(p.playbackLooper)
         builtWithAss = prefs.keepAssStyling
         assHandler = built.assHandler
         bufferWait = built.bufferWait
@@ -937,6 +982,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         waitingSince = 0L
         retryPending = false
         handler.removeCallbacks(retryRunnable)
+        rebuildOnRetry = false
+        // A new player behind the freeze message (a setting changed in front of it) answers it as OK would: the film is
+        // watched from the first step again, or a second freeze would go unseen.
+        if (frozeOut) freezeWatch.reset()
+        frozeOut = false
+        freezeWatch.jumped()
         cannotOpen = false
         previewCutOffs = 0
         // TIME_UNSET starts VOD at the beginning and live at the live edge.
@@ -994,6 +1045,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         countPlaying(false)
         vsyncFix?.stop()
         vsyncFix = null
+        frameRateMatcher.unwatch()
+        threadBeat = null
         p.removeListener(this)
         // Its listener is gone, so the glass won't hear that it stopped playing.
         backdrop?.playing = false
@@ -1238,6 +1291,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             }
             findNextEpisode()
             errorBox.visibility = View.GONE
+            // The stopped player loaded again behind the freeze message (a subtitle added): it plays, so it's answered.
+            if (frozeOut) {
+                frozeOut = false
+                freezeWatch.reset()
+            }
             waitingSince = 0L
             retries = 0
             retryPending = false
@@ -1317,10 +1375,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             pictureText.discardAhead()
             // Another episode: the refresh rate is checked again, and the sound and subtitles picked are matched.
             matchedFpsForIndex = -1
+            refusedForIndex = -1
+            rematches = 0
             reapplyWishes = trackWishes.isNotEmpty()
         }
         playingIndex = now
         deviceRetries = 0
+        freezeWatch.jumped()
         measuredFps = 0f
         fpsMeter.reset()
         lineUpNext()
@@ -1331,6 +1392,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     override fun onTracksChanged(tracks: Tracks) {
+        // Another sound track (or the same one set up again) gets its own time to start.
+        freezeWatch.jumped()
         pendingExternalSubId?.let { id ->
             val option = trackOptions(C.TRACK_TYPE_TEXT).firstOrNull { sameId(it, id) }
             if (option != null) {
@@ -1388,6 +1451,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+        // Every jump, the viewer's or FreezeWatch's own: the film's time starts afresh there.
+        freezeWatch.jumped()
         // A jump while already waiting is a new wait (the state doesn't change), so the percentage starts again.
         if (reason == Player.DISCONTINUITY_REASON_SEEK) {
             restartPostPlayCount(newPosition.positionMs)
@@ -1409,7 +1474,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         readPictures()
         // libass draws its own subtitles; picture subtitles are images. Example text would sit on top of them.
         val otherShowing = lastPictureCues.isNotEmpty() || libassShowing()
-        val text = styler.normalize(shownTextCues)
+        // A new episode's first downloaded lines can wait a moment for auto sync to say where they go.
+        val held = shownTextCues.isNotEmpty() && ::autoSync.isInitialized && autoSync.holdsCues()
+        val text = if (held) emptyList() else styler.normalize(shownTextCues)
         val preview = stylePreviewing && text.isEmpty() && !otherShowing && player?.playWhenReady != true
         screenSubtitles.setCues(if (preview) styler.sample() else text)
         frameSubtitles.setCues(styler.pictures(shownPictureCues))
@@ -1448,8 +1515,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val read = lastPictureCues.indices.filter { texts[it]!!.isNotEmpty() }
             .sortedBy { lastPictureCues[it].line.takeIf { line -> line != Cue.DIMEN_UNSET } ?: 0f }
         if (read.isEmpty()) return
-        val text = read.joinToString("\n") { texts[it]!! }
-        shownTextCues = lastTextCues + Cue.Builder().setText(text).build()
+        shownTextCues = if (styler.filePosition) {
+            // "As in the file": each picture's words go where the picture was (bottom ones still stack at the bottom).
+            lastTextCues + read.map { placedLikePicture(lastPictureCues[it], texts[it]!!) }
+        } else {
+            lastTextCues + Cue.Builder().setText(read.joinToString("\n") { texts[it]!! }).build()
+        }
         shownPictureCues = lastPictureCues.filterIndexed { i, _ -> texts[i]!!.isEmpty() }
     }
 
@@ -1547,6 +1618,117 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         buffering.visibility = View.VISIBLE
         handler.removeCallbacks(retryRunnable)
         handler.postDelayed(retryRunnable, delayMs)
+    }
+
+    /**
+     * From [postPlayTick]: a film meant to be playing whose time stands still is started again, step by step (see
+     * [FreezeWatch]). With the TV off, Fire OS's sound once stopped taking the film's sound, and the picture stood still
+     * for half an hour with nothing said, until the viewer paused and played again.
+     */
+    private fun checkFreeze() {
+        val p = player ?: return
+        val now = SystemClock.elapsedRealtime()
+        // Held on purpose, or something in front of the film (Alexa, a system window): not watched.
+        val held = seeking || pausedForSwitch || pausedForFreeze || retryPending || resumeDialogShowing ||
+            errorBox.visibility == View.VISIBLE || completed || isFinishing || !hasWindowFocus()
+        val event = freezeWatch.check(
+            FreezeWatch.Sample(
+                playing = p.isPlaying,
+                waiting = p.playWhenReady && p.playbackState == Player.STATE_BUFFERING,
+                held = held,
+                positionMs = p.currentPosition,
+                bufferedMs = p.bufferedPosition,
+                durationMs = p.duration,
+                live = p.isCurrentMediaItemLive,
+                seekable = p.isCurrentMediaItemSeekable,
+                switchAtMs = displaySwitchAt,
+                threadSilentMs = threadBeat?.silentMs(now) ?: 0L,
+            ),
+        ) ?: return
+        if (event is FreezeWatch.Event.Recovered) {
+            val how = when (event.after) {
+                FreezeWatch.Step.PAUSE_PLAY -> "pausing and playing"
+                FreezeWatch.Step.JUMP -> "jumping to the same spot"
+                else -> "a new player"
+            }
+            android.util.Log.i(TAG, "Film playing again at ${formatTime(event.positionMs, long = true)} after $how " +
+                "(stuck ${event.stuckMs / 1000} s)")
+            return
+        }
+        val act = event as FreezeWatch.Event.Act
+        val at = formatTime(act.positionMs, long = true)
+        val stuck = "${act.stuckMs / 1000} s"
+        when (act.step) {
+            FreezeWatch.Step.PAUSE_PLAY -> {
+                android.util.Log.w(TAG, "Film stuck at $at for $stuck with ${act.aheadMs / 1000} s loaded ahead: pausing " +
+                    "and playing again (the sound may have stopped taking it)")
+                pausedForFreeze = true
+                p.pause()
+                handler.removeCallbacks(resumeAfterFreeze)
+                handler.postDelayed(resumeAfterFreeze, FREEZE_PAUSE_MS)
+            }
+            FreezeWatch.Step.JUMP -> {
+                android.util.Log.w(TAG, "Still stuck at $at ($stuck): jumping to the same spot, which starts the sound afresh")
+                // Exactly a millisecond on: a jump to where the film already is does nothing at all, and one allowed onto a
+                // keyframe could land on the very picture it stands on. Forward, so subtitles read ahead are kept.
+                p.setSeekParameters(SeekParameters.EXACT)
+                p.seekTo(p.currentPosition + 1)
+                p.setSeekParameters(PlayerFactory.FILM_SEEK)
+            }
+            FreezeWatch.Step.NEW_PLAYER -> {
+                val why = if (act.threadSilent) "The player hasn't answered for $stuck at $at" else "Still stuck at $at ($stuck)"
+                android.util.Log.w(TAG, "$why: building a new player")
+                rebuildOnRetry = true
+                retryQuietly(0L)
+            }
+            FreezeWatch.Step.MESSAGE -> {
+                android.util.Log.w(TAG, "Still stuck at $at ($stuck) after a new player: showing a message")
+                showFrozen()
+            }
+        }
+        logHdmiSound()
+    }
+
+    private val resumeAfterFreeze = Runnable {
+        if (pausedForFreeze) {
+            pausedForFreeze = false
+            player?.play()
+        }
+    }
+
+    /**
+     * The film froze and nothing started it again: it's stopped (at once, even if the player's own thread is stuck), which
+     * lets go of the sound, the decoders and the provider's connection and lets the TV sleep, and the viewer is told.
+     */
+    private fun showFrozen() {
+        player?.stop()
+        frozeOut = true
+        retries = 0
+        deviceRetries = 0
+        retryPending = false
+        hideBuffering()
+        // The error box needs OK, so a settings window can't be left in front of it.
+        if (panel.isOpen) panel.close()
+        errorText.text = "The film froze and couldn't be started again. Fire TV's sound may have stopped working " +
+            "(it can while the TV is off)."
+        errorHint.text = "Press OK to try again  ·  If it keeps freezing, restart the Fire TV"
+        errorBox.visibility = View.VISIBLE
+        updateKeepScreenOn()
+        hideControls()
+    }
+
+    /**
+     * For the logs: whether Fire OS has the TV's HDMI sound output just now (none while the TV is off). Asked on a thread
+     * of its own, as the sound system may be what's stuck.
+     */
+    private fun logHdmiSound() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        val audio = getSystemService(AudioManager::class.java) ?: return
+        thread(name = "FirePlayerSoundOutputs", isDaemon = true) {
+            val outputs = runCatching { audio.getDevices(AudioManager.GET_DEVICES_OUTPUTS) }.getOrNull() ?: return@thread
+            val hdmi = outputs.any { it.type == AudioDeviceInfo.TYPE_HDMI }
+            android.util.Log.i(TAG, "HDMI sound output while the film was stuck: " + if (hdmi) "there" else "none (the TV may be off)")
+        }
     }
 
     private fun errorMessage(error: PlaybackException, status: Int?): String = when (error.errorCode) {
@@ -1892,6 +2074,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             updateSkip()
             updatePostPlay()
             noteWhilePlaying()
+            checkFreeze()
             handler.postDelayed(this, 200)
         }
     }
@@ -2519,16 +2702,66 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (fps <= 0) return
         matchedFpsForIndex = p.currentMediaItemIndex
         val wasPlaying = p.playWhenReady
-        val switching = frameRateMatcher.match(fps)
-        if (switching) displaySwitchAt = SystemClock.elapsedRealtime()
-        if (switching && wasPlaying) {
-            // The TV blanks for a moment while it switches; don't play through it.
-            p.pause()
-            pausedForSwitch = true
-            handler.removeCallbacks(resumeAfterSwitch)
-            handler.postDelayed(resumeAfterSwitch, DISPLAY_SWITCH_PAUSE_MS)
+        switchFor(frameRateMatcher.match(fps), wasPlaying)
+    }
+
+    /** The TV was asked for another mode ([switching]): the film waits for the picture if it was playing. */
+    private fun switchFor(switching: Boolean, wasPlaying: Boolean) {
+        if (!switching) return
+        displaySwitchAt = SystemClock.elapsedRealtime()
+        if (!wasPlaying) return
+        // The TV blanks for a moment while it switches; don't play through it.
+        player?.pause()
+        pausedForSwitch = true
+        handler.removeCallbacks(resumeAfterSwitch)
+        handler.postDelayed(resumeAfterSwitch, DISPLAY_SWITCH_PAUSE_MS)
+    }
+
+    /**
+     * The TV's mode changed under the film and has settled: turned on, reconnected, or Fire OS putting its own mode back
+     * (once the TV came on at 59.94 Hz in the middle of a 23.976 fps film, and stayed there). If the film's rate was
+     * matched and the mode no longer suits it, it's asked for again, with the usual pause. A TV that leaves the mode
+     * again right after being asked may still be coming on: it's asked again once [REMATCH_AGAIN_MS] have passed, up to
+     * [REMATCH_MAX] times for one video.
+     */
+    private fun rematchFrameRate() {
+        val p = player ?: return
+        val index = p.currentMediaItemIndex
+        val fps = selectedFormat(C.TRACK_TYPE_VIDEO)?.frameRate ?: Format.NO_VALUE.toFloat()
+        val now = SystemClock.elapsedRealtime()
+        val matchOn = prefs.matchFrameRate
+        val decision = FrameRateMatcher.rematch(
+            nowMs = now,
+            matchOn = matchOn,
+            matchedThisFilm = matchedFpsForIndex == index,
+            refused = refusedForIndex == index,
+            fps = fps,
+            suits = !matchOn || fps <= 0 || frameRateMatcher.suits(fps),
+            switchAtMs = displaySwitchAt,
+            askedAtMs = frameRateMatcher.askedAt,
+            settleMs = DISPLAY_SETTLE_MS,
+            againMs = REMATCH_AGAIN_MS,
+        )
+        when (decision) {
+            is FrameRateMatcher.Rematch.Wait -> {
+                handler.removeCallbacks(rematchLater)
+                handler.postDelayed(rematchLater, decision.ms)
+            }
+            FrameRateMatcher.Rematch.Ask -> {
+                // A TV that keeps going back, soon or late, is left alone after a few tries: no pause again and again.
+                if (++rematches >= REMATCH_MAX) refusedForIndex = index
+                android.util.Log.i(TAG, "The TV went to ${tvHz()} Hz while the film plays (turned on or reconnected): " +
+                    "asking for ${FpsMeter.snap(fps)} fps again")
+                switchFor(frameRateMatcher.match(fps, again = true), p.playWhenReady)
+            }
+            FrameRateMatcher.Rematch.Leave -> Unit
         }
     }
+
+    private val rematchLater = Runnable { rematchFrameRate() }
+
+    @Suppress("DEPRECATION")
+    private fun tvHz(): String = "%.3f".format(Locale.US, windowManager.defaultDisplay?.refreshRate ?: 0f)
 
     private val resumeAfterSwitch = Runnable {
         pausedForSwitch = false
@@ -2889,6 +3122,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val p = player ?: return
         handler.removeCallbacks(resumeAfterSwitch)
         pausedForSwitch = false
+        handler.removeCallbacks(resumeAfterFreeze)
+        pausedForFreeze = false
         if (p.playbackState == Player.STATE_ENDED) p.seekTo(0)
         p.playWhenReady = !p.playWhenReady
         updatePlayButton()
@@ -3059,6 +3294,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 if (event.repeatCount == 0) {
                     handler.removeCallbacks(resumeAfterSwitch)
                     pausedForSwitch = false
+                    handler.removeCallbacks(resumeAfterFreeze)
+                    pausedForFreeze = false
                     when (code) {
                         KeyEvent.KEYCODE_MEDIA_PLAY -> player?.play()
                         KeyEvent.KEYCODE_MEDIA_PAUSE -> player?.pause()
@@ -3123,6 +3360,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             // Nothing to try again with a link of a kind the player can't open: OK leaves, as Back does.
             if (cannotOpen || decoderStuck) {
                 if (event.repeatCount == 0) finishWithResult()
+                return true
+            }
+            if (frozeOut) {
+                // A new player on a new thread, in case the old one is what's stuck.
+                frozeOut = false
+                errorBox.visibility = View.GONE
+                freezeWatch.reset()
+                rebuildPlayer()
+                player?.play()
                 return true
             }
             errorBox.visibility = View.GONE
@@ -3218,6 +3464,17 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             }
             if (isOk) {
                 if (event.repeatCount == 0) togglePlay()
+                return true
+            }
+        }
+        // The icon row under the arrow wraps around: left from the first goes to the last, right from the last to the
+        // first. Only on a fresh press, so holding the D-pad stops at the end instead of spinning round.
+        if (moreShown && (code == KeyEvent.KEYCODE_DPAD_LEFT || code == KeyEvent.KEYCODE_DPAD_RIGHT)) {
+            val items = (0 until moreRow.childCount).map { moreRow.getChildAt(it) }.filter { it.visibility == View.VISIBLE }
+            val at = items.indexOf(currentFocus)
+            val left = code == KeyEvent.KEYCODE_DPAD_LEFT
+            if (at >= 0 && items.size > 1 && (left && at == 0 || !left && at == items.size - 1)) {
+                if (event.repeatCount == 0) (if (left) items.last() else items.first()).requestFocus()
                 return true
             }
         }
@@ -3519,7 +3776,30 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (downloaded && prefs.autoSync) {
             row("Resync") { autoSync.resync(); refresh() }
             if (autoSync.undoUs != null) row("Undo auto sync") { autoSync.undo(); refresh() }
+            syncWithRow(panel)
         }
+    }
+
+    /**
+     * "Sync with": what auto sync lines up against, when the film has subtitles of its own. Auto (the best of them,
+     * named), each of them with how well it matches the downloaded subtitles, or the speech only. Kept for the show.
+     */
+    private fun syncWithRow(panel: SidePanel) = with(panel) {
+        val tracks = autoSync.tracks
+        val chosen = autoSync.syncWith()
+        if (tracks.isEmpty() && chosen == null) return@with
+        val inUse = tracks.firstOrNull { it.info.key == autoSync.trackInUse }
+        val auto = when {
+            // Just the track: the row's value has room for little more, and the list says how well each matches.
+            inUse != null -> "Auto (${inUse.info.name()})"
+            tracks.isNotEmpty() && autoSync.trackInUse == null && autoSync.state != AutoSync.State.LISTENING -> "Auto (speech)"
+            else -> "Auto"
+        }
+        val keys = listOf<String?>(null) + tracks.map { it.info.key } + AutoSync.SPEECH
+        val options = listOf(auto) + tracks.map { "${it.info.name()}, ${it.strength.label}" } + "Speech only"
+        // A track chosen before that this film doesn't have: shown as Auto.
+        val selected = keys.indexOf(chosen).let { if (it < 0) 0 else it }
+        choice("Sync with", options, selected) { i -> autoSync.chooseSyncWith(keys[i]); refreshLabels() }
     }
 
     /** Tells auto sync which subtitles are on: a file from Search online, or anything else (left alone). */
@@ -3533,7 +3813,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         val path = config?.uri?.takeIf { it.scheme == "file" }?.path
         val file = path?.let { File(it) }?.takeIf { it.parentFile == downloadDir() && it.isFile }
-        autoSync.follow(file, entry?.key)
+        // Which release they were made for (subtitles from the same source start from the last episode's delay).
+        val saved = if (file == null || entry == null) null else SavedSubtitles.forVideo(this, entry.key).firstOrNull { it.file == file.name }
+        autoSync.follow(file, entry?.key, saved?.release, saved?.language)
     }
 
     /** Where Search online puts the subtitles it downloads. */
@@ -3737,7 +4019,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             if (prefs.playNextEpisode != playNext) nextEpisodeSwitched()
             // Only when the setting itself changed: matching again would pause the film for nothing.
             if (prefs.matchFrameRate != matchFps) {
-                if (prefs.matchFrameRate) { matchedFpsForIndex = -1; matchFrameRate() } else frameRateMatcher.reset()
+                if (prefs.matchFrameRate) {
+                    matchedFpsForIndex = -1
+                    refusedForIndex = -1
+                    rematches = 0
+                    matchFrameRate()
+                } else {
+                    frameRateMatcher.reset()
+                }
             }
             refreshLabels()
         }) {
@@ -4682,6 +4971,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         const val REAL_AGAIN_MS = 20_000L
         // How long the film waits for the TV to change refresh rate.
         const val DISPLAY_SWITCH_PAUSE_MS = 2_000L
+        /** How long a film that froze is paused before it's played again (the viewer did the same, and it went on). */
+        const val FREEZE_PAUSE_MS = 1_000L
+        private const val TAG = "FirePlayer"
         /** Away longer than this, a player left behind closes instead of coming back (see onStart). */
         const val AWAY_CLOSES_MS = 30 * 60_000L
         /** How long the decoder list may take before the player says the decoder service is stuck. */
@@ -4721,6 +5013,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         const val DEVICE_RETRY_WINDOW_MS = 60_000L
         /** How long after a refresh-rate switch the TV's sound output may still be coming back. */
         const val DISPLAY_SETTLE_MS = 3_000L
+        /**
+         * The TV leaving the film's mode this soon after it was asked for is asked again only when this is up: a TV coming
+         * on can drop its HDMI connection again a few seconds later, and Fire OS puts its own mode back each time.
+         */
+        const val REMATCH_AGAIN_MS = 10_000L
+        /** The most times one video asks for its rate again after the TV changed mode under it. */
+        const val REMATCH_MAX = 3
         /** File missing, no permission and cleartext blocked won't fix themselves. */
         val NOT_RETRIED = setOf(
             PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND,

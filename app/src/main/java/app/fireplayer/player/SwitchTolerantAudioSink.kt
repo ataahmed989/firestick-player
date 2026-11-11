@@ -74,9 +74,9 @@ class SwitchTolerantAudioSink(sink: AudioSink, private val displaySwitch: Displa
         super.reset()
     }
 
-    private companion object {
-        // The TV's sound came back 1 to 2.1 s after a switch began (measured); room to spare.
+    companion object {
+        /** The TV's sound came back 1 to 2.1 s after a switch began (measured); room to spare. */
         const val WINDOW_MS = 6_000L
-        const val RETRY_MS = 100L
+        private const val RETRY_MS = 100L
     }
 }

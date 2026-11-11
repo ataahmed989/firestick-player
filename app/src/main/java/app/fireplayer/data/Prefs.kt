@@ -168,12 +168,44 @@ class Prefs(context: Context) {
 
     fun saveSyncedDelay(key: String, ms: Long) = sp.edit().putLong("sync|$key", ms).apply()
 
-    fun forgetSyncedDelay(key: String) = sp.edit().remove("sync|$key").remove("sync|$key|at").apply()
+    fun forgetSyncedDelay(key: String) = sp.edit().remove("sync|$key").remove("sync|$key|at").remove("sync|$key|track").apply()
 
     // ...and by film position once the timing changed along the film (an ad break): see OffsetTracker.encode.
     fun syncedSegments(key: String): String? = sp.getString("sync|$key|at", null)
 
+    /**
+     * Jumps auto sync found in a show's episodes (the subtitles needing this much more, or less, delay after a bumper
+     * or an ad), newest first: tried first after a break in its other episodes.
+     */
+    fun showJumps(show: String): List<Long> =
+        sp.getString("syncjumps|$show", null)?.split(',')?.mapNotNull { it.trim().toLongOrNull() } ?: emptyList()
+
+    fun saveShowJumps(show: String, jumps: List<Long>) = sp.edit().putString("syncjumps|$show", jumps.joinToString(",")).apply()
+
     fun saveSyncedSegments(key: String, text: String) = sp.edit().putString("sync|$key|at", text).apply()
+
+    /**
+     * The delay a show's last episode started with (ms), for subtitles from the same source ([source]: the release they
+     * were made for, less the episode): a new episode starts from it, checked as it plays.
+     */
+    fun showStartMs(show: String, source: String): Long? =
+        "syncstart|$show|$source".let { if (sp.contains(it)) sp.getLong(it, 0L) else null }
+
+    fun saveShowStart(show: String, source: String, ms: Long) = sp.edit().putLong("syncstart|$show|$source", ms).apply()
+
+    /**
+     * What auto sync lines up against for a show (or one film without one), as chosen in the Subtitle delay window: one
+     * of the film's own subtitle tracks (its key), "speech", or null for the best of them (auto).
+     */
+    fun syncWith(scope: String): String? = sp.getString("syncwith|$scope", null)
+
+    fun saveSyncWith(scope: String, choice: String?) =
+        sp.edit().apply { if (choice == null) remove("syncwith|$scope") else putString("syncwith|$scope", choice) }.apply()
+
+    /** The film's own subtitle track auto sync picked for a subtitle and film, so it picks the same one next time. */
+    fun syncTrack(key: String): String? = sp.getString("sync|$key|track", null)
+
+    fun saveSyncTrack(key: String, track: String) = sp.edit().putString("sync|$key|track", track).apply()
 
     /** A delay set by hand for a downloaded subtitle on one video, used again when it's chosen another time. */
     fun handDelayMs(key: String): Long? = if (sp.contains("subdelay|$key")) sp.getLong("subdelay|$key", 0L) else null
