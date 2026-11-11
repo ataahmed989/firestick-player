@@ -52,6 +52,8 @@ class AutoSync(
     private val position: () -> Pair<Long, Long>,
     /** Something to show changed (the state, or the delay). */
     private val onChanged: () -> Unit,
+    /** The show the film is an episode of ("tmdb:ID"), or null: its jumps are remembered for its other episodes. */
+    private val showKey: () -> String? = { null },
 ) {
 
     enum class State { OFF, LISTENING, SYNCED, NOT_SYNCED }
@@ -104,6 +106,8 @@ class AutoSync(
         val centerMs: Long,
         val rangeMs: Long,
         val relearnAtMs: Long?,
+        /** Jumps other episodes of the show made, tried first after a break. */
+        val jumps: List<Long> = emptyList(),
     )
 
     private var generation = 0
@@ -278,11 +282,12 @@ class AutoSync(
         if (l.lines.size < 20 || byHand) return
         val gen = ++generation
         val known = if (relearnAtMs == null) segments else emptyList()
+        val jumps = showKey()?.let { prefs.showJumps(it) } ?: emptyList()
         job = if (relearnAtMs != null) {
             // Resync looks further either way, around the delay in use: after a few breaks it can be minutes.
-            Job(gen, k, l, known, delayUs() / 1000, OffsetTracker.RANGE_MS, relearnAtMs)
+            Job(gen, k, l, known, delayUs() / 1000, OffsetTracker.RANGE_MS, relearnAtMs, jumps)
         } else {
-            Job(gen, k, l, known, 0, SyncMatcher.RANGE_MS, null)
+            Job(gen, k, l, known, 0, SyncMatcher.RANGE_MS, null, jumps)
         }
         if (known.isEmpty()) setState(State.LISTENING, "Listening for speech. Usually takes a minute or two of talking.")
         ensureWorker()
@@ -395,7 +400,7 @@ class AutoSync(
                     }
                     // Resync with the same subtitles keeps the tracker's idea of where breaks were, to start from the last.
                     val t = tracker?.takeIf { current.relearnAtMs != null && it.lines === current.lines }
-                        ?: OffsetTracker(current.lines, current.segments, current.centerMs, current.rangeMs)
+                        ?: OffsetTracker(current.lines, current.segments, current.centerMs, current.rangeMs, knownJumps = current.jumps)
                     current.relearnAtMs?.let { t.relearn(it, current.centerMs, timeline) }
                     tracker = t
                     // A new job's mapping starts from nothing (the old one was cleared): the first snapshot always goes.
@@ -579,6 +584,9 @@ class AutoSync(
         prefs.saveSyncedSegments(savedKey(), OffsetTracker.encode(segments))
         // Also the one delay older versions read.
         prefs.saveSyncedDelay(savedKey(), segments[0].delayMs)
+        if (d.outcome == Outcome.MOVED) showKey()?.let { show ->
+            prefs.saveShowJumps(show, OffsetTracker.rememberJumps(prefs.showJumps(show), segments))
+        }
         val nowUs = delayUs()
         val wantUs = (OffsetTracker.delayAt(segments, position().first) ?: return) * 1000
         if (abs(wantUs - nowUs) >= MIN_MOVE_US) {

@@ -348,6 +348,84 @@ class OffsetTrackerTest {
         assertEquals(p.tracker.segments.map { it.fromMs }, p.tracker.changeFrom(p.timeline))
     }
 
+    /** Seconds after each ad ended until its delay was followed; null where it wasn't. */
+    private fun followTimes(film: FakeFilm, p: Playback): List<Long?> = film.ads.mapIndexed { k, ad ->
+        val want = film.pieces.filter { it.delayMs != null }[k + 1].delayMs!!
+        p.moves.firstOrNull { near(want, it.delayMs, 300) && it.toMs >= ad.toMs }?.let { (it.toMs - ad.toMs) / 1000 }
+    }
+
+    @Test
+    fun aBumperTheSameLengthAgainIsFollowedQuickly() {
+        // Three bumpers, each needing 15 s more: after the first, the same jump is tried first and proven on the talking
+        // since in about a minute, where searching every shift takes about three.
+        val breaks = (1..3).map { Break(it * 12 * min, adMs = 45_000, skipMs = 30_000) }
+        val quick = ArrayList<Long>()
+        val slow = ArrayList<Long>()
+        for (seed in 1L..8L) {
+            val film = FakeFilm.make(seed, minutes = 48, delayMs = 1_400, breaks = breaks)
+            val p = Playback(film, OffsetTracker(film.subs))
+            p.play(film.lengthMs)
+            assertFollows(film, p, slackMs = 60_000)
+            val off = Playback(film, OffsetTracker(film.subs, guessing = false)).also { it.play(film.lengthMs) }
+            val t = followTimes(film, p)
+            val tOff = followTimes(film, off)
+            println("same bumper again (seed $seed): ${t.drop(1)} s after the ad, searching every shift ${tOff.drop(1)} s")
+            quick += t.drop(1).map { it!! }
+            slow += tOff.drop(1).map { it!! }
+            assertTrue(p.story(), p.moves.any { it.note.contains("tried first") })
+        }
+        quick.sort()
+        slow.sort()
+        println("median ${quick[quick.size / 2]} s, was ${slow[slow.size / 2]} s")
+        // This made-up film talks sparsely (about 6 lines a minute): with more talking it's quicker still.
+        assertTrue("$quick vs $slow", quick[quick.size / 2] <= 120 && quick.sum() < slow.sum() * 3 / 4)
+    }
+
+    @Test
+    fun aJumpRememberedFromAnotherEpisodeIsTriedFirst() {
+        // One bumper, the same length as one in another episode of the show: tried first from the start.
+        val breaks = listOf(Break(12 * min, adMs = 45_000, skipMs = 30_000))
+        var faster = 0
+        for (seed in 1L..8L) {
+            val film = FakeFilm.make(seed, minutes = 30, delayMs = 1_400, breaks = breaks)
+            val p = Playback(film, OffsetTracker(film.subs, knownJumps = listOf(15_000L)))
+            p.play(film.lengthMs)
+            val fresh = Playback(film, OffsetTracker(film.subs)).also { it.play(film.lengthMs) }
+            // Where the change is put is as precise as when it's searched for (a line or two after the ad, at times).
+            assertFollows(film, p, slackMs = 60_000)
+            val t = followTimes(film, p)[0]!!
+            val tFresh = followTimes(film, fresh)[0]!!
+            println("remembered jump (seed $seed): $t s, not remembered $tFresh s")
+            if (t < tFresh) faster++
+        }
+        assertTrue("faster in $faster of 8", faster >= 6)
+    }
+
+    @Test
+    fun wrongGuessesDoNotMoveIt() {
+        // Breaks of other lengths than the jumps tried first (and one 1.5 s off), sparse talking too: no delay is made up.
+        val cases = listOf(
+            listOf(Break(12 * min, adMs = 45_000, skipMs = 30_000), Break(24 * min, adMs = 70_000, skipMs = 30_000), Break(36 * min, adMs = 20_000, skipMs = 30_000)),
+            listOf(Break(12 * min, adMs = 45_000, skipMs = 30_000), Break(24 * min, adMs = 46_500, skipMs = 30_000)),
+            listOf(Break(12 * min, adMs = 45_000, skipMs = 30_000)),
+        )
+        for (breaks in cases) for ((noise, missed) in listOf(0.08 to 0.1, 0.2 to 0.3)) for (seed in 1L..8L) {
+            val film = FakeFilm.make(seed, minutes = 48, delayMs = 1_400, breaks = breaks, noise = noise, missed = missed)
+            val p = Playback(film, OffsetTracker(film.subs, knownJumps = listOf(15_000L, -8_000L)))
+            p.play(film.lengthMs)
+            val truth = film.pieces.mapNotNull { it.delayMs }
+            assertTrue("seed $seed noise $noise: ${p.tracker.segments}\n${p.story()}",
+                p.tracker.segments.all { s -> truth.any { near(it, s.delayMs, 300) } })
+        }
+    }
+
+    @Test
+    fun jumpsAreRememberedNewestFirst() {
+        val segs = listOf(Segment(0, 1_400), Segment(600_000, 16_400), Segment(1_200_000, 16_500), Segment(1_800_000, 31_400))
+        // 15 s twice (and 0.1 s between, too little to be a jump): once, the newest, then the older ones, at most 4.
+        assertEquals(listOf(14_900L, -8_000L, 60_000L, 5_000L), OffsetTracker.rememberJumps(listOf(15_050L, -8_000L, 60_000L, 5_000L, 9_000L), segs))
+    }
+
     @Test
     fun whereAChangeMayBeginAfterAJumpPastIt() {
         // Heard to 8:00, then a jump to 40:00, past a break at 25:00: the change is put where the viewer landed, but it

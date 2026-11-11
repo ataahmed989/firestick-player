@@ -173,6 +173,15 @@ class Prefs(context: Context) {
     // ...and by film position once the timing changed along the film (an ad break): see OffsetTracker.encode.
     fun syncedSegments(key: String): String? = sp.getString("sync|$key|at", null)
 
+    /**
+     * Jumps auto sync found in a show's episodes (the subtitles needing this much more, or less, delay after a bumper
+     * or an ad), newest first: tried first after a break in its other episodes.
+     */
+    fun showJumps(show: String): List<Long> =
+        sp.getString("syncjumps|$show", null)?.split(',')?.mapNotNull { it.trim().toLongOrNull() } ?: emptyList()
+
+    fun saveShowJumps(show: String, jumps: List<Long>) = sp.edit().putString("syncjumps|$show", jumps.joinToString(",")).apply()
+
     fun saveSyncedSegments(key: String, text: String) = sp.edit().putString("sync|$key|at", text).apply()
 
     /** A delay set by hand for a downloaded subtitle on one video, used again when it's chosen another time. */
