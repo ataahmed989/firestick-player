@@ -111,6 +111,9 @@ object SubtitleTimes {
  * Coarse first, in 100 ms steps over 100 ms blocks (a few million additions for six minutes heard), then in 10 ms steps
  * around the best one. A shift is only trusted when it clearly beats every other shift more than 2 s away, and enough
  * lines and talking went into it.
+ *
+ * The two sides are worked out apart ([Lines] once per subtitle file, [Heard] once per stretch of film), so
+ * [OffsetTracker] can try one stretch against several shifts without working it out again.
  */
 object SyncMatcher {
 
@@ -151,66 +154,106 @@ object SyncMatcher {
     }
 
     /**
+     * The subtitle side, worked out once per file: the lines as 10 ms marks, and how much of each 100 ms block has a
+     * line on screen, less its average over the 10 s around it (see [detrend]). About 0.6 MB for two hours.
+     */
+    class Lines(val lines: List<SubtitleTimes.Line>, val frames: BitSet = SubtitleTimes.frames(lines)) {
+        internal val ys: DoubleArray
+
+        init {
+            val n = frames.length() / BLOCK + 1
+            ys = DoubleArray(n)
+            var s = frames.nextSetBit(0)
+            while (s >= 0) {
+                ys[s / BLOCK] += 1.0 / BLOCK
+                s = frames.nextSetBit(s + 1)
+            }
+            detrend(ys, n)
+        }
+
+        /** How many lines, shown [delayMs] later, are on screen at some point between film times [fromMs] and [toMs]. */
+        fun onScreen(delayMs: Long, fromMs: Long, toMs: Long): Int =
+            lines.count { it.endMs + delayMs > fromMs && it.startMs + delayMs < toMs }
+    }
+
+    /**
+     * One stretch of heard film, marks [fromFrame] (inclusive) to [toFrame] (exclusive), ready to slide lines over:
+     * its 100 ms blocks that were mostly heard, and how much of each was talking less the 10 s average around it.
+     */
+    class Heard internal constructor(
+        val speech: BitSet,
+        val heard: BitSet,
+        val fromFrame: Int,
+        val toFrame: Int,
+        internal val idx: IntArray,
+        internal val xs: DoubleArray,
+        /** How many blocks went in. */
+        val blocks: Int,
+        internal val sxx: Double,
+        /** Talking heard in the stretch. */
+        val speechMs: Long,
+    ) {
+        /** Film time where block [k] starts. */
+        fun blockMs(k: Int): Long = idx[k] * BLOCK * 10L
+    }
+
+    /** [speech] where [heard], from mark [fromFrame] up to [toFrame]; null when there's too little to go on. */
+    fun heard(speech: BitSet, heard: BitSet, fromFrame: Int = 0, toFrame: Int = Int.MAX_VALUE): Heard? {
+        val from = maxOf(fromFrame, 0)
+        val to = minOf(toFrame, heard.length())
+        val first = heard.nextSetBit(from)
+        if (first < 0 || first >= to) return null
+        val speechMs = speech.get(from, to).also { it.and(heard.get(from, to)) }.cardinality() * 10L
+
+        // Blocks of 100 ms that were (mostly) heard, and how much of each was talking.
+        val firstBlock = first / BLOCK
+        val cap = (to - 1) / BLOCK - firstBlock + 1
+        val idx = IntArray(cap)
+        val xs = DoubleArray(cap)
+        var nb = 0
+        var b = firstBlock
+        while (b >= 0) {
+            val a = maxOf(b * BLOCK, from)
+            val e = minOf(b * BLOCK + BLOCK, to)
+            var h = 0
+            var t = 0
+            for (f in a until e) if (heard.get(f)) { h++; if (speech.get(f)) t++ }
+            if (h >= BLOCK / 2) {
+                idx[nb] = b
+                xs[nb] = t.toDouble() / h
+                nb++
+            }
+            val next = heard.nextSetBit(b * BLOCK + BLOCK)
+            b = if (next < 0 || next >= to) -1 else next / BLOCK
+        }
+        if (nb < 100) return null
+
+        // Talking comes and goes in stretches (a chatty scene, then a chase), and so do lines: taking away each one's
+        // average over the 10 s around it leaves the starts and stops, which only line up at the right shift.
+        detrend(xs, nb)
+        var sxx = 0.0
+        for (i in 0 until nb) sxx += xs[i] * xs[i]
+        if (sxx <= 0) return null
+        return Heard(speech, heard, from, to, idx, xs, nb, sxx, speechMs)
+    }
+
+    /**
      * Matches [subs] (from [SubtitleTimes.frames]) against [speech] where [heard]. Shifts are tried within
      * [centerMs] ± [rangeMs].
      */
     fun match(speech: BitSet, heard: BitSet, subs: BitSet, lines: List<SubtitleTimes.Line>, centerMs: Long = 0, rangeMs: Long = RANGE_MS): Result? {
         if (heard.isEmpty || subs.isEmpty) return null
-        val speechMs = run { val s = speech.clone() as BitSet; s.and(heard); s.cardinality() * 10L }
+        val h = heard(speech, heard) ?: return null
+        return match(h, Lines(lines, subs), centerMs, rangeMs)
+    }
 
-        // Blocks of 100 ms that were (mostly) heard, and how much of each was talking.
-        val lastBlock = heard.length() / BLOCK + 1
-        val idx = IntArray(lastBlock)
-        val xs = DoubleArray(lastBlock)
-        var nb = 0
-        var b = heard.nextSetBit(0) / BLOCK
-        while (b in 0 until lastBlock) {
-            val from = b * BLOCK
-            val h = heard.get(from, from + BLOCK).cardinality()
-            if (h >= BLOCK / 2) {
-                idx[nb] = b
-                xs[nb] = speechIn(speech, heard, from, from + BLOCK).toDouble() / h
-                nb++
-            }
-            val next = heard.nextSetBit(from + BLOCK)
-            b = if (next < 0) -1 else next / BLOCK
-        }
-        if (nb < 100) return null
-
-        // How much of each 100 ms block has a subtitle line on screen.
-        val subBlocks = subs.length() / BLOCK + 1
-        val ys = DoubleArray(subBlocks)
-        var s = subs.nextSetBit(0)
-        while (s >= 0) {
-            ys[s / BLOCK] += 1.0 / BLOCK
-            s = subs.nextSetBit(s + 1)
-        }
-
-        // Talking comes and goes in stretches (a chatty scene, then a chase), and so do lines: taking away each one's
-        // average over the 10 s around it leaves the starts and stops, which only line up at the right shift.
-        detrend(xs, nb)
-        detrend(ys, subBlocks)
-
-        var sxx = 0.0
-        for (i in 0 until nb) sxx += xs[i] * xs[i]
-        if (sxx <= 0) return null
-
+    /** Slides [subs] over [h], shifts within [centerMs] ± [rangeMs]. The work is blocks heard × shifts tried. */
+    fun match(h: Heard, subs: Lines, centerMs: Long = 0, rangeMs: Long = RANGE_MS): Result {
         val center = (centerMs / 100).toInt()
         val reach = (rangeMs / 100).toInt()
         val lags = 2 * reach + 1
         val rs = DoubleArray(lags)
-        for (k in 0 until lags) {
-            // Speech at block t goes with the subtitle that was at t - lag before shifting.
-            val lag = center - reach + k
-            var syy = 0.0; var sxy = 0.0
-            for (i in 0 until nb) {
-                val j = idx[i] - lag
-                if (j !in 0 until subBlocks) continue
-                val y = ys[j]
-                syy += y * y; sxy += xs[i] * y
-            }
-            rs[k] = if (syy <= 0) 0.0 else sxy / sqrt(sxx * syy)
-        }
+        for (k in 0 until lags) rs[k] = rAtLag(h, subs.ys, center - reach + k)
         var best = 0
         for (k in 1 until lags) if (rs[k] > rs[best]) best = k
         var runnerUp = 0.0
@@ -230,19 +273,71 @@ object SyncMatcher {
         var fineBest = coarse
         var fineR = -2.0
         for (lag in coarse - 15..coarse + 15) {
-            val r = fineR(speech, heard, subs, lag)
+            val r = fineR(h, subs.frames, lag)
             if (r > fineR) { fineR = r; fineBest = lag }
         }
         val delayMs = fineBest * 10L
-        val heardLines = lines.count { l ->
+        val heardLines = subs.lines.count { l ->
             val from = ((l.startMs + delayMs) / 10).toInt()
-            val to = ((l.endMs + delayMs) / 10).toInt()
-            from >= 0 && heard.nextSetBit(from).let { it in 0 until to }
+            val to = minOf(((l.endMs + delayMs) / 10).toInt(), h.toFrame)
+            from >= 0 && h.heard.nextSetBit(maxOf(from, h.fromFrame)).let { it in 0 until to }
         }
         val r = rs[best]
         val standsOut = runnerUp <= r * MAX_RUNNER_UP && (z >= MIN_Z || runnerUp <= r * CLEAR_RUNNER_UP)
-        val sure = speechMs >= MIN_SPEECH_MS && heardLines >= MIN_LINES && r >= MIN_R && standsOut
-        return Result(delayMs, sure, r, runnerUp, z, speechMs, heardLines)
+        val sure = h.speechMs >= MIN_SPEECH_MS && heardLines >= MIN_LINES && r >= MIN_R && standsOut
+        return Result(delayMs, sure, r, runnerUp, z, h.speechMs, heardLines)
+    }
+
+    /** The overlap (what [Result.r] measures) of [h] with the lines shown [delayMs] later, to the nearest 100 ms. */
+    fun rAt(h: Heard, subs: Lines, delayMs: Long): Double = rAtLag(h, subs.ys, lagOf(delayMs))
+
+    /**
+     * How far the overlap at [delayMs] (within 100 ms either way) stands above the overlaps of all the shifts within
+     * [centerMs] ± [rangeMs], in standard deviations. For a delay found on another stretch, whether [h] bears it out on
+     * its own: it's one shift named beforehand, not the best of thousands, so a much lower bar than [Result.z] means a lot.
+     */
+    fun zAt(h: Heard, subs: Lines, delayMs: Long, centerMs: Long, rangeMs: Long): Double {
+        val first = lagOf(centerMs - rangeMs)
+        val lags = lagOf(centerMs + rangeMs) - first + 1
+        val rs = DoubleArray(lags) { rAtLag(h, subs.ys, first + it) }
+        val mean = rs.average()
+        var sd = 0.0
+        for (r in rs) sd += (r - mean) * (r - mean)
+        sd = sqrt(sd / lags)
+        val k = lagOf(delayMs) - first
+        var r = Double.NEGATIVE_INFINITY
+        for (j in k - 1..k + 1) if (j in 0 until lags) r = maxOf(r, rs[j])
+        return if (sd > 0 && r.isFinite()) (r - mean) / sd else 0.0
+    }
+
+    /**
+     * What each block of [h] adds to the overlap with the lines shown [delayMs] later: above 0 on the whole where that
+     * delay fits, around 0 where it doesn't. Added up along the film, it shows where a delay stops fitting.
+     */
+    fun fits(h: Heard, subs: Lines, delayMs: Long): DoubleArray {
+        val lag = lagOf(delayMs)
+        val ys = subs.ys
+        return DoubleArray(h.blocks) { i ->
+            val j = h.idx[i] - lag
+            if (j in ys.indices) h.xs[i] * ys[j] else 0.0
+        }
+    }
+
+    private fun lagOf(delayMs: Long): Int = Math.floorDiv(delayMs + 50, 100L).toInt()
+
+    /** Speech at block t goes with the subtitle that was at t - [lag] before shifting. */
+    private fun rAtLag(h: Heard, ys: DoubleArray, lag: Int): Double {
+        val idx = h.idx
+        val xs = h.xs
+        var syy = 0.0
+        var sxy = 0.0
+        for (i in 0 until h.blocks) {
+            val j = idx[i] - lag
+            if (j < 0 || j >= ys.size) continue
+            val y = ys[j]
+            syy += y * y; sxy += xs[i] * y
+        }
+        return if (syy <= 0) 0.0 else sxy / sqrt(h.sxx * syy)
     }
 
     /** Takes away from each value the average of the [SMOOTH] values either side of it. */
@@ -257,21 +352,13 @@ object SyncMatcher {
         }
     }
 
-    private fun speechIn(speech: BitSet, heard: BitSet, from: Int, to: Int): Int {
-        var n = 0
-        var i = speech.nextSetBit(from)
-        while (i in from until to) {
-            if (heard.get(i)) n++
-            i = speech.nextSetBit(i + 1)
-        }
-        return n
-    }
-
-    /** Correlation of talking (where heard) with the lines moved [lag] marks later. */
-    private fun fineR(speech: BitSet, heard: BitSet, subs: BitSet, lag: Int): Double {
+    /** Correlation of talking (where heard, within [h]'s stretch) with the lines moved [lag] marks later. */
+    private fun fineR(h: Heard, subs: BitSet, lag: Int): Double {
+        val speech = h.speech
+        val heard = h.heard
         var n = 0.0; var sx = 0.0; var sy = 0.0; var sxy = 0.0
-        var i = heard.nextSetBit(0)
-        while (i >= 0) {
+        var i = heard.nextSetBit(h.fromFrame)
+        while (i in 0 until h.toFrame) {
             val x = speech.get(i)
             val j = i - lag
             val y = j >= 0 && subs.get(j)
