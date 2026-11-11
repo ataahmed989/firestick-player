@@ -602,7 +602,7 @@
         </LinearLayout>
     </LinearLayout>
 
-    <!-- Skip intro / Skip recap / Skip credits, where the end card sits. -->
+    <!-- Skip intro / Skip recap / Skip credits, small, where the end card sits: up for 8 s, then it slips away. -->
     <app.fireplayer.ui.CountdownPill
         android:id="@+id/skip_button"
         android:layout_width="wrap_content"
@@ -612,13 +612,32 @@
         android:layout_marginBottom="48dp"
         android:fontFamily="@font/figtree_600"
         android:gravity="center"
-        android:minWidth="160dp"
-        android:paddingStart="22dp"
-        android:paddingTop="11dp"
-        android:paddingEnd="22dp"
-        android:paddingBottom="11dp"
+        android:minWidth="104dp"
+        android:paddingStart="16dp"
+        android:paddingTop="7dp"
+        android:paddingEnd="16dp"
+        android:paddingBottom="7dp"
         android:text="Skip intro"
-        android:textSize="16sp"
+        android:textSize="13sp"
+        android:visibility="gone" />
+
+    <!-- The same, while the controls are up and the part plays: an unselected pod above the time bar, on the right.
+         Up from the time bar selects it. Placed over the time bar's row when shown (see PlayerActivity.updateSkip). -->
+    <app.fireplayer.ui.CountdownPill
+        android:id="@+id/skip_pod"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|end"
+        android:layout_marginEnd="42dp"
+        android:focusable="true"
+        android:fontFamily="@font/figtree_600"
+        android:gravity="center"
+        android:paddingStart="14dp"
+        android:paddingTop="5dp"
+        android:paddingEnd="14dp"
+        android:paddingBottom="5dp"
+        android:text="Skip intro"
+        android:textSize="12sp"
         android:visibility="gone" />
 
     <LinearLayout

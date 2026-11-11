@@ -243,6 +243,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     // A file's own chapters, read once per file, by entry key (null: it has none to use).
     private val chapterSegments = HashMap<String, Segments?>()
     private lateinit var skipButton: CountdownPill
+    private lateinit var skipPod: CountdownPill
+    // The part whose button came up, and when (uptime): after SKIP_SHOWN_MS untouched it slips away for good, and
+    // the part can still be skipped from the pod over the time bar while the controls are up.
+    private var skipShownFor = -1L
+    private var skipShownAt = 0L
+    private var skipFadedFor = -1L
     private var skipStart = -1L
     private var skipTarget = -1L
     // The part whose button was put away with Back, so it doesn't come straight back.
@@ -1609,6 +1615,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         skipButton.chosen = true
         skipButton.pod = true
         skipButton.setOnClickListener { skipPart() }
+        skipPod = findViewById(R.id.skip_pod)
+        skipPod.pod = true
+        skipPod.setOnClickListener { skipPart() }
         dimmer = findViewById(R.id.dimmer)
         postPlayGo.countdown = { postPlayProgress() }
         postPlayIcon = postPlayGo.compoundDrawablesRelative[0]
@@ -1972,8 +1981,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     /**
-     * Skip intro, Skip recap or Skip credits (when something follows them), Netflix-style: shown while that part plays
-     * and the controls are down; OK jumps past it. Where the parts are comes from [lookUpSegments].
+     * Skip intro, Skip recap or Skip credits (when something follows them), Netflix-style: a small button while that
+     * part plays and the controls are down, for [SKIP_SHOWN_MS], then it slips away; OK jumps past it. For as long as
+     * the part plays, the controls carry an unselected pod above the time bar, on the right, that does the same.
+     * Outside the part, neither shows. Where the parts are comes from [lookUpSegments].
      */
     private fun updateSkip() {
         val p = player
@@ -1984,18 +1995,46 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         // Back before a part whose button was put away (watching it again): the button comes back with it.
         if (p != null && skipDismissed >= 0 && p.currentPosition < skipDismissed) skipDismissed = -1L
+        if (p != null && skipFadedFor >= 0 && p.currentPosition < skipFadedFor) { skipFadedFor = -1L; skipShownFor = -1L }
         val skip = if (p == null) null else segments?.skip(p.currentPosition)
-        val show = skip != null && skip.start != skipDismissed && prefs.skipIntro && !seeking && !controlsShown &&
-            !panel.isOpen && !episodesSheet.isOpen && postPlay.visibility != View.VISIBLE &&
-            errorBox.visibility != View.VISIBLE && !resumeDialogShowing
-        if (!show || skip == null) {
-            if (skipButton.visibility == View.VISIBLE) skipButton.visibility = View.GONE
+        val free = skip != null && prefs.skipIntro && !seeking && !panel.isOpen && !episodesSheet.isOpen &&
+            postPlay.visibility != View.VISIBLE && errorBox.visibility != View.VISIBLE && !resumeDialogShowing
+        // The pod over the time bar: whenever the controls are up inside the part.
+        val podShown = free && controlsShown && skip != null && p?.duration?.let { it != C.TIME_UNSET } == true
+        if (podShown) {
+            if (skipPod.text.toString() != skip!!.label) skipPod.text = skip.label
+            if (skipPod.visibility != View.VISIBLE) {
+                placeSkipPod()
+                skipPod.alpha = 0f
+                skipPod.visibility = View.VISIBLE
+                skipPod.animate().alpha(1f).setDuration(200).start()
+            }
+        } else if (skipPod.visibility == View.VISIBLE) {
+            if (skipPod.isFocused) seekBar.requestFocus()
+            skipPod.visibility = View.GONE
+        }
+        if (skip != null) { skipStart = skip.start; skipTarget = skip.target }
+        val now = SystemClock.uptimeMillis()
+        if (skip != null && skipShownFor == skip.start && skipFadedFor != skip.start && now - skipShownAt >= SKIP_SHOWN_MS) {
+            skipFadedFor = skip.start
+            if (skipButton.visibility == View.VISIBLE) {
+                // Untouched: it fades and slips down out of the way.
+                skipButton.animate().alpha(0f).translationY(24 * resources.displayMetrics.density).setDuration(400)
+                    .withEndAction { skipButton.visibility = View.GONE; skipButton.translationY = 0f }.start()
+                focusSink.requestFocus()
+            }
             return
         }
-        skipStart = skip.start
-        skipTarget = skip.target
+        val show = free && !controlsShown && skip!!.start != skipDismissed && skip.start != skipFadedFor
+        if (!show || skip == null) {
+            if (skipButton.visibility == View.VISIBLE && skipFadedFor != skip?.start) skipButton.visibility = View.GONE
+            return
+        }
         if (skipButton.text.toString() != skip.label) skipButton.text = skip.label
         if (skipButton.visibility != View.VISIBLE) {
+            if (skipShownFor != skip.start) { skipShownFor = skip.start; skipShownAt = now }
+            skipButton.animate().cancel()
+            skipButton.translationY = 0f
             skipButton.alpha = 0f
             skipButton.visibility = View.VISIBLE
             skipButton.animate().alpha(1f).setDuration(250).start()
@@ -2003,9 +2042,22 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
     }
 
+    /** Lines the pod up with the chips' row, just above the time bar, at its right end. */
+    private fun placeSkipPod() {
+        val info = findViewById<View>(R.id.info_layer)
+        val parent = skipPod.parent as View
+        val a = IntArray(2).also { info.getLocationInWindow(it) }
+        val b = IntArray(2).also { parent.getLocationInWindow(it) }
+        val lp = skipPod.layoutParams as FrameLayout.LayoutParams
+        val bottom = (parent.height - (a[1] - b[1] + info.height)).coerceAtLeast(0)
+        if (lp.bottomMargin != bottom) { lp.bottomMargin = bottom; skipPod.layoutParams = lp }
+    }
+
     private fun skipPart() {
         val p = player ?: return
         skipButton.visibility = View.GONE
+        if (skipPod.isFocused) seekBar.requestFocus()
+        skipPod.visibility = View.GONE
         if (skipTarget > p.currentPosition) p.seekTo(skipTarget)
     }
 
@@ -3009,12 +3061,22 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
         // Controls are showing.
         scheduleHide()
+        if (skipPod.isFocused) {
+            when (code) {
+                KeyEvent.KEYCODE_DPAD_DOWN -> { seekBar.requestFocus(); return true }
+                KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> return true
+            }
+            if (isOk) {
+                if (event.repeatCount == 0) skipPart()
+                return true
+            }
+        }
         if (seekBar.isFocused) {
             // The selected time bar: left / right move along it, OK jumps, down goes back to the buttons.
             when (code) {
                 KeyEvent.KEYCODE_DPAD_LEFT -> { nudge(prefs.dpadStepSec, -1, event); return true }
                 KeyEvent.KEYCODE_DPAD_RIGHT -> { nudge(prefs.dpadStepSec, 1, event); return true }
-                KeyEvent.KEYCODE_DPAD_UP -> return true
+                KeyEvent.KEYCODE_DPAD_UP -> { if (skipPod.visibility == View.VISIBLE) skipPod.requestFocus(); return true }
                 KeyEvent.KEYCODE_DPAD_DOWN -> { btnPlay.requestFocus(); return true }
             }
             if (isOk) {
@@ -4328,6 +4390,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         /** How long the decoder list may take before the player says the decoder service is stuck. */
         private const val DECODER_STUCK_MS = 10_000L
         const val POST_PLAY_LEAD_MS = 20_000L
+        // How long the skip button waits, untouched, before it slips away.
+        const val SKIP_SHOWN_MS = 8_000L
         private const val AUDIO_KEPT = 300
         private val FOCUS_EASE = DecelerateInterpolator(1.4f)
         private const val LOADING = "Loading from TMDB…"
