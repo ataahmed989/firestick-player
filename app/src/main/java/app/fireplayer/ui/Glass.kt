@@ -16,6 +16,13 @@ import app.fireplayer.R
 object Glass {
     @Volatile var on = false
 
+    /**
+     * How much every piece of glass is darkened (Screen dimmer, a custom's glass amount): 0 not at all, 0.8 to a
+     * fifth of its light. The film inside and the milky glaze dim; the selected look dims half as much, so it
+     * still stands out.
+     */
+    @Volatile var dim = 0f
+
     /** The shapes that can be glass. Each replaces one classic background ([classicRes]). */
     enum class Kind { PANEL, POPUP, DIALOG_POPUP, CIRCLE, PILL, CHIP, MORE_ICON, ROW }
 
@@ -46,6 +53,16 @@ object Glass {
     /** A new glass background of this shape, whatever the setting. Rows have no film of their own. */
     fun drawable(context: Context, kind: Kind): Drawable =
         GlassDrawable(context, kind, if (kind == Kind.ROW) null else backdropFor(context))
+
+    /** Whether [context] is the player's (Home's glass is never dimmed: it has no film and no dimmer). */
+    fun inPlayer(context: Context): Boolean {
+        var c: Context? = context
+        while (c is ContextWrapper) {
+            if (c is Activity) return c is GlassBackdrop.Host
+            c = c.baseContext
+        }
+        return false
+    }
 
     /** The blurred film of the player this view belongs to, or null where there's none (Home): glass is then dark. */
     fun backdropFor(context: Context): GlassBackdrop? {
