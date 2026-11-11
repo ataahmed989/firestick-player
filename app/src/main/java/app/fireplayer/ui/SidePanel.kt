@@ -51,7 +51,9 @@ class SidePanel(private val activity: Activity) {
         root.visibility = View.VISIBLE
         root.alpha = 0f
         root.translationX = rows.dp(24).toFloat()
-        root.animate().alpha(1f).translationX(0f).setDuration(160).start()
+        // Slides in as one drawn layer, easing out, so a window full of rows doesn't stutter on the way.
+        root.animate().alpha(1f).translationX(0f).setDuration(180)
+            .setInterpolator(android.view.animation.DecelerateInterpolator(1.6f)).withLayer().start()
         scroll.scrollTo(0, 0)
         rebuild(focusIndex = 0)
     }

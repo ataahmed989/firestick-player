@@ -1,5 +1,6 @@
 package app.fireplayer.history
 
+import app.fireplayer.history.WatchHistory.Companion.matched
 import app.fireplayer.history.WatchHistory.Kind
 import app.fireplayer.player.NextPick
 import app.fireplayer.player.TitleInfo
@@ -363,5 +364,64 @@ class WatchHistoryTest {
         assertEquals("two shows, two rows", 2, h.rows().size)
         h.watched(ep("1", "c"), 3_000, { "id${n++}" })
         assertEquals("the first show again: still two rows", 2, h.rows().size)
+    }
+
+    @Test
+    fun aGuideMatchGivesTmdbNamesAndNumbers() {
+        val m = WatchHistory.Match(1396, "Breaking Bad", 2008, season = 2, episode = 3, episodeTitle = "Bit by a Dead Bee")
+        val w = episode(1, 5, 7, 6 * minute).matched(m)
+        assertEquals(1396, w.tmdbId)
+        assertEquals("Breaking Bad", w.title)
+        assertEquals(2008, w.year)
+        assertEquals(2, w.season)
+        assertEquals(3, w.episode)
+        assertEquals("Bit by a Dead Bee", w.episodeTitle)
+        val h = WatchHistory()
+        h.play(w)
+        val row = h.rows().single()
+        assertEquals(1396, row.tmdbId)
+        assertEquals("Bit by a Dead Bee", row.episodeTitle)
+        // A show matched without its episode keeps the link's numbers.
+        val showOnly = episode(1, 5, 7, 6 * minute).matched(WatchHistory.Match(1396, "Breaking Bad", 2008))
+        assertEquals(5, showOnly.season)
+        assertEquals(7, showOnly.episode)
+        // No match: as it was.
+        assertEquals(episode(1, 5, 7, 6 * minute), episode(1, 5, 7, 6 * minute).matched(null))
+    }
+
+    @Test
+    fun aFixMatchOverwritesTheTmdbIdAtOnce() {
+        val h = WatchHistory()
+        h.play(episode(1, 1, 1, 6 * minute))
+        assertEquals(901, h.rows().single().tmdbId)
+        val changed = h.rematch(
+            Kind.EPISODE, setOf("s|provider.example:80|1"), "e|provider.example:80|111",
+            WatchHistory.Match(1396, "Breaking Bad", 2008, season = 1, episode = 2, episodeTitle = "Cat's in the Bag..."),
+        )
+        assertTrue("the row changed, so Glass Home is told", changed)
+        val row = h.rows().single()
+        assertEquals(1396, row.tmdbId)
+        assertEquals("Breaking Bad", row.title)
+        assertEquals(2008, row.year)
+        assertEquals(2, row.episode)
+        assertEquals("Cat's in the Bag...", row.episodeTitle)
+        // The same again changes nothing.
+        assertFalse(h.rematch(Kind.EPISODE, setOf("s|provider.example:80|1"), "x", WatchHistory.Match(1396, "Breaking Bad", 2008)))
+    }
+
+    @Test
+    fun filmsUseTheFixedTmdbId() {
+        val fixed = WatchHistory.Match(27205, "Inception", 2010)
+        val w = movie(1, 6 * minute).matched(fixed)
+        assertEquals(27205, w.tmdbId)
+        assertEquals("Inception", w.title)
+        assertEquals(2010, w.year)
+        assertEquals(0, w.season)
+        val h = WatchHistory()
+        h.play(movie(1, 6 * minute))
+        assertNotEquals(27205, h.rows().single().tmdbId)
+        assertTrue(h.rematch(Kind.MOVIE, setOf("m|provider.example:80|1"), "m|provider.example:80|1", fixed))
+        assertEquals(27205, h.rows().single().tmdbId)
+        assertEquals("Inception", h.rows().single().title)
     }
 }

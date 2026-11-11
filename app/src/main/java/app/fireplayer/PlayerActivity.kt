@@ -57,6 +57,7 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.SubtitleView
 import app.fireplayer.data.Prefs
 import app.fireplayer.history.ContinueWatching
+import app.fireplayer.history.WatchHistory
 import app.fireplayer.player.BufferWait
 import app.fireplayer.player.DecoderCheck
 import app.fireplayer.player.Delays
@@ -294,6 +295,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     // The sound and subtitles picked by hand, to pick the same kind again in the next episode.
     private val trackWishes = HashMap<Int, TrackWish>()
     private var reapplyWishes = false
+    // The film or show whose remembered sound was put back, so it's done once per title.
+    private var audioRecalledFor: String? = null
     // The film was paused for the TV to change refresh rate, and goes on by itself afterwards.
     private var pausedForSwitch = false
     // A sleep timer's time left while the player is away; it only counts down on screen.
@@ -470,6 +473,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         buildMoreRow()
         applyLook()
         settingsPanels.onLookChanged = { applyLook() }
+        settingsPanels.onChipsChanged = { updateChips() }
         displayMode = prefs.displayMode
         applyDim()
 
@@ -993,8 +997,42 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 real = entry.real,
                 next = next?.let { it.uri to it.rawTitle },
                 nextReal = next?.real,
+                match = matchFor(entry),
+                nextMatch = next?.let { matchFor(it) },
             ),
         )
+    }
+
+    /**
+     * What FirePlayer's own TMDB match says [entry] is, for Continue Watching: the show's guide (its TMDB id, name, year,
+     * and the episode's TMDB numbers and name when the episode is matched), or a film's Fix match. Null for neither.
+     */
+    private fun matchFor(entry: Entry): WatchHistory.Match? {
+        val g = guide
+        val ep = guideEpisode(entry)
+        if (g != null && ep != null && g.tmdbId > 0) {
+            val m = SHOW_YEAR.matchEntire(g.show)
+            val numbered = ep.match != ShowGuide.Match.NONE
+            return WatchHistory.Match(
+                tmdbId = g.tmdbId,
+                title = m?.groupValues?.get(1)?.trim() ?: g.show,
+                year = m?.groupValues?.get(2)?.toIntOrNull() ?: 0,
+                season = if (numbered) ep.season else 0,
+                episode = if (numbered) ep.number else 0,
+                episodeTitle = if (numbered) ep.name.ifEmpty { null } else null,
+            )
+        }
+        if (entry.info.episode != null || NextEpisode.isEpisodeLink(entry.uri)) return null
+        val portal = NextEpisode.portal(entry.uri) ?: return null
+        val id = entry.uri.lastPathSegment?.substringBeforeLast('.') ?: return null
+        val f = matchFixes.filmMatch(portal, id) ?: return null
+        return WatchHistory.Match(f.tmdbId, f.name, f.year)
+    }
+
+    /** After a Fix match: Continue Watching's row for this video takes the new match at once. */
+    private fun noteRematch(entry: Entry, episode: Boolean) {
+        val m = matchFor(entry) ?: return
+        ContinueWatching.rematch(applicationContext, entry.uri, episode, m)
     }
 
     /** From [postPlayTick]: now and then while it plays, so a crash, a power cut or Fire OS stopping it loses little. */
@@ -1199,6 +1237,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 if (!option.selected) selectTrack(option)
             }
         }
+        recallAudio()
         if (reapplyWishes) reapplyChoices()
         refreshLabels()
         updateChips()
@@ -1596,12 +1635,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private fun focusEffect(button: View, scale: Float, label: View? = null) {
         button.setOnFocusChangeListener { v, hasFocus ->
             val s = if (hasFocus) scale else 1f
-            v.animate().scaleX(s).scaleY(s).setDuration(140).start()
+            // Eased, like the rest of the controls, rather than at an even pace.
+            v.animate().scaleX(s).scaleY(s).setDuration(140).setInterpolator(FOCUS_EASE).start()
             if (label != null) {
                 label.pivotX = v.left + v.width / 2f - label.left
                 label.pivotY = v.top + v.height / 2f - label.top
                 if (hasFocus) label.visibility = View.VISIBLE
-                label.animate().alpha(if (hasFocus) 1f else 0f).scaleX(s).scaleY(s).setDuration(140)
+                label.animate().alpha(if (hasFocus) 1f else 0f).scaleX(s).scaleY(s).setDuration(140).setInterpolator(FOCUS_EASE)
                     .withEndAction { if (!v.isFocused) label.visibility = View.INVISIBLE }
                     .start()
             }
@@ -2094,16 +2134,20 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     private fun updateChips() {
         val p = player ?: return
+        // Pods turned off in Settings > Look > Info pods stay hidden.
+        val hidden = prefs.hiddenChips
+        fun pod(chip: TextView, key: String, text: String?) = setChip(chip, text.takeIf { key !in hidden })
         val video = selectedFormat(C.TRACK_TYPE_VIDEO)
         val audio = selectedFormat(C.TRACK_TYPE_AUDIO)
         val w = p.videoSize.width.takeIf { it > 0 } ?: video?.width ?: 0
         val h = p.videoSize.height.takeIf { it > 0 } ?: video?.height ?: 0
-        setChip(chipResolution, if (w > 0 && h > 0) "$w×$h" else null)
+        pod(chipResolution, "quality", if (w > 0 && h > 0) "$w×$h" else null)
         val fps = videoFps()
-        setChip(chipFps, if (fps > 0) fpsLabel(fps) else null)
+        pod(chipFps, "fps", if (fps > 0) fpsLabel(fps) else null)
         val channels = audio?.channelCount ?: Format.NO_VALUE
-        setChip(
+        pod(
             chipAudio,
+            "sound",
             when (channels) {
                 1 -> "Mono"
                 2 -> "Stereo"
@@ -2114,7 +2158,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             },
         )
         // Which provider it plays from: "premium-pro2.com:8789".
-        setChip(chipPortal, entries.getOrNull(p.currentMediaItemIndex)?.let { NextEpisode.portal(it.uri) })
+        pod(chipPortal, "source", entries.getOrNull(p.currentMediaItemIndex)?.let { NextEpisode.portal(it.uri) })
     }
 
     private fun setChip(chip: TextView, text: String?) {
@@ -2247,9 +2291,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val ease = DecelerateInterpolator(1.6f)
         if (show.alpha >= 1f) { show.alpha = 0f; show.translationY = -shift }
         if (showArrow.alpha >= 1f) showArrow.alpha = 0f
-        show.animate().alpha(1f).translationY(0f).setStartDelay(0).setDuration(220).setInterpolator(ease).start()
+        show.animate().alpha(1f).translationY(0f).setStartDelay(0).setDuration(220).setInterpolator(ease).withLayer().start()
         showArrow.animate().alpha(1f).setStartDelay(80).setDuration(160).setInterpolator(ease).start()
-        hide.animate().alpha(0f).translationY(shift).setStartDelay(0).setDuration(160).setInterpolator(ease).withEndAction {
+        hide.animate().alpha(0f).translationY(shift).setStartDelay(0).setDuration(160).setInterpolator(ease).withLayer().withEndAction {
             hide.visibility = View.GONE; hide.alpha = 1f; hide.translationY = 0f
         }.start()
         hideArrow.animate().alpha(0f).setStartDelay(0).setDuration(100).withEndAction {
@@ -2954,6 +2998,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             f.language, f.label, f.roleFlags, f.selectionFlags and C.SELECTION_FLAG_FORCED != 0, f.channelCount,
         )
         selectTrack(o)
+        // The sound picked for a film or show is picked again when it's opened another time.
+        if (type == C.TRACK_TYPE_AUDIO) currentEntry()?.let { e -> audioKey(e)?.let { rememberAudio(it, trackWishes[type]!!) } }
         // For as long as the player is open, that language comes first (Settings keeps the default).
         val p = player ?: return
         val language = f.language ?: return
@@ -2987,6 +3033,47 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 ?: same.firstOrNull()
             if (pick != null && !pick.selected) selectTrack(pick)
         }
+    }
+
+    /** One key per film (its link's file on its provider) or show (its name), for the sound last picked for it. */
+    private fun audioKey(entry: Entry): String? {
+        val episode = entry.info.episode != null || NextEpisode.isEpisodeLink(entry.uri)
+        if (episode) {
+            val name = entry.info.searchQuery.trim().lowercase(Locale.ROOT)
+            return if (name.isEmpty() || name == TitleInfo.NO_NAME.lowercase(Locale.ROOT)) null else "show|$name"
+        }
+        val file = entry.uri.lastPathSegment ?: return null
+        return "film|${NextEpisode.portal(entry.uri) ?: entry.uri.authority.orEmpty()}|$file"
+    }
+
+    private fun audioMemory() = getSharedPreferences("audio_choices", MODE_PRIVATE)
+
+    private fun rememberAudio(key: String, wish: TrackWish) {
+        val sp = audioMemory()
+        val value = listOf(wish.language.orEmpty(), wish.label.orEmpty(), wish.roleFlags, wish.channels, System.currentTimeMillis())
+            .joinToString("\u0001")
+        val editor = sp.edit().putString(key, value)
+        // Only the latest few hundred titles are kept.
+        val all = sp.all
+        if (all.size > AUDIO_KEPT) {
+            all.entries.sortedBy { (it.value as? String)?.substringAfterLast('\u0001')?.toLongOrNull() ?: 0L }
+                .take(all.size - AUDIO_KEPT).forEach { editor.remove(it.key) }
+        }
+        editor.apply()
+    }
+
+    /** Once the tracks of a title opened again are in: the sound picked for it last time is picked again. */
+    private fun recallAudio() {
+        val entry = currentEntry() ?: return
+        val key = audioKey(entry) ?: return
+        if (key == audioRecalledFor || trackOptions(C.TRACK_TYPE_AUDIO).size < 2) return
+        audioRecalledFor = key
+        val parts = audioMemory().getString(key, null)?.split('\u0001') ?: return
+        if (parts.size < 4 || parts[0].isEmpty()) return
+        trackWishes[C.TRACK_TYPE_AUDIO] = TrackWish(
+            parts[0], parts[1].ifEmpty { null }, parts[2].toIntOrNull() ?: 0, false, parts[3].toIntOrNull() ?: 0,
+        )
+        reapplyWishes = true
     }
 
     private fun subtitlesOff() {
@@ -3334,6 +3421,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 rebuildFromFix()
                 refresh()
             }
+            if (tmdb.isConfigured && g.tmdbId > 0) row("Show details") { openDetails(from, show = true) }
             if (tmdb.isConfigured) row("Fix match") { panel.close(); openFixShow(from) }
             if (portal != null) row("Source", portal) {}
         } else if (portal != null && entry.info.episode == null) {
@@ -3348,9 +3436,123 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 refresh()
             }
             if (!thisTitleOpen) return
+            if (tmdb.isConfigured) row("Film details") { openDetails(from, show = false) }
             if (tmdb.isConfigured) row("Fix match") { panel.close(); openFixFilm(from) }
             else message("Add a TMDB API key below to fix this film's name.")
             row("Source", portal) {}
+        }
+    }
+
+    // Show details / Film details: TMDB's cover and story for the video they were asked for.
+    private var aboutFor: String? = null
+    private var about: Tmdb.About? = null
+    private var aboutStatus: String? = null
+
+    private fun openDetails(from: View, show: Boolean) {
+        val entry = currentEntry() ?: return
+        if (aboutFor != entry.key || (about == null && aboutStatus != LOADING)) {
+            aboutFor = entry.key
+            about = null
+            aboutStatus = LOADING
+            loadAbout(entry, show)
+        }
+        panel.close()
+        openPanel(if (show) "Show details" else "Film details", from) {
+            val a = about
+            if (a == null) message(aboutStatus ?: LOADING)
+            else view(detailsView(a, if (show) guideEpisode(entry) else null, NextEpisode.portal(entry.uri)), top = 2, bottom = 6)
+        }
+    }
+
+    private fun loadAbout(entry: Entry, show: Boolean) {
+        val key = entry.key
+        val showId = guide?.tmdbId ?: 0
+        val film = if (show) null else matchFor(entry)?.tmdbId
+        io.execute {
+            val found = runCatching {
+                val id = if (show) showId else film ?: filmTmdbId(entry)
+                if (id > 0) tmdb.about(id, show) else null
+            }
+            handler.post {
+                if (isFinishing || aboutFor != key) return@post
+                about = found.getOrNull()
+                aboutStatus = when {
+                    found.isFailure -> "Couldn't reach TMDB just now."
+                    about == null -> "TMDB has no details for this ${if (show) "show" else "film"}. Fix match finds it."
+                    else -> null
+                }
+                if (panel.isOpen) panel.refresh()
+            }
+        }
+    }
+
+    /** Blocks; on [io]. A film's TMDB id: as the title server matched it, else as TMDB finds its name. 0 for none. */
+    private fun filmTmdbId(entry: Entry): Int {
+        val server = TitleProxy.serverIn(entry.uri)
+        val id = entry.uri.lastPathSegment?.substringBeforeLast('.')?.toIntOrNull()
+        if (server != null && id != null) {
+            runCatching { book().about(server, TitleBook.Kind.MOVIE, id)?.tmdb }.getOrNull()?.takeIf { it > 0 }?.let { return it }
+        }
+        val info = entry.info
+        val year = YEAR_IN_NAME.find(info.title)?.groupValues?.get(1)?.toIntOrNull()
+        return tmdb.find(info.searchQuery, year, false)?.id ?: 0
+    }
+
+    /** The cover on the left, name and facts beside it, then the story (and the episode's, for a show). */
+    private fun detailsView(a: Tmdb.About, ep: ShowGuide.Ep?, source: String?): View {
+        val d = resources.displayMetrics.density
+        fun dp(v: Int) = (v * d).toInt()
+        fun text(value: CharSequence, sp: Float, color: Int, font: Int, top: Int = 0) = TextView(this).apply {
+            text = value
+            setTextColor(ContextCompat.getColor(this@PlayerActivity, color))
+            setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, sp)
+            typeface = androidx.core.content.res.ResourcesCompat.getFont(this@PlayerActivity, font)
+            setLineSpacing(2f * d, 1f)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                .apply { topMargin = dp(top) }
+        }
+        val poster = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            background = android.graphics.drawable.GradientDrawable().apply { cornerRadius = 8 * d; setColor(0x22FFFFFF) }
+            clipToOutline = true
+            contentDescription = a.name
+        }
+        app.fireplayer.ui.ImageLoader.load(a.poster, poster, dp(110))
+        val facts = listOfNotNull(
+            a.year,
+            a.genres.takeIf { it.isNotEmpty() }?.joinToString(", "),
+            a.runtime.takeIf { it > 0 }?.let { if (it >= 60) "${it / 60}h ${it % 60}m" else "${it}m" },
+            a.seasons.takeIf { it > 0 }?.let { if (it == 1) "1 season" else "$it seasons" },
+        ).joinToString(" · ")
+        val side = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(text(a.name, 17f, R.color.text, R.font.figtree_700))
+            if (facts.isNotEmpty()) addView(text(facts, 12f, R.color.text_muted, R.font.figtree_500, top = 4))
+            if (a.rating > 0) addView(text(String.format(Locale.ROOT, "★ %.1f on TMDB", a.rating), 12f, R.color.text_muted, R.font.figtree_500, top = 4))
+            if (a.tagline.isNotEmpty()) addView(text(a.tagline, 12f, R.color.text, R.font.figtree_500, top = 8))
+            // Where this copy plays from.
+            source?.let { addView(text("Source  ·  $it", 12f, R.color.text_muted, R.font.figtree_600, top = 8)) }
+        }
+        val top = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(poster, LinearLayout.LayoutParams(dp(96), dp(144)))
+            addView(side, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(14) })
+        }
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(top)
+            // Kept to what fits the window: it has nothing to move focus to, so it isn't scrolled.
+            if (a.overview.isNotEmpty()) addView(text(a.overview, 13f, R.color.text, R.font.figtree_500, top = 14).apply {
+                maxLines = if (ep != null) 7 else 12
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            })
+            if (ep != null && (ep.name.isNotEmpty() || ep.overview.isNotEmpty())) {
+                addView(text(episodeLine(ep.label, ep.name), 13f, R.color.text_muted, R.font.figtree_600, top = 16))
+                if (ep.overview.isNotEmpty()) addView(text(ep.overview, 13f, R.color.text, R.font.figtree_500, top = 4).apply {
+                    maxLines = 5
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                })
+            }
         }
     }
 
@@ -3444,7 +3646,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val entry = currentEntry() ?: return
         val portal = NextEpisode.portal(entry.uri) ?: return
         val id = entry.uri.lastPathSegment?.substringBeforeLast('.') ?: return
-        matchFixes.setFilm(portal, id, hit.label)
+        matchFixes.setFilm(portal, id, hit.label, hit.id, hit.name, hit.year?.toIntOrNull() ?: 0)
+        noteRematch(entry, episode = false)
         panel.close()
         updateTitle()
         showNotice("Saved: ${hit.label}", 2_500)
@@ -3528,7 +3731,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         matchFixes.place(g.key, show.id, ep.id, ep.providerSeason, ep.providerNumber, fixSeason, fixNumber, fixRest)
         panel.close()
         showNotice("Saving the match…", 2_500)
-        rebuildFromFix { showNotice("Match saved", 2_000) }
+        rebuildFromFix {
+            showNotice("Match saved", 2_000)
+            noteRematch(entry, episode = true)
+        }
     }
 
     // Find subtitles (OpenSubtitles)
@@ -3826,6 +4032,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         /** How long the decoder list may take before the player says the decoder service is stuck. */
         private const val DECODER_STUCK_MS = 10_000L
         const val POST_PLAY_LEAD_MS = 20_000L
+        private const val AUDIO_KEPT = 300
+        private val FOCUS_EASE = DecelerateInterpolator(1.4f)
+        private const val LOADING = "Loading from TMDB…"
+        private val YEAR_IN_NAME = Regex("""\((\d{4})\)""")
+        // "Breaking Bad (2008)": the name and the year.
+        private val SHOW_YEAR = Regex("""^(.*?)\s*\((\d{4})\)$""")
         // A next-episode look-up starts with this much of the film loaded, after this long at most, and no later than
         // this long before the end card.
         const val LOOKUP_AHEAD_MS = 60_000L
