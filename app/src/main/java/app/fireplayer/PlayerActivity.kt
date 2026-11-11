@@ -5,6 +5,8 @@ import android.widget.FrameLayout
 import android.app.ActivityManager
 import android.content.Intent
 import android.graphics.Paint
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -65,6 +67,7 @@ import app.fireplayer.player.Delays
 import app.fireplayer.player.DisplaySwitch
 import app.fireplayer.player.FpsMeter
 import app.fireplayer.player.FrameRateMatcher
+import app.fireplayer.player.FreezeWatch
 import app.fireplayer.player.IdleCloseDataSource
 import app.fireplayer.player.NextEpisode
 import app.fireplayer.player.MatchFixes
@@ -73,6 +76,7 @@ import app.fireplayer.player.ShowGuide
 import app.fireplayer.player.SpeechTap
 import app.fireplayer.player.PlayerFactory
 import app.fireplayer.player.ServerSwitch
+import app.fireplayer.player.ThreadBeat
 import app.fireplayer.player.TitleInfo
 import app.fireplayer.player.VsyncFix
 import app.fireplayer.player.XtreamAccount
@@ -333,6 +337,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private var audioRecalledFor: String? = null
     // The film was paused for the TV to change refresh rate, and goes on by itself afterwards.
     private var pausedForSwitch = false
+    // The film stood still while meant to be playing (see FreezeWatch): paused for a moment, and played again by itself.
+    private var pausedForFreeze = false
+    private val freezeWatch = FreezeWatch { SystemClock.elapsedRealtime() }
+    /** Whether the current player's own thread still answers; one per player. */
+    private var threadBeat: ThreadBeat? = null
+    // The next quiet retry builds a new player instead of loading again (a film that froze).
+    private var rebuildOnRetry = false
+    // The error shown is for a film that froze and couldn't be started again: OK builds a new player.
+    private var frozeOut = false
     // A sleep timer's time left while the player is away; it only counts down on screen.
     private var sleepRemainingMs = 0L
     // The link is of a kind the player can't open at all, so OK can't try again.
@@ -410,7 +423,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             }
             retryPending = false
             roundStartedAt = SystemClock.elapsedRealtime()
-            player?.prepare()
+            if (rebuildOnRetry) {
+                // A new thread, in case the old one is what's stuck.
+                rebuildOnRetry = false
+                rebuildPlayer()
+            } else {
+                player?.prepare()
+            }
         }
     }
     // Sound or a decoder the device couldn't start, counted apart: these can fail again right after
@@ -637,6 +656,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         backdrop?.stop()
         releasePlayer()
         pausedForSwitch = false
+        pausedForFreeze = false
+        freezeWatch.reset()
         if (!isFinishing) stoppedAt = SystemClock.elapsedRealtime()
         if (sleepEndsAt > 0) {
             sleepRemainingMs = (sleepEndsAt - SystemClock.elapsedRealtime()).coerceAtLeast(1L)
@@ -666,8 +687,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
      */
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        // Playing, or only paused for the TV's refresh-rate switch (it plays on after that)
-        if (!openingOwn && !isFinishing && (player?.playWhenReady == true || pausedForSwitch)) finishWithResult(animate = false)
+        // Playing, or only paused for the TV's refresh-rate switch or to get a frozen film going (it plays on after that)
+        if (!openingOwn && !isFinishing && (player?.playWhenReady == true || pausedForSwitch || pausedForFreeze)) {
+            finishWithResult(animate = false)
+        }
     }
 
     override fun startActivity(intent: Intent, options: Bundle?) {
@@ -905,6 +928,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         vsyncFix = vsync.also { it.start() }
         val p = built.player
         player = p
+        threadBeat = ThreadBeat(p.playbackLooper)
         builtWithAss = prefs.keepAssStyling
         assHandler = built.assHandler
         bufferWait = built.bufferWait
@@ -943,6 +967,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         waitingSince = 0L
         retryPending = false
         handler.removeCallbacks(retryRunnable)
+        rebuildOnRetry = false
+        frozeOut = false
+        freezeWatch.jumped()
         cannotOpen = false
         previewCutOffs = 0
         // TIME_UNSET starts VOD at the beginning and live at the live edge.
@@ -1000,6 +1027,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         countPlaying(false)
         vsyncFix?.stop()
         vsyncFix = null
+        threadBeat = null
         p.removeListener(this)
         // Its listener is gone, so the glass won't hear that it stopped playing.
         backdrop?.playing = false
@@ -1327,6 +1355,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         playingIndex = now
         deviceRetries = 0
+        freezeWatch.jumped()
         measuredFps = 0f
         fpsMeter.reset()
         lineUpNext()
@@ -1337,6 +1366,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     override fun onTracksChanged(tracks: Tracks) {
+        // Another sound track (or the same one set up again) gets its own time to start.
+        freezeWatch.jumped()
         pendingExternalSubId?.let { id ->
             val option = trackOptions(C.TRACK_TYPE_TEXT).firstOrNull { sameId(it, id) }
             if (option != null) {
@@ -1394,6 +1425,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+        // Every jump, the viewer's or FreezeWatch's own: the film's time starts afresh there.
+        freezeWatch.jumped()
         // A jump while already waiting is a new wait (the state doesn't change), so the percentage starts again.
         if (reason == Player.DISCONTINUITY_REASON_SEEK) {
             restartPostPlayCount(newPosition.positionMs)
@@ -1553,6 +1586,117 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         buffering.visibility = View.VISIBLE
         handler.removeCallbacks(retryRunnable)
         handler.postDelayed(retryRunnable, delayMs)
+    }
+
+    /**
+     * From [postPlayTick]: a film meant to be playing whose time stands still is started again, step by step (see
+     * [FreezeWatch]). With the TV off, Fire OS's sound once stopped taking the film's sound, and the picture stood still
+     * for half an hour with nothing said, until the viewer paused and played again.
+     */
+    private fun checkFreeze() {
+        val p = player ?: return
+        val now = SystemClock.elapsedRealtime()
+        // Held on purpose, or something in front of the film (Alexa, a system window): not watched.
+        val held = seeking || pausedForSwitch || pausedForFreeze || retryPending || resumeDialogShowing ||
+            errorBox.visibility == View.VISIBLE || completed || isFinishing || !hasWindowFocus()
+        val event = freezeWatch.check(
+            FreezeWatch.Sample(
+                playing = p.isPlaying,
+                waiting = p.playWhenReady && p.playbackState == Player.STATE_BUFFERING,
+                held = held,
+                positionMs = p.currentPosition,
+                bufferedMs = p.bufferedPosition,
+                durationMs = p.duration,
+                live = p.isCurrentMediaItemLive,
+                seekable = p.isCurrentMediaItemSeekable,
+                switchAtMs = displaySwitchAt,
+                threadSilentMs = threadBeat?.silentMs(now) ?: 0L,
+            ),
+        ) ?: return
+        if (event is FreezeWatch.Event.Recovered) {
+            val how = when (event.after) {
+                FreezeWatch.Step.PAUSE_PLAY -> "pausing and playing"
+                FreezeWatch.Step.JUMP -> "jumping to the same spot"
+                else -> "a new player"
+            }
+            android.util.Log.i(TAG, "Film playing again at ${formatTime(event.positionMs, long = true)} after $how " +
+                "(stuck ${event.stuckMs / 1000} s)")
+            return
+        }
+        val act = event as FreezeWatch.Event.Act
+        val at = formatTime(act.positionMs, long = true)
+        val stuck = "${act.stuckMs / 1000} s"
+        when (act.step) {
+            FreezeWatch.Step.PAUSE_PLAY -> {
+                android.util.Log.w(TAG, "Film stuck at $at for $stuck with ${act.aheadMs / 1000} s loaded ahead: pausing " +
+                    "and playing again (the sound may have stopped taking it)")
+                pausedForFreeze = true
+                p.pause()
+                handler.removeCallbacks(resumeAfterFreeze)
+                handler.postDelayed(resumeAfterFreeze, FREEZE_PAUSE_MS)
+            }
+            FreezeWatch.Step.JUMP -> {
+                android.util.Log.w(TAG, "Still stuck at $at ($stuck): jumping to the same spot, which starts the sound afresh")
+                // Exactly a millisecond on: a jump to where the film already is does nothing at all, and one allowed onto a
+                // keyframe could land on the very picture it stands on. Forward, so subtitles read ahead are kept.
+                p.setSeekParameters(SeekParameters.EXACT)
+                p.seekTo(p.currentPosition + 1)
+                p.setSeekParameters(PlayerFactory.FILM_SEEK)
+            }
+            FreezeWatch.Step.NEW_PLAYER -> {
+                val why = if (act.threadSilent) "The player hasn't answered for $stuck at $at" else "Still stuck at $at ($stuck)"
+                android.util.Log.w(TAG, "$why: building a new player")
+                rebuildOnRetry = true
+                retryQuietly(0L)
+            }
+            FreezeWatch.Step.MESSAGE -> {
+                android.util.Log.w(TAG, "Still stuck at $at ($stuck) after a new player: showing a message")
+                showFrozen()
+            }
+        }
+        logHdmiSound()
+    }
+
+    private val resumeAfterFreeze = Runnable {
+        if (pausedForFreeze) {
+            pausedForFreeze = false
+            player?.play()
+        }
+    }
+
+    /**
+     * The film froze and nothing started it again: it's stopped (at once, even if the player's own thread is stuck), which
+     * lets go of the sound, the decoders and the provider's connection and lets the TV sleep, and the viewer is told.
+     */
+    private fun showFrozen() {
+        player?.stop()
+        frozeOut = true
+        retries = 0
+        deviceRetries = 0
+        retryPending = false
+        hideBuffering()
+        // The error box needs OK, so a settings window can't be left in front of it.
+        if (panel.isOpen) panel.close()
+        errorText.text = "The film froze and couldn't be started again. Fire TV's sound may have stopped working " +
+            "(it can while the TV is off)."
+        errorHint.text = "Press OK to try again  ·  If it keeps freezing, restart the Fire TV"
+        errorBox.visibility = View.VISIBLE
+        updateKeepScreenOn()
+        hideControls()
+    }
+
+    /**
+     * For the logs: whether Fire OS has the TV's HDMI sound output just now (none while the TV is off). Asked on a thread
+     * of its own, as the sound system may be what's stuck.
+     */
+    private fun logHdmiSound() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        val audio = getSystemService(AudioManager::class.java) ?: return
+        thread(name = "FirePlayerSoundOutputs", isDaemon = true) {
+            val outputs = runCatching { audio.getDevices(AudioManager.GET_DEVICES_OUTPUTS) }.getOrNull() ?: return@thread
+            val hdmi = outputs.any { it.type == AudioDeviceInfo.TYPE_HDMI }
+            android.util.Log.i(TAG, "HDMI sound output while the film was stuck: " + if (hdmi) "there" else "none (the TV may be off)")
+        }
     }
 
     private fun errorMessage(error: PlaybackException, status: Int?): String = when (error.errorCode) {
@@ -1898,6 +2042,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             updateSkip()
             updatePostPlay()
             noteWhilePlaying()
+            checkFreeze()
             handler.postDelayed(this, 200)
         }
     }
@@ -2895,6 +3040,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val p = player ?: return
         handler.removeCallbacks(resumeAfterSwitch)
         pausedForSwitch = false
+        handler.removeCallbacks(resumeAfterFreeze)
+        pausedForFreeze = false
         if (p.playbackState == Player.STATE_ENDED) p.seekTo(0)
         p.playWhenReady = !p.playWhenReady
         updatePlayButton()
@@ -3065,6 +3212,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 if (event.repeatCount == 0) {
                     handler.removeCallbacks(resumeAfterSwitch)
                     pausedForSwitch = false
+                    handler.removeCallbacks(resumeAfterFreeze)
+                    pausedForFreeze = false
                     when (code) {
                         KeyEvent.KEYCODE_MEDIA_PLAY -> player?.play()
                         KeyEvent.KEYCODE_MEDIA_PAUSE -> player?.pause()
@@ -3129,6 +3278,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             // Nothing to try again with a link of a kind the player can't open: OK leaves, as Back does.
             if (cannotOpen || decoderStuck) {
                 if (event.repeatCount == 0) finishWithResult()
+                return true
+            }
+            if (frozeOut) {
+                // A new player on a new thread, in case the old one is what's stuck.
+                frozeOut = false
+                errorBox.visibility = View.GONE
+                freezeWatch.reset()
+                rebuildPlayer()
+                player?.play()
                 return true
             }
             errorBox.visibility = View.GONE
@@ -4688,6 +4846,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         const val REAL_AGAIN_MS = 20_000L
         // How long the film waits for the TV to change refresh rate.
         const val DISPLAY_SWITCH_PAUSE_MS = 2_000L
+        /** How long a film that froze is paused before it's played again (the viewer did the same, and it went on). */
+        const val FREEZE_PAUSE_MS = 1_000L
+        private const val TAG = "FirePlayer"
         /** Away longer than this, a player left behind closes instead of coming back (see onStart). */
         const val AWAY_CLOSES_MS = 30 * 60_000L
         /** How long the decoder list may take before the player says the decoder service is stuck. */
