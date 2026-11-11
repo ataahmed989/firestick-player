@@ -64,9 +64,9 @@ class Handler(SimpleHTTPRequestHandler):
             if action == "get_series_info":
                 return self.send_json(series_info())
             return self.send_json({"user_info": {"auth": 1, "active_cons": "0", "max_connections": "2"}})
-        # Every episode plays the test film.
+        # Every episode plays the test film, with chapters.
         if re.match(r"^/series/[^/]+/[^/]+/\d+\.mkv$", url.path):
-            self.path = "/movie.mkv"
+            self.path = "/episode.mkv"
         return super().do_GET()
 
 
