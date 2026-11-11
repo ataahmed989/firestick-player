@@ -16,7 +16,7 @@ burst() {
   local name=$1 frames=$2; shift 2
   adb shell "(for k in $*; do input keyevent \$k; done) & sleep 0.6; for i in \$(seq $frames); do screencap $DEV/$name-\$i.raw; sleep 0.2; done; wait"
 }
-key() { for k in "$@"; do adb shell input keyevent "$k"; sleep 0.7; done; }
+key() { for k in "$@"; do adb shell input keyevent "$k"; sleep 1.5; done; }
 movie() {
   # Back closes whatever is open and leaves the player, which saves the position for the resume question.
   key KEYCODE_BACK KEYCODE_BACK
@@ -39,7 +39,9 @@ movie "http://10.0.2.2:8000/movie.mkv" "EN - 4K UHD - Dune: Part Two (2024)"
 sleep 12
 key KEYCODE_DPAD_UP
 shot d00-controls-before 1
-key KEYCODE_DPAD_UP KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN
+key KEYCODE_DPAD_UP
+shot d00b-seek 0.3
+key KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN
 key KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT
 shot d01-more-row 0.5
 key KEYCODE_DPAD_CENTER
