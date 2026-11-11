@@ -3528,7 +3528,25 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             orientation = LinearLayout.VERTICAL
             addView(text(a.name, 17f, R.color.text, R.font.figtree_700))
             if (facts.isNotEmpty()) addView(text(facts, 12f, R.color.text_muted, R.font.figtree_500, top = 4))
-            if (a.rating > 0) addView(text(String.format(Locale.ROOT, "★ %.1f on TMDB", a.rating), 12f, R.color.text_muted, R.font.figtree_500, top = 4))
+            // Age rating as a small outlined badge, then TMDB's score, on one line.
+            if (a.ageRating.isNotEmpty() || a.rating > 0) addView(LinearLayout(this@PlayerActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                if (a.ageRating.isNotEmpty()) addView(text(a.ageRating, 11f, R.color.text, R.font.figtree_700).apply {
+                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                    setPadding(dp(6), dp(1), dp(6), dp(1))
+                    background = android.graphics.drawable.GradientDrawable().apply {
+                        cornerRadius = 4 * d
+                        setStroke(dp(1).coerceAtLeast(1), 0x99FFFFFF.toInt())
+                    }
+                    contentDescription = "Rated ${a.ageRating}"
+                })
+                if (a.rating > 0) addView(text(String.format(Locale.ROOT, "★ %.1f", a.rating), 12f, R.color.text_muted, R.font.figtree_500).apply {
+                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                        .apply { if (a.ageRating.isNotEmpty()) marginStart = dp(10) }
+                })
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6) }
+            })
             if (a.tagline.isNotEmpty()) addView(text(a.tagline, 12f, R.color.text, R.font.figtree_500, top = 8))
             // Where this copy plays from.
             source?.let { addView(text("Source  ·  $it", 12f, R.color.text_muted, R.font.figtree_600, top = 8)) }
