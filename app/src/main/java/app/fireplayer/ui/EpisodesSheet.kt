@@ -66,6 +66,9 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
     private val source = text(10f, font700, color(R.color.text)).apply {
         setPadding(dp(6), dp(2), dp(6), dp(2))
     }
+    private val count = text(10f, font700, color(R.color.text)).apply {
+        setPadding(dp(6), dp(2), dp(6), dp(2))
+    }
     private val seasonsRow = LinearLayout(activity).apply {
         orientation = LinearLayout.HORIZONTAL
         clipChildren = false
@@ -116,6 +119,7 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
             clipToPadding = false
             addView(seasonsScroll, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             addView(source, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(12) })
+            addView(count, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(5) })
         }
         sheet.addView(seasonsLine, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10) })
         sheet.addView(status, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(16) })
@@ -132,6 +136,7 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
         cardsRow.removeAllViews()
         source.text = ""
         source.visibility = View.GONE
+        count.visibility = View.GONE
         status.text = waiting
         status.visibility = View.VISIBLE
         root.visibility = View.VISIBLE
@@ -162,10 +167,14 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
         this.guide = guide
         playingId = playing
         progressOf = progress
-        val count = guide.episodes.size
-        Glass.background(source, Glass.Kind.CHIP)
-        source.visibility = View.VISIBLE
-        source.text = "From ${guide.portal} · $count episode" + if (count == 1) "" else "s"
+        val episodes = guide.episodes.size
+        // Two pods, like the player's info pods: where they come from, and how many there are.
+        for (pod in listOf(source, count)) {
+            Glass.background(pod, Glass.Kind.CHIP)
+            pod.visibility = View.VISIBLE
+        }
+        source.text = guide.portal
+        count.text = "$episodes episode" + if (episodes == 1) "" else "s"
         status.visibility = View.GONE
         val now = guide.episode(playing)
         if (firstTime || guide.seasons.none { it == season }) season = now?.season ?: guide.seasons.firstOrNull() ?: 0
