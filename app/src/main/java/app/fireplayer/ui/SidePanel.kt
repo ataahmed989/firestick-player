@@ -260,11 +260,23 @@ class SidePanel(private val activity: Activity) {
      * A search result: its name (up to two lines), a line of small notes under it, and a value on the right (a match
      * score). The notes follow the row's colours, dark on the white selected row.
      */
-    fun resultRow(title: String, notes: String, value: String?, selected: Boolean = false, onClick: () -> Unit): View {
+    fun resultRow(
+        title: String,
+        notes: String,
+        value: String?,
+        selected: Boolean = false,
+        poster: String? = null,
+        withPoster: Boolean = false,
+        onClick: () -> Unit,
+    ): View {
         val row = rows.base()
         // Blue while it's the one in use, like the current choice elsewhere.
         row.isSelected = selected
-        row.setPadding(rows.dp(16), rows.dp(10), rows.dp(16), rows.dp(10))
+        row.setPadding(rows.dp(if (withPoster) 10 else 16), rows.dp(if (withPoster) 10 else 10), rows.dp(16), rows.dp(if (withPoster) 10 else 10))
+        // A TMDB result: its cover on the left, its corners following the row's own, so it stays inside the selected one.
+        if (withPoster) row.addView(cover(poster, 36, 54, 8), LinearLayout.LayoutParams(rows.dp(36), rows.dp(54)).apply {
+            marginEnd = rows.dp(12)
+        })
         val column = RowLayout(activity, rows.textColors).apply {
             orientation = LinearLayout.VERTICAL
             // Takes the row's state, so its texts are recoloured with it.
@@ -303,6 +315,162 @@ class SidePanel(private val activity: Activity) {
         row.setOnClickListener { onClick() }
         add(row)
         return row
+    }
+
+    /** A picture from TMDB, [w] by [h] dp with [corner] dp corners, on a faint fill while it loads (or has none). */
+    fun cover(url: String?, w: Int, h: Int, corner: Int): ImageView = CoverImage(activity).apply {
+        scaleType = ImageView.ScaleType.CENTER_CROP
+        background = android.graphics.drawable.GradientDrawable().apply {
+            cornerRadius = rows.dp(corner).toFloat()
+            setColor(0x22FFFFFF)
+        }
+        clipToOutline = true
+        isDuplicateParentStateEnabled = false
+        ImageLoader.load(url, this, rows.dp(w * 2))
+    }
+
+    /** A search box: a magnifier, what's searched for, and a small [source] tag on the right. OK opens the keyboard. */
+    fun searchBox(query: String, source: String, onClick: () -> Unit): View {
+        val row = rows.base()
+        row.minimumHeight = rows.dp(38)
+        row.setPadding(rows.dp(14), rows.dp(7), rows.dp(14), rows.dp(7))
+        row.addView(rows.icon(R.drawable.ic_search, 15).apply {
+            (layoutParams as LinearLayout.LayoutParams).apply { marginStart = 0; marginEnd = rows.dp(10) }
+        })
+        row.addView(rows.text(query.ifEmpty { "Type a name" }).apply { if (query.isEmpty()) alpha = 0.6f },
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        row.addView(rows.text(source).apply {
+            typeface = ResourcesCompat.getFont(activity, R.font.figtree_700)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+            letterSpacing = 0.04f
+            alpha = 0.6f
+        })
+        row.setOnClickListener { onClick() }
+        add(row)
+        return row
+    }
+
+    /** Facts in two columns, a muted name on the left and its value beside it, like "Show   Breaking Bad (2008)". */
+    fun facts(pairs: List<Pair<String, View>>) {
+        if (pairs.isEmpty()) return
+        val box = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
+        pairs.forEachIndexed { i, (name, value) ->
+            box.addView(LinearLayout(activity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(TextView(activity).apply {
+                    text = name
+                    typeface = ResourcesCompat.getFont(activity, R.font.figtree_500)
+                    setTextColor(ContextCompat.getColor(activity, R.color.text_muted))
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                }, LinearLayout.LayoutParams(rows.dp(92), ViewGroup.LayoutParams.WRAP_CONTENT))
+                addView(value, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                if (i > 0) topMargin = rows.dp(4)
+            })
+        }
+        list.addView(box, rows.listParams(top = 2, bottom = 6))
+    }
+
+    /** A fact's value as plain text, for [facts]. */
+    fun fact(value: String): TextView = TextView(activity).apply {
+        text = value
+        typeface = ResourcesCompat.getFont(activity, R.font.figtree_600)
+        setTextColor(ContextCompat.getColor(activity, R.color.text))
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
+        maxLines = 2
+        ellipsize = android.text.TextUtils.TruncateAt.END
+    }
+
+    /** One number set with round ‹ and › buttons, for [steppers]. */
+    class Step(val label: String, val value: String, val onStep: (direction: Int) -> Unit)
+
+    /**
+     * Numbers side by side, each under a small caps name, set with round ‹ and › buttons ("SEASON ‹ 2 ›  EPISODE ‹ 4 ›").
+     * Left and right move between the buttons, OK presses one.
+     */
+    fun steppers(steps: List<Step>) {
+        val group = 104
+        val gap = 28
+        list.addView(LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            steps.forEach { s ->
+                addView(TextView(activity).apply {
+                    text = s.label.uppercase()
+                    typeface = ResourcesCompat.getFont(activity, R.font.figtree_700)
+                    letterSpacing = 0.1f
+                    setTextColor(ContextCompat.getColor(activity, R.color.text_muted))
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+                }, LinearLayout.LayoutParams(rows.dp(group + gap), ViewGroup.LayoutParams.WRAP_CONTENT))
+            }
+        }, rows.listParams(top = 8, bottom = 3))
+        val pair = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            tag = ROW_PAIR
+            clipChildren = false
+            clipToPadding = false
+        }
+        fun button(sign: String, onClick: () -> Unit) = rows.base().apply {
+            gravity = Gravity.CENTER
+            setPadding(0, 0, 0, 0)
+            minimumHeight = 0
+            contentDescription = if (sign == "‹") "Less" else "More"
+            addView(rows.text(sign).apply { setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f); gravity = Gravity.CENTER })
+            setOnClickListener { onClick(); refresh() }
+        }
+        steps.forEachIndexed { i, s ->
+            if (i > 0) pair.addView(View(activity), LinearLayout.LayoutParams(rows.dp(gap), 1))
+            pair.addView(button("‹") { s.onStep(-1) }, LinearLayout.LayoutParams(rows.dp(30), rows.dp(30)))
+            pair.addView(TextView(activity).apply {
+                text = s.value
+                gravity = Gravity.CENTER
+                typeface = ResourcesCompat.getFont(activity, R.font.figtree_700)
+                setTextColor(ContextCompat.getColor(activity, R.color.text))
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
+            }, LinearLayout.LayoutParams(rows.dp(44), ViewGroup.LayoutParams.WRAP_CONTENT))
+            pair.addView(button("›") { s.onStep(1) }, LinearLayout.LayoutParams(rows.dp(30), rows.dp(30)))
+        }
+        sideBySide(pair)
+        list.addView(pair, rows.listParams(top = 0, bottom = 6))
+    }
+
+    /** Two buttons side by side, the first the one that does it ("Save match", then "Cancel"). */
+    fun buttons(first: String, second: String, onFirst: () -> Unit, onSecond: () -> Unit) {
+        val pair = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            tag = ROW_PAIR
+            clipChildren = false
+            clipToPadding = false
+        }
+        listOf(first to onFirst, second to onSecond).forEachIndexed { i, (label, action) ->
+            pair.addView(rows.base().apply {
+                gravity = Gravity.CENTER
+                minimumHeight = rows.dp(40)
+                addView(rows.text(label).apply { gravity = Gravity.CENTER })
+                setOnClickListener { action() }
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { if (i > 0) marginStart = rows.dp(10) })
+        }
+        sideBySide(pair)
+        list.addView(pair, rows.listParams(top = 8, bottom = 2))
+    }
+
+    /** Left and right move between [pair]'s buttons; up and down go on from it as one row. */
+    private fun sideBySide(pair: ViewGroup) {
+        val buttons = (0 until pair.childCount).map { pair.getChildAt(it) }.filter { it.isFocusable }
+        buttons.forEachIndexed { i, b ->
+            b.setOnKeyListener { _, keyCode, event ->
+                when (keyCode) {
+                    KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                        if (event.action == KeyEvent.ACTION_DOWN) {
+                            buttons.getOrNull(i + if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) -1 else 1)?.requestFocus()
+                        }
+                        true
+                    }
+                    else -> Rows.verticalNav(list, pair.getChildAt(0), keyCode, event)
+                }
+            }
+        }
     }
 
     /** Something shown in the list that isn't a row, such as a progress bar: the D-pad passes it by. */

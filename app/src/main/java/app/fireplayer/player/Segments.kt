@@ -12,7 +12,9 @@ import java.net.URL
 /**
  * Where an episode's recap, intro and credits are, in milliseconds of this very file. [afterCredits] is where
  * something worth watching starts again after the credits (a scene, or a preview of the next one), or null when the
- * credits run to the end. [from] says where it came from: "chapters" (the file's own, exact) or "introdb".
+ * credits run to the end. [creditsToEnd]: it is known that the credits run to the very end, so nothing (no scene
+ * after them) would be missed by leaving there. [from] says where it came from: "chapters" (the file's own, exact),
+ * "skipdb" or "introdb".
  */
 class Segments(
     val recap: LongRange?,
@@ -20,6 +22,9 @@ class Segments(
     val creditsAt: Long?,
     val afterCredits: Long?,
     val from: String,
+    val creditsToEnd: Boolean = false,
+    /** The credits' times are the file's own (its chapters), not a database's matched by length. */
+    val creditsFromFile: Boolean = false,
 ) {
     /** The button to show at [position], and where it jumps to, or null. */
     fun skip(position: Long): Skip? {
@@ -38,10 +43,21 @@ class Segments(
 
     class Skip(val label: String, val start: Long, val target: Long)
 
+    /** When "Exit" may come up: at the credits, only when they surely run to the end. */
+    val exitAt: Long? get() = creditsAt?.takeIf { afterCredits == null && creditsToEnd }
+
+    /**
+     * When something may happen by itself at the credits (Next episode or Exit counting down): only with the file's own
+     * times. A database's times fit by length only, which is evidence, not proof: they get buttons, never automatic.
+     */
+    val autoAt: Long? get() = exitAt?.takeIf { creditsFromFile }
+
     /** These, with what [other] knows and this doesn't. */
     fun or(other: Segments?): Segments = if (other == null) this else Segments(
         recap ?: other.recap, intro ?: other.intro,
         creditsAt ?: other.creditsAt, if (creditsAt != null) afterCredits else other.afterCredits, from,
+        if (creditsAt != null) creditsToEnd else other.creditsToEnd,
+        if (creditsAt != null) creditsFromFile else other.creditsFromFile,
     )
 
     companion object {
@@ -87,10 +103,12 @@ object MkvChapters {
         // A chapter after the credits that isn't more credits, and long enough to be something.
         val after = creditsEnd?.takeIf { durationMs - it > AFTER_MIN_MS }
         if (recap == null && intro == null && creditsAt == null) return null
-        return Segments(recap, intro, creditsAt, after, "chapters")
+        return Segments(recap, intro, creditsAt, after, "chapters", creditsEnd != null && durationMs - creditsEnd <= TO_END_MS,
+            creditsFromFile = creditsAt != null)
     }
 
     private const val AFTER_MIN_MS = 15_000L
+    private const val TO_END_MS = 5_000L
 
     private fun read(uri: Uri, headers: Map<String, String>): List<Chapter>? {
         val head = get(uri, headers, null, HEAD_BYTES) ?: return null
@@ -244,103 +262,5 @@ object MkvChapters {
         fun skip(n: Long) { if (n < 0 || pos + n > end) throw IllegalStateException("past end"); pos += n.toInt() }
         fun uint(n: Int): Long { var v = 0L; repeat(n) { v = (v shl 8) or (b[pos++].toLong() and 0xFF) }; return v }
         fun string(n: Int): String { val s = String(b, pos, n, Charsets.UTF_8).trimEnd('\u0000'); pos += n; return s }
-    }
-}
-
-/**
- * TheIntroDB (theintrodb.org): times people submitted for a show's intro, recap and credits, by TMDB id and TMDB's
- * season and episode numbers. It doesn't say how long the file was that they were timed on, so they're used only for
- * a file whose length agrees with TMDB's for the episode, and only where they fit this file.
- */
-object IntroDb {
-    private const val TAG = "FirePlayerSegments"
-    private const val BASE = "https://api.theintrodb.org/v4/media"
-    private const val KEPT_MS = 7 * 24 * 60 * 60_000L
-    private const val MISS_KEPT_MS = 24 * 60 * 60_000L
-    // TMDB gives whole minutes, sometimes rounded either way.
-    private const val LENGTH_SLACK_MS = 90_000L
-    private const val CREDITS_MIN_MS = 10_000L
-    private const val CREDITS_MAX_MS = 4 * 60_000L
-
-    /** Blocks. [tmdbMinutes] is TMDB's length for the episode; without it nothing is trusted. */
-    fun episode(context: Context, showTmdb: Int, season: Int, episode: Int, tmdbMinutes: Int, durationMs: Long): Segments? {
-        if (showTmdb <= 0 || tmdbMinutes <= 0 || durationMs <= 0) return null
-        if (Math.abs(durationMs - tmdbMinutes * 60_000L) > LENGTH_SLACK_MS) {
-            Log.i(TAG, "Not using TheIntroDB: this file is ${durationMs / 1000}s, TMDB says $tmdbMinutes min")
-            return null
-        }
-        val o = fetch(context, "tmdb_id=$showTmdb&season=$season&episode=$episode&duration_ms=$durationMs") ?: return null
-        if (o.optString("type") != "tv") return null
-        return fitted(o, durationMs)
-    }
-
-    /** The times that fit this file; anything that doesn't is left out. */
-    private fun fitted(o: JSONObject, durationMs: Long): Segments? {
-        fun first(name: String): Pair<Long?, Long?>? {
-            val a = o.optJSONArray(name) ?: return null
-            if (a.length() == 0) return null
-            val s = a.getJSONObject(0)
-            fun ms(k: String) = if (s.isNull(k)) null else s.optLong(k, -1).takeIf { it >= 0 }
-            return ms("start_ms") to ms("end_ms")
-        }
-        fun opening(name: String): LongRange? {
-            val (start, end) = first(name) ?: return null
-            val from = start ?: 0L
-            if (end == null || end <= from || end - from > 5 * 60_000L || end > durationMs / 3) return null
-            return from..end
-        }
-        val recap = opening("recap")
-        val intro = opening("intro")
-        var creditsAt: Long? = null
-        var after: Long? = null
-        first("credits")?.let { (start, end) ->
-            if (start == null) return@let
-            val left = durationMs - start
-            if (left !in CREDITS_MIN_MS..CREDITS_MAX_MS * 3) return@let
-            // Something after the credits: a scene or a preview. Then the credits needn't be at the very end.
-            if (end != null && durationMs - end > 15_000L && end > start) {
-                creditsAt = start
-                after = end
-            } else if (left <= CREDITS_MAX_MS) {
-                creditsAt = start
-            }
-        }
-        // A preview of the next episode after the credits counts as something after them too.
-        first("preview")?.let { (start, _) -> if (start != null && creditsAt != null && after == null && start > creditsAt!!) after = start }
-        if (recap == null && intro == null && creditsAt == null) return null
-        return Segments(recap, intro, creditsAt, after, "introdb")
-    }
-
-    private fun fetch(context: Context, query: String): JSONObject? {
-        val file = File(File(context.cacheDir, "segments").apply { mkdirs() }, "${query.substringBefore("&duration").hashCode().toUInt()}.json")
-        if (file.exists()) {
-            val age = System.currentTimeMillis() - file.lastModified()
-            val text = runCatching { file.readText() }.getOrNull()
-            if (text != null) {
-                if (text.isEmpty() && age < MISS_KEPT_MS) return null
-                if (text.isNotEmpty() && age < KEPT_MS) return runCatching { JSONObject(text) }.getOrNull()
-            }
-        }
-        val conn = URL("$BASE?$query").openConnection() as HttpURLConnection
-        conn.connectTimeout = 8_000
-        conn.readTimeout = 10_000
-        conn.setRequestProperty("User-Agent", "FirePlayer/1.0 (Linux; Android)")
-        conn.setRequestProperty("Accept", "application/json")
-        return try {
-            when (conn.responseCode) {
-                200 -> {
-                    val text = conn.inputStream.bufferedReader().use { it.readText() }
-                    runCatching { file.writeText(text) }
-                    JSONObject(text)
-                }
-                404 -> { runCatching { file.writeText("") }; null }
-                else -> null
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "TheIntroDB didn't answer", e)
-            null
-        } finally {
-            conn.disconnect()
-        }
     }
 }

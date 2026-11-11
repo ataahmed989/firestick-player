@@ -244,6 +244,26 @@ class Tmdb(private val key: () -> String, private val memory: Memory) {
         return (all.firstOrNull { it.optInt("type") == 3 } ?: all.firstOrNull())?.optString("certification")?.trim().orEmpty()
     }
 
+    /** A title's IMDb id ("tt0903747"), and a film's length in minutes (0 for a show). */
+    class Ids(val imdb: String, val runtime: Int)
+
+    /** A film's or show's IMDb id, for SkipDB and IntroDB; null when TMDB has none. Kept while the player runs. Blocks. */
+    fun ids(id: Int, show: Boolean): Ids? {
+        if (id <= 0) return null
+        val key = "$MATCH_RULES|ids|${if (show) "tv" else "movie"}|$id"
+        memory.get(key)?.let { v -> return if (v.isEmpty()) null else Ids(v.substringBefore('|'), v.substringAfter('|').toIntOrNull() ?: 0) }
+        val o = try {
+            JSONObject(request(if (show) "tv/$id/external_ids" else "movie/$id", emptyList()))
+        } catch (e: HttpError) {
+            if (e.code == 404) { memory.put(key, ""); return null }
+            throw e
+        }
+        val imdb = o.optString("imdb_id").takeIf { it.startsWith("tt") }
+        val runtime = if (show) 0 else o.optInt("runtime")
+        memory.put(key, if (imdb == null) "" else "$imdb|$runtime")
+        return imdb?.let { Ids(it, runtime) }
+    }
+
     /** One episode of a show as TMDB lists it. [still] is a picture from it, ready to load. */
     class TvEpisode(
         val id: Int,

@@ -67,11 +67,18 @@ key KEYCODE_BACK KEYCODE_BACK
 key KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_CENTER
 shot 10-settings 1.5
 # Down to Auto sync subtitles, at the top of Online subtitles.
-key KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN
+key KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN
 shot 10b-settings-auto-sync 1.5
 key KEYCODE_BACK
 key KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT KEYCODE_DPAD_CENTER
 shot 11-subtitles 1.5
+# Search online (fake OpenSubtitles results from the mock server): Find subtitles' result rows.
+key KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_CENTER
+sleep 1
+key KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_CENTER
+shot 11c-find-results 4
+key KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN
+shot 11d-find-results-lower 1.5
 key KEYCODE_BACK
 # Subtitle delay, next to Subtitles: these subtitles came with the video, so auto sync leaves them alone.
 key KEYCODE_DPAD_RIGHT KEYCODE_DPAD_CENTER
@@ -112,9 +119,14 @@ adb logcat -d -v time ${pid:+--pid=$pid} | grep -E "Ocr|OCR|Subtitle|PGS|Pgs|Exo
 # Episodes, and This episode in Settings. The look-up waits for the film to be well ahead, so this waits too.
 movie "http://10.0.2.2:8000/series/demo/demo/2003.mkv" "EN - Breaking Bad (2008) - S02E03 - Bit by a Dead Bee"
 # Its chapters say the intro runs from 0:05 to 1:00: Skip intro shows while the controls are down.
-shot 16-episode-playing 25
+shot 16-episode-playing 7
+shot 16b-skip-gone 10
 key KEYCODE_DPAD_UP
 shot 17-episode-controls 1.5
+# Still in the intro: the skip pod sits over the time bar. Up, up selects it; down, down goes back to Play.
+key KEYCODE_DPAD_UP KEYCODE_DPAD_UP
+shot 17a-skip-pod-selected 0.5
+key KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN
 # Right from Play: Watch from start, Next episode, Episodes.
 key KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT
 shot 17b-episodes-button 1
@@ -135,11 +147,17 @@ key KEYCODE_BACK
 pid=$(adb shell pidof $PKG | tr -d '\r')
 adb logcat -d -v time ${pid:+--pid=$pid} | grep -E "FirePlayerNext|FirePlayerGuide|FirePlayerSegments|AndroidRuntime" | tail -100 > "$OUT/logcat-episodes.txt"
 
-# The next episode, started near its end: its chapters put the credits at 4:20, so the end card is up.
+# The next episode, started near its end: its chapters put the credits at 4:20 to the end, so the end card counts
+# 10 s and the last episode starts by itself.
 movie "http://10.0.2.2:8000/series/demo/demo/2004.mkv" "EN - Breaking Bad (2008) - S02E04 - Down" "--el position 262000"
-shot 21-credits-card 9
+shot 21-credits-card 8
+shot 21b-next-started 12
 pid=$(adb shell pidof $PKG | tr -d '\r')
 adb logcat -d -v time ${pid:+--pid=$pid} | grep -E "FirePlayerNext|FirePlayerSegments|AndroidRuntime" | tail -60 > "$OUT/logcat-credits.txt"
+
+# The last episode, near its end: nothing next and the credits run to the end, so Exit counts down.
+movie "http://10.0.2.2:8000/series/demo/demo/2013.mkv" "EN - Breaking Bad (2008) - S02E13 - ABQ" "--el position 262000"
+shot 22-exit-card 6
 
 # Coming back to the same film asks where to start.
 movie "http://10.0.2.2:8000/movie.mkv" "EN - 4K UHD - Dune: Part Two (2024)"

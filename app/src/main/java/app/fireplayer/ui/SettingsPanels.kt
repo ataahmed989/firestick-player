@@ -60,6 +60,11 @@ class SettingsPanels(
     private var detailsShown = false
     private var playlistNoteShown = false
     private var arrowTurned = false
+    // The same for the playlists' note and for the skip buttons' details.
+    private var playlistArrowTurned = false
+    private var skipDetailsShown = false
+    private var skipArrowTurned = false
+    private var skipSession = -1
     private var checkValue: String? = null
     private var checkNote: String? = null
 
@@ -189,9 +194,6 @@ class SettingsPanels(
             prefs.playNextEpisode = !prefs.playNextEpisode; refresh()
         }
         if (prefs.playNextEpisode) NextEpisode.status?.let { message(it) }
-        row("Skip intro and credits", onOff(prefs.skipIntro)) {
-            prefs.skipIntro = !prefs.skipIntro; refresh()
-        }
         row("Match frame rate", onOff(prefs.matchFrameRate)) {
             prefs.matchFrameRate = !prefs.matchFrameRate; refresh()
         }
@@ -264,6 +266,30 @@ class SettingsPanels(
             alpha = 0.8f
         }, top = 3, bottom = 4)
 
+        header("Skip intro and credits")
+        if (session != skipSession) {
+            skipSession = session
+            skipDetailsShown = false
+        }
+        val skipTurned = skipArrowTurned
+        skipArrowTurned = false
+        rowWithArrow(
+            "Skip buttons",
+            onOff(prefs.skipIntro),
+            expanded = skipDetailsShown,
+            turned = skipTurned,
+            onClick = { prefs.skipIntro = !prefs.skipIntro; refresh() },
+            onArrow = { skipDetailsShown = !skipDetailsShown; skipArrowTurned = true; refresh() },
+        )
+        if (skipDetailsShown) {
+            message("Skip intro and Skip recap, Next episode at the credits and Exit after a film's credits. " +
+                "Times from the file's chapters, else SkipDB and IntroDB, with the TMDB key above.")
+        }
+        val counts = COUNTDOWNS
+        choice("Next episode / Exit countdown", counts.map { "$it s" }, counts.indexOf(prefs.autoCountdownSec).let { if (it < 0) 1 else it }) {
+            prefs.autoCountdownSec = counts[it]
+        }
+
         header("App")
         row("Check for updates", updateStatus ?: "Version ${updater.installedName}") {
             updateStatus = "Checking…"; refresh()
@@ -327,8 +353,10 @@ class SettingsPanels(
         val playlists = titleCounts.orEmpty()
         if (playlists.isNotEmpty()) {
             header("Playlists")
-            playlists.forEach { p ->
-                row(p.server, "${p.renamed} renamed") {
+            val noteTurned = playlistArrowTurned
+            playlistArrowTurned = false
+            playlists.forEachIndexed { i, p ->
+                val onClick = {
                     FireDialog.choose(activity, p.server, listOf("Delete its English names", "Keep them"), 1, besidePanel = true) { pick ->
                         if (pick != 0) return@choose
                         titleCounts = titleCounts?.filter { it.server != p.server }
@@ -338,13 +366,17 @@ class SettingsPanels(
                         }
                     }
                 }
+                // The last pod carries the arrow for what happens to a playlist taken out of TiviMate, as the titles'
+                // switch carries the set-up details.
+                if (i == playlists.lastIndex) {
+                    rowWithArrow(p.server, "${p.renamed} renamed", expanded = playlistNoteShown, turned = noteTurned,
+                        onClick = { onClick() },
+                        onArrow = { playlistNoteShown = !playlistNoteShown; playlistArrowTurned = true; refresh() })
+                } else {
+                    row(p.server, "${p.renamed} renamed") { onClick() }
+                }
             }
-            // The explanation waits behind an arrow, as the titles' set-up details do.
-            dropdownRow("Removed a playlist from TiviMate?", null, Rows.Badge.INACTIVE, playlistNoteShown) {
-                playlistNoteShown = !playlistNoteShown
-                refresh()
-            }
-            if (playlistNoteShown) message("Its English names are deleted here a week after TiviMate last used it, or now from this list.")
+            if (playlistNoteShown) message("Removed a playlist from TiviMate? Its English names are deleted here a week after TiviMate last used it, or now from this list.")
         }
     }
 
@@ -598,6 +630,7 @@ class SettingsPanels(
     }
 
     companion object {
+        private val COUNTDOWNS = listOf(5, 10, 15, 20, 30)
         const val FILE_POSITION = "As in the file"
         /** The pods above the time bar, by their keys in [Prefs.hiddenChips]. */
         val CHIPS = listOf("quality" to "Quality", "fps" to "Frame rate", "sound" to "Sound", "source" to "Source")
