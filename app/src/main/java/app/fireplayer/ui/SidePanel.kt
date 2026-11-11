@@ -272,9 +272,9 @@ class SidePanel(private val activity: Activity) {
         val row = rows.base()
         // Blue while it's the one in use, like the current choice elsewhere.
         row.isSelected = selected
-        row.setPadding(rows.dp(if (withPoster) 8 else 16), rows.dp(if (withPoster) 8 else 10), rows.dp(16), rows.dp(if (withPoster) 8 else 10))
-        // A TMDB result: its cover on the left, rounded like the window's other pictures.
-        if (withPoster) row.addView(cover(poster, 36, 54, 6), LinearLayout.LayoutParams(rows.dp(36), rows.dp(54)).apply {
+        row.setPadding(rows.dp(if (withPoster) 10 else 16), rows.dp(if (withPoster) 10 else 10), rows.dp(16), rows.dp(if (withPoster) 10 else 10))
+        // A TMDB result: its cover on the left, its corners following the row's own, so it stays inside the selected one.
+        if (withPoster) row.addView(cover(poster, 36, 54, 8), LinearLayout.LayoutParams(rows.dp(36), rows.dp(54)).apply {
             marginEnd = rows.dp(12)
         })
         val column = RowLayout(activity, rows.textColors).apply {
@@ -318,7 +318,7 @@ class SidePanel(private val activity: Activity) {
     }
 
     /** A picture from TMDB, [w] by [h] dp with [corner] dp corners, on a faint fill while it loads (or has none). */
-    fun cover(url: String?, w: Int, h: Int, corner: Int): ImageView = ImageView(activity).apply {
+    fun cover(url: String?, w: Int, h: Int, corner: Int): ImageView = CoverImage(activity).apply {
         scaleType = ImageView.ScaleType.CENTER_CROP
         background = android.graphics.drawable.GradientDrawable().apply {
             cornerRadius = rows.dp(corner).toFloat()
