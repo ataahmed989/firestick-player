@@ -238,6 +238,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     // Where this episode's intro and credits are ([Segments]), worked out for [segmentsFor] (entry key and episode).
     private var segments: Segments? = null
     @Volatile private var segmentsFor: String? = null
+    // Each look-up's number: an answer from an earlier one for the same episode is dropped.
+    @Volatile private var segmentsAsked = 0
+    // A newer answer for the same episode, held while a skip button or pod shows (it isn't moved under the viewer).
+    private var segmentsWaiting: Segments? = null
+    private var segmentsWait = false
+    private var segmentsAgainAt = 0L
+    private val lookUpSegmentsAgain = Runnable { lookUpSegmentsAgain() }
     // One look-up at a time; one for an episode no longer playing is dropped before it asks anything.
     private val segmentWorker = Executors.newSingleThreadExecutor()
     // A file's own chapters, read once per file, by entry key (null: it has none to use).
@@ -498,6 +505,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 if (delayPanelOpen && panel.isOpen) panel.refresh()
             },
         )
+        autoSync.onMappingChanged = { syncMappingChanged() }
         settingsPanels.onAutoSyncChanged = { autoSync.setOn(prefs.autoSync); followSubtitle() }
         settingsPanels.onFontChanged = {
             styler.reloadImportedFont()
@@ -675,6 +683,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         pictureText.release()
         backdrop?.release()
+        handler.removeCallbacks(lookUpSegmentsAgain)
         autoSync.release()
         io.shutdownNow()
         segmentWorker.shutdownNow()
@@ -2025,6 +2034,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (p != null && entry != null && duration != C.TIME_UNSET && duration > 0 && !p.isCurrentMediaItemLive) {
             lookUpSegments(entry, duration)
         }
+        if (segmentsWait && skipButton.visibility != View.VISIBLE && skipPod.visibility != View.VISIBLE) {
+            segments = segmentsWaiting
+            segmentsWaiting = null
+            segmentsWait = false
+        }
         // Back before a part whose button was put away (watching it again): the button comes back with it.
         if (p != null && skipDismissed >= 0 && p.currentPosition < skipDismissed) skipDismissed = -1L
         if (p != null && skipFadedFor >= 0 && p.currentPosition < skipFadedFor) { skipFadedFor = -1L; skipShownFor = -1L }
@@ -2099,17 +2113,24 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
      * episode surely matched to it, or a film. Asked again when the episode, its match or the file's length changes;
      * an answer for anything no longer playing is dropped.
      */
-    private fun lookUpSegments(entry: Entry, duration: Long) {
+    private fun lookUpSegments(entry: Entry, duration: Long, again: Boolean = false) {
         val g = guide
         val ep = guideEpisode(entry)?.takeIf { g != null && g.tmdbId > 0 && it.match == ShowGuide.Match.SURE }
         val film = ep == null && entry.info.episode == null && !NextEpisode.isEpisodeLink(entry.uri)
         val want = entry.key + "|" + (ep?.let { "${g!!.tmdbId}/${it.season}/${it.number}" } ?: if (film) "film" else "-") +
             "|" + duration / 1000
-        if (want == segmentsFor) return
-        segmentsFor = want
-        segments = null
-        skipDismissed = -1L
+        if (want == segmentsFor && !again) return
+        val fresh = want != segmentsFor
+        if (fresh) {
+            segmentsFor = want
+            segments = null
+            segmentsWaiting = null
+            segmentsWait = false
+            skipDismissed = -1L
+        }
         if (!prefs.skipIntro) return
+        // Auto sync's confirmed offsets for these subtitles on this very file, if any (see [SyncMapping]).
+        val sync = if (::autoSync.isInitialized) autoSync.mapping?.takeIf { it.filmKey == entry.key } else null
         val uri = entry.uri
         val key = entry.key
         val known = chapterSegments.containsKey(key)
@@ -2119,32 +2140,62 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             uri.lastPathSegment?.endsWith(".mkv", ignoreCase = true) == true
         val online = tmdb.isConfigured && (ep != null || film)
         if (!online && !readChapters && knownChapters == null) return
+        // The first look-up is still reading the chapters: asked again once it has.
+        if (again && !fresh && readChapters) { handler.postDelayed(lookUpSegmentsAgain, SEGMENTS_AGAIN_MS); return }
+        val asked = ++segmentsAsked
         val headers = headersFromIntent()
         val app = applicationContext
         val showId = g?.tmdbId ?: 0
         val fixed = if (film) matchFor(entry)?.tmdbId else null
         if (segmentWorker.isShutdown) return
         segmentWorker.execute {
-            if (segmentsFor != want) return@execute
+            if (segmentsFor != want || segmentsAsked != asked) return@execute
             val chapters = if (readChapters) MkvChapters.segments(uri, headers, duration) else knownChapters
             // Only what the chapters don't say is asked for.
             val db = if (!online || (chapters?.intro != null && chapters.creditsAt != null)) null else runCatching {
                 if (ep != null) {
-                    tmdb.ids(showId, true)?.let { SkipTimes.find(app, it.imdb, ep.season, ep.number, duration, ep.tmdbMin) }
+                    tmdb.ids(showId, true)?.let { SkipTimes.find(app, it.imdb, ep.season, ep.number, duration, ep.tmdbMin, sync) }
                 } else {
                     val id = fixed ?: filmTmdbId(entry)
-                    tmdb.ids(id, false)?.let { SkipTimes.find(app, it.imdb, null, null, duration, it.runtime) }
+                    tmdb.ids(id, false)?.let { SkipTimes.find(app, it.imdb, null, null, duration, it.runtime, sync) }
                 }
             }.onFailure { android.util.Log.w("FirePlayerSegments", "Look-up failed", it) }.getOrNull()
             val found = chapters?.or(db) ?: db
             handler.post {
                 if (readChapters) chapterSegments[key] = chapters
-                if (isFinishing || segmentsFor != want) return@post
-                segments = found
+                if (isFinishing || segmentsFor != want || segmentsAsked != asked) return@post
+                // Asked again (auto sync's offsets changed): a button or pod on screen stays where it is till it goes.
+                if (again && (skipButton.visibility == View.VISIBLE || skipPod.visibility == View.VISIBLE)) {
+                    segmentsWaiting = found
+                    segmentsWait = true
+                } else {
+                    segments = found
+                    segmentsWaiting = null
+                    segmentsWait = false
+                }
                 if (found != null) android.util.Log.i("FirePlayerSegments", "From ${found.from}: recap ${found.recap}, " +
                     "intro ${found.intro}, credits ${found.creditsAt}, after ${found.afterCredits}, to end ${found.creditsToEnd}")
             }
         }
+    }
+
+    /**
+     * Auto sync's confirmed offsets changed (more of the film matched, a break found, or none stand any more): the
+     * parts are looked up again for this file, at most every [SEGMENTS_AGAIN_MS], at once when the offsets are gone.
+     */
+    private fun syncMappingChanged() {
+        handler.removeCallbacks(lookUpSegmentsAgain)
+        val wait = SEGMENTS_AGAIN_MS - (SystemClock.uptimeMillis() - segmentsAgainAt)
+        if (autoSync.mapping == null || wait <= 0) lookUpSegmentsAgain() else handler.postDelayed(lookUpSegmentsAgain, wait)
+    }
+
+    private fun lookUpSegmentsAgain() {
+        val p = player ?: return
+        val entry = currentEntry() ?: return
+        val duration = p.duration
+        if (isFinishing || duration == C.TIME_UNSET || duration <= 0 || p.isCurrentMediaItemLive) return
+        segmentsAgainAt = SystemClock.uptimeMillis()
+        lookUpSegments(entry, duration, again = true)
     }
 
     private fun hidePostPlay() {
@@ -4494,6 +4545,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         const val POST_PLAY_LEAD_MS = 20_000L
         // How long the skip button waits, untouched, before it slips away.
         const val SKIP_SHOWN_MS = 8_000L
+        // Looked up again for auto sync's new offsets at most this often.
+        const val SEGMENTS_AGAIN_MS = 15_000L
         private const val AUDIO_KEPT = 300
         private val FOCUS_EASE = DecelerateInterpolator(1.4f)
         private const val LOADING = "Loading from TMDB…"

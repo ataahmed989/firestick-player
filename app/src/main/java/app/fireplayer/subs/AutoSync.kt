@@ -67,6 +67,14 @@ class AutoSync(
     /** The downloaded subtitle file being followed, or null. */
     var file: File? = null
         private set
+    /**
+     * What auto sync has confirmed, for use elsewhere (the skip buttons): see [SyncMapping] for the contract. Null while
+     * nothing is confirmed, under a delay set by hand, or with auto sync off. [onMappingChanged] hears every change.
+     */
+    var mapping: SyncMapping? = null
+        private set
+    var onMappingChanged: (() -> Unit)? = null
+    private var mappingVersion = 0
 
     private val main = Handler(Looper.getMainLooper())
     private var key: String? = null
@@ -107,6 +115,7 @@ class AutoSync(
     fun follow(subtitle: File?, filmKey: String?) {
         if (subtitle == file && filmKey == key) return
         stopListening()
+        clearMapping()
         file = subtitle
         key = filmKey
         undoUs = null
@@ -150,6 +159,7 @@ class AutoSync(
     fun resync() {
         val f = file ?: return
         stopListening()
+        clearMapping()
         byHand = false
         segments = emptyList()
         prefs.forgetSyncedDelay(savedKey())
@@ -164,6 +174,7 @@ class AutoSync(
         prefs.saveHandDelay(savedKey(), delayUs / 1000)
         if (state == State.OFF) return
         stopListening()
+        clearMapping()
         byHand = true
         undoUs = null
         segments = emptyList()
@@ -177,6 +188,7 @@ class AutoSync(
             if (file != null && state == State.OFF) resync()
         } else {
             stopListening()
+            clearMapping()
             setState(State.OFF, null)
         }
     }
@@ -185,6 +197,7 @@ class AutoSync(
     fun undo() {
         val before = undoUs ?: return
         stopListening()
+        clearMapping()
         setDelayUs(before)
         undoUs = null
         byHand = true
@@ -200,6 +213,8 @@ class AutoSync(
     }
 
     fun release() {
+        mapping = null
+        onMappingChanged = null
         stopListening()
         main.removeCallbacksAndMessages(null)
         worker?.interrupt()
@@ -317,6 +332,8 @@ class AutoSync(
         var gen = -1
         var filmKey: String? = null
         var tracker: OffsetTracker? = null
+        var publishedCount = -1
+        var publishedSegments: List<OffsetTracker.Segment>? = null
         // 10 ms marks heard (new or again) since the job started, and at the last step.
         var played = 0L
         var stepAt = 0L
@@ -456,6 +473,14 @@ class AutoSync(
                     cost.matched(SystemClock.currentThreadTimeMillis() - cpu0)
                     Log.i(TAG, d.toString())
                 }
+                // What's confirmed grew or the offsets changed: the main thread gets a fresh snapshot for the skip times.
+                val segs = tr.segments
+                if (tr.confirmedCount != publishedCount || segs != publishedSegments) {
+                    publishedCount = tr.confirmedCount
+                    publishedSegments = segs
+                    val confirmed = tr.confirmedSeconds()
+                    main.post { publishMapping(current, segs, confirmed) }
+                }
                 when (d.outcome) {
                     Outcome.LEARNED, Outcome.MOVED, Outcome.TUNED -> main.post { decided(current, d) }
                     Outcome.GAVE_UP -> {
@@ -554,6 +579,20 @@ class AutoSync(
         }
         setState(State.SYNCED, syncedText())
         startFollowing()
+    }
+
+    private fun publishMapping(current: Job, segs: List<OffsetTracker.Segment>, confirmed: java.util.BitSet) {
+        if (current.generation != generation || byHand || state != State.SYNCED || segs.isEmpty()) return
+        mapping = SyncMapping(segs, confirmed, ++mappingVersion, current.filmKey)
+        onMappingChanged?.invoke()
+    }
+
+    /** New subtitles or film, Resync, Undo, a delay by hand, auto sync off: nothing confirmed stands any more. */
+    private fun clearMapping() {
+        if (mapping == null) return
+        mapping = null
+        mappingVersion++
+        onMappingChanged?.invoke()
     }
 
     private fun notFound(current: Job) {

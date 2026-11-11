@@ -126,6 +126,9 @@ class OffsetTracker(
     private var resyncAtMs = -1L
 
     val segments: List<Segment> get() = map.toList()
+    /** Seconds of film where a match agreed with the map in this session (a copy), for [SyncMapping]. */
+    fun confirmedSeconds(): BitSet = verified.clone() as BitSet
+    val confirmedCount: Int get() = verified.cardinality()
     val learning: Boolean get() = map.isEmpty()
 
     /** The delay for film time [ms], or null while nothing is known. */
