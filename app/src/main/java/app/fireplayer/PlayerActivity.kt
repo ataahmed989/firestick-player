@@ -2084,7 +2084,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
      * (only with times for them). Only on the file's own times ([Segments.autoAt]: its chapters say the credits run to
      * the end) does anything happen by itself: Next episode counts [Prefs.autoCountdownSec] of playing and starts the next one, or, with
      * nothing next, "Exit · 10s" counts the same and leaves. On a database's times (they fit by length, evidence but not proof)
-     * the card is the same but waits: Next episode fills up until the real end, Exit waits to be pressed.
+     * the card is the same but waits: Next episode and Exit fill up until the real end. Exit only comes for a film or
+     * a show's very last episode; every other episode gets Next episode (see [isSeriesFinale]).
      * Watch credits / Keep watching put it away, pausing pauses a count, a jump starts it again.
      */
     private fun updatePostPlay() {
@@ -2108,7 +2109,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val nextUnknown = current != null && prefs.playNextEpisode && findsNextEpisode &&
             (current.info.episode != null || NextEpisode.isEpisodeLink(current.uri)) &&
             (lookupInFlight || nextLookedUpFor != current.key)
-        val exitAt = if (!nextOk && next == null && !nextUnknown && prefs.skipIntro) inCredits(parts?.exitAt) else null
+        // Exit is for a film, or a show's very last episode (its final season's finale, by TMDB); any other episode
+        // never gets it, even when nothing comes after it on the provider yet.
+        val exitAt = if (!nextOk && next == null && !nextUnknown && prefs.skipIntro && current != null &&
+            (!isEpisode(current) || isSeriesFinale(current) == true)) inCredits(parts?.exitAt) else null
         val exit = !nextOk && exitAt != null
         // Counting down by itself only on the file's own credits times; a database's get the card, no countdown.
         val sure = inCredits(parts?.autoAt) != null
@@ -2147,7 +2151,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             postPlayCountMs = if (auto) prefs.autoCountdownSec * 1000L else (duration - position).coerceAtLeast(1L)
             countShown = 0f
             countShownAt = 0L
-            postPlayGo.counting = auto || !exit
+            // Both count: Next episode and Exit fill up, by themselves to the chosen seconds, else to the real end.
+            postPlayGo.counting = true
             postPlay.alpha = 0f
             postPlay.visibility = View.VISIBLE
             postPlay.animate().alpha(1f).setDuration(250).start()
@@ -2164,6 +2169,35 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         } else if (postPlayAuto && position >= postPlayFrom + postPlayCountMs && p.playWhenReady) {
             playNextEpisode()
         }
+    }
+
+    /** Whether [entry] is an episode of a show, by its name, its link or the show's guide. */
+    private fun isEpisode(entry: Entry): Boolean =
+        entry.info.episode != null || NextEpisode.isEpisodeLink(entry.uri) || guideEpisode(entry) != null
+
+    // Whether the episode playing is its show's last ever, as TMDB says; null until known (or when it can't be).
+    private var finaleFor: String? = null
+    private var finaleKnown: Boolean? = null
+
+    /**
+     * Whether [entry] is its show's very last episode: the show has ended and this is its final season's finale. Asked of
+     * TMDB once per episode, for one matched to it; null meanwhile, or when it isn't matched.
+     */
+    private fun isSeriesFinale(entry: Entry): Boolean? {
+        val g = guide ?: return null
+        val ep = guideEpisode(entry)?.takeIf { g.tmdbId > 0 && it.match != ShowGuide.Match.NONE } ?: return null
+        if (!tmdb.isConfigured) return null
+        val key = "${entry.key}|${g.tmdbId}/${ep.season}/${ep.number}"
+        if (key == finaleFor) return finaleKnown
+        finaleFor = key
+        finaleKnown = null
+        val showId = g.tmdbId
+        io.execute {
+            val answer = runCatching { tmdb.isSeriesFinale(showId, ep.season, ep.number) }
+                .onFailure { android.util.Log.w("FirePlayerEnd", "Couldn't ask TMDB about the show's end", it) }.getOrNull()
+            handler.post { if (finaleFor == key) finaleKnown = answer }
+        }
+        return null
     }
 
     /** Exit, after a film's credits: watched to the end, back to where it was opened from. */
