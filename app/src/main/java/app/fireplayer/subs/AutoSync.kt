@@ -190,7 +190,8 @@ class AutoSync(
     private fun loadLines(subtitle: File, then: () -> Unit) {
         val gen = ++generation
         Thread {
-            val read = SubtitleTimes.read(subtitle)
+            // Whatever goes wrong reading them, it must not take the player down from this thread: no lines, not synced.
+            val read = runCatching { SubtitleTimes.read(subtitle) }.getOrDefault(emptyList())
             main.post {
                 if (gen != generation || subtitle != file) return@post
                 lines = read
