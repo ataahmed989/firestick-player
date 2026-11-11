@@ -258,8 +258,11 @@ class SidePanel(private val activity: Activity) {
      * A search result: its name (up to two lines), a line of small notes under it, and a value on the right (a match
      * score). The notes follow the row's colours, dark on the white selected row.
      */
-    fun resultRow(title: String, notes: String, value: String?, onClick: () -> Unit): View {
+    fun resultRow(title: String, notes: String, value: String?, selected: Boolean = false, onClick: () -> Unit): View {
         val row = rows.base()
+        // Blue while it's the one in use, like the current choice elsewhere.
+        row.isSelected = selected
+        row.setPadding(rows.dp(12), rows.dp(9), rows.dp(12), rows.dp(9))
         val column = RowLayout(activity, rows.textColors).apply {
             orientation = LinearLayout.VERTICAL
             // Takes the row's state, so its texts are recoloured with it.
@@ -267,23 +270,32 @@ class SidePanel(private val activity: Activity) {
             addView(rows.text(title).apply {
                 isSingleLine = false
                 maxLines = 2
+                ellipsize = android.text.TextUtils.TruncateAt.END
                 setLineSpacing(1f * rows.density, 1f)
             })
-            if (notes.isNotEmpty()) addView(rows.text(notes).apply {
-                isSingleLine = false
-                maxLines = 2
-                alpha = 0.8f
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
-                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-                    .apply { topMargin = rows.dp(2) }
-            })
+            // One line per kind of note ("Best match · Same release", then "23.976 fps · 12k downloads · English").
+            notes.split('\n').filter { it.isNotBlank() }.forEachIndexed { i, line ->
+                addView(rows.text(line).apply {
+                    isSingleLine = false
+                    maxLines = 2
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                    alpha = if (i == 0) 0.9f else 0.72f
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+                    setLineSpacing(1f * rows.density, 1f)
+                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                        .apply { topMargin = rows.dp(if (i == 0) 3 else 1) }
+                })
+            }
         }
         row.addView(column, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        // The scores line up on the right, whatever their width.
         if (value != null) row.addView(rows.text(value).apply {
             typeface = ResourcesCompat.getFont(activity, R.font.figtree_700)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            gravity = android.view.Gravity.END
+            minWidth = rows.dp(40)
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-                .apply { marginStart = rows.dp(8) }
+                .apply { marginStart = rows.dp(12) }
         })
         row.setOnClickListener { onClick() }
         add(row)
