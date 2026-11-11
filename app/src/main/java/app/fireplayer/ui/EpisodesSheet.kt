@@ -300,12 +300,12 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
         val chosen = pill.tag == season
         val fill = when {
             focused -> color(R.color.focus_fill)
-            chosen -> 0x473D8BFF
+            chosen -> 0x663D8BFF
             else -> 0x12FFFFFF
         }
         val rim = when {
             focused -> accent
-            chosen -> 0xBF3D8BFF.toInt()
+            chosen -> ACCENT_RIM
             else -> 0x1FFFFFFF
         }
         // Glass look: a season neither selected nor the one shown is a clear glass pod, like the other buttons.
@@ -318,7 +318,8 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
         pill.background = GradientDrawable().apply {
             cornerRadius = dp(16).toFloat()
             setColor(fill)
-            setStroke(dp(1).coerceAtLeast(1), rim)
+            // The season shown has a stronger ring, so it stands out from the others.
+            setStroke(if (chosen && !focused) (1.5f * density).toInt().coerceAtLeast(2) else dp(1).coerceAtLeast(1), rim)
         }
         pill.setTextColor(if (focused) color(R.color.text_dark) else if (chosen) color(R.color.text) else color(R.color.text_muted))
     }
@@ -480,6 +481,8 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
         val MONTHS = listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
         /** The dark wash over the whole screen while the sheet is up. */
         const val SHADE = 0x66000000
+        /** The ring of the season shown: the accent blue, solid. */
+        const val ACCENT_RIM = 0xFF3D8BFF.toInt()
         /** The sheet's own gradient, from clear at its top to nearly black at the bottom. */
         val SHEET_SHADE = intArrayOf(0x00080A0E, 0xD6080A0E.toInt(), 0xF2080A0E.toInt())
     }
