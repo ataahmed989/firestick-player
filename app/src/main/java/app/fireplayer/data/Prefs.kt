@@ -66,6 +66,11 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("skip_intro", true)
         set(v) = sp.edit().putBoolean("skip_intro", v).apply()
 
+    /** How long the Next episode / Exit card counts before it goes on by itself. */
+    var autoCountdownSec: Int
+        get() = sp.getInt("auto_countdown", 10)
+        set(v) = sp.edit().putInt("auto_countdown", v).apply()
+
     var matchFrameRate: Boolean
         get() = sp.getBoolean("match_frame_rate", true)
         set(v) = sp.edit().putBoolean("match_frame_rate", v).apply()
