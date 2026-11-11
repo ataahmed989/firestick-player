@@ -261,6 +261,7 @@ class AutoSync(
         var fresh = 0L
         var lastTry = 0L
         var agreed: SyncMatcher.Result? = null
+        val diagResetsRef = LongArray(1)
 
         fun mark(talking: Boolean) {
             if (cursor >= 0 && timeline.mark(cursor.toInt(), talking)) fresh++
@@ -274,6 +275,7 @@ class AutoSync(
             val frame = filmUs / 10_000.0
             // More than 50 ms away from where the last piece ended: a jump (or a gap), start counting from here.
             if (cursor < 0 || abs(frame - cursor) > 5) {
+                diagResetsRef[0]++
                 cursor = frame
                 detector.reset()
             }
@@ -291,7 +293,15 @@ class AutoSync(
             buf.position(start)
         }
 
+        var diagAt = 0L; var diagTaken = 0L; var diagResets = 0L; var diagBackoff = 0L; var diagKind = ""
         while (!Thread.currentThread().isInterrupted) {
+            val nowDiag = SystemClock.elapsedRealtime()
+            if (nowDiag - diagAt > 5_000) {
+                diagAt = nowDiag
+                Log.i("SyncDiag", "job=${job != null} listening=${tap.listening} sinkCalls=${tap.DIAG_SINK_CALLS} noKind=${tap.DIAG_NO_KIND} " +
+                    "offers=${tap.DIAG_OFFERS} queued=${tap.DIAG_QUEUED} full=${tap.DIAG_FULL} taken=$diagTaken kind=$diagKind " +
+                    "fresh=$fresh cursor=${"%.1f".format(cursor)} lastUs=${tap.DIAG_LAST_US} resets=${diagResetsRef[0]} backoffMs=$diagBackoff state=$state")
+            }
             val current = job
             if (current == null) {
                 // Nothing to do: the decoder is let go, and the thread waits.
@@ -309,13 +319,16 @@ class AutoSync(
                 decoder?.flush()
             }
             val wait = backOffUntil - SystemClock.elapsedRealtime()
+            if (wait > 0) diagBackoff += minOf(wait, 1_000)
             if (wait > 0) {
                 try { Thread.sleep(minOf(wait, 1_000)) } catch (_: InterruptedException) { break }
                 continue
             }
             val piece = tap.take(500) ?: continue
+            diagTaken++
             try {
                 val kind = piece.kind ?: continue
+                diagKind = "enc=${kind.encoded} ch=${kind.channels} rate=${kind.sampleRate} pcm=${kind.pcmEncoding} mime=${kind.format.sampleMimeType}"
                 if (!kind.encoded) {
                     feed(ByteBuffer.wrap(piece.bytes, 0, piece.size), piece.filmUs, kind.channels, kind.sampleRate, kind.pcmEncoding == C.ENCODING_PCM_FLOAT)
                 } else {

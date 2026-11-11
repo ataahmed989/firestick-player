@@ -49,6 +49,7 @@ class SpeechTap {
 
     /** Called on the playback thread: copies [buffer] (without moving it) if anyone is listening. */
     internal fun offer(buffer: ByteBuffer, filmUs: Long, kind: Kind) {
+        DIAG_OFFERS++
         if (!listening) return
         val size = buffer.remaining()
         if (size <= 0 || size > PIECE_BYTES) return
@@ -57,10 +58,16 @@ class SpeechTap {
         piece.size = size
         piece.filmUs = filmUs
         piece.kind = kind
-        if (!ready.offer(piece)) recycle(piece)
+        if (!ready.offer(piece)) { recycle(piece); DIAG_FULL++ } else DIAG_QUEUED++
     }
 
     private var allocated = 0
+    @Volatile var DIAG_OFFERS = 0L
+    @Volatile var DIAG_QUEUED = 0L
+    @Volatile var DIAG_FULL = 0L
+    @Volatile var DIAG_SINK_CALLS = 0L
+    @Volatile var DIAG_NO_KIND = 0L
+    @Volatile var DIAG_LAST_US = 0L
 
     companion object {
         // 48 pieces of up to 64 KB: at most 3 MB, and only once listening has started.
@@ -103,6 +110,9 @@ class SpeechTapAudioSink(sink: AudioSink, private val tap: SpeechTap) : Forwardi
     }
 
     override fun handleBuffer(buffer: ByteBuffer, presentationTimeUs: Long, encodedAccessUnitCount: Int): Boolean {
+        tap.DIAG_SINK_CALLS++
+        if (kind == null) tap.DIAG_NO_KIND++
+        tap.DIAG_LAST_US = presentationTimeUs - streamOffsetUs
         if (tap.listening && (buffer !== lastBuffer || presentationTimeUs != lastTimeUs)) {
             lastBuffer = buffer
             lastTimeUs = presentationTimeUs
