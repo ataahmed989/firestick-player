@@ -3534,6 +3534,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private var findResults: List<SubtitleRanker.Ranked> = emptyList()
     // The result loaded last (its file id), so "Try the next one" can load the one after it.
     private var findLoaded = 0L
+    // Its subtitle track, to tell whether it's still the one shown.
+    private var findLoadedSubId: String? = null
     // The show's TMDB id from its guide, so the search asks for exactly that show.
     private var findTmdb = 0
     private var findStatus: String? = null
@@ -3559,6 +3561,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             findStatus = null
             findMatch = null
             findLoaded = 0L
+            findLoadedSubId = null
             findTmdb = 0
             // The show as matched for its guide: TMDB's name, numbers and id.
             val g = guide
@@ -3601,17 +3604,35 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             findResults.getOrNull(loadedAt + 1)?.takeIf { loadedAt >= 0 }?.let { next ->
                 row("Try the next one", "${next.score}%") { downloadSubtitle(next) }
             }
+            val shownId = selectedFormat(C.TRACK_TYPE_TEXT)?.id
+            val loadedId = findLoadedSubId
+            val inUse = loadedId != null && shownId != null &&
+                (shownId == loadedId || shownId.endsWith(":$loadedId") || loadedId.endsWith(":$shownId"))
             findResults.forEach { ranked ->
                 val r = ranked.result
                 val lang = Locale.forLanguageTag(r.language).getDisplayLanguage(Locale.ENGLISH)
-                val notes = listOfNotNull(
-                    if (r.fileId == findLoaded) "Loaded" else null,
+                val loaded = r.fileId == findLoaded
+                // First line: why it should fit. Second: the facts (frame rate, downloads, language).
+                val (why, facts) = ranked.notes.partition { n -> HIGHLIGHTS.any { n.startsWith(it) } }
+                val first = listOfNotNull(
+                    if (loaded) (if (inUse) "In use" else "Loaded") else null,
                     if (ranked.best) "Best match" else null,
-                ) + ranked.notes + listOfNotNull(lang.takeIf { it.isNotEmpty() })
-                resultRow(r.release, notes.joinToString(" · "), "${ranked.score}%") { downloadSubtitle(ranked) }
+                ) + why
+                val second = facts + listOfNotNull(lang.takeIf { it.isNotEmpty() })
+                val notes = listOf(first, second).filter { it.isNotEmpty() }.joinToString("\n") { it.joinToString(" · ") }
+                resultRow(readableRelease(r.release), notes, "${ranked.score}%", selected = loaded && inUse) {
+                    downloadSubtitle(ranked)
+                }
             }
         }
     }
+
+    /** "Breaking.Bad.S02E03.720p.BluRay.x264-DEMAND" → "Breaking Bad S02E03 720p BluRay x264-DEMAND", to wrap nicely. */
+    private fun readableRelease(name: String): String =
+        name.substringBeforeLast(".srt")
+            .replace(Regex("(\\d)\\.(\\d)(?!\\d)"), "$1\u0000$2") // 5.1, 2.0 stay as they are
+            .replace('_', ' ').replace('.', ' ').replace('\u0000', '.')
+            .replace(Regex("\\s+"), " ").trim()
 
     /** English or Arabic: the last one chosen, else the default subtitle language when it's one of them. */
     private fun searchLanguage(): String =
@@ -3696,6 +3717,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                     findStatus = null
                     findLoaded = r.fileId
                     addExternalSubtitle(Uri.fromFile(file), r.language)
+                    findLoadedSubId = pendingExternalSubId
                     panel.close()
                     // Made for a longer or shorter cut (extended, or with a recap): the next one may fit better.
                     if (length > 10 * 60_000L && last > 0 && (last > length + 90_000L || last < length * 7 / 10)) {
@@ -3812,6 +3834,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // Two film drops just after the preview connected, this close together, mean the server cuts one off.
         const val CUT_OFF_PAIR_MS = 60_000L
         const val POST_PLAY_COUNT_MS = 10_000L
+        // Find subtitles: the notes that say why a result should fit, shown on their own line.
+        private val HIGHLIGHTS = listOf("Made for this exact file", "Same release", "Same source")
         /** How often what's playing is noted for Continue Watching while it plays. */
         const val WATCH_NOTE_EVERY_MS = 60_000L
         /** How long a note about previews stays up. */
