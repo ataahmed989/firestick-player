@@ -62,7 +62,10 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
         setPadding(dp(42), dp(34), dp(42), dp(14))
     }
     private val title = text(22f, font700, color(R.color.text)).apply { text = "Episodes" }
-    private val source = text(11.5f, font500, color(R.color.text_muted))
+    // Where the episodes come from, as a pod like the player's info pods, beside the seasons.
+    private val source = text(10f, font700, color(R.color.text)).apply {
+        setPadding(dp(6), dp(2), dp(6), dp(2))
+    }
     private val seasonsRow = LinearLayout(activity).apply {
         orientation = LinearLayout.HORIZONTAL
         clipChildren = false
@@ -103,10 +106,18 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.BOTTOM
             addView(title, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            addView(source.apply { gravity = Gravity.END }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(4) })
         }
         sheet.addView(head, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        sheet.addView(seasonsScroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10) })
+        // The seasons, and on the same line at the right the source pod: low, just above the episodes.
+        val seasonsLine = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            clipChildren = false
+            clipToPadding = false
+            addView(seasonsScroll, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(source, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(12) })
+        }
+        sheet.addView(seasonsLine, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10) })
         sheet.addView(status, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(16) })
         sheet.addView(cardsScroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) })
         root.addView(sheet, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
@@ -120,6 +131,7 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
         seasonsRow.removeAllViews()
         cardsRow.removeAllViews()
         source.text = ""
+        source.visibility = View.GONE
         status.text = waiting
         status.visibility = View.VISIBLE
         root.visibility = View.VISIBLE
@@ -151,6 +163,8 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
         playingId = playing
         progressOf = progress
         val count = guide.episodes.size
+        Glass.background(source, Glass.Kind.CHIP)
+        source.visibility = View.VISIBLE
         source.text = "From ${guide.portal} · $count episode" + if (count == 1) "" else "s"
         status.visibility = View.GONE
         val now = guide.episode(playing)
@@ -254,6 +268,12 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
             focused -> accent
             chosen -> 0xBF3D8BFF.toInt()
             else -> 0x1FFFFFFF
+        }
+        // Glass look: a season neither selected nor the one shown is a clear glass pod, like the other buttons.
+        if (Glass.on && !focused && !chosen) {
+            pill.background = Glass.drawable(activity, Glass.Kind.PILL)
+            pill.setTextColor(color(R.color.text))
+            return
         }
         pill.background = GradientDrawable().apply {
             cornerRadius = dp(16).toFloat()
