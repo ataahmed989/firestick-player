@@ -198,12 +198,17 @@ class Tmdb(private val key: () -> String, private val memory: Memory) {
         val runtime: Int,
         /** A show's seasons; 0 for a film. */
         val seasons: Int,
+        /** The US age rating (PG-13, TV-MA...); empty when TMDB has none. */
+        val ageRating: String = "",
     )
 
     /** A film or show's details by its TMDB id; null when TMDB has none. Blocks. */
     fun about(id: Int, show: Boolean): About? {
         val item = try {
-            JSONObject(request("${if (show) "tv" else "movie"}/$id", listOf("language" to "en-US")))
+            JSONObject(request("${if (show) "tv" else "movie"}/$id", listOf(
+                "language" to "en-US",
+                "append_to_response" to if (show) "content_ratings" else "release_dates",
+            )))
         } catch (e: HttpError) {
             if (e.code == 404) return null
             throw e
@@ -222,7 +227,21 @@ class Tmdb(private val key: () -> String, private val memory: Memory) {
             rating = item.optDouble("vote_average", 0.0),
             runtime = if (show) 0 else item.optInt("runtime"),
             seasons = if (show) item.optInt("number_of_seasons") else 0,
+            ageRating = ageRating(item, show),
         )
+    }
+
+    /** The US rating from what about() appended: a show's TV rating, or a film's theatrical one first. */
+    private fun ageRating(item: JSONObject, show: Boolean): String {
+        val results = item.optJSONObject(if (show) "content_ratings" else "release_dates")?.optJSONArray("results") ?: return ""
+        val us = (0 until results.length()).mapNotNull { results.optJSONObject(it) }
+            .firstOrNull { it.optString("iso_3166_1") == "US" } ?: return ""
+        if (show) return us.optString("rating").trim()
+        val dates = us.optJSONArray("release_dates") ?: return ""
+        val all = (0 until dates.length()).mapNotNull { dates.optJSONObject(it) }
+            .filter { it.optString("certification").isNotBlank() }
+        // 3 is a theatrical release; otherwise the first rated one.
+        return (all.firstOrNull { it.optInt("type") == 3 } ?: all.firstOrNull())?.optString("certification")?.trim().orEmpty()
     }
 
     /** One episode of a show as TMDB lists it. [still] is a picture from it, ready to load. */

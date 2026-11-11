@@ -69,11 +69,13 @@ import app.fireplayer.player.NextEpisode
 import app.fireplayer.player.MatchFixes
 import app.fireplayer.player.NextPick
 import app.fireplayer.player.ShowGuide
+import app.fireplayer.player.SpeechTap
 import app.fireplayer.player.PlayerFactory
 import app.fireplayer.player.ServerSwitch
 import app.fireplayer.player.TitleInfo
 import app.fireplayer.player.VsyncFix
 import app.fireplayer.player.XtreamAccount
+import app.fireplayer.subs.AutoSync
 import app.fireplayer.subs.FontImport
 import app.fireplayer.subs.MovieHash
 import app.fireplayer.subs.OpenSubtitles
@@ -192,6 +194,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     // FirePlayer's title server's names, opened when first needed (on [io]).
     private var titleBook: TitleBook? = null
     private val delays = Delays()
+    // Subtitle auto sync: listens to a copy of the sound while it lines downloaded subtitles up (see AutoSync).
+    private val speechTap = SpeechTap()
+    private lateinit var autoSync: AutoSync
+    // The Subtitle delay window is open, so auto sync's news shows in it at once.
+    private var delayPanelOpen = false
 
     private var player: ExoPlayer? = null
     // Keeps the film's frames evenly paced on a TV switched to the film's refresh rate (see VsyncFix).
@@ -458,6 +465,18 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         matchFixes = MatchFixes(this)
         @Suppress("DEPRECATION")
         overridePendingTransition(android.R.anim.fade_in, 0)
+        autoSync = AutoSync(
+            speechTap,
+            prefs,
+            delayUs = { delays.subtitleUs },
+            setDelayUs = { delays.subtitleUs = it; refreshLabels() },
+            position = { player?.let { it.currentPosition to it.duration.coerceAtLeast(0L) } ?: (0L to 0L) },
+            onChanged = {
+                refreshLabels()
+                if (delayPanelOpen && panel.isOpen) panel.refresh()
+            },
+        )
+        settingsPanels.onAutoSyncChanged = { autoSync.setOn(prefs.autoSync); followSubtitle() }
         settingsPanels.onFontChanged = {
             styler.reloadImportedFont()
             applySubtitleStyle()
@@ -606,6 +625,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         pictureText.release()
         backdrop?.release()
+        autoSync.release()
         io.shutdownNow()
         handler.removeCallbacksAndMessages(null)
         FontImport.stopAll()
@@ -787,6 +807,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             pictureText = pictureText,
             vsync = vsync,
             displaySwitch = displaySwitch,
+            speechTap = speechTap,
         )
         vsyncFix = vsync.also { it.start() }
         val p = built.player
@@ -797,6 +818,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         p.setVideoSurfaceView(surfaceView)
         p.addListener(this)
         p.addAnalyticsListener(filmLoadErrors)
+        p.addAnalyticsListener(droppedFrames)
         p.setVideoFrameMetadataListener(fpsMeter)
         fpsMeter.reset()
         p.pauseAtEndOfMediaItems = sleepAtEnd
@@ -1239,6 +1261,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         recallAudio()
         if (reapplyWishes) reapplyChoices()
+        followSubtitle()
         refreshLabels()
         updateChips()
         matchFrameRate()
@@ -1500,6 +1523,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
      * keeps it. Only the film's own link counts (not a subtitle file), and only an answer that means "no" or a
      * connection dropped at that moment (not a hiccup the film retries past).
      */
+    // Auto sync waits while the picture drops frames: the film comes first.
+    private val droppedFrames = object : AnalyticsListener {
+        override fun onDroppedVideoFrames(eventTime: AnalyticsListener.EventTime, droppedFrames: Int, elapsedMs: Long) {
+            autoSync.framesDropped()
+        }
+    }
+
     private val filmLoadErrors = object : AnalyticsListener {
         override fun onLoadError(
             eventTime: AnalyticsListener.EventTime,
@@ -3104,18 +3134,85 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         spacer(6)
         stepper("Delay", formatDelay(delays.subtitleUs)) { dir ->
             delays.subtitleUs += dir * 100_000L
+            autoSync.handOff()
             refreshLabels()
         }
     }
 
-    private fun openSubtitleDelayPanel(from: View) = openPanel("Subtitle delay", from) {
-        message("Left makes subtitles earlier, right makes them later.")
-        stepper("Delay", formatDelay(delays.subtitleUs)) { dir ->
-            delays.subtitleUs += dir * 100_000L
-            refreshLabels()
+    private fun openSubtitleDelayPanel(from: View) {
+        delayPanelOpen = true
+        openPanel("Subtitle delay", from, onClosed = { delayPanelOpen = false }) {
+            message("Left makes subtitles earlier, right makes them later.")
+            stepper("Delay", formatDelay(delays.subtitleUs)) { dir ->
+                delays.subtitleUs += dir * 100_000L
+                autoSync.handOff()
+                refreshLabels()
+            }
+            renderAutoSync(this)
+            row("Reset") {
+                delays.subtitleUs = 0
+                autoSync.handOff()
+                refreshLabels()
+                refresh()
+            }
         }
-        row("Reset") { delays.subtitleUs = 0; refreshLabels(); refresh() }
     }
+
+    /**
+     * Auto sync in the Subtitle delay window: its state as a badge, like the ones in Settings ("Synced" in blue,
+     * "Listening" or "Off" in gray), a line on what it found, and Resync and Undo. Pressing the badge's row turns it
+     * on or off for these subtitles.
+     */
+    private fun renderAutoSync(panel: SidePanel) = with(panel) {
+        val downloaded = autoSync.file != null
+        val (badge, style) = when {
+            !prefs.autoSync -> "Off" to Rows.Badge.INACTIVE
+            !downloaded -> "Off" to Rows.Badge.INACTIVE
+            else -> when (autoSync.state) {
+                AutoSync.State.SYNCED -> "Synced" to Rows.Badge.ACTIVE
+                AutoSync.State.LISTENING -> "Listening" to Rows.Badge.BUSY
+                AutoSync.State.NOT_SYNCED -> "Not synced" to Rows.Badge.INACTIVE
+                AutoSync.State.OFF -> "Off" to Rows.Badge.INACTIVE
+            }
+        }
+        spacer(6)
+        badgeRow("Auto sync", badge, style) {
+            when {
+                !prefs.autoSync -> { prefs.autoSync = true; autoSync.setOn(true); followSubtitle() }
+                !downloaded -> {}
+                autoSync.state == AutoSync.State.OFF || autoSync.state == AutoSync.State.NOT_SYNCED -> autoSync.resync()
+                else -> autoSync.setOn(false)
+            }
+            refresh()
+        }
+        val note = when {
+            !prefs.autoSync -> "Turned off in Settings. Press to turn it on."
+            !downloaded -> "Lines up subtitles found with Search online. These came with the video."
+            else -> autoSync.detail
+        }
+        note?.let { message(it) }
+        if (downloaded && prefs.autoSync) {
+            row("Resync") { autoSync.resync(); refresh() }
+            if (autoSync.undoUs != null) row("Undo auto sync") { autoSync.undo(); refresh() }
+        }
+    }
+
+    /** Tells auto sync which subtitles are on: a file from Search online, or anything else (left alone). */
+    private fun followSubtitle() {
+        if (!::autoSync.isInitialized) return
+        val entry = entries.getOrNull(player?.currentMediaItemIndex ?: playingIndex)
+        val id = selectedFormat(C.TRACK_TYPE_TEXT)?.id
+        val config = if (id == null || entry == null) null else entry.subtitles.firstOrNull { c ->
+            val cid = c.id ?: return@firstOrNull false
+            id == cid || id.endsWith(":$cid")
+        }
+        val path = config?.uri?.takeIf { it.scheme == "file" }?.path
+        val file = path?.let { File(it) }?.takeIf { it.parentFile == downloadDir() && it.isFile }
+        autoSync.follow(file, entry?.key)
+    }
+
+    /** Where Search online puts the subtitles it downloads. */
+    private fun downloadDir() = File(cacheDir, "subs")
 
     private fun openAudioPanel(from: View) = openPanel("Audio", from) {
         val options = trackOptions(C.TRACK_TYPE_AUDIO)
@@ -3528,7 +3625,25 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             orientation = LinearLayout.VERTICAL
             addView(text(a.name, 17f, R.color.text, R.font.figtree_700))
             if (facts.isNotEmpty()) addView(text(facts, 12f, R.color.text_muted, R.font.figtree_500, top = 4))
-            if (a.rating > 0) addView(text(String.format(Locale.ROOT, "★ %.1f on TMDB", a.rating), 12f, R.color.text_muted, R.font.figtree_500, top = 4))
+            // Age rating as a small outlined badge, then TMDB's score, on one line.
+            if (a.ageRating.isNotEmpty() || a.rating > 0) addView(LinearLayout(this@PlayerActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                if (a.ageRating.isNotEmpty()) addView(text(a.ageRating, 11f, R.color.text, R.font.figtree_700).apply {
+                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                    setPadding(dp(6), dp(1), dp(6), dp(1))
+                    background = android.graphics.drawable.GradientDrawable().apply {
+                        cornerRadius = 4 * d
+                        setStroke(dp(1).coerceAtLeast(1), 0x99FFFFFF.toInt())
+                    }
+                    contentDescription = "Rated ${a.ageRating}"
+                })
+                if (a.rating > 0) addView(text(String.format(Locale.ROOT, "★ %.1f", a.rating), 12f, R.color.text_muted, R.font.figtree_500).apply {
+                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                        .apply { if (a.ageRating.isNotEmpty()) marginStart = dp(10) }
+                })
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6) }
+            })
             if (a.tagline.isNotEmpty()) addView(text(a.tagline, 12f, R.color.text, R.font.figtree_500, top = 8))
             // Where this copy plays from.
             source?.let { addView(text("Source  ·  $it", 12f, R.color.text_muted, R.font.figtree_600, top = 8)) }
@@ -3912,7 +4027,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val r = ranked.result
         findStatus = "Downloading…"
         panel.refresh()
-        val dir = File(cacheDir, "subs").apply { mkdirs() }
+        val dir = downloadDir().apply { mkdirs() }
         val length = player?.duration?.takeIf { it != C.TIME_UNSET && it > 0 } ?: 0L
         io.execute {
             val result = runCatching {
