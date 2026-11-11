@@ -63,7 +63,9 @@ class EmbeddedCues {
 
         /** A sample of the sound or picture at [ms] was loaded: the film up to about there has loaded. */
         internal fun loaded(ms: Long) = synchronized(this) {
-            if (runFrom < 0 || ms < runFrom - JUMP_MS || ms > runTo + JUMP_MS) {
+            // Behind where loading had got, not only before where it began: a skip back into the stretch being loaded
+            // starts loading there again, and that film is gone over again (lined up afresh) from there.
+            if (runFrom < 0 || ms < runTo - JUMP_MS || ms > runTo + JUMP_MS) {
                 // Loading started somewhere else (a jump): the stretch before is kept as it was.
                 if (runFrom >= 0) keep(runFrom, runTo)
                 runFrom = ms

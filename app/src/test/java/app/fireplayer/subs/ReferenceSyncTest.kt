@@ -250,6 +250,24 @@ class ReferenceSyncTest {
     }
 
     @Test
+    fun aSkipBackIntoTheStretchBeingLoadedStartsLoadingAgainThere() {
+        val source = EmbeddedCues.Source("film")
+        for (s in 0 until 600) source.loaded(s * 1_000L)
+        assertEquals(0L to 599_000L, source.loading())
+        // Played back to 5:00: loading starts there again, a new stretch (as a skip ahead would be).
+        source.loaded(300_000L)
+        assertEquals(300_000L to 300_000L, source.loading())
+        for (s in 301 until 320) source.loaded(s * 1_000L)
+        assertEquals(300_000L to 319_000L, source.loading())
+        // What was loaded before still counts as loaded.
+        assertEquals(1, source.covered().size)
+        assertEquals(0L, source.covered()[0][0])
+        // Sound and picture a little out of step (within 10 s) are the same stretch.
+        source.loaded(312_000L)
+        assertEquals(300_000L to 319_000L, source.loading())
+    }
+
+    @Test
     fun forcedOnlyTracksAreNeverUsed() {
         val source = EmbeddedCues.Source("film")
         source.track(1, info(language = "en", forced = true))
