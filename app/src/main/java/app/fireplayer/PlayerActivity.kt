@@ -3746,7 +3746,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         openPanel(if (show) "Show details" else "Film details", from) {
             val a = about
             if (a == null) message(aboutStatus ?: LOADING)
-            else view(detailsView(a, if (show) guideEpisode(entry) else null, NextEpisode.portal(entry.uri)), top = 2, bottom = 6)
+            else details(a, if (show) guideEpisode(entry) else null, NextEpisode.portal(entry.uri))
         }
     }
 
@@ -3784,11 +3784,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         return tmdb.find(info.searchQuery, year, false)?.id ?: 0
     }
 
-    /** The cover on the left, name and facts beside it, then the story (and the episode's, for a show). */
-    private fun detailsView(a: Tmdb.About, ep: ShowGuide.Ep?, source: String?): View {
+    /**
+     * Show or film details, laid out like Fix match: the cover with the name and a line of facts beside it, then the
+     * rating, TMDB's score and the source in two columns, the story, and for a show this episode as a card.
+     */
+    private fun SidePanel.details(a: Tmdb.About, ep: ShowGuide.Ep?, source: String?) {
         val d = resources.displayMetrics.density
         fun dp(v: Int) = (v * d).toInt()
-        fun text(value: CharSequence, sp: Float, color: Int, font: Int, top: Int = 0) = TextView(this).apply {
+        fun text(value: CharSequence, sp: Float, color: Int, font: Int, top: Int = 0) = TextView(this@PlayerActivity).apply {
             text = value
             setTextColor(ContextCompat.getColor(this@PlayerActivity, color))
             setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, sp)
@@ -3797,67 +3800,125 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
                 .apply { topMargin = dp(top) }
         }
-        val poster = ImageView(this).apply {
-            scaleType = ImageView.ScaleType.CENTER_CROP
-            background = android.graphics.drawable.GradientDrawable().apply { cornerRadius = 8 * d; setColor(0x22FFFFFF) }
-            clipToOutline = true
-            contentDescription = a.name
-        }
-        app.fireplayer.ui.ImageLoader.load(a.poster, poster, dp(110))
         val facts = listOfNotNull(
             a.year,
-            a.genres.takeIf { it.isNotEmpty() }?.joinToString(", "),
+            if (a.seasons > 0) "TV show" else "Film",
             a.runtime.takeIf { it > 0 }?.let { if (it >= 60) "${it / 60}h ${it % 60}m" else "${it}m" },
             a.seasons.takeIf { it > 0 }?.let { if (it == 1) "1 season" else "$it seasons" },
         ).joinToString(" · ")
-        val side = LinearLayout(this).apply {
+        val side = LinearLayout(this@PlayerActivity).apply {
             orientation = LinearLayout.VERTICAL
             addView(text(a.name, 17f, R.color.text, R.font.figtree_700))
-            if (facts.isNotEmpty()) addView(text(facts, 12f, R.color.text_muted, R.font.figtree_500, top = 4))
-            // Age rating as a small outlined badge, then TMDB's score, on one line.
-            if (a.ageRating.isNotEmpty() || a.rating > 0) addView(LinearLayout(this@PlayerActivity).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                if (a.ageRating.isNotEmpty()) addView(text(a.ageRating, 11f, R.color.text, R.font.figtree_700).apply {
+            if (facts.isNotEmpty()) addView(text(facts, 12f, R.color.text_muted, R.font.figtree_500, top = 3))
+            if (a.genres.isNotEmpty()) addView(text(a.genres.joinToString(", "), 12f, R.color.text_muted, R.font.figtree_500, top = 1))
+            if (a.tagline.isNotEmpty()) addView(text(a.tagline, 12f, R.color.text, R.font.figtree_500, top = 8))
+        }
+        view(LinearLayout(this@PlayerActivity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(cover(a.poster, 84, 126, 8).apply { contentDescription = a.name }, LinearLayout.LayoutParams(dp(84), dp(126)))
+            addView(side, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(14) })
+        }, top = 2, bottom = 8)
+        // The age rating as a small outlined badge, as before.
+        val rated = a.ageRating.takeIf { it.isNotEmpty() }?.let { r ->
+            LinearLayout(this@PlayerActivity).apply {
+                addView(text(r, 11f, R.color.text, R.font.figtree_700).apply {
                     layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
                     setPadding(dp(6), dp(1), dp(6), dp(1))
                     background = android.graphics.drawable.GradientDrawable().apply {
                         cornerRadius = 4 * d
                         setStroke(dp(1).coerceAtLeast(1), 0x99FFFFFF.toInt())
                     }
-                    contentDescription = "Rated ${a.ageRating}"
-                })
-                if (a.rating > 0) addView(text(String.format(Locale.ROOT, "★ %.1f", a.rating), 12f, R.color.text_muted, R.font.figtree_500).apply {
-                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-                        .apply { if (a.ageRating.isNotEmpty()) marginStart = dp(10) }
-                })
-                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6) }
-            })
-            if (a.tagline.isNotEmpty()) addView(text(a.tagline, 12f, R.color.text, R.font.figtree_500, top = 8))
-            // Where this copy plays from.
-            source?.let { addView(text("Source  ·  $it", 12f, R.color.text_muted, R.font.figtree_600, top = 8)) }
-        }
-        val top = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            addView(poster, LinearLayout.LayoutParams(dp(96), dp(144)))
-            addView(side, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(14) })
-        }
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(top)
-            // Kept to what fits the window: it has nothing to move focus to, so it isn't scrolled.
-            if (a.overview.isNotEmpty()) addView(text(a.overview, 13f, R.color.text, R.font.figtree_500, top = 14).apply {
-                maxLines = if (ep != null) 7 else 12
-                ellipsize = android.text.TextUtils.TruncateAt.END
-            })
-            if (ep != null && (ep.name.isNotEmpty() || ep.overview.isNotEmpty())) {
-                addView(text(episodeLine(ep.label, ep.name), 13f, R.color.text_muted, R.font.figtree_600, top = 16))
-                if (ep.overview.isNotEmpty()) addView(text(ep.overview, 13f, R.color.text, R.font.figtree_500, top = 4).apply {
-                    maxLines = 5
-                    ellipsize = android.text.TextUtils.TruncateAt.END
+                    contentDescription = "Rated $r"
                 })
             }
         }
+        facts(listOfNotNull(
+            rated?.let { "Rated" to it },
+            a.rating.takeIf { it > 0 }?.let { "TMDB" to fact(String.format(Locale.ROOT, "★ %.1f", it)) },
+            source?.let { "Source" to fact(it) },
+        ))
+        // Kept to what fits the window: it has nothing to move focus to, so it isn't scrolled.
+        if (a.overview.isNotEmpty()) view(text(a.overview, 13f, R.color.text, R.font.figtree_500).apply {
+            maxLines = if (ep != null) 6 else 12
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }, top = 2, bottom = 6)
+        if (ep != null && (ep.name.isNotEmpty() || ep.overview.isNotEmpty())) {
+            header("This episode")
+            view(episodeCard(ep.image, ep.label, ep.name,
+                listOfNotNull(prettyDate(ep.airDate), ep.runtimeMin.takeIf { it > 0 }?.let { "${it}m" }).joinToString(" · "),
+                ep.overview), top = 2, bottom = 4)
+        }
+    }
+
+    /**
+     * An episode as a card: its picture on the left; beside it "S2 E4" in blue and its name in bold, the date and
+     * length, and the start of its story. Fix match and Show details use the same card.
+     */
+    private fun episodeCard(image: String?, label: String, name: String, meta: String, story: String): View {
+        val d = resources.displayMetrics.density
+        fun dp(v: Int) = (v * d).toInt()
+        fun font(res: Int) = androidx.core.content.res.ResourcesCompat.getFont(this, res)
+        val picture = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            background = android.graphics.drawable.GradientDrawable().apply { cornerRadius = 8 * d; setColor(0x22FFFFFF) }
+            clipToOutline = true
+        }
+        app.fireplayer.ui.ImageLoader.load(image, picture, dp(240))
+        val title = android.text.SpannableStringBuilder(label).apply {
+            setSpan(android.text.style.ForegroundColorSpan(ContextCompat.getColor(this@PlayerActivity, R.color.badge_on)), 0, length, 0)
+            if (name.isNotEmpty()) {
+                append(" · ")
+                val start = length
+                append(name)
+                setSpan(android.text.style.ForegroundColorSpan(ContextCompat.getColor(this@PlayerActivity, R.color.text)), start - 3, length, 0)
+            }
+        }
+        val side = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(TextView(this@PlayerActivity).apply {
+                text = title
+                typeface = font(R.font.figtree_700)
+                setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 14f)
+                maxLines = 2
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            })
+            if (meta.isNotEmpty()) addView(TextView(this@PlayerActivity).apply {
+                text = meta
+                typeface = font(R.font.figtree_500)
+                setTextColor(ContextCompat.getColor(this@PlayerActivity, R.color.text_muted))
+                setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 11.5f)
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(2) })
+            if (story.isNotEmpty()) addView(TextView(this@PlayerActivity).apply {
+                text = story
+                typeface = font(R.font.figtree_500)
+                setTextColor(ContextCompat.getColor(this@PlayerActivity, R.color.text))
+                setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 12f)
+                setLineSpacing(2f * d, 1f)
+                maxLines = 3
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(5) })
+        }
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = android.graphics.drawable.GradientDrawable().apply {
+                cornerRadius = dp(if (app.fireplayer.ui.Glass.on) 14 else 10).toFloat()
+                setColor(ContextCompat.getColor(this@PlayerActivity,
+                    if (app.fireplayer.ui.Glass.on) R.color.details_fill_glass else R.color.details_fill))
+                if (app.fireplayer.ui.Glass.on) setStroke(dp(1).coerceAtLeast(1), ContextCompat.getColor(this@PlayerActivity, R.color.details_rim_glass))
+            }
+            setPadding(dp(10), dp(10), dp(12), dp(10))
+            addView(picture, LinearLayout.LayoutParams(dp(120), dp(68)))
+            addView(side, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(12) })
+        }
+    }
+
+    /** "2009-03-29" as "Mar 29, 2009"; the text as it came when it isn't a date. */
+    private fun prettyDate(iso: String): String? {
+        if (iso.isBlank()) return null
+        return runCatching {
+            val d = java.text.SimpleDateFormat("yyyy-MM-dd", Locale.US).parse(iso)!!
+            java.text.SimpleDateFormat("MMM d, yyyy", Locale.US).format(d)
+        }.getOrDefault(iso)
     }
 
     /** Pairs the show again with the fixes just made, from what the provider last said. */
@@ -3908,8 +3969,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         fixHits = emptyList()
         fixStatus = "Searching…"
         runFixSearch(shows)
-        openPanel("Fix match", from) {
-            row("Search TMDB", fixQuery) {
+        openPanel(if (shows) "Fix match · Find the show" else "Fix match · Find the film", from) {
+            searchBox(fixQuery, "TMDB") {
                 SidePanel.prompt(this@PlayerActivity, "Search TMDB", fixQuery) {
                     fixQuery = it.trim()
                     runFixSearch(shows)
@@ -3918,10 +3979,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             }
             fixStatus?.let { message(it) }
             fixHits.forEach { hit ->
-                resultRow(hit.name, listOfNotNull(hit.year, if (hit.show) "TV show" else "Film").joinToString(" · "), null) {
+                resultRow(hit.name, listOfNotNull(hit.year, if (hit.show) "TV show" else "Film").joinToString(" · "), null,
+                    poster = hit.poster, withPoster = true) {
                     if (hit.show) pickFixShow(hit, from) else saveFixFilm(hit)
                 }
             }
+            message("Press OK on the search box to type. FirePlayer starts it with the name your provider gave.")
         }
     }
 
@@ -3968,22 +4031,26 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         fixRest = true
         loadFixSeason()
         panel.close()
-        openPanel("Fix match", from) {
+        openPanel("Fix match · Pick the episode", from) {
             val show = fixShow ?: return@openPanel
-            if (ep != null) {
-                val own = ep.providerTitle.takeIf { it.isNotEmpty() }?.let { " · “$it”" }.orEmpty()
-                message("Your provider: S${ep.providerSeason} E${ep.providerNumber}$own")
-            }
-            message("Show: ${show.label}")
-            stepper("Season", fixSeason.toString()) {
-                fixSeason = (fixSeason + it).coerceIn(0, 99)
-                fixNumber = 1
-                loadFixSeason()
-            }
-            stepper("Episode", fixNumber.toString()) {
-                val last = fixSeasons[fixSeason]?.maxOfOrNull { e -> e.number } ?: 999
-                fixNumber = (fixNumber + it).coerceIn(1, last.coerceAtLeast(1))
-            }
+            facts(listOfNotNull(
+                ep?.let { e ->
+                    val own = e.providerTitle.takeIf { it.isNotEmpty() }?.let { " · “$it”" }.orEmpty()
+                    "Your provider" to fact("S${e.providerSeason} E${e.providerNumber}$own")
+                },
+                "Show" to fact(show.label),
+            ))
+            steppers(listOf(
+                SidePanel.Step("Season", fixSeason.toString()) {
+                    fixSeason = (fixSeason + it).coerceIn(0, 99)
+                    fixNumber = 1
+                    loadFixSeason()
+                },
+                SidePanel.Step("Episode", fixNumber.toString()) {
+                    val last = fixSeasons[fixSeason]?.maxOfOrNull { e -> e.number } ?: 999
+                    fixNumber = (fixNumber + it).coerceIn(1, last.coerceAtLeast(1))
+                },
+            ))
             val list = fixSeasons[fixSeason]
             when {
                 !fixSeasons.containsKey(fixSeason) -> message("Looking up season $fixSeason…")
@@ -3991,8 +4058,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 else -> {
                     val picked = list.firstOrNull { it.number == fixNumber }
                     if (picked == null) message("TMDB has no episode $fixNumber in season $fixSeason.")
-                    else message(listOf("S${picked.season} E${picked.number} · ${picked.name}", picked.airDate, picked.overview)
-                        .filter { it.isNotBlank() }.joinToString("\n"))
+                    else view(episodeCard(picked.still, "S${picked.season} E${picked.number}", picked.name,
+                        listOfNotNull(prettyDate(picked.airDate), picked.runtime.takeIf { it > 0 }?.let { "${it}m" }).joinToString(" · "),
+                        picked.overview), top = 4, bottom = 6)
                 }
             }
             row("Move the rest of the season too", if (fixRest) "On" else "Off") {
@@ -4009,7 +4077,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 }
                 message("Your provider's later episodes of season ${ep.providerSeason} $how. Next episode and Episodes follow this.")
             }
-            row("Save match") { saveFixShow() }
+            buttons("Save match", "Cancel", { saveFixShow() }, { close() })
         }
     }
 
