@@ -1353,6 +1353,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+        // The next episode's preloaded start is playing now: nothing more to load ahead.
+        preloadNext(false)
         val now = player?.currentMediaItemIndex ?: playingIndex
         if (seeking && reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO && now != playingIndex && seekOffsetMs < 0) {
             // The episode ended while a jump back in it was being lined up: make that jump instead of moving on.
@@ -2081,11 +2083,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     /**
      * The end of an episode, Netflix-style: when a show has a next episode, a card comes up where the credits start
-     * (only with times for them). Only on the file's own times ([Segments.autoAt]: its chapters say the credits run to
-     * the end) does anything happen by itself: Next episode counts [Prefs.autoCountdownSec] of playing and starts the next one, or, with
-     * nothing next, "Exit · 10s" counts the same and leaves. On a database's times (they fit by length, evidence but not proof)
-     * the card is the same but waits: Next episode and Exit fill up until the real end. Exit only comes for a film or
-     * a show's very last episode; every other episode gets Next episode (see [isSeriesFinale]).
+     * (only with times for them). Next episode counts [Prefs.autoCountdownSec] of playing and starts the next one, or,
+     * with nothing next, "Exit · 10s" counts the same and leaves; set to "Until the end", both fill up until the real
+     * end. Exit only comes for a film or a show's very last episode; every other episode gets Next episode (see
+     * [isSeriesFinale]).
      * Watch credits / Keep watching put it away, pausing pauses a count, a jump starts it again.
      */
     private fun updatePostPlay() {
@@ -2114,9 +2115,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val exitAt = if (!nextOk && next == null && !nextUnknown && prefs.skipIntro && current != null &&
             (!isEpisode(current) || isSeriesFinale(current) == true)) inCredits(parts?.exitAt) else null
         val exit = !nextOk && exitAt != null
-        // Counting down by itself only on the file's own credits times; a database's get the card, no countdown.
-        val sure = inCredits(parts?.autoAt) != null
-        val auto = (nextOk || exit) && sure
+        // Counts the chosen seconds, then goes on by itself; "Until the end" fills up to the episode's real end.
+        val auto = (nextOk || exit) && prefs.autoCountdownSec > 0
         val showAt = if (exit) exitAt!! else credits ?: Long.MAX_VALUE
         // Going back out of the credits brings the card back when they come again.
         if (known && showAt != Long.MAX_VALUE && postPlayDismissedFor == index && position < showAt - 5_000) postPlayDismissedFor = -1
@@ -2157,6 +2157,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             postPlay.visibility = View.VISIBLE
             postPlay.animate().alpha(1f).setDuration(250).start()
             postPlayGo.requestFocus()
+            preloadNext(!exit)
         }
         // The fill follows every frame by itself; this only wakes it after a pause.
         postPlayGo.invalidate()
@@ -2457,9 +2458,21 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         lookUpSegments(entry, duration, again = true)
     }
 
-    private fun hidePostPlay() {
+    /** [keepPreload]: going on to the next episode, whose loaded start would be thrown away. */
+    private fun hidePostPlay(keepPreload: Boolean = false) {
         postPlay.animate().cancel()
         postPlay.visibility = View.GONE
+        if (!keepPreload) preloadNext(false)
+    }
+
+    /**
+     * While the Next episode card is up, the next episode's start is loaded alongside this one's credits, so it starts
+     * at once when the count ends. A second connection to the provider: only where Preview while skipping allows one.
+     */
+    private fun preloadNext(on: Boolean) {
+        val p = player ?: return
+        val want = if (on && prefs.seekPreviews) ExoPlayer.PreloadConfiguration(NEXT_PRELOAD_US) else ExoPlayer.PreloadConfiguration.DEFAULT
+        if (p.preloadConfiguration.targetPreloadDurationUs != want.targetPreloadDurationUs) p.preloadConfiguration = want
     }
 
     private fun dismissPostPlay() {
@@ -2469,7 +2482,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     private fun playNextEpisode() {
         val p = player ?: return
-        hidePostPlay()
+        hidePostPlay(keepPreload = true)
         // This one was watched to the credits: next time it starts from the top.
         entries.getOrNull(p.currentMediaItemIndex)?.let {
             prefs.savePosition(it.key, 0L)
@@ -5013,6 +5026,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         /** How long the decoder list may take before the player says the decoder service is stuck. */
         private const val DECODER_STUCK_MS = 10_000L
         const val POST_PLAY_LEAD_MS = 20_000L
+        /** How much of the next episode loads while the Next episode card counts. */
+        const val NEXT_PRELOAD_US = 20_000_000L
         // How long the skip button waits, untouched, before it slips away.
         const val SKIP_SHOWN_MS = 8_000L
         // Looked up again for auto sync's new offsets at most this often.
