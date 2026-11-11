@@ -123,11 +123,15 @@ class RowLayout(context: Context, private val colors: ColorStateList?) : LinearL
         for (i in 0 until childCount) {
             when (val child = getChildAt(i)) {
                 is TextView -> if (child.tag != KEEP_COLORS && child.currentTextColor != color) child.setTextColor(color)
+                is CoverImage -> Unit
                 is ImageView -> if (child.tag != KEEP_COLORS && child.imageTintList?.defaultColor != color) child.imageTintList = ColorStateList.valueOf(color)
             }
         }
     }
 }
+
+/** A picture (a TMDB cover) in a row: never recoloured with the row's text, which would leave a blank shape. */
+class CoverImage(context: Context) : androidx.appcompat.widget.AppCompatImageView(context)
 
 /** Tag for a row's image or text that keeps its own colours (the glass switch, a badge) instead of the text colour. */
 const val KEEP_COLORS = "keepColors"
