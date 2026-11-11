@@ -423,6 +423,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private var watchNotedAt = 0L
     // Opened from Glass Home's Continue Watching row: the link is FirePlayer's own, never handed back in a result.
     private var resumedFromRow = false
+    // When the player last went off screen without closing (the TV slept, the screensaver, Home while paused).
+    private var stoppedAt = 0L
     private var pendingAudioId: String? = null
     private var notice = false
     private var pendingNotice: String? = null
@@ -537,6 +539,21 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     override fun onStart() {
         super.onStart()
+        // Come back to after a while away (the app that opened it reopened, Back pressed there): the film it had is
+        // long over, and it closes before showing, so an old film never pops up. Back sooner, it's there but paused,
+        // and never starts again by itself.
+        if (stoppedAt > 0) {
+            val away = SystemClock.elapsedRealtime() - stoppedAt
+            stoppedAt = 0L
+            if (away > AWAY_CLOSES_MS) {
+                if (isTaskRoot || inPlayerTask()) finishAndRemoveTask() else finish()
+                @Suppress("DEPRECATION")
+                overridePendingTransition(0, 0)
+                return
+            }
+            savedPlayWhenReady = false
+            pausedForSwitch = false
+        }
         backdrop?.start()
         if (entries.isNotEmpty() && player == null) {
             // Back from Home with the TV on another refresh rate: it switches again as the window shows, so the film
@@ -580,11 +597,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // Before the player goes, so no copy is taken of a film being taken down.
         backdrop?.stop()
         releasePlayer()
-        // Paused only for a refresh-rate switch: it plays on when the viewer comes back.
-        if (pausedForSwitch) {
-            savedPlayWhenReady = true
-            pausedForSwitch = false
-        }
+        pausedForSwitch = false
+        if (!isFinishing) stoppedAt = SystemClock.elapsedRealtime()
         if (sleepEndsAt > 0) {
             sleepRemainingMs = (sleepEndsAt - SystemClock.elapsedRealtime()).coerceAtLeast(1L)
             sleepEndsAt = 0
@@ -4455,6 +4469,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         const val REAL_AGAIN_MS = 20_000L
         // How long the film waits for the TV to change refresh rate.
         const val DISPLAY_SWITCH_PAUSE_MS = 2_000L
+        /** Away longer than this, a player left behind closes instead of coming back (see onStart). */
+        const val AWAY_CLOSES_MS = 30 * 60_000L
         /** How long the decoder list may take before the player says the decoder service is stuck. */
         private const val DECODER_STUCK_MS = 10_000L
         const val POST_PLAY_LEAD_MS = 20_000L
