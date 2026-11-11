@@ -1,5 +1,7 @@
 package app.fireplayer.player
 
+import app.fireplayer.subs.SyncMapping
+
 /**
  * Which timestamps from SkipDB and IntroDB are trusted for this very file, all in milliseconds. Kept free of Android
  * and of the network so it can be tested on its own.
@@ -129,6 +131,34 @@ object SkipRules {
             }
             Part.PREVIEW -> if (start < duration / 2) Pick.Rejected("not in the second half") else Pick.Found(start, e)
         }
+    }
+
+    /**
+     * SkipDB's own times (asked with adjust=none, so nothing of its shifting is applied twice) taken as times on the
+     * downloaded subtitles' timeline. Only an "exact" answer, when asked with that timeline's length
+     * ([app.fireplayer.subs.SyncMapping.cleanLength]), is evidence it was timed on the subtitles' version of the
+     * episode; the same episode id alone isn't.
+     */
+    fun skipDbOnSubtitles(part: Part, s: SkipDbSegment?, cleanLength: Long): Pick {
+        if (s == null) return Pick.Missing
+        if (s.start == 0L && s.end == 0L) return Pick.None
+        if (s.match != "exact") return Pick.Rejected("not timed on the subtitles' version (${s.match})")
+        if (s.confidence < EXACT_MIN_CONFIDENCE) return Pick.Rejected("exact, but confidence ${s.confidence}")
+        return fits(part, s.start, s.end, cleanLength)
+    }
+
+    /**
+     * A part found on the subtitles' timeline ([onSubtitles], from [skipDbOnSubtitles] or from [introDb] weighed
+     * against the subtitles' length) put on this file's through the offsets auto sync confirmed ([sync]). Both ends
+     * must map under one confirmed offset; then the file's own bounds are checked again. Passing [fits] here only
+     * says the times make sense for the file, the evidence for the alignment is what got the part this far.
+     * Such times only ever get buttons, like every database's ([Segments.autoAt] stays with the file's chapters).
+     */
+    fun mapped(part: Part, onSubtitles: Pick, sync: SyncMapping, duration: Long): Pick {
+        if (onSubtitles !is Pick.Found) return onSubtitles
+        val range = sync.fileRangeOf(onSubtitles.start, onSubtitles.end, duration)
+            ?: return Pick.Rejected("not lined up by auto sync there (or across a break)")
+        return fits(part, range.first, range.last, duration)
     }
 
     /** True when a part is worth asking the next source about: unknown, or not trusted. "None" is an answer. */

@@ -36,6 +36,10 @@ class SpeechTap {
             }
         }
 
+    /** Pieces let go because the listener was behind: a gap in what's heard. Counted for auto sync's cost log. */
+    @Volatile var dropped = 0L
+        private set
+
     private val ready = ArrayBlockingQueue<Piece>(PIECES)
     private val free = ArrayBlockingQueue<Piece>(PIECES)
 
@@ -52,12 +56,13 @@ class SpeechTap {
         if (!listening) return
         val size = buffer.remaining()
         if (size <= 0 || size > PIECE_BYTES) return
-        val piece = free.poll() ?: if (allocated < PIECES) { allocated++; Piece(ByteArray(PIECE_BYTES), 0, 0, null) } else return
+        // Only the playback thread writes the count, so ++ on it is safe.
+        val piece = free.poll() ?: if (allocated < PIECES) { allocated++; Piece(ByteArray(PIECE_BYTES), 0, 0, null) } else { dropped++; return }
         buffer.duplicate().get(piece.bytes, 0, size)
         piece.size = size
         piece.filmUs = filmUs
         piece.kind = kind
-        if (!ready.offer(piece)) recycle(piece)
+        if (!ready.offer(piece)) { recycle(piece); dropped++ }
     }
 
     private var allocated = 0
