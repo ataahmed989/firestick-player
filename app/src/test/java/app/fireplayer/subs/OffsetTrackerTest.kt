@@ -295,6 +295,26 @@ class OffsetTrackerTest {
     }
 
     @Test
+    fun aChangeFoundBackwardsReachesTheNextOneWithoutASliver() {
+        // Three stretches (+1.4 s, +3.4 s from 10:00, +4.7 s from 20:00). Heard to 8:00, a jump past 20:00 finds +4.7
+        // where the viewer landed (not on a whole second); back at 12:30, +3.4 is found. It runs on to the +4.7, with
+        // no few seconds of the first delay left in between (the second the +4.7 begins in isn't the first's).
+        for (seed in 1L..3L) {
+            val film = FakeFilm.make(seed, minutes = 40, delayMs = 1_400, breaks = listOf(Break(10 * min, adMs = 2_000), Break(20 * min, adMs = 1_300)))
+            val p = Playback(film, OffsetTracker(film.subs))
+            p.play(8 * min)
+            p.seek(20 * min + 30_450)
+            p.play(25 * min)
+            p.seek(12 * min + 30_000)
+            p.play(19 * min)
+            val segs = p.tracker.segments
+            assertTrue("$segs\n${p.story()}", segs.any { near(3_400, it.delayMs, 300) } && segs.any { near(4_700, it.delayMs, 300) })
+            val i = segs.indexOfFirst { near(3_400, it.delayMs, 300) }
+            assertTrue("$segs\n${p.story()}", near(4_700, segs[i + 1].delayMs, 300))
+        }
+    }
+
+    @Test
     fun whereAChangeMayBeginAfterAJumpPastIt() {
         // Heard to 8:00, then a jump to 40:00, past a break at 25:00: the change is put where the viewer landed, but it
         // may be anywhere from the end of the talking found right before (about 8:00). Played through, it's known.

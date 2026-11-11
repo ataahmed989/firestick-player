@@ -566,7 +566,8 @@ class OffsetTracker(
         val end = map.getOrNull(i + 1)?.fromMs ?: Long.MAX_VALUE
         var back = end
         val later = kept.nextSetBit(sec(now))
-        if (later >= 0 && later * 1000L < end) {
+        // Only a second wholly inside this segment: the one the next segment begins in was found right under its delay.
+        if (later >= 0 && (later + 1) * 1000L <= end) {
             // That stretch can start before here, this proof having run into it: then the return is looked for between.
             val start = maxOf(at, (if (later == sec(now)) kept.previousClearBit(later) + 1 else later) * 1000L)
             val lo = minOf(start, now)
@@ -602,7 +603,6 @@ class OffsetTracker(
 
     private fun waiting(now: Long) = Decision(Outcome.WAIT, segments, delayAt(now) ?: learnCenterMs, now, now, now, null, Double.NaN, "")
 
-    /** Sure by [SyncMatcher], and not at the edge of the shifts tried: a best there is likely a slope up to one beyond. */
     /**
      * The best shift within [RANGE_MS] of the delay in use [cur], and the reach it was judged in. Among the thousands
      * of shifts that far, chance alone makes some match nearly as well as a real but modest one (sparse talking, music
@@ -620,6 +620,7 @@ class OffsetTracker(
         return wide to RANGE_MS
     }
 
+    /** Sure by [SyncMatcher], and not at the edge of the shifts tried: a best there is likely a slope up to one beyond. */
     private fun sure(res: SyncMatcher.Result, centerMs: Long, rangeMs: Long) =
         res.confident && abs(res.delayMs - centerMs) <= rangeMs - EDGE_MS
 
