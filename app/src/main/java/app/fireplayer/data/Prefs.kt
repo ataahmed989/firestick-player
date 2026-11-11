@@ -66,6 +66,11 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("skip_intro", true)
         set(v) = sp.edit().putBoolean("skip_intro", v).apply()
 
+    /** Without times for the credits, the Next episode card comes up this many seconds before the end. */
+    var nextCardLeadSec: Int
+        get() = sp.getInt("next_card_lead", 30)
+        set(v) = sp.edit().putInt("next_card_lead", v).apply()
+
     var matchFrameRate: Boolean
         get() = sp.getBoolean("match_frame_rate", true)
         set(v) = sp.edit().putBoolean("match_frame_rate", v).apply()

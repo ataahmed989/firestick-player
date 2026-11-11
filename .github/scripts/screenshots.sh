@@ -67,11 +67,18 @@ key KEYCODE_BACK KEYCODE_BACK
 key KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_CENTER
 shot 10-settings 1.5
 # Down to Auto sync subtitles, at the top of Online subtitles.
-key KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN
+key KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN
 shot 10b-settings-auto-sync 1.5
 key KEYCODE_BACK
 key KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT KEYCODE_DPAD_CENTER
 shot 11-subtitles 1.5
+# Search online (fake OpenSubtitles results from the mock server): Find subtitles' result rows.
+key KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_CENTER
+sleep 1
+key KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_CENTER
+shot 11c-find-results 4
+key KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN
+shot 11d-find-results-lower 1.5
 key KEYCODE_BACK
 # Subtitle delay, next to Subtitles: these subtitles came with the video, so auto sync leaves them alone.
 key KEYCODE_DPAD_RIGHT KEYCODE_DPAD_CENTER
@@ -140,6 +147,10 @@ movie "http://10.0.2.2:8000/series/demo/demo/2004.mkv" "EN - Breaking Bad (2008)
 shot 21-credits-card 9
 pid=$(adb shell pidof $PKG | tr -d '\r')
 adb logcat -d -v time ${pid:+--pid=$pid} | grep -E "FirePlayerNext|FirePlayerSegments|AndroidRuntime" | tail -60 > "$OUT/logcat-credits.txt"
+
+# The last episode, near its end: nothing next and the credits run to the end, so Exit counts down.
+movie "http://10.0.2.2:8000/series/demo/demo/2013.mkv" "EN - Breaking Bad (2008) - S02E13 - ABQ" "--el position 262000"
+shot 22-exit-card 6
 
 # Coming back to the same film asks where to start.
 movie "http://10.0.2.2:8000/movie.mkv" "EN - 4K UHD - Dune: Part Two (2024)"
