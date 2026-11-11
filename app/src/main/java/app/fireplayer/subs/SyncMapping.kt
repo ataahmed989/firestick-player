@@ -22,9 +22,19 @@ class SyncMapping(
     val version: Int,
     /** The film these subtitles were matched to: a mapping says nothing about any other. */
     val filmKey: String,
+    /**
+     * Per segment (same order), where its change may really begin, at or before its start: after a jump past a break
+     * the tracker puts the change where the viewer landed, but it can be anywhere in the film not heard before that
+     * ([OffsetTracker.changeFrom]). Each segment's own start when null.
+     */
+    changeFrom: List<Long>? = null,
 ) {
+    private val order = segments.indices.sortedBy { segments[it].fromMs }
 
-    val segments: List<OffsetTracker.Segment> = segments.sortedBy { it.fromMs }
+    val segments: List<OffsetTracker.Segment> = order.map { segments[it] }
+
+    // Where each segment's change may begin (never after its start).
+    private val softFrom: List<Long> = order.map { minOf(changeFrom?.getOrNull(it) ?: segments[it].fromMs, segments[it].fromMs) }
 
     /** Where [cleanMs] on the subtitles' timeline is in this file; null where it isn't known for sure (see above). */
     fun fileTimeOf(cleanMs: Long): Long? {
@@ -59,13 +69,20 @@ class SyncMapping(
     fun cleanLength(fileDurationMs: Long): Long? =
         segments.lastOrNull()?.let { fileDurationMs - it.delayMs }?.takeIf { it > 0 && fileDurationMs > 0 }
 
-    /** The one offset under which [cleanMs] lands in its own stretch of the file; null for none or more than one. */
+    /** Where segment [i]'s stretch of the file surely ends: where the next change may begin. */
+    private fun sureEnd(i: Int): Long = softFrom.getOrNull(i + 1) ?: Long.MAX_VALUE
+
+    /**
+     * The one offset under which [cleanMs] lands in its own stretch of the file; null for none, for more than one, and
+     * where it lands between a change's earliest possible place and the place the tracker put it.
+     */
     private fun segmentFor(cleanMs: Long): Int? {
         var found: Int? = null
         for (i in segments.indices) {
             val f = cleanMs + segments[i].delayMs
             val end = segments.getOrNull(i + 1)?.fromMs ?: Long.MAX_VALUE
             if (f >= segments[i].fromMs && f < end) {
+                if (f >= sureEnd(i)) return null
                 if (found != null) return null
                 found = i
             }
@@ -73,12 +90,17 @@ class SyncMapping(
         return found
     }
 
+    /** Talking matched under segment [i]'s offset within [REACH_MS] of [fileMs], in whole seconds inside its stretch. */
     private fun confirmedNear(i: Int, fileMs: Long): Boolean {
-        val from = maxOf(segments[i].fromMs, fileMs - REACH_MS, 0L)
-        val to = minOf(segments.getOrNull(i + 1)?.fromMs ?: Long.MAX_VALUE, fileMs + REACH_MS)
+        val segFrom = segments[i].fromMs
+        val segTo = sureEnd(i)
+        val from = maxOf(segFrom, fileMs - REACH_MS, 0L)
+        val to = minOf(segTo, fileMs + REACH_MS)
         if (to <= from) return false
-        val a = (from / 1000).toInt()
-        val b = ((to + 999) / 1000).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        // Only seconds wholly inside the stretch: one straddling a change may have been matched under the neighbour's.
+        val a = maxOf(from / 1000, (segFrom + 999) / 1000).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        val b = minOf((to + 999) / 1000, segTo / 1000).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        if (b <= a) return false
         val next = confirmedSeconds.nextSetBit(a)
         return next in a until b
     }

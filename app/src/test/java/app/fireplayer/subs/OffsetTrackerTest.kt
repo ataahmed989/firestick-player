@@ -273,6 +273,47 @@ class OffsetTrackerTest {
     }
 
     @Test
+    fun aChangeOfSecondsInSparseTalkIsJudgedNearTheDelayInUse() {
+        // 3 s more after 20:00 in a film whose talking is hard to hear (music, lines missed). Among all the shifts within
+        // 3 minutes, chance matches keep it "not sure" for many minutes, or for good; among those within 20 s, it stands
+        // out. Never a delay that's neither.
+        var wideFound = 0
+        for (seed in 1L..8L) {
+            val film = FakeFilm.make(seed, minutes = 45, delayMs = 1_400, breaks = listOf(Break(20 * min, adMs = 3_150)), noise = 0.2, missed = 0.3)
+            val times = listOf(0L, OffsetTracker.NEAR_MS).map { nearMs ->
+                val p = Playback(film, OffsetTracker(film.subs, nearMs = nearMs))
+                p.play(film.lengthMs)
+                assertTrue(p.story(), p.tracker.segments.all { near(1_400, it.delayMs, 300) || near(4_550, it.delayMs, 300) })
+                p.moves.firstOrNull { near(4_550, it.delayMs, 300) }?.let { it.toMs - 20 * min }
+            }
+            if (times[0] != null) wideFound++
+            println("3 s change in sparse talk (seed $seed): whole reach only ${times[0]?.div(1000)} s, near the delay in use ${times[1]?.div(1000)} s")
+            assertNotNull("seed $seed", times[1])
+            assertTrue("seed $seed: ${times[1]}", times[1]!! <= 12 * min)
+        }
+        assertTrue("whole reach only found it $wideFound times of 8", wideFound < 8)
+    }
+
+    @Test
+    fun whereAChangeMayBeginAfterAJumpPastIt() {
+        // Heard to 8:00, then a jump to 40:00, past a break at 25:00: the change is put where the viewer landed, but it
+        // may be anywhere from the end of the talking found right before (about 8:00). Played through, it's known.
+        val film = FakeFilm.make(seed = 70, minutes = 60, delayMs = 500, breaks = listOf(Break(25 * min, adMs = 50_000, skipMs = 30_000)))
+        val p = Playback(film, OffsetTracker(film.subs))
+        p.play(8 * min)
+        p.seek(40 * min)
+        p.play(44 * min)
+        assertEquals(p.story(), 2, p.tracker.segments.size)
+        val jumped = p.tracker.changeFrom(p.timeline)
+        assertEquals(0L, jumped[0])
+        assertTrue("$jumped ${p.tracker.segments}", jumped[1] <= 8 * min + 5_000 && jumped[1] < p.tracker.segments[1].fromMs)
+        p.seek(20 * min)
+        p.play(30 * min)
+        val heard = p.tracker.changeFrom(p.timeline)
+        assertEquals("$heard ${p.tracker.segments}", p.tracker.segments[1].fromMs, heard[1])
+    }
+
+    @Test
     fun aChangeBeyondTheRangeSearchedIsNotGuessed() {
         // 4 or 5 minutes of ads the subtitles don't allow for: the right delay is beyond the 3 minutes searched. No
         // delay is made up (the subtitles stay as they were), and the checks that keep coming out unsure are spaced out.

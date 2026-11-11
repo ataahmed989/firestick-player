@@ -39,6 +39,8 @@ class OffsetTracker(
     /** Where the first delay is looked for while nothing is known: [learnCenterMs] ± [learnRangeMs]. */
     private var learnCenterMs: Long = 0,
     private var learnRangeMs: Long = SyncMatcher.RANGE_MS,
+    /** See [search]; 0 judges every change in the whole [RANGE_MS] only. */
+    private val nearMs: Long = NEAR_MS,
 ) {
 
     /** From film time [fromMs] on, until the next one, subtitles are shown [delayMs] later. */
@@ -128,6 +130,23 @@ class OffsetTracker(
     val segments: List<Segment> get() = map.toList()
     /** Seconds of film where a match agreed with the map in this session (a copy), for [SyncMapping]. */
     fun confirmedSeconds(): BitSet = verified.clone() as BitSet
+
+    /**
+     * For each segment, where its change may really begin: its own start, or, when some of the film between the last
+     * second found right under the offset before and that start was never heard (a jump past the break), the end of
+     * that talking. The change can be anywhere in between. See [SyncMapping].
+     */
+    fun changeFrom(tl: SpeechTimeline): List<Long> = map.mapIndexed { k, s ->
+        if (k == 0) return@mapIndexed s.fromMs
+        val prevFrom = map[k - 1].fromMs
+        val v = verified.previousSetBit(sec(s.fromMs) - 1)
+        val lastOk = if (v < sec(prevFrom)) prevFrom else minOf(s.fromMs, (v + 1) * 1000L)
+        if (s.fromMs <= lastOk) return@mapIndexed s.fromMs
+        val a = frame(lastOk)
+        val b = frame(s.fromMs)
+        val unheardMs = ((b - a) - tl.heard.get(a, b).cardinality()) * 10L
+        if (unheardMs >= GAP_MS) lastOk else s.fromMs
+    }
     val confirmedCount: Int get() = verified.cardinality()
     val learning: Boolean get() = map.isEmpty()
 
@@ -248,12 +267,15 @@ class OffsetTracker(
         }
         val before = candidate
         var note = ""
+        // Only the talking the proof went by counts as found right: not what came before a break inside the stretch.
+        var proofFrom = from
         if (before == null || abs(before.delayMs - res.delayMs) > AGREE_MS) {
             val fits = fitStart(tl, res.delayMs, from, now)
             if (!confirmsAtOnce(tl, res.delayMs, learnCenterMs, learnRangeMs, fits, now)) {
                 candidate = Candidate(res.delayMs, -1, from, now, fits)
                 return decide(Outcome.NOT_SURE, "sure once")
             }
+            proofFrom = fits
             note = AT_ONCE
         } else {
             confirmFails(tl, before, res.delayMs, learnCenterMs, learnRangeMs, now)?.let { return decide(Outcome.NOT_SURE, it) }
@@ -262,7 +284,7 @@ class OffsetTracker(
         candidate = null
         suspectMs = -1
         rejectedMs = null
-        checked(tl, res.delayMs, from, now, exactly = false)
+        checked(tl, res.delayMs, proofFrom, now, exactly = false)
         return decide(Outcome.LEARNED, note)
     }
 
@@ -296,21 +318,23 @@ class OffsetTracker(
         val seg = map[i]
         val cur = seg.delayMs
         val h = SyncMatcher.heard(tl.speech, tl.heard, frame(from), frame(now) + 1) ?: return waiting(now)
-        val res = SyncMatcher.match(h, lines, cur, RANGE_MS)
+        val (res, range) = search(h, cur)
         val rHere = SyncMatcher.rAt(h, lines, cur)
         fun decide(o: Outcome, delay: Long, note: String = "", at: Long = now) = Decision(o, segments, delay, at, from, now, res, rHere, note)
 
-        if (!sure(res, cur, RANGE_MS)) {
+        if (!sure(res, cur, range)) {
             candidate = null
             if (suspectMs >= 0) misses++
             return decide(Outcome.NOT_SURE, cur, unsureNote(res))
         }
-        misses = 0
+        // Judged in the nearer reach only, a match on its own doesn't end the back-off: what it leads to does.
+        if (range == RANGE_MS) misses = 0
         val shift = abs(res.delayMs - cur)
         if (shift < TUNE_MS) {
             // Right here, to within what anyone sees.
             candidate = null
             suspectMs = -1
+            misses = 0
             checked(tl, cur, from, now, exactly = true)
             return decide(Outcome.KEPT, cur)
         }
@@ -327,6 +351,7 @@ class OffsetTracker(
         val exactEnd = if (close) exactEnd(seg, now) else -1L
         if (close) {
             suspectMs = -1
+            misses = 0
             verify(from, now)
             // Part of this segment was found exactly right: a small change after it, which would be a segment of its
             // own, has to be well beyond the matches' own scatter (about 100 ms either way).
@@ -340,20 +365,21 @@ class OffsetTracker(
         val before = candidate
         // The talking the proof goes by: after the break, not the break itself.
         val proofFrom: Long
-        var note = why
+        var note = if (range != RANGE_MS) "$why, $NEAR" else why
         if (before == null || abs(before.delayMs - res.delayMs) > AGREE_MS) {
             val fits = fitStart(tl, res.delayMs, from, now)
-            if (!confirmsAtOnce(tl, res.delayMs, cur, RANGE_MS, fits, now)) {
+            if (!confirmsAtOnce(tl, res.delayMs, cur, range, fits, now)) {
                 candidate = Candidate(res.delayMs, seg.fromMs, from, now, fits)
-                return decide(meanwhile, shown, "sure once")
+                return decide(meanwhile, shown, if (range != RANGE_MS) "sure once, $NEAR" else "sure once")
             }
             proofFrom = fits
             note += ", $AT_ONCE"
         } else {
-            confirmFails(tl, before, res.delayMs, cur, RANGE_MS, now)?.let { return decide(meanwhile, shown, it) }
+            confirmFails(tl, before, res.delayMs, cur, range, now)?.let { return decide(meanwhile, shown, it) }
             proofFrom = from
         }
         candidate = null
+        misses = 0
         if (map.size >= MAX_SEGMENTS) return decide(meanwhile, shown, "too many changes in one film")
         val at = if (close) tuneAt(tl, i, res.delayMs, exactEnd, now) else moveAt(tl, i, res.delayMs, proofFrom, now)
         if (!put(tl, i, at, res.delayMs, proofFrom, now, if (close) exact else verified)) {
@@ -577,6 +603,23 @@ class OffsetTracker(
     private fun waiting(now: Long) = Decision(Outcome.WAIT, segments, delayAt(now) ?: learnCenterMs, now, now, now, null, Double.NaN, "")
 
     /** Sure by [SyncMatcher], and not at the edge of the shifts tried: a best there is likely a slope up to one beyond. */
+    /**
+     * The best shift within [RANGE_MS] of the delay in use [cur], and the reach it was judged in. Among the thousands
+     * of shifts that far, chance alone makes some match nearly as well as a real but modest one (sparse talking, music
+     * under it), so a change of a few seconds can stay "not sure" for minutes. Judged again among the shifts within
+     * [NEAR_MS] only, by the same rule, it counts when it is also the very best of the whole reach: never over a
+     * better match further off. Everything after (two matches agreeing, fresh talking, beating the delay in use) is
+     * asked of it as of any other.
+     */
+    private fun search(h: SyncMatcher.Heard, cur: Long): Pair<SyncMatcher.Result, Long> {
+        val wide = SyncMatcher.match(h, lines, cur, RANGE_MS)
+        if (sure(wide, cur, RANGE_MS)) return wide to RANGE_MS
+        if (nearMs <= EDGE_MS) return wide to RANGE_MS
+        val near = SyncMatcher.match(h, lines, cur, nearMs)
+        if (sure(near, cur, nearMs) && abs(near.delayMs - wide.delayMs) <= AGREE_MS) return near to nearMs
+        return wide to RANGE_MS
+    }
+
     private fun sure(res: SyncMatcher.Result, centerMs: Long, rangeMs: Long) =
         res.confident && abs(res.delayMs - centerMs) <= rangeMs - EDGE_MS
 
@@ -617,6 +660,9 @@ class OffsetTracker(
     companion object {
         /** How far either way of the delay in use a new one is looked for once one is known (and on Resync). */
         const val RANGE_MS = 3 * 60_000L
+        /** The nearer reach a change is judged in again when the whole [RANGE_MS] can't call it (see [search]). */
+        const val NEAR_MS = 20_000L
+        private const val NEAR = "judged near the delay in use"
         /** Two sure matches this close are the same delay. */
         const val AGREE_MS = 100L
         /** Changes smaller than this only fine-tune the delay in use (it's still about right where it is). */

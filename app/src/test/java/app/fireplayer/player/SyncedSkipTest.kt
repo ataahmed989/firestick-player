@@ -115,6 +115,33 @@ class SyncedSkipTest {
     }
 
     @Test
+    fun nothingMapsInFilmJumpedOverBeforeTheChange() {
+        // Heard to 4:05 (found right to 3:59), a jump to 7:00 past a 60 s ad at 4:00..5:00: the change was put at 7:00,
+        // but it may be anywhere after 4:00. An intro at 4:10..5:00 on the subtitles' timeline is really at 5:10..6:00:
+        // under the earlier offset it would land in the ad. Nothing maps there; before it, all is as it was.
+        val file = clean + 60_000
+        val segments = listOf(Segment(0, 0), Segment(420_000, 60_000))
+        val heard = BitSet().apply { set(0, 240); set(420, 600) }
+        val jumped = SyncMapping(segments, heard, 1, "film", listOf(0L, 240_000L))
+        assertNull(jumped.fileRangeOf(250_000, 300_000))
+        assertNull(jumped.fileTimeOf(250_000))
+        assertEquals(200_000L, jumped.fileTimeOf(200_000))
+        assertEquals(500_000L, jumped.fileTimeOf(440_000))
+        val intro = SkipRules.skipDbOnSubtitles(Part.INTRO, exact(250_000, 300_000), clean)
+        assertTrue(SkipRules.mapped(Part.INTRO, intro, jumped, file) is Pick.Rejected)
+        // Without knowing where the change may begin, the same would have mapped into the ad.
+        assertEquals(LongRange(250_000, 300_000), SyncMapping(segments, heard, 1, "film").fileRangeOf(250_000, 300_000))
+    }
+
+    @Test
+    fun aSecondAcrossAChangeCountsForNeitherSide() {
+        // The change at 5:00.5; second 300 was matched under the later offset only. Nothing before it was heard again.
+        val sync = mapping(listOf(Segment(0, 0), Segment(300_500, 60_000)), BitSet().apply { set(300); set(360, 600) })
+        assertNull(sync.fileTimeOf(250_000))
+        assertEquals(460_000L, sync.fileTimeOf(400_000))
+    }
+
+    @Test
     fun cutFilmMapsToNothing() {
         // 30 s missing from this file at 10:00: those 30 s of the subtitles are nowhere in it.
         val sync = mapping(listOf(Segment(0, 0), Segment(600_000, -30_000)), heard(0, 2_700))

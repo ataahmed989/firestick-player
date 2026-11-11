@@ -60,7 +60,7 @@ object SkipTimes {
         }
         // What's still open, from the databases' times taken on the downloaded subtitles' version and put on this
         // file's timeline through the offsets auto sync confirmed (a file with an ad or bumper the databases' hasn't).
-        if (sync != null && Part.values().any { SkipRules.open(picks[it]) }) {
+        if (sync != null && listOf(Part.INTRO, Part.RECAP, Part.OUTRO).any { SkipRules.open(picks[it]) }) {
             val synced = onSubtitles(context, imdbId, what, durationMs, tmdbMinutes, sync)
             if (synced != null) {
                 val before = picks
@@ -88,7 +88,7 @@ object SkipTimes {
             ?.let { runCatching { skipDbPicks(JSONObject(it), clean, onSubtitles = true) }.getOrNull() }
             ?: emptyMap()
         var mapped = Part.values().associateWith { SkipRules.mapped(it, onSubs[it] ?: Pick.Missing, sync, durationMs) }
-        if (Part.values().any { SkipRules.open(mapped[it]) }) {
+        if (listOf(Part.INTRO, Part.RECAP, Part.OUTRO).any { SkipRules.open(mapped[it]) }) {
             val movie = if (what.isEmpty()) "&is_movie=true" else ""
             val intro = get(context, "$INTRODB?imdb_id=$imdbId$what$movie")
                 ?.let { runCatching { introDbPicks(JSONObject(it), clean, SkipRules.runtimeAgrees(tmdbMinutes, clean)) }.getOrNull() }

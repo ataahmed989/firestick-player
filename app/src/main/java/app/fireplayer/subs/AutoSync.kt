@@ -334,6 +334,7 @@ class AutoSync(
         var tracker: OffsetTracker? = null
         var publishedCount = -1
         var publishedSegments: List<OffsetTracker.Segment>? = null
+        var publishedChanges: List<Long>? = null
         // 10 ms marks heard (new or again) since the job started, and at the last step.
         var played = 0L
         var stepAt = 0L
@@ -397,6 +398,10 @@ class AutoSync(
                         ?: OffsetTracker(current.lines, current.segments, current.centerMs, current.rangeMs)
                     current.relearnAtMs?.let { t.relearn(it, current.centerMs, timeline) }
                     tracker = t
+                    // A new job's mapping starts from nothing (the old one was cleared): the first snapshot always goes.
+                    publishedCount = -1
+                    publishedSegments = null
+                    publishedChanges = null
                     cursor = -1.0
                     played = 0
                     // Resync tries at once, with what was heard already.
@@ -473,14 +478,6 @@ class AutoSync(
                     cost.matched(SystemClock.currentThreadTimeMillis() - cpu0)
                     Log.i(TAG, d.toString())
                 }
-                // What's confirmed grew or the offsets changed: the main thread gets a fresh snapshot for the skip times.
-                val segs = tr.segments
-                if (tr.confirmedCount != publishedCount || segs != publishedSegments) {
-                    publishedCount = tr.confirmedCount
-                    publishedSegments = segs
-                    val confirmed = tr.confirmedSeconds()
-                    main.post { publishMapping(current, segs, confirmed) }
-                }
                 when (d.outcome) {
                     Outcome.LEARNED, Outcome.MOVED, Outcome.TUNED -> main.post { decided(current, d) }
                     Outcome.GAVE_UP -> {
@@ -488,6 +485,17 @@ class AutoSync(
                         main.post { notFound(current) }
                     }
                     else -> {}
+                }
+                // What's confirmed grew or the offsets changed: the main thread gets a fresh snapshot for the skip times,
+                // after decided() (a first delay learnt has made it SYNCED by then).
+                val segs = tr.segments
+                val changes = tr.changeFrom(timeline)
+                if (tr.confirmedCount != publishedCount || segs != publishedSegments || changes != publishedChanges) {
+                    publishedCount = tr.confirmedCount
+                    publishedSegments = segs
+                    publishedChanges = changes
+                    val confirmed = tr.confirmedSeconds()
+                    main.post { publishMapping(current, segs, confirmed, changes) }
                 }
             }
         } finally {
@@ -581,9 +589,9 @@ class AutoSync(
         startFollowing()
     }
 
-    private fun publishMapping(current: Job, segs: List<OffsetTracker.Segment>, confirmed: java.util.BitSet) {
+    private fun publishMapping(current: Job, segs: List<OffsetTracker.Segment>, confirmed: java.util.BitSet, changes: List<Long>) {
         if (current.generation != generation || byHand || state != State.SYNCED || segs.isEmpty()) return
-        mapping = SyncMapping(segs, confirmed, ++mappingVersion, current.filmKey)
+        mapping = SyncMapping(segs, confirmed, ++mappingVersion, current.filmKey, changes)
         onMappingChanged?.invoke()
     }
 

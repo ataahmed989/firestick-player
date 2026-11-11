@@ -2034,11 +2034,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (p != null && entry != null && duration != C.TIME_UNSET && duration > 0 && !p.isCurrentMediaItemLive) {
             lookUpSegments(entry, duration)
         }
-        if (segmentsWait && skipButton.visibility != View.VISIBLE && skipPod.visibility != View.VISIBLE) {
-            segments = segmentsWaiting
-            segmentsWaiting = null
-            segmentsWait = false
-        }
+        if (segmentsWait && skipButton.visibility != View.VISIBLE && skipPod.visibility != View.VISIBLE) takeSegments(segmentsWaiting)
         // Back before a part whose button was put away (watching it again): the button comes back with it.
         if (p != null && skipDismissed >= 0 && p.currentPosition < skipDismissed) skipDismissed = -1L
         if (p != null && skipFadedFor >= 0 && p.currentPosition < skipFadedFor) { skipFadedFor = -1L; skipShownFor = -1L }
@@ -2169,14 +2165,33 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                     segmentsWaiting = found
                     segmentsWait = true
                 } else {
-                    segments = found
-                    segmentsWaiting = null
-                    segmentsWait = false
+                    takeSegments(found)
                 }
                 if (found != null) android.util.Log.i("FirePlayerSegments", "From ${found.from}: recap ${found.recap}, " +
                     "intro ${found.intro}, credits ${found.creditsAt}, after ${found.afterCredits}, to end ${found.creditsToEnd}")
             }
         }
+    }
+
+    /**
+     * Puts a newer answer for the same episode in place. When the part playing only moved (auto sync's offsets were
+     * fine-tuned or a break found before it), its button's state moves with it: one that slipped away or was put away
+     * stays away, one showing isn't shown afresh.
+     */
+    private fun takeSegments(found: Segments?) {
+        val pos = player?.currentPosition
+        val old = if (pos == null) null else segments?.skip(pos)
+        val new = if (pos == null) null else found?.skip(pos)
+        if (old != null && new != null && old.label == new.label && old.start != new.start &&
+            old.start < new.target && new.start < old.target) {
+            if (skipDismissed == old.start) skipDismissed = new.start
+            if (skipFadedFor == old.start) skipFadedFor = new.start
+            if (skipShownFor == old.start) skipShownFor = new.start
+            if (skipStart == old.start) { skipStart = new.start; skipTarget = new.target }
+        }
+        segments = found
+        segmentsWaiting = null
+        segmentsWait = false
     }
 
     /**
