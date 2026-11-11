@@ -41,7 +41,8 @@ movie "http://10.0.2.2:8000/movie.mkv" "EN - 4K UHD - Dune: Part Two (2024)"
 sleep 12
 keys KEYCODE_DPAD_UP KEYCODE_DPAD_DOWN
 shot d01-more-row 0.3
-key KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT
+sleep 1.5
+adb shell "for k in 1 2 3 4 5 6; do input keyevent KEYCODE_DPAD_RIGHT; sleep 0.6; done"
 shot d01b-dim-selected 0.2
 key KEYCODE_DPAD_CENTER
 shot d02-dimmer-list 1.5
