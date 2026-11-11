@@ -1,10 +1,12 @@
 name: Screenshots
 
 # Runs the app on an Android TV emulator and saves a screenshot of each screen.
-# Push a commit to the "shots" branch to run it; nothing is published.
+# Push a commit to the "shots" branch (or start it by hand on a branch) to run it; nothing is published.
 on:
   push:
     branches: [shots]
+  # Or started by hand on any branch.
+  workflow_dispatch:
 
 jobs:
   shots:
