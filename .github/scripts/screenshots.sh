@@ -34,23 +34,12 @@ adb shell am start -W -n $PKG/.HomeActivity
 sleep 8
 key KEYCODE_BACK
 
-# Episodes sheet first, with the dimmer off: glass pods dim with the sheet.
-movie "http://10.0.2.2:8000/series/demo/demo/2003.mkv" "EN - Breaking Bad (2008) - S02E03 - Bit by a Dead Bee"
-shot e16-episode-playing 7
-sleep 10
-key KEYCODE_DPAD_UP
-key KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT
-key KEYCODE_DPAD_CENTER
-shot e18-episodes 4
-key KEYCODE_DPAD_UP
-shot e18c-episodes-seasons 1.5
-key KEYCODE_BACK
-sleep 2
-
 # The dimmer window.
+movie "http://10.0.2.2:8000/movie.mkv" "EN - 4K UHD - Dune: Part Two (2024)"
+sleep 12
 key KEYCODE_DPAD_UP
 shot d00-controls-before 1
-key KEYCODE_DPAD_DOWN
+key KEYCODE_DPAD_UP KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN
 key KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT
 shot d01-more-row 0.5
 key KEYCODE_DPAD_CENTER
@@ -75,8 +64,14 @@ key KEYCODE_DPAD_UP KEYCODE_DPAD_UP KEYCODE_DPAD_UP KEYCODE_DPAD_RIGHT KEYCODE_D
 shot d09-night-changed-unsaved 1.5
 key KEYCODE_BACK
 shot d10-controls-dimmed 1.5
-key KEYCODE_DPAD_UP KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_CENTER
+movie "http://10.0.2.2:8000/series/demo/demo/2003.mkv" "EN - Breaking Bad (2008) - S02E03 - Bit by a Dead Bee"
+sleep 17
+key KEYCODE_DPAD_UP
+key KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT
+key KEYCODE_DPAD_CENTER
 shot d11-episodes-dimmed 4
+key KEYCODE_DPAD_UP
+shot d12-episodes-seasons-dimmed 1.5
 
 # Raw screenshots: a 16-byte header (width, height, format, colour space), then RGBA pixels.
 adb pull $DEV /tmp/raw
