@@ -62,7 +62,13 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
         setPadding(dp(42), dp(34), dp(42), dp(14))
     }
     private val title = text(22f, font700, color(R.color.text)).apply { text = "Episodes" }
-    private val source = text(11.5f, font500, color(R.color.text_muted))
+    // Where the episodes come from, as a pod like the player's info pods.
+    private val source = text(10f, font700, color(R.color.text)).apply {
+        setPadding(dp(6), dp(2), dp(6), dp(2))
+    }
+    private val count = text(10f, font700, color(R.color.text)).apply {
+        setPadding(dp(6), dp(2), dp(6), dp(2))
+    }
     private val seasonsRow = LinearLayout(activity).apply {
         orientation = LinearLayout.HORIZONTAL
         clipChildren = false
@@ -103,12 +109,20 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.BOTTOM
             addView(title, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            addView(source.apply { gravity = Gravity.END }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(4) })
         }
         sheet.addView(head, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         sheet.addView(seasonsScroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10) })
         sheet.addView(status, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(16) })
-        sheet.addView(cardsScroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) })
+        // Where the episodes come from and how many, as pods just over the covers, like the info pods over the time bar.
+        val pods = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(4), 0, 0, 0)
+            addView(source, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(count, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(5) })
+        }
+        sheet.addView(pods, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(12) })
+        sheet.addView(cardsScroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = 0 })
         root.addView(sheet, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
         host.addView(root, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
     }
@@ -120,6 +134,8 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
         seasonsRow.removeAllViews()
         cardsRow.removeAllViews()
         source.text = ""
+        source.visibility = View.GONE
+        count.visibility = View.GONE
         status.text = waiting
         status.visibility = View.VISIBLE
         root.visibility = View.VISIBLE
@@ -150,8 +166,14 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
         this.guide = guide
         playingId = playing
         progressOf = progress
-        val count = guide.episodes.size
-        source.text = "From ${guide.portal} · $count episode" + if (count == 1) "" else "s"
+        val episodes = guide.episodes.size
+        // Two pods, like the player's info pods: where they come from, and how many there are.
+        for (pod in listOf(source, count)) {
+            Glass.background(pod, Glass.Kind.CHIP)
+            pod.visibility = View.VISIBLE
+        }
+        source.text = "From ${guide.portal}"
+        count.text = "$episodes episode" + if (episodes == 1) "" else "s"
         status.visibility = View.GONE
         val now = guide.episode(playing)
         if (firstTime || guide.seasons.none { it == season }) season = now?.season ?: guide.seasons.firstOrNull() ?: 0
@@ -254,6 +276,12 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
             focused -> accent
             chosen -> 0xBF3D8BFF.toInt()
             else -> 0x1FFFFFFF
+        }
+        // Glass look: a season neither selected nor the one shown is a clear glass pod, like the other buttons.
+        if (Glass.on && !focused && !chosen) {
+            pill.background = Glass.drawable(activity, Glass.Kind.PILL)
+            pill.setTextColor(color(R.color.text))
+            return
         }
         pill.background = GradientDrawable().apply {
             cornerRadius = dp(16).toFloat()
