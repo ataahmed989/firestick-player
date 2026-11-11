@@ -17,8 +17,6 @@ burst() {
   adb shell "(for k in $*; do input keyevent \$k; done) & sleep 0.6; for i in \$(seq $frames); do screencap $DEV/$name-\$i.raw; sleep 0.2; done; wait"
 }
 key() { for k in "$@"; do adb shell input keyevent "$k"; sleep 0.7; done; }
-# Several keys in one go (the emulator is slow to start each input command; the controls hide after 5 s).
-keys() { adb shell "for k in $*; do input keyevent \$k; sleep 0.3; done"; sleep 1; }
 movie() {
   # Back closes whatever is open and leaves the player, which saves the position for the resume question.
   key KEYCODE_BACK KEYCODE_BACK
@@ -31,46 +29,143 @@ adb install -r FirePlayer.apk || exit 1
 adb_ready
 adb shell wm size
 
-# TEMP: screen dimmer shots only.
+# Home screen. This build is older than the latest release, so the update offer shows first.
 adb shell am start -W -n $PKG/.HomeActivity
-sleep 8
+shot 01-update-offer 10
+key KEYCODE_BACK
+shot 02-home 2
+key KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_CENTER
+shot 03-home-settings 2
 key KEYCODE_BACK
 
-# The dimmer window.
+# Player.
 movie "http://10.0.2.2:8000/movie.mkv" "EN - 4K UHD - Dune: Part Two (2024)"
-sleep 12
-keys KEYCODE_DPAD_UP KEYCODE_DPAD_DOWN
-shot d01-more-row 0.3
-sleep 1.5
-adb shell "for k in 1 2 3 4 5 6; do input keyevent KEYCODE_DPAD_RIGHT; sleep 0.6; done"
-shot d01b-dim-selected 0.2
+shot 04-playing 15
+# Skipping with the controls hidden brings up the bar and the "+0:20" card.
+burst 04b-skip 6 KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT
+sleep 4
+key KEYCODE_DPAD_UP
+shot 05-controls 1.5
+key KEYCODE_DPAD_UP
+shot 06-seek-bar-selected 0.6
+# Moving along the selected bar (it waits 2 s before jumping) shows a picture of where it would land.
+burst 06b-seek-back-preview 6 KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT
+burst 06c-seek-preview-moved 4 KEYCODE_DPAD_RIGHT
+# Paused, the emulator has time to spare for the preview's picture.
+key KEYCODE_MEDIA_PLAY_PAUSE
+burst 06d-paused-preview 8 KEYCODE_DPAD_LEFT
+adb logcat -d -v time | grep -E "ExoPlayerImpl|MediaCodec|CCodec|AndroidRuntime" | tail -300 > "$OUT/logcat-skip.txt"
+key KEYCODE_MEDIA_PLAY_PAUSE
+sleep 1
+key KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN
+shot 07-more-row 1
+key KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_CENTER
+shot 08-subtitle-style 1.5
+key KEYCODE_DPAD_DOWN KEYCODE_DPAD_CENTER
+shot 09-size-picker 1.5
+key KEYCODE_BACK KEYCODE_BACK
+key KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_CENTER
+shot 10-settings 1.5
+# Down to Auto sync subtitles, at the top of Online subtitles.
+key KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN
+shot 10b-settings-auto-sync 1.5
+key KEYCODE_BACK
+key KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT KEYCODE_DPAD_CENTER
+shot 11-subtitles 1.5
+# Search online (fake OpenSubtitles results from the mock server): Find subtitles' result rows.
+key KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_CENTER
+sleep 1
+key KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_CENTER
+shot 11c-find-results 4
+key KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN
+shot 11d-find-results-lower 1.5
+key KEYCODE_BACK
+# Subtitle delay, next to Subtitles: these subtitles came with the video, so auto sync leaves them alone.
+key KEYCODE_DPAD_RIGHT KEYCODE_DPAD_CENTER
+shot 11b-subtitle-delay 1.5
+key KEYCODE_BACK
+key KEYCODE_MEDIA_PLAY_PAUSE
+shot 12-paused 1.5
+
+# Picture (Blu-ray PGS) subtitles: first as the disc draws them, then, with "Keep embedded styling" off, read as
+# text and shown in the chosen style. The setting is saved, so it stays off for the rest of the run; the resume
+# question and the error below show no subtitles, so they look the same either way.
+movie "http://10.0.2.2:8000/movie-pgs.mkv" "EN - Blade Runner 2049 (2017)"
+shot 15a-pgs-picture 15
+# The icon row, across to Subtitle style (Subtitles, Subtitle delay, Subtitle style).
+key KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN
+key KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_CENTER
+sleep 1
+# Down from Preset past Size, Color, Edge, Shadow strength, Background box, Position and Font, then OK to turn it off.
+key KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN
 key KEYCODE_DPAD_CENTER
-shot d02-dimmer-list 1.5
-keys KEYCODE_DPAD_DOWN KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT
-shot d04-display-up-auto 1
-keys KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_CENTER
-keys KEYCODE_DPAD_UP KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT
-shot d05-auto-off-glass-down 1
-keys KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_CENTER
-shot d06-save-custom 1.5
-keys KEYCODE_DPAD_DOWN KEYCODE_DPAD_CENTER
-sleep 1.5
-adb shell input text Night
-shot d07-name 1.5
-keys KEYCODE_ENTER
-shot d08-saved-night 2
-keys KEYCODE_DPAD_UP KEYCODE_DPAD_UP KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT
-shot d09-night-changed-unsaved 1.5
-keys KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN
-shot d09b-save-selected 1
-keys KEYCODE_BACK
-shot d10-controls-dimmed 1
+shot 15b-pgs-styling-off 1.5
+# Back closes the window, Back again hides the controls. Turning it off rebuilds the player, so give it a moment.
+key KEYCODE_BACK KEYCODE_BACK
+# The emulator takes a while to load text recognition the first time, so these spread over half a minute.
+shot 15-pgs-as-text-1 5
+shot 15-pgs-as-text-2 4
+shot 15-pgs-as-text-3 5
+shot 15-pgs-as-text-4 6
+shot 15-pgs-as-text-5 6
+# Paused on a subtitle: however slow the emulator reads, this one gets read and turns into text.
+key KEYCODE_MEDIA_PLAY_PAUSE
+shot 15-pgs-paused-read 15
+key KEYCODE_MEDIA_PLAY_PAUSE
+pid=$(adb shell pidof $PKG | tr -d '\r')
+adb logcat -d -v time ${pid:+--pid=$pid} | grep -E "Ocr|OCR|Subtitle|PGS|Pgs|ExoPlayerImpl|AndroidRuntime" | tail -300 > "$OUT/logcat-pgs.txt"
+
+# A show's episode from the small provider served alongside: its name beside the numbers, the provider's chip,
+# Episodes, and This episode in Settings. The look-up waits for the film to be well ahead, so this waits too.
 movie "http://10.0.2.2:8000/series/demo/demo/2003.mkv" "EN - Breaking Bad (2008) - S02E03 - Bit by a Dead Bee"
-sleep 17
-keys KEYCODE_DPAD_UP KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_CENTER
-shot d11-episodes-dimmed 4
-keys KEYCODE_DPAD_UP
-shot d12-episodes-seasons-dimmed 1.5
+# Its chapters say the intro runs from 0:05 to 1:00: Skip intro shows while the controls are down.
+shot 16-episode-playing 7
+shot 16b-skip-gone 10
+key KEYCODE_DPAD_UP
+shot 17-episode-controls 1.5
+# Still in the intro: the skip pod sits over the time bar. Up, up selects it; down, down goes back to Play.
+key KEYCODE_DPAD_UP KEYCODE_DPAD_UP
+shot 17a-skip-pod-selected 0.5
+key KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN
+# Right from Play: Watch from start, Next episode, Episodes.
+key KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT
+shot 17b-episodes-button 1
+key KEYCODE_DPAD_CENTER
+shot 18-episodes 4
+key KEYCODE_DPAD_RIGHT
+shot 18b-episodes-next-card 1.5
+key KEYCODE_DPAD_UP
+shot 18c-episodes-seasons 1
+key KEYCODE_DPAD_LEFT
+shot 18d-episodes-season-1 1.5
+key KEYCODE_BACK
+key KEYCODE_MENU
+shot 19-this-episode 1.5
+key KEYCODE_DPAD_CENTER
+shot 20-this-episode-open 1.5
+key KEYCODE_BACK
+pid=$(adb shell pidof $PKG | tr -d '\r')
+adb logcat -d -v time ${pid:+--pid=$pid} | grep -E "FirePlayerNext|FirePlayerGuide|FirePlayerSegments|AndroidRuntime" | tail -100 > "$OUT/logcat-episodes.txt"
+
+# The next episode, started near its end: its chapters put the credits at 4:20 to the end, so the end card counts
+# 10 s and the last episode starts by itself.
+movie "http://10.0.2.2:8000/series/demo/demo/2004.mkv" "EN - Breaking Bad (2008) - S02E04 - Down" "--el position 262000"
+shot 21-credits-card 8
+shot 21b-next-started 12
+pid=$(adb shell pidof $PKG | tr -d '\r')
+adb logcat -d -v time ${pid:+--pid=$pid} | grep -E "FirePlayerNext|FirePlayerSegments|AndroidRuntime" | tail -60 > "$OUT/logcat-credits.txt"
+
+# The last episode, near its end: nothing next and the credits run to the end, so Exit counts down.
+movie "http://10.0.2.2:8000/series/demo/demo/2013.mkv" "EN - Breaking Bad (2008) - S02E13 - ABQ" "--el position 262000"
+shot 22-exit-card 6
+
+# Coming back to the same film asks where to start.
+movie "http://10.0.2.2:8000/movie.mkv" "EN - 4K UHD - Dune: Part Two (2024)"
+shot 13-resume 6
+
+# A link that isn't on the server.
+movie "http://10.0.2.2:8000/missing.mkv" "EN - The Batman (2022)"
+shot 14-error 12
 
 # Raw screenshots: a 16-byte header (width, height, format, colour space), then RGBA pixels.
 adb pull $DEV /tmp/raw
