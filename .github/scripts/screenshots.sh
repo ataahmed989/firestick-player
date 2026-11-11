@@ -141,6 +141,10 @@ shot 21-credits-card 9
 pid=$(adb shell pidof $PKG | tr -d '\r')
 adb logcat -d -v time ${pid:+--pid=$pid} | grep -E "FirePlayerNext|FirePlayerSegments|AndroidRuntime" | tail -60 > "$OUT/logcat-credits.txt"
 
+# The last episode, near its end: nothing next and the credits run to the end, so Exit counts down.
+movie "http://10.0.2.2:8000/series/demo/demo/2013.mkv" "EN - Breaking Bad (2008) - S02E13 - ABQ" "--el position 262000"
+shot 22-exit-card 6
+
 # Coming back to the same film asks where to start.
 movie "http://10.0.2.2:8000/movie.mkv" "EN - 4K UHD - Dune: Part Two (2024)"
 shot 13-resume 6

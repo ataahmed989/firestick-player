@@ -189,9 +189,6 @@ class SettingsPanels(
             prefs.playNextEpisode = !prefs.playNextEpisode; refresh()
         }
         if (prefs.playNextEpisode) NextEpisode.status?.let { message(it) }
-        row("Skip intro and credits", onOff(prefs.skipIntro)) {
-            prefs.skipIntro = !prefs.skipIntro; refresh()
-        }
         row("Match frame rate", onOff(prefs.matchFrameRate)) {
             prefs.matchFrameRate = !prefs.matchFrameRate; refresh()
         }
@@ -263,6 +260,19 @@ class SettingsPanels(
             setLineSpacing(2f * density, 1f)
             alpha = 0.8f
         }, top = 3, bottom = 4)
+
+        header("Skip intro and credits")
+        row("Skip buttons", onOff(prefs.skipIntro)) {
+            prefs.skipIntro = !prefs.skipIntro; refresh()
+        }
+        if (prefs.skipIntro) {
+            message("Skip intro and Skip recap, Next episode at the credits and Exit after a film's credits. " +
+                "Times from the file's chapters, else SkipDB and IntroDB, with the TMDB key above.")
+            val leads = NEXT_CARD_LEADS
+            choice("Next episode, without credits times", leads.map { "Last $it s" }, leads.indexOf(prefs.nextCardLeadSec).coerceAtLeast(0)) {
+                prefs.nextCardLeadSec = leads[it]
+            }
+        }
 
         header("App")
         row("Check for updates", updateStatus ?: "Version ${updater.installedName}") {
@@ -598,6 +608,7 @@ class SettingsPanels(
     }
 
     companion object {
+        private val NEXT_CARD_LEADS = listOf(15, 20, 30, 45, 60)
         const val FILE_POSITION = "As in the file"
         /** The pods above the time bar, by their keys in [Prefs.hiddenChips]. */
         val CHIPS = listOf("quality" to "Quality", "fps" to "Frame rate", "sound" to "Sound", "source" to "Source")

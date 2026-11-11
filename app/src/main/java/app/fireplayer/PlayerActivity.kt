@@ -89,7 +89,7 @@ import app.fireplayer.subs.PictureText
 import app.fireplayer.subs.SubtitlePresets
 import app.fireplayer.subs.SubtitleStyler
 import app.fireplayer.ui.CountdownPill
-import app.fireplayer.player.IntroDb
+import app.fireplayer.player.SkipTimes
 import app.fireplayer.player.MkvChapters
 import app.fireplayer.player.Segments
 import app.fireplayer.ui.EpisodesSheet
@@ -229,10 +229,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     // Where the end card's count started, and how long it runs.
     private var postPlayFrom = 0L
     private var postPlayCountMs = POST_PLAY_COUNT_MS
+    // What the end card offers: the next episode, or Exit once only a film's (or last episode's) credits remain.
+    private var postPlayExit = false
+    private var postPlayIcon: android.graphics.drawable.Drawable? = null
 
     // Where this episode's intro and credits are ([Segments]), worked out for [segmentsFor] (entry key and episode).
     private var segments: Segments? = null
-    private var segmentsFor: String? = null
+    @Volatile private var segmentsFor: String? = null
+    // One look-up at a time; one for an episode no longer playing is dropped before it asks anything.
+    private val segmentWorker = Executors.newSingleThreadExecutor()
     // A file's own chapters, read once per file, by entry key (null: it has none to use).
     private val chapterSegments = HashMap<String, Segments?>()
     private lateinit var skipButton: CountdownPill
@@ -632,6 +637,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         backdrop?.release()
         autoSync.release()
         io.shutdownNow()
+        segmentWorker.shutdownNow()
         handler.removeCallbacksAndMessages(null)
         FontImport.stopAll()
     }
@@ -1328,6 +1334,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
         // A jump while already waiting is a new wait (the state doesn't change), so the percentage starts again.
         if (reason == Player.DISCONTINUITY_REASON_SEEK) {
+            restartPostPlayCount(newPosition.positionMs)
             shownPercent = 0
             percentFrom = SystemClock.elapsedRealtime()
             glassAfterSeek = true
@@ -1602,6 +1609,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         skipButton.setOnClickListener { skipPart() }
         dimmer = findViewById(R.id.dimmer)
         postPlayGo.countdown = { postPlayProgress() }
+        postPlayIcon = postPlayGo.compoundDrawablesRelative[0]
         bufferingInfo = findViewById(R.id.buffering_info)
         scrimTop = findViewById(R.id.scrim_top)
         scrimBottom = findViewById(R.id.scrim_bottom)
@@ -1757,7 +1765,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val p = player ?: return
         if (lookupWantedAt == 0L || p.playbackState != Player.STATE_READY) return
         val duration = p.duration
-        val nearEnd = duration != C.TIME_UNSET && duration - p.currentPosition < POST_PLAY_LEAD_MS + LOOKUP_BEFORE_END_MS
+        val nearEnd = duration != C.TIME_UNSET && duration - p.currentPosition < maxOf(POST_PLAY_LEAD_MS, prefs.nextCardLeadSec * 1000L) + LOOKUP_BEFORE_END_MS
         val free = p.totalBufferedDuration >= LOOKUP_AHEAD_MS || !p.isLoading || nearEnd ||
             SystemClock.elapsedRealtime() - lookupWantedAt >= LOOKUP_WAIT_MS
         if (!free) return
@@ -1830,10 +1838,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     /**
-     * The end of an episode, Netflix-style: when a show has a next episode, a card comes up [POST_PLAY_LEAD_MS] before
-     * the end (where the credits usually roll), and Next episode fills up over [POST_PLAY_COUNT_MS] of playing (less
-     * when the card comes up later, so it's full by the end), then starts it. Paused, the count waits too. Watch credits
-     * puts the card away; the next episode then starts at the end.
+     * The end of an episode, Netflix-style: when a show has a next episode, a card comes up where the credits start
+     * (or, without times for them, [Prefs.nextCardLeadSec] before the end). Next episode fills up until the real end
+     * and never starts it by itself early: pressing it does, or the end. Watch credits puts the card away.
+     * With nothing next, once only the credits remain (they surely run to the end, nothing after them), "Exit · 10s"
+     * counts 10 s of playing, then leaves; Keep watching puts it away, pausing pauses it, a jump starts it again.
      */
     private fun updatePostPlay() {
         val p = player
@@ -1845,25 +1854,48 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // Where the credits start, when this file's chapters or TheIntroDB say so; something after them (a scene, a
         // preview) means no card at all: the next episode starts when this one really ends.
         val parts = segments?.takeIf { segmentsFor?.startsWith(entries.getOrNull(index)?.key + "|") == true }
-        val credits = parts?.endCardAt?.takeIf { known && it >= duration / 2 && it < duration - 5_000 }
+        fun inCredits(at: Long?) = at?.takeIf { known && it >= duration / 2 && it < duration - 5_000 }
+        val credits = inCredits(parts?.endCardAt)
         val playsToEnd = parts?.afterCredits != null
-        val showAt = credits ?: (duration - POST_PLAY_LEAD_MS)
+        // Next episode when there's one to play; else Exit, but only where the credits surely run to the end (a scene
+        // after them, or not knowing, means no Exit).
+        val nextOk = next?.nextEpisode == true && prefs.playNextEpisode
+        val exitAt = if (!nextOk && next == null && prefs.skipIntro) inCredits(parts?.exitAt) else null
+        val exit = !nextOk && exitAt != null
+        val showAt = when {
+            exit -> exitAt!!
+            else -> credits ?: (duration - prefs.nextCardLeadSec * 1000L)
+        }
         // Going back out of the credits brings the card back when they come again.
         if (known && postPlayDismissedFor == index && position < showAt - 5_000) postPlayDismissedFor = -1
-        val due = p != null && next?.nextEpisode == true && prefs.playNextEpisode && !sleepAtEnd && known &&
+        val due = p != null && (nextOk || exit) && !sleepAtEnd && known &&
             duration > 3 * POST_PLAY_LEAD_MS && !p.isCurrentMediaItemLive && position >= showAt &&
-            !playsToEnd && postPlayDismissedFor != index && !seeking && !controlsShown && !panel.isOpen && !episodesSheet.isOpen &&
-            errorBox.visibility != View.VISIBLE && !resumeDialogShowing
-        if (!due || p == null || next == null) {
+            (exit || !playsToEnd) && postPlayDismissedFor != index && !seeking && !controlsShown && !panel.isOpen &&
+            !episodesSheet.isOpen && errorBox.visibility != View.VISIBLE && !resumeDialogShowing
+        if (!due || p == null || (!exit && next == null)) {
             if (postPlay.visibility == View.VISIBLE) hidePostPlay()
             return
         }
+        // Up for the other kind (a next episode turned up, say): it comes back as the right one.
+        if (postPlay.visibility == View.VISIBLE && postPlayExit != exit) hidePostPlay()
         if (postPlay.visibility != View.VISIBLE) {
-            postPlayNext.text = "Next · " + (guideEpisode(next)?.let { e -> e.label + if (e.name.isNotEmpty()) " · ${e.name}" else "" }
-                ?: next.info.subtitle ?: next.info.title)
-            // The count starts with the card, however late in the credits that is.
+            postPlayExit = exit
+            if (exit) {
+                postPlayNext.visibility = View.GONE
+                postPlayCredits.text = "Keep watching"
+                postPlayGo.setCompoundDrawablesRelativeWithIntrinsicBounds(null, null, null, null)
+            } else {
+                postPlayNext.visibility = View.VISIBLE
+                postPlayNext.text = "Next · " + (guideEpisode(next!!)?.let { e -> e.label + if (e.name.isNotEmpty()) " · ${e.name}" else "" }
+                    ?: next.info.subtitle ?: next.info.title)
+                postPlayCredits.text = "Watch credits"
+                postPlayGo.setCompoundDrawablesRelativeWithIntrinsicBounds(postPlayIcon, null, null, null)
+                postPlayGo.text = "Next episode"
+            }
+            // The count starts with the card. Exit counts 10 s of playing; Next episode fills up to the real end and
+            // never starts it early: the next one plays when this one ends, or when Next episode is pressed.
             postPlayFrom = position
-            postPlayCountMs = minOf(POST_PLAY_COUNT_MS, duration - position).coerceAtLeast(1L)
+            postPlayCountMs = if (exit) EXIT_COUNT_MS else (duration - position).coerceAtLeast(1L)
             countShown = 0f
             countShownAt = 0L
             postPlayGo.counting = true
@@ -1874,7 +1906,35 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         // The fill follows every frame by itself; this only wakes it after a pause.
         postPlayGo.invalidate()
-        if (position >= postPlayFrom + postPlayCountMs && p.playWhenReady) playNextEpisode()
+        if (exit) {
+            val left = ((postPlayFrom + postPlayCountMs - position + 999) / 1000).coerceAtLeast(0)
+            val label = "Exit · ${left}s"
+            if (postPlayGo.text.toString() != label) postPlayGo.text = label
+            // Paused, the position stands still and so does the count.
+            if (position >= postPlayFrom + postPlayCountMs && p.playWhenReady) exitAfterCredits()
+        }
+    }
+
+    /** Exit, after a film's credits: watched to the end, back to where it was opened from. */
+    private fun exitAfterCredits() {
+        val p = player ?: return
+        hidePostPlay()
+        completed = true
+        entries.getOrNull(p.currentMediaItemIndex)?.let {
+            prefs.savePosition(it.key, 0L)
+            noteWatched(it, p.currentPosition, p.duration, finished = true, live = p.isCurrentMediaItemLive)
+        }
+        finishWithResult()
+    }
+
+    /** A jump while the end card is up starts its count again from there. */
+    private fun restartPostPlayCount(position: Long) {
+        if (postPlay.visibility != View.VISIBLE) return
+        val duration = player?.duration ?: return
+        postPlayFrom = position
+        postPlayCountMs = if (postPlayExit) EXIT_COUNT_MS else (duration - position).coerceAtLeast(1L)
+        countShown = 0f
+        countShownAt = 0L
     }
 
     // The count as last drawn, and when: the fill glides on its own clock between the player's position updates.
@@ -1911,6 +1971,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (p != null && entry != null && duration != C.TIME_UNSET && duration > 0 && !p.isCurrentMediaItemLive) {
             lookUpSegments(entry, duration)
         }
+        // Back before a part whose button was put away (watching it again): the button comes back with it.
+        if (p != null && skipDismissed >= 0 && p.currentPosition < skipDismissed) skipDismissed = -1L
         val skip = if (p == null) null else segments?.skip(p.currentPosition)
         val show = skip != null && skip.start != skipDismissed && prefs.skipIntro && !seeking && !controlsShown &&
             !panel.isOpen && !episodesSheet.isOpen && postPlay.visibility != View.VISIBLE &&
@@ -1937,14 +1999,17 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     /**
-     * Finds where this episode's recap, intro and credits are: the file's own chapters first (exact for this file),
-     * then TheIntroDB for what they don't say, for an episode surely matched to TMDB and only when the file's length
-     * agrees with TMDB's (see [IntroDb]). Asked again when the episode or its match changes.
+     * Finds where this episode's (or film's) recap, intro and credits are: the file's own chapters first (exact for
+     * this file), then SkipDB, then IntroDB for what neither says (see [SkipTimes]), by the IMDb id TMDB gives for an
+     * episode surely matched to it, or a film. Asked again when the episode, its match or the file's length changes;
+     * an answer for anything no longer playing is dropped.
      */
     private fun lookUpSegments(entry: Entry, duration: Long) {
         val g = guide
         val ep = guideEpisode(entry)?.takeIf { g != null && g.tmdbId > 0 && it.match == ShowGuide.Match.SURE }
-        val want = entry.key + "|" + (ep?.let { "${g!!.tmdbId}/${it.season}/${it.number}" } ?: "-")
+        val film = ep == null && entry.info.episode == null && !NextEpisode.isEpisodeLink(entry.uri)
+        val want = entry.key + "|" + (ep?.let { "${g!!.tmdbId}/${it.season}/${it.number}" } ?: if (film) "film" else "-") +
+            "|" + duration / 1000
         if (want == segmentsFor) return
         segmentsFor = want
         segments = null
@@ -1957,20 +2022,32 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // A second, short connection to read the start of the file: only where previews are allowed one too.
         val readChapters = !known && prefs.seekPreviews && uri.scheme?.startsWith("http") == true &&
             uri.lastPathSegment?.endsWith(".mkv", ignoreCase = true) == true
-        if (ep == null && !readChapters && knownChapters == null) return
+        val online = tmdb.isConfigured && (ep != null || film)
+        if (!online && !readChapters && knownChapters == null) return
         val headers = headersFromIntent()
         val app = applicationContext
-        val tmdbShow = g?.tmdbId ?: 0
-        thread(name = "FirePlayerSegments", isDaemon = true, priority = Thread.MIN_PRIORITY) {
+        val showId = g?.tmdbId ?: 0
+        val fixed = if (film) matchFor(entry)?.tmdbId else null
+        if (segmentWorker.isShutdown) return
+        segmentWorker.execute {
+            if (segmentsFor != want) return@execute
             val chapters = if (readChapters) MkvChapters.segments(uri, headers, duration) else knownChapters
-            val db = ep?.let { IntroDb.episode(app, tmdbShow, it.season, it.number, it.tmdbMin, duration) }
+            // Only what the chapters don't say is asked for.
+            val db = if (!online || (chapters?.intro != null && chapters.creditsAt != null)) null else runCatching {
+                if (ep != null) {
+                    tmdb.ids(showId, true)?.let { SkipTimes.find(app, it.imdb, ep.season, ep.number, duration, ep.tmdbMin) }
+                } else {
+                    val id = fixed ?: filmTmdbId(entry)
+                    tmdb.ids(id, false)?.let { SkipTimes.find(app, it.imdb, null, null, duration, it.runtime) }
+                }
+            }.onFailure { android.util.Log.w("FirePlayerSegments", "Look-up failed", it) }.getOrNull()
             val found = chapters?.or(db) ?: db
             handler.post {
                 if (readChapters) chapterSegments[key] = chapters
                 if (isFinishing || segmentsFor != want) return@post
                 segments = found
                 if (found != null) android.util.Log.i("FirePlayerSegments", "From ${found.from}: recap ${found.recap}, " +
-                    "intro ${found.intro}, credits ${found.creditsAt}, after ${found.afterCredits}")
+                    "intro ${found.intro}, credits ${found.creditsAt}, after ${found.afterCredits}, to end ${found.creditsToEnd}")
             }
         }
     }
@@ -2892,7 +2969,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             }
             if (isOk) {
                 if (event.repeatCount == 0) {
-                    if (postPlayCredits.isFocused) dismissPostPlay() else playNextEpisode()
+                    if (postPlayCredits.isFocused) dismissPostPlay() else if (postPlayExit) exitAfterCredits() else playNextEpisode()
                 }
                 return true
             }
@@ -4240,6 +4317,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         /** How long the decoder list may take before the player says the decoder service is stuck. */
         private const val DECODER_STUCK_MS = 10_000L
         const val POST_PLAY_LEAD_MS = 20_000L
+        const val EXIT_COUNT_MS = 10_000L
         private const val AUDIO_KEPT = 300
         private val FOCUS_EASE = DecelerateInterpolator(1.4f)
         private const val LOADING = "Loading from TMDB…"
