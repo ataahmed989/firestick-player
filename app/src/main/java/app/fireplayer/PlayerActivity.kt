@@ -375,6 +375,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     /** Whether the current player was built with libass ("Keep embedded styling" on). */
     private var builtWithAss = false
     private var matchedFpsForIndex = -1
+    // The video the TV wouldn't stay on the film's rate for: not asked again (see rematchFrameRate). And how often it was
+    // asked again for the video playing.
+    private var refusedForIndex = -1
+    private var rematches = 0
     private var displayMode = 0
 
     // Seeking
@@ -926,6 +930,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             speechTap = speechTap,
         )
         vsyncFix = vsync.also { it.start() }
+        // The TV's mode can change under the film (turned on, reconnected): its rate is asked for again then.
+        frameRateMatcher.watch { rematchFrameRate() }
         val p = built.player
         player = p
         threadBeat = ThreadBeat(p.playbackLooper)
@@ -1027,6 +1033,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         countPlaying(false)
         vsyncFix?.stop()
         vsyncFix = null
+        frameRateMatcher.unwatch()
         threadBeat = null
         p.removeListener(this)
         // Its listener is gone, so the glass won't hear that it stopped playing.
@@ -1351,6 +1358,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             pictureText.discardAhead()
             // Another episode: the refresh rate is checked again, and the sound and subtitles picked are matched.
             matchedFpsForIndex = -1
+            refusedForIndex = -1
+            rematches = 0
             reapplyWishes = trackWishes.isNotEmpty()
         }
         playingIndex = now
@@ -2670,16 +2679,70 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (fps <= 0) return
         matchedFpsForIndex = p.currentMediaItemIndex
         val wasPlaying = p.playWhenReady
-        val switching = frameRateMatcher.match(fps)
-        if (switching) displaySwitchAt = SystemClock.elapsedRealtime()
-        if (switching && wasPlaying) {
-            // The TV blanks for a moment while it switches; don't play through it.
-            p.pause()
-            pausedForSwitch = true
-            handler.removeCallbacks(resumeAfterSwitch)
-            handler.postDelayed(resumeAfterSwitch, DISPLAY_SWITCH_PAUSE_MS)
+        switchFor(frameRateMatcher.match(fps), wasPlaying)
+    }
+
+    /** The TV was asked for another mode ([switching]): the film waits for the picture if it was playing. */
+    private fun switchFor(switching: Boolean, wasPlaying: Boolean) {
+        if (!switching) return
+        displaySwitchAt = SystemClock.elapsedRealtime()
+        if (!wasPlaying) return
+        // The TV blanks for a moment while it switches; don't play through it.
+        player?.pause()
+        pausedForSwitch = true
+        handler.removeCallbacks(resumeAfterSwitch)
+        handler.postDelayed(resumeAfterSwitch, DISPLAY_SWITCH_PAUSE_MS)
+    }
+
+    /**
+     * The TV's mode changed under the film and has settled: turned on, reconnected, or Fire OS putting its own mode back
+     * (once the TV came on at 59.94 Hz in the middle of a 23.976 fps film, and stayed there). If the film's rate was
+     * matched and the mode no longer suits it, it's asked for again, with the usual pause. A TV that leaves the mode
+     * again right after being asked won't keep it: this video doesn't ask again.
+     */
+    private fun rematchFrameRate() {
+        val p = player ?: return
+        val index = p.currentMediaItemIndex
+        val fps = selectedFormat(C.TRACK_TYPE_VIDEO)?.frameRate ?: Format.NO_VALUE.toFloat()
+        val now = SystemClock.elapsedRealtime()
+        val matchOn = prefs.matchFrameRate
+        val decision = FrameRateMatcher.rematch(
+            nowMs = now,
+            matchOn = matchOn,
+            matchedThisFilm = matchedFpsForIndex == index,
+            refused = refusedForIndex == index,
+            fps = fps,
+            suits = !matchOn || fps <= 0 || frameRateMatcher.suits(fps),
+            switchAtMs = displaySwitchAt,
+            askedAtMs = frameRateMatcher.askedAt,
+            settleMs = DISPLAY_SETTLE_MS,
+            refusedMs = REMATCH_REFUSED_MS,
+        )
+        when (decision) {
+            is FrameRateMatcher.Rematch.Wait -> {
+                handler.removeCallbacks(rematchLater)
+                handler.postDelayed(rematchLater, decision.ms)
+            }
+            FrameRateMatcher.Rematch.Refused -> {
+                refusedForIndex = index
+                android.util.Log.i(TAG, "The TV went back to ${tvHz()} Hz right after being asked for the film's rate: " +
+                    "not asking again for this video")
+            }
+            FrameRateMatcher.Rematch.Ask -> {
+                // A TV that keeps going back, however slowly, is left alone after a few tries: no pause again and again.
+                if (++rematches >= REMATCH_MAX) refusedForIndex = index
+                android.util.Log.i(TAG, "The TV went to ${tvHz()} Hz while the film plays (turned on or reconnected): " +
+                    "asking for ${FpsMeter.snap(fps)} fps again")
+                switchFor(frameRateMatcher.match(fps, again = true), p.playWhenReady)
+            }
+            FrameRateMatcher.Rematch.Leave -> Unit
         }
     }
+
+    private val rematchLater = Runnable { rematchFrameRate() }
+
+    @Suppress("DEPRECATION")
+    private fun tvHz(): String = "%.3f".format(Locale.US, windowManager.defaultDisplay?.refreshRate ?: 0f)
 
     private val resumeAfterSwitch = Runnable {
         pausedForSwitch = false
@@ -3901,7 +3964,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             if (prefs.playNextEpisode != playNext) nextEpisodeSwitched()
             // Only when the setting itself changed: matching again would pause the film for nothing.
             if (prefs.matchFrameRate != matchFps) {
-                if (prefs.matchFrameRate) { matchedFpsForIndex = -1; matchFrameRate() } else frameRateMatcher.reset()
+                if (prefs.matchFrameRate) {
+                    matchedFpsForIndex = -1
+                    refusedForIndex = -1
+                    rematches = 0
+                    matchFrameRate()
+                } else {
+                    frameRateMatcher.reset()
+                }
             }
             refreshLabels()
         }) {
@@ -4888,6 +4958,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         const val DEVICE_RETRY_WINDOW_MS = 60_000L
         /** How long after a refresh-rate switch the TV's sound output may still be coming back. */
         const val DISPLAY_SETTLE_MS = 3_000L
+        /** The TV leaving the film's mode this soon after it was asked for won't keep it: not asked again. */
+        const val REMATCH_REFUSED_MS = 10_000L
+        /** The most times one video asks for its rate again after the TV changed mode under it. */
+        const val REMATCH_MAX = 3
         /** File missing, no permission and cleartext blocked won't fix themselves. */
         val NOT_RETRIED = setOf(
             PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND,
