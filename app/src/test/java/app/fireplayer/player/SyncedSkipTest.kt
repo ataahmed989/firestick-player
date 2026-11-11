@@ -137,6 +137,10 @@ class SyncedSkipTest {
     fun aSecondAcrossAChangeCountsForNeitherSide() {
         // The change at 5:00.5; second 300 was matched under the later offset only. Nothing before it was heard again.
         val sync = mapping(listOf(Segment(0, 0), Segment(300_500, 60_000)), BitSet().apply { set(300); set(360, 600) })
+        // 3:50 maps only under the first offset (under the second it would be 4:50, before the change): the only talking
+        // within reach is second 300, which straddles the change, so it doesn't count.
+        assertNull(sync.fileTimeOf(230_000))
+        // 4:10 could be either side of the change: nothing either.
         assertNull(sync.fileTimeOf(250_000))
         assertEquals(460_000L, sync.fileTimeOf(400_000))
     }

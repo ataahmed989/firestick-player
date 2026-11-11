@@ -260,6 +260,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private var skipTarget = -1L
     // The part whose button was put away with Back, so it doesn't come straight back.
     private var skipDismissed = -1L
+    // Where the part whose button was put away (or slipped away) began before auto sync's offsets moved it later:
+    // only going back before that brings the button back, not playing on into its new start.
+    private var skipDismissedFrom = -1L
+    private var skipFadedFrom = -1L
     private lateinit var bufferingInfo: TextView
     private lateinit var scrimTop: View
     private lateinit var scrimBottom: View
@@ -2036,8 +2040,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         if (segmentsWait && skipButton.visibility != View.VISIBLE && skipPod.visibility != View.VISIBLE) takeSegments(segmentsWaiting)
         // Back before a part whose button was put away (watching it again): the button comes back with it.
-        if (p != null && skipDismissed >= 0 && p.currentPosition < skipDismissed) skipDismissed = -1L
-        if (p != null && skipFadedFor >= 0 && p.currentPosition < skipFadedFor) { skipFadedFor = -1L; skipShownFor = -1L }
+        if (p != null && skipDismissed >= 0 && p.currentPosition < earliest(skipDismissed, skipDismissedFrom)) {
+            skipDismissed = -1L
+            skipDismissedFrom = -1L
+        }
+        if (p != null && skipFadedFor >= 0 && p.currentPosition < earliest(skipFadedFor, skipFadedFrom)) {
+            skipFadedFor = -1L
+            skipShownFor = -1L
+            skipFadedFrom = -1L
+        }
         val skip = if (p == null) null else segments?.skip(p.currentPosition)
         val free = skip != null && prefs.skipIntro && !seeking && !panel.isOpen && !episodesSheet.isOpen &&
             postPlay.visibility != View.VISIBLE && errorBox.visibility != View.VISIBLE && !resumeDialogShowing
@@ -2059,6 +2070,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val now = SystemClock.uptimeMillis()
         if (skip != null && skipShownFor == skip.start && skipFadedFor != skip.start && now - skipShownAt >= SKIP_SHOWN_MS) {
             skipFadedFor = skip.start
+            skipFadedFrom = -1L
             if (skipButton.visibility == View.VISIBLE) {
                 // Untouched: it fades and slips down out of the way.
                 skipButton.animate().alpha(0f).translationY(24 * resources.displayMetrics.density).setDuration(400)
@@ -2123,6 +2135,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             segmentsWaiting = null
             segmentsWait = false
             skipDismissed = -1L
+            skipDismissedFrom = -1L
+            skipFadedFrom = -1L
         }
         if (!prefs.skipIntro) return
         // Auto sync's confirmed offsets for these subtitles on this very file, if any (see [SyncMapping]).
@@ -2179,20 +2193,30 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
      * stays away, one showing isn't shown afresh.
      */
     private fun takeSegments(found: Segments?) {
-        val pos = player?.currentPosition
-        val old = if (pos == null) null else segments?.skip(pos)
-        val new = if (pos == null) null else found?.skip(pos)
-        if (old != null && new != null && old.label == new.label && old.start != new.start &&
-            old.start < new.target && new.start < old.target) {
-            if (skipDismissed == old.start) skipDismissed = new.start
-            if (skipFadedFor == old.start) skipFadedFor = new.start
-            if (skipShownFor == old.start) skipShownFor = new.start
-            if (skipStart == old.start) { skipStart = new.start; skipTarget = new.target }
+        val o = segments
+        if (o != null && found != null) {
+            fun credits(s: Segments) = s.creditsAt?.let { c -> s.afterCredits?.let { c..it } }
+            // The same part (recap, intro, credits) at a new place it still overlaps.
+            val moves = listOf(o.recap to found.recap, o.intro to found.intro, credits(o) to credits(found)).mapNotNull { (a, b) ->
+                if (a != null && b != null && a.first != b.first && a.first < b.last && b.first < a.last) a to b else null
+            }
+            fun moved(v: Long) = if (v < 0) v else moves.firstOrNull { it.first.first == v }?.second?.first ?: v
+            val dismissed = moved(skipDismissed)
+            if (dismissed > skipDismissed && skipDismissed >= 0) skipDismissedFrom = earliest(skipDismissed, skipDismissedFrom)
+            val faded = moved(skipFadedFor)
+            if (faded > skipFadedFor && skipFadedFor >= 0) skipFadedFrom = earliest(skipFadedFor, skipFadedFrom)
+            skipDismissed = dismissed
+            skipFadedFor = faded
+            skipShownFor = moved(skipShownFor)
+            moves.firstOrNull { it.first.first == skipStart }?.let { skipStart = it.second.first; skipTarget = it.second.last }
         }
         segments = found
         segmentsWaiting = null
         segmentsWait = false
     }
+
+    /** [at], or [from] when that's set and earlier. */
+    private fun earliest(at: Long, from: Long) = if (from >= 0) minOf(at, from) else at
 
     /**
      * Auto sync's confirmed offsets changed (more of the film matched, a break found, or none stand any more): the
@@ -3106,6 +3130,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             if (code == KeyEvent.KEYCODE_BACK) {
                 consumeBackUp = true
                 skipDismissed = skipStart
+                skipDismissedFrom = -1L
                 skipButton.visibility = View.GONE
                 return true
             }

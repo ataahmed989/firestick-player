@@ -142,10 +142,22 @@ class OffsetTracker(
         val v = verified.previousSetBit(sec(s.fromMs) - 1)
         val lastOk = if (v < sec(prevFrom)) prevFrom else minOf(s.fromMs, (v + 1) * 1000L)
         if (s.fromMs <= lastOk) return@mapIndexed s.fromMs
-        val a = frame(lastOk)
-        val b = frame(s.fromMs)
-        val unheardMs = ((b - a) - tl.heard.get(a, b).cardinality()) * 10L
-        if (unheardMs >= GAP_MS) lastOk else s.fromMs
+        // A jump: one stretch never heard of GAP_MS or more (as for a seek), not pieces dropped here and there.
+        if (longestUnheard(tl, frame(lastOk), frame(s.fromMs)) * 10L >= GAP_MS) lastOk else s.fromMs
+    }
+
+    /** The longest run of 10 ms marks in [from] until [to] never heard; stops once one is as long as a jump. */
+    private fun longestUnheard(tl: SpeechTimeline, from: Int, to: Int): Int {
+        var longest = 0
+        var f = tl.heard.nextClearBit(from)
+        while (f < to) {
+            val next = tl.heard.nextSetBit(f)
+            val end = if (next < 0 || next > to) to else next
+            longest = maxOf(longest, end - f)
+            if (longest * 10L >= GAP_MS) break
+            f = tl.heard.nextClearBit(end)
+        }
+        return longest
     }
     val confirmedCount: Int get() = verified.cardinality()
     val learning: Boolean get() = map.isEmpty()
@@ -616,7 +628,11 @@ class OffsetTracker(
         if (sure(wide, cur, RANGE_MS)) return wide to RANGE_MS
         if (nearMs <= EDGE_MS) return wide to RANGE_MS
         val near = SyncMatcher.match(h, lines, cur, nearMs)
-        if (sure(near, cur, nearMs) && abs(near.delayMs - wide.delayMs) <= AGREE_MS) return near to nearMs
+        // Only for a change of a second or more: closer than that, the shifts near the delay in use sit on the same
+        // peak's shoulder, and neither "sure" nor fresh talking can tell them from it (nor does beating it by enough
+        // apply below [SMALL_SHIFT_MS]).
+        if (sure(near, cur, nearMs) && abs(near.delayMs - wide.delayMs) <= AGREE_MS &&
+            abs(near.delayMs - cur) >= SMALL_SHIFT_MS) return near to nearMs
         return wide to RANGE_MS
     }
 

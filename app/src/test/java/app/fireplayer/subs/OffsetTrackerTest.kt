@@ -315,6 +315,40 @@ class OffsetTrackerTest {
     }
 
     @Test
+    fun judgingNearTheDelayInUseMakesNoChangeOfUnderASecond() {
+        // Sparse talking with no change at all, and with one 30 s ad: the shifts just beside the right one can look sure
+        // among those near it, but a change of under a second is never judged there, so none is made up.
+        for (seed in 1L..16L) {
+            val film = FakeFilm.make(seed, minutes = 50, delayMs = 1_400, noise = 0.2, missed = 0.3)
+            val p = Playback(film, OffsetTracker(film.subs))
+            p.play(film.lengthMs)
+            // One delay throughout (learnt within what sparse talking allows), no changes made up.
+            assertEquals("seed $seed: ${p.tracker.segments}\n${p.story()}", 1, p.tracker.segments.size)
+            assertTrue("seed $seed: ${p.tracker.segments}\n${p.story()}", near(1_400, p.tracker.segments[0].delayMs, 300))
+        }
+        val film = FakeFilm.make(7, minutes = 50, delayMs = 1_400, breaks = listOf(Break(20 * min, adMs = 30_000)), noise = 0.2, missed = 0.3)
+        val p = Playback(film, OffsetTracker(film.subs))
+        p.play(film.lengthMs)
+        assertTrue("${p.tracker.segments}\n${p.story()}", p.tracker.segments.all { near(1_400, it.delayMs, 300) || near(31_400, it.delayMs, 300) })
+        assertTrue("${p.tracker.segments}\n${p.story()}", near(31_400, p.tracker.delayAt(45 * min), 300))
+    }
+
+    @Test
+    fun soundDroppedHereAndThereIsNoJump() {
+        // Played straight through a break with a few seconds' sound missed every minute (the listener falling behind):
+        // the change is where the talking put it, not anywhere since the last stretch found right.
+        val film = FakeFilm.make(seed = 31, minutes = 40, delayMs = 500, breaks = listOf(Break(20 * min, adMs = 60_000)))
+        val p = Playback(film, OffsetTracker(film.subs))
+        p.play(film.lengthMs)
+        assertEquals(p.story(), 2, p.tracker.segments.size)
+        for (m in 1 until 40) {
+            val f = (m * min / 10).toInt()
+            p.timeline.heard.clear(f, f + 400)
+        }
+        assertEquals(p.tracker.segments.map { it.fromMs }, p.tracker.changeFrom(p.timeline))
+    }
+
+    @Test
     fun whereAChangeMayBeginAfterAJumpPastIt() {
         // Heard to 8:00, then a jump to 40:00, past a break at 25:00: the change is put where the viewer landed, but it
         // may be anywhere from the end of the talking found right before (about 8:00). Played through, it's known.
