@@ -508,6 +508,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 refreshLabels()
                 if (delayPanelOpen && panel.isOpen) panel.refresh()
             },
+            // The show this episode is of, when TMDB knows it: a bumper's jump found here is tried first in its others.
+            showKey = {
+                val g = guide
+                val entry = currentEntry()
+                if (g != null && g.tmdbId > 0 && entry != null && guideEpisode(entry) != null) "tmdb:${g.tmdbId}" else null
+            },
         )
         autoSync.onMappingChanged = { syncMappingChanged() }
         settingsPanels.onAutoSyncChanged = { autoSync.setOn(prefs.autoSync); followSubtitle() }
