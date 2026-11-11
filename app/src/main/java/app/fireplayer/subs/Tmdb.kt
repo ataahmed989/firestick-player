@@ -185,6 +185,46 @@ class Tmdb(private val key: () -> String, private val memory: Memory) {
         return Details(id, name, year, names)
     }
 
+    /** What Show details / Film details show: TMDB's cover, story and a few facts, in English. */
+    class About(
+        val name: String,
+        val year: String?,
+        val overview: String,
+        val tagline: String,
+        val poster: String?,
+        val genres: List<String>,
+        val rating: Double,
+        /** A film's length in minutes; 0 for a show or when unknown. */
+        val runtime: Int,
+        /** A show's seasons; 0 for a film. */
+        val seasons: Int,
+    )
+
+    /** A film or show's details by its TMDB id; null when TMDB has none. Blocks. */
+    fun about(id: Int, show: Boolean): About? {
+        val item = try {
+            JSONObject(request("${if (show) "tv" else "movie"}/$id", listOf("language" to "en-US")))
+        } catch (e: HttpError) {
+            if (e.code == 404) return null
+            throw e
+        }
+        val name = item.optString(if (show) "name" else "title").ifEmpty { item.optString(if (show) "original_name" else "original_title") }
+        if (name.isEmpty()) return null
+        val list = item.optJSONArray("genres")
+        val genres = if (list == null) emptyList() else (0 until list.length()).mapNotNull { list.optJSONObject(it)?.optString("name")?.ifEmpty { null } }
+        return About(
+            name = name,
+            year = item.optString(if (show) "first_air_date" else "release_date").take(4).takeIf { it.length == 4 },
+            overview = item.optString("overview"),
+            tagline = item.optString("tagline"),
+            poster = item.optString("poster_path").takeIf { it.startsWith("/") }?.let { "$IMAGES/w342$it" },
+            genres = genres.take(3),
+            rating = item.optDouble("vote_average", 0.0),
+            runtime = if (show) 0 else item.optInt("runtime"),
+            seasons = if (show) item.optInt("number_of_seasons") else 0,
+        )
+    }
+
     /** One episode of a show as TMDB lists it. [still] is a picture from it, ready to load. */
     class TvEpisode(
         val id: Int,

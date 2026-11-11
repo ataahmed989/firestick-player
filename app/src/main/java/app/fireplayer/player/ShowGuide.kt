@@ -403,12 +403,26 @@ class MatchFixes(context: Context) {
     /** Fix match on a film: the name it goes by, by the provider and its id for it. */
     fun film(portal: String, id: String): String? = prefs.getString("film|$portal|$id", null)
 
-    fun setFilm(portal: String, id: String, title: String) = prefs.edit().putString("film|$portal|$id", title).apply()
+    /** A film put right by hand: TMDB's id for it, its name and year (0 when TMDB gives none). */
+    class Film(val tmdbId: Int, val name: String, val year: Int)
+
+    /** The film as put right by hand, with its TMDB id; null for none, or one fixed before ids were kept. */
+    fun filmMatch(portal: String, id: String): Film? {
+        val parts = prefs.getString("filmtmdb|$portal|$id", null)?.split('\t') ?: return null
+        val tmdb = parts.getOrNull(0)?.toIntOrNull() ?: return null
+        return Film(tmdb, parts.getOrNull(2).orEmpty(), parts.getOrNull(1)?.toIntOrNull() ?: 0)
+    }
+
+    fun setFilm(portal: String, id: String, title: String, tmdbId: Int = 0, name: String = "", year: Int = 0) {
+        prefs.edit().putString("film|$portal|$id", title).apply {
+            if (tmdbId > 0) putString("filmtmdb|$portal|$id", "$tmdbId\t$year\t${name.replace('\t', ' ')}")
+        }.apply()
+    }
 
     /** Forgets every fix made for a provider (when its playlist is gone from TiviMate). */
     fun forgetPortal(portal: String) {
         val editor = prefs.edit()
-        prefs.all.keys.filter { it.startsWith("film|$portal|") || (it.startsWith("show|") && it.contains("/$portal|")) }
+        prefs.all.keys.filter { it.startsWith("film|$portal|") || it.startsWith("filmtmdb|$portal|") || (it.startsWith("show|") && it.contains("/$portal|")) }
             .forEach { editor.remove(it) }
         editor.apply()
     }

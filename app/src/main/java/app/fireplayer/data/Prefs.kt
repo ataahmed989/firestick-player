@@ -56,6 +56,11 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("play_next_episode", true)
         set(v) = sp.edit().putBoolean("play_next_episode", v).apply()
 
+    /** The info pods above the time bar left out by hand: "quality", "fps", "sound", "source". */
+    var hiddenChips: Set<String>
+        get() = sp.getStringSet("chips_hidden", emptySet())?.toSet().orEmpty()
+        set(v) = sp.edit().putStringSet("chips_hidden", v).apply()
+
     /** Skip intro / recap / credits buttons, and the end card at the credits, from chapters or TheIntroDB. */
     var skipIntro: Boolean
         get() = sp.getBoolean("skip_intro", true)

@@ -131,11 +131,12 @@ class CountdownPill @JvmOverloads constructor(context: Context, attrs: Attribute
     override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: android.graphics.Rect?) {
         super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
         val scale = if (gainFocus) 1.08f else 1f
-        animate().scaleX(scale).scaleY(scale).setDuration(120).start()
+        animate().scaleX(scale).scaleY(scale).setDuration(120).setInterpolator(EASE).start()
         refreshColors()
     }
 
     private companion object {
+        val EASE = android.view.animation.DecelerateInterpolator()
         const val PALE = 0x66333333
         // Light enough for the dark text, see-through enough to show the white filling it.
         const val PALE_COUNTING = 0xB3A6A6A6.toInt()

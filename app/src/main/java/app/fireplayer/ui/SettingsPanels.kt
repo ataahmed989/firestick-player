@@ -58,6 +58,7 @@ class SettingsPanels(
     // what "Check playlists now" said.
     private var titlesSession = -1
     private var detailsShown = false
+    private var playlistNoteShown = false
     private var arrowTurned = false
     private var checkValue: String? = null
     private var checkNote: String? = null
@@ -83,6 +84,11 @@ class SettingsPanels(
 
     /** Called when the glass look is turned on or off, so the screen behind can restyle its buttons. */
     var onLookChanged: () -> Unit = {}
+    /** Which info pods show above the time bar was changed. */
+    var onChipsChanged: () -> Unit = {}
+    // Whether the list of info pods is open (closed each time the window opens).
+    private var chipsOpen = false
+    private var chipsSession = -1
 
     /** Called after a font arrives from the phone (or is removed), so the subtitles can switch to it. */
     var onFontChanged: () -> Unit = {}
@@ -110,6 +116,26 @@ class SettingsPanels(
         }
 
         header("Look")
+        // A small list behind an arrow: which pods show above the time bar.
+        if (chipsSession != session) {
+            chipsSession = session
+            chipsOpen = false
+        }
+        val hidden = prefs.hiddenChips
+        val shownCount = CHIPS.count { it.first !in hidden }
+        dropdownRow("Info pods", "$shownCount of ${CHIPS.size}", Rows.Badge.INACTIVE, chipsOpen) {
+            chipsOpen = !chipsOpen
+            refresh()
+        }
+        if (chipsOpen) {
+            CHIPS.forEach { (key, label) ->
+                row(label, onOff(key !in hidden)) {
+                    prefs.hiddenChips = if (key in hidden) hidden - key else hidden + key
+                    onChipsChanged()
+                    refresh()
+                }
+            }
+        }
         row("Glass look", onOff(prefs.glassLook)) {
             prefs.glassLook = !prefs.glassLook
             Glass.on = prefs.glassLook
@@ -250,6 +276,7 @@ class SettingsPanels(
         if (session != titlesSession) {
             titlesSession = session
             detailsShown = false
+            playlistNoteShown = false
             checkValue = null
             checkNote = null
         }
@@ -303,7 +330,12 @@ class SettingsPanels(
                     }
                 }
             }
-            message("Removed a playlist from TiviMate? Its English names are deleted here a week after TiviMate last used it, or now from this list.")
+            // The explanation waits behind an arrow, as the titles' set-up details do.
+            dropdownRow("Removed a playlist from TiviMate?", null, Rows.Badge.INACTIVE, playlistNoteShown) {
+                playlistNoteShown = !playlistNoteShown
+                refresh()
+            }
+            if (playlistNoteShown) message("Its English names are deleted here a week after TiviMate last used it, or now from this list.")
         }
     }
 
@@ -558,6 +590,8 @@ class SettingsPanels(
 
     companion object {
         const val FILE_POSITION = "As in the file"
+        /** The pods above the time bar, by their keys in [Prefs.hiddenChips]. */
+        val CHIPS = listOf("quality" to "Quality", "fps" to "Frame rate", "sound" to "Sound", "source" to "Source")
         fun onOff(on: Boolean) = if (on) "On" else "Off"
 
         private const val ACTIVE = "Active"
