@@ -216,11 +216,27 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
                 }
             }
             pill.setOnClickListener { focusCard(0) }
-            pill.setOnKeyListener { _, keyCode, event ->
-                if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
-                    if (event.action == KeyEvent.ACTION_DOWN) focusCard(playingIndex().coerceAtLeast(0))
-                    true
-                } else keyCode == KeyEvent.KEYCODE_DPAD_UP
+            pill.setOnKeyListener { v, keyCode, event ->
+                val down = event.action == KeyEvent.ACTION_DOWN
+                when (keyCode) {
+                    KeyEvent.KEYCODE_DPAD_DOWN -> {
+                        if (down) focusCard(playingIndex().coerceAtLeast(0))
+                        true
+                    }
+                    // Explicit, so the remote always steps season to season.
+                    KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                        if (down) {
+                            val at = pills.indexOf(v) + if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) 1 else -1
+                            pills.getOrNull(at)?.let { next ->
+                                next.requestFocus()
+                                seasonsScroll.smoothScrollTo((next.left - dp(40)).coerceAtLeast(0), 0)
+                            }
+                        }
+                        true
+                    }
+                    KeyEvent.KEYCODE_DPAD_UP -> true
+                    else -> false
+                }
             }
             pills += pill
             seasonsRow.addView(pill, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(6) })
