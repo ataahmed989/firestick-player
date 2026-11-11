@@ -3595,23 +3595,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     /**
-     * Screen dimmer: Off, the levels 1 to 10 (the film only), and the customs, each with a display amount (the film)
-     * and a glass amount (all glass, Glass look). The custom on is set with arrows under the list; Custom 1 keeps
-     * changes at once, the others when Save custom is pressed. Whatever is picked or saved stays on for every video.
+     * Screen dimmer: the customs, then the one on, with its display amount (the film) and glass amount (all glass,
+     * Glass look) set with arrows. Custom 1 keeps changes at once, the others when Save custom is pressed. Whatever is
+     * picked or saved stays on for every video.
      */
     private fun openDimPanel(from: View) = openPanel("Screen dimmer", from) {
         val active = dimmer.active()
-        val level = dimmer.level
-        (0..10).forEach { l ->
-            row(if (l == 0) "Off" else "$l", checked = active == null && l == level) {
-                dimmer.chooseLevel(l)
-                applyDim()
-                refreshLabels()
-                refresh()
-            }
-        }
+        header("Customs")
         dimmer.customs().forEach { c ->
-            val on = c.id == active?.id
+            val on = c.id == active.id
             row(c.name, value = if (on) null else "${c.display}% · ${c.glass}%", checked = on) {
                 dimmer.chooseCustom(c.id)
                 applyDim()
@@ -3619,18 +3611,16 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 refresh()
             }
         }
-        if (active == null) {
-            message("Pick a custom to set the display and glass on their own.")
-            return@openPanel
-        }
         header(active.name)
         stepper("Display dimmer", "${active.display}%") { dir ->
             dimmer.stepDisplay(dir)
             applyDim()
+            refreshLabels()
         }
         stepper("Glass dimmer", "${active.glass}%") { dir ->
             dimmer.stepGlass(dir)
             applyDim()
+            refreshLabels()
         }
         row("Auto", if (active.auto) "On" else "Off") {
             dimmer.toggleAuto()
@@ -3644,9 +3634,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 else -> "Glass dimmer darkens every glass button and window."
             },
         )
-        if (dimmer.hasUnsaved()) message("Changed. Press Save custom to keep it.")
+        val changed = dimmer.hasUnsaved()
+        if (changed) message("Changed. Press Save custom to keep it.", accent = true)
         spacer(6)
-        row("Save custom") { saveCustomDim(this) }
+        // Blue, like the current choice, while there's something to save.
+        row("Save custom") { saveCustomDim(this) }.isSelected = changed
         if (active.id != Dimmer.FIRST_ID) {
             row("Delete \"${active.name}\"") {
                 FireDialog.ask(
@@ -3669,7 +3661,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
      * keeps its changes at once, so for it Save custom is for renaming it or making a new one.
      */
     private fun saveCustomDim(panel: SidePanel) {
-        val active = dimmer.active() ?: return
+        val active = dimmer.active()
         fun askName(title: String, initial: String, except: String?, done: (String) -> Unit) {
             SidePanel.prompt(this, title, initial) { name ->
                 val clean = name.trim()

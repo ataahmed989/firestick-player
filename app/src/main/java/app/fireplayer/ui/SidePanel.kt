@@ -125,10 +125,11 @@ class SidePanel(private val activity: Activity) {
         list.addView(tv, rows.listParams(top = 9, bottom = 3))
     }
 
-    fun message(text: String) {
+    /** A note under the rows; [accent] makes it blue, for something that needs doing, such as a change to save. */
+    fun message(text: String, accent: Boolean = false) {
         val tv = TextView(activity).apply {
             this.text = text
-            setTextColor(ContextCompat.getColor(activity, R.color.text_muted))
+            setTextColor(ContextCompat.getColor(activity, if (accent) R.color.accent else R.color.text_muted))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
             setLineSpacing(2f * rows.density, 1f)
         }
