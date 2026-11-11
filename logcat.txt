@@ -1,0 +1,64 @@
+--------- beginning of main
+11-11 09:02:12.932 W/app.fireplayer( 7446): Unexpected CPU variant for X86 using defaults: x86
+11-11 09:02:12.940 E/app.fireplayer( 7446): Not starting debugger since process cannot load the jdwp agent.
+11-11 09:02:13.051 D/NetworkSecurityConfig( 7446): No Network Security Config specified, using platform default
+11-11 09:02:13.051 D/NetworkSecurityConfig( 7446): No Network Security Config specified, using platform default
+11-11 09:02:13.120 D/AppCompatDelegate( 7446): Checking for metadata for AppLocalesMetadataHolderService : Service not found
+11-11 09:02:13.221 D/libEGL  ( 7446): loaded /vendor/lib/egl/libEGL_emulation.so
+11-11 09:02:13.222 D/libEGL  ( 7446): loaded /vendor/lib/egl/libGLESv1_CM_emulation.so
+11-11 09:02:13.239 I/VideoCapabilities( 7446): Unsupported profile 4 for video/mp4v-es
+11-11 09:02:13.331 D/libEGL  ( 7446): loaded /vendor/lib/egl/libGLESv2_emulation.so
+11-11 09:02:13.379 D/HostConnection( 7446): HostConnection::get() New Host Connection established 0xf524f580, tid 7473
+11-11 09:02:13.401 D/HostConnection( 7446): HostComposition ext ANDROID_EMU_CHECKSUM_HELPER_v1 ANDROID_EMU_native_sync_v2 ANDROID_EMU_dma_v1 ANDROID_EMU_direct_mem ANDROID_EMU_host_composition_v1 ANDROID_EMU_host_composition_v2 ANDROID_EMU_vulkan ANDROID_EMU_deferred_vulkan_commands ANDROID_EMU_vulkan_null_optional_strings ANDROID_EMU_vulkan_create_resources_with_requirements ANDROID_EMU_YUV_Cache ANDROID_EMU_vulkan_ignored_handles ANDROID_EMU_has_shared_slots_host_memory_allocator ANDROID_EMU_vulkan_free_memory_sync ANDROID_EMU_vulkan_shader_float16_int8 ANDROID_EMU_vulkan_async_queue_submit ANDROID_EMU_sync_buffer_data ANDROID_EMU_vulkan_async_qsri ANDROID_EMU_read_color_buffer_dma ANDROID_EMU_hwc_color_transform GL_OES_EGL_image_external_essl3 GL_OES_vertex_array_object GL_KHR_texture_compression_astc_ldr ANDROID_EMU_host_side_tracing ANDROID_EMU_gles_max_version_3_0 
+11-11 09:02:13.438 D/EGL_emulation( 7446): eglCreateContext: 0xf524f510: maj 3 min 0 rcv 3
+11-11 09:02:13.438 D/EGL_emulation( 7446): eglMakeCurrent: 0xf524f510: ver 3 0 (tinfo 0xf55fadf0) (first time)
+11-11 09:02:13.481 I/Gralloc4( 7446): mapper 4.x is not supported
+11-11 09:02:13.481 D/HostConnection( 7446): createUnique: call
+11-11 09:02:13.481 D/HostConnection( 7446): HostConnection::get() New Host Connection established 0xf5264660, tid 7473
+11-11 09:02:13.481 D/goldfish-address-space( 7446): allocate: Ask for block of size 0x100
+11-11 09:02:13.482 D/goldfish-address-space( 7446): allocate: ioctl allocate returned offset 0x3f7ffe000 size 0x2000
+11-11 09:02:13.505 D/HostConnection( 7446): HostComposition ext ANDROID_EMU_CHECKSUM_HELPER_v1 ANDROID_EMU_native_sync_v2 ANDROID_EMU_dma_v1 ANDROID_EMU_direct_mem ANDROID_EMU_host_composition_v1 ANDROID_EMU_host_composition_v2 ANDROID_EMU_vulkan ANDROID_EMU_deferred_vulkan_commands ANDROID_EMU_vulkan_null_optional_strings ANDROID_EMU_vulkan_create_resources_with_requirements ANDROID_EMU_YUV_Cache ANDROID_EMU_vulkan_ignored_handles ANDROID_EMU_has_shared_slots_host_memory_allocator ANDROID_EMU_vulkan_free_memory_sync ANDROID_EMU_vulkan_shader_float16_int8 ANDROID_EMU_vulkan_async_queue_submit ANDROID_EMU_sync_buffer_data ANDROID_EMU_vulkan_async_qsri ANDROID_EMU_read_color_buffer_dma ANDROID_EMU_hwc_color_transform GL_OES_EGL_image_external_essl3 GL_OES_vertex_array_object GL_KHR_texture_compression_astc_ldr ANDROID_EMU_host_side_tracing ANDROID_EMU_gles_max_version_3_0 
+11-11 09:02:13.800 I/ExoPlayerImpl( 7446): Init ded7d7e [AndroidXMedia3/1.8.0] [generic_x86, AOSP TV on x86, Google, 30]
+11-11 09:02:13.801 W/app.fireplayer( 7446): Accessing hidden method Landroid/media/MediaRouter2$RoutingController;->getRoutingSessionInfo()Landroid/media/RoutingSessionInfo; (blacklist, linking, denied)
+11-11 09:02:13.813 I/DefaultRenderersFactory( 7446): Loaded FfmpegVideoRenderer.
+11-11 09:02:13.814 I/DefaultRenderersFactory( 7446): Loaded FfmpegAudioRenderer.
+11-11 09:02:13.818 I/AssHandler( 7446): onSurfaceSizeChanged: width = 1920, height = 1080
+11-11 09:02:13.823 I/AssHandler( 7446): onMediaItemTransition: item = androidx.media3.common.MediaItem@c17b85b1, reason = 3
+11-11 09:02:14.012 I/Choreographer( 7446): Skipped 39 frames!  The application may be doing too much work on its main thread.
+11-11 09:02:14.059 I/AssHandler( 7446): setVideoSize: width = 1280, height = 720
+11-11 09:02:14.072 I/OpenGLRenderer( 7446): Davey! duration=713ms; Flags=1, IntendedVsync=186729065100, Vsync=187379065074, OldestInputEvent=9223372036854775807, NewestInputEvent=0, HandleInputStart=187383194858, AnimationStart=187383195999, PerformTraversalsStart=187383222138, DrawStart=187428780347, SyncQueued=187433062947, SyncStart=187433146741, IssueDrawCommandsStart=187433211086, SwapBuffers=187434448969, FrameCompleted=187443106175, DequeueBufferDuration=7760799, QueueBufferDuration=156452, GpuCompleted=0, 
+11-11 09:02:14.097 D/HostConnection( 7446): HostConnection::get() New Host Connection established 0xf5269830, tid 7548
+11-11 09:02:14.113 D/HostConnection( 7446): HostComposition ext ANDROID_EMU_CHECKSUM_HELPER_v1 ANDROID_EMU_native_sync_v2 ANDROID_EMU_dma_v1 ANDROID_EMU_direct_mem ANDROID_EMU_host_composition_v1 ANDROID_EMU_host_composition_v2 ANDROID_EMU_vulkan ANDROID_EMU_deferred_vulkan_commands ANDROID_EMU_vulkan_null_optional_strings ANDROID_EMU_vulkan_create_resources_with_requirements ANDROID_EMU_YUV_Cache ANDROID_EMU_vulkan_ignored_handles ANDROID_EMU_has_shared_slots_host_memory_allocator ANDROID_EMU_vulkan_free_memory_sync ANDROID_EMU_vulkan_shader_float16_int8 ANDROID_EMU_vulkan_async_queue_submit ANDROID_EMU_sync_buffer_data ANDROID_EMU_vulkan_async_qsri ANDROID_EMU_read_color_buffer_dma ANDROID_EMU_hwc_color_transform GL_OES_EGL_image_external_essl3 GL_OES_vertex_array_object GL_KHR_texture_compression_astc_ldr ANDROID_EMU_host_side_tracing ANDROID_EMU_gles_max_version_3_0 
+11-11 09:02:14.115 D/EGL_emulation( 7446): eglCreateContext: 0xf526a2b0: maj 3 min 0 rcv 3
+11-11 09:02:14.115 W/Gralloc4( 7446): allocator 3.x is not supported
+11-11 09:02:14.129 I/TetheringManager( 7446): registerTetheringEventCallback:app.fireplayer
+11-11 09:02:14.213 D/EGL_emulation( 7446): eglMakeCurrent: 0xf526a2b0: ver 3 0 (tinfo 0xc63498f0) (first time)
+11-11 09:02:14.290 W/AssRender( 7446): GL_EXT_unpack_subimage not supported, fallback to bitmap texture upload
+11-11 09:02:15.292 I/app.fireplayer( 7446): Background young concurrent copying GC freed 51079(3602KB) AllocSpace objects, 7(268KB) LOS objects, 84% free, 4662KB/28MB, paused 21us total 358.537ms
+11-11 09:02:18.154 E/libc    ( 7446): Access denied finding property "vendor.display-size"
+11-11 09:02:18.210 I/OMXClient( 7446): IOmx service obtained
+11-11 09:02:18.220 D/SurfaceUtils( 7446): connecting to surface 0xefbd1528, reason connectToSurface
+11-11 09:02:18.221 I/AssHandler( 7446): onTracksChanged androidx.media3.common.Tracks@2670b830
+11-11 09:02:18.222 I/MediaCodec( 7446): [OMX.google.h264.decoder] setting surface generation to 7624705
+11-11 09:02:18.222 D/SurfaceUtils( 7446): disconnecting from surface 0xefbd1528, reason connectToSurface(reconnect)
+11-11 09:02:18.222 D/SurfaceUtils( 7446): connecting to surface 0xefbd1528, reason connectToSurface(reconnect)
+11-11 09:02:18.222 I/AssHandler( 7446): setVideoSize: width = 1280, height = 720
+11-11 09:02:18.222 I/AssHandler( 7446): subtitle track disabled
+11-11 09:02:18.233 E/ACodec  ( 7446): [OMX.google.h264.decoder] setPortMode on output to DynamicANWBuffer failed w/ err -1010
+11-11 09:02:18.241 I/ACodec  ( 7446): codec does not support config priority (err -1010)
+11-11 09:02:18.423 I/OMXClient( 7446): IOmx service obtained
+11-11 09:02:18.457 I/ACodec  ( 7446): codec does not support config priority (err -2147483648)
+11-11 09:02:18.457 I/ACodec  ( 7446): codec does not support config operating rate (err -2147483648)
+11-11 09:02:18.610 I/FirePlayerSegments( 7446): Chapters: Cold open@0s, Intro@5s, Episode@60s, Credits@260s
+11-11 09:02:18.635 I/FirePlayerSegments( 7446): From chapters: recap null, intro 5000..60000, credits 260000, after null, to end true
+11-11 09:02:18.709 D/MediaCodec( 7446): [OMX.google.h264.decoder] setting dataspace on output surface to #104
+11-11 09:02:18.851 D/SoftwareRenderer( 7446): setting dataspace on output surface to #104
+11-11 09:02:18.852 I/AssHandler( 7446): onVideoSizeChanged: width = 1280, height = 720
+11-11 09:02:18.881 D/AudioTrack( 7446): getTimestamp_l(23): device stall time corrected using current time 192252541532
+11-11 09:02:19.118 D/ProfileInstaller( 7446): Skipping profile installation for app.fireplayer
+11-11 09:02:19.697 I/FirePlayerNext( 7446): Shows that may hold this episode: "EN - Breaking Bad (2008)"
+11-11 09:02:24.287 I/Choreographer( 7446): Skipped 36 frames!  The application may be doing too much work on its main thread.
+11-11 09:02:24.557 I/OpenGLRenderer( 7446): Davey! duration=762ms; Flags=0, IntendedVsync=197045840132, Vsync=197645840108, OldestInputEvent=9223372036854775807, NewestInputEvent=0, HandleInputStart=197658731887, AnimationStart=197658732348, PerformTraversalsStart=197658804074, DrawStart=197659285196, SyncQueued=197659294039, SyncStart=197779487667, IssueDrawCommandsStart=197828354318, SwapBuffers=197914675347, FrameCompleted=197928515826, DequeueBufferDuration=2010166, QueueBufferDuration=6954565, GpuCompleted=187679380030, 
+11-11 09:02:41.140 I/OpenGLRenderer( 7446): Davey! duration=1040ms; Flags=0, IntendedVsync=213411658571, Vsync=213411658571, OldestInputEvent=9223372036854775807, NewestInputEvent=0, HandleInputStart=213412394653, AnimationStart=213412395514, PerformTraversalsStart=213412455623, DrawStart=213415720556, SyncQueued=213420712716, SyncStart=213479664778, IssueDrawCommandsStart=213485133053, SwapBuffers=214466119280, FrameCompleted=214510807907, DequeueBufferDuration=36484, QueueBufferDuration=1535643, GpuCompleted=203801461593, 
+11-11 09:02:41.144 I/Choreographer( 7446): Skipped 61 frames!  The application may be doing too much work on its main thread.
+11-11 09:02:41.453 I/OpenGLRenderer( 7446): Davey! duration=1084ms; Flags=0, IntendedVsync=213495025112, Vsync=214511691738, OldestInputEvent=9223372036854775807, NewestInputEvent=0, HandleInputStart=214515443534, AnimationStart=214515443965, PerformTraversalsStart=214515603801, DrawStart=214515841994, SyncQueued=214516134687, SyncStart=214760845978, IssueDrawCommandsStart=214766197471, SwapBuffers=214815013347, FrameCompleted=214823848336, DequeueBufferDuration=59699, QueueBufferDuration=257251, GpuCompleted=203924339840, 
