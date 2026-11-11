@@ -142,9 +142,11 @@ key KEYCODE_BACK
 pid=$(adb shell pidof $PKG | tr -d '\r')
 adb logcat -d -v time ${pid:+--pid=$pid} | grep -E "FirePlayerNext|FirePlayerGuide|FirePlayerSegments|AndroidRuntime" | tail -100 > "$OUT/logcat-episodes.txt"
 
-# The next episode, started near its end: its chapters put the credits at 4:20, so the end card is up.
+# The next episode, started near its end: its chapters put the credits at 4:20 to the end, so the end card counts
+# 10 s and the last episode starts by itself.
 movie "http://10.0.2.2:8000/series/demo/demo/2004.mkv" "EN - Breaking Bad (2008) - S02E04 - Down" "--el position 262000"
-shot 21-credits-card 9
+shot 21-credits-card 8
+shot 21b-next-started 12
 pid=$(adb shell pidof $PKG | tr -d '\r')
 adb logcat -d -v time ${pid:+--pid=$pid} | grep -E "FirePlayerNext|FirePlayerSegments|AndroidRuntime" | tail -60 > "$OUT/logcat-credits.txt"
 
