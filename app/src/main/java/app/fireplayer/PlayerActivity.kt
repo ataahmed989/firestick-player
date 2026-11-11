@@ -2550,6 +2550,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             Glass.background(item.view.findViewById<View>(R.id.more_icon).parent as View, Glass.Kind.MORE_ICON)
         }
         Glass.background(errorBox, Glass.Kind.POPUP)
+        // The skip pods: clear glass while unselected, like the other buttons; classic keeps Netflix's flat grey.
+        for (pill in listOf(skipButton, skipPod)) {
+            if (Glass.on) Glass.background(pill, Glass.Kind.PILL) else pill.background = null
+            pill.glass = Glass.on
+        }
         (findViewById<FrameLayout>(R.id.preview_card)).foreground = ContextCompat.getDrawable(this, Glass.previewEdge)
     }
 
