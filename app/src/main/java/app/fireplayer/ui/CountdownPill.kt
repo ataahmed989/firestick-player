@@ -146,7 +146,8 @@ class CountdownPill @JvmOverloads constructor(context: Context, attrs: Attribute
             else -> PALE
         }
         val plain = !isFocused && !chosen && !counting
-        if (!(glass && plain)) canvas.drawRoundRect(rect, corner, corner, paint)
+        // On glass, the glass itself shows plain or selected (glossy white, blue ring), the same on every button.
+        if (!(glass && (plain || isFocused))) canvas.drawRoundRect(rect, corner, corner, paint)
         val progress = if (counting) countdown?.invoke()?.coerceIn(0f, 1f) ?: 0f else 0f
         if (progress > 0f) {
             // The same rounded shape in white, cut off straight where the count has got to. Drawn as one smoothed
