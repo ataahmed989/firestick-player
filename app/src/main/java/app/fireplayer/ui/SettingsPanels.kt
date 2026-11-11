@@ -160,6 +160,9 @@ class SettingsPanels(
             prefs.playNextEpisode = !prefs.playNextEpisode; refresh()
         }
         if (prefs.playNextEpisode) NextEpisode.status?.let { message(it) }
+        row("Skip intro and credits", onOff(prefs.skipIntro)) {
+            prefs.skipIntro = !prefs.skipIntro; refresh()
+        }
         row("Match frame rate", onOff(prefs.matchFrameRate)) {
             prefs.matchFrameRate = !prefs.matchFrameRate; refresh()
         }

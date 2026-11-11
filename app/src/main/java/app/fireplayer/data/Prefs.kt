@@ -56,6 +56,11 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("play_next_episode", true)
         set(v) = sp.edit().putBoolean("play_next_episode", v).apply()
 
+    /** Skip intro / recap / credits buttons, and the end card at the credits, from chapters or TheIntroDB. */
+    var skipIntro: Boolean
+        get() = sp.getBoolean("skip_intro", true)
+        set(v) = sp.edit().putBoolean("skip_intro", v).apply()
+
     var matchFrameRate: Boolean
         get() = sp.getBoolean("match_frame_rate", true)
         set(v) = sp.edit().putBoolean("match_frame_rate", v).apply()

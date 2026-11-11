@@ -85,6 +85,9 @@ import app.fireplayer.subs.PictureText
 import app.fireplayer.subs.SubtitlePresets
 import app.fireplayer.subs.SubtitleStyler
 import app.fireplayer.ui.CountdownPill
+import app.fireplayer.player.IntroDb
+import app.fireplayer.player.MkvChapters
+import app.fireplayer.player.Segments
 import app.fireplayer.ui.EpisodesSheet
 import app.fireplayer.ui.FireDialog
 import app.fireplayer.ui.Glass
@@ -217,6 +220,17 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     // Where the end card's count started, and how long it runs.
     private var postPlayFrom = 0L
     private var postPlayCountMs = POST_PLAY_COUNT_MS
+
+    // Where this episode's intro and credits are ([Segments]), worked out for [segmentsFor] (entry key and episode).
+    private var segments: Segments? = null
+    private var segmentsFor: String? = null
+    // A file's own chapters, read once per file, by entry key (null: it has none to use).
+    private val chapterSegments = HashMap<String, Segments?>()
+    private lateinit var skipButton: CountdownPill
+    private var skipStart = -1L
+    private var skipTarget = -1L
+    // The part whose button was put away with Back, so it doesn't come straight back.
+    private var skipDismissed = -1L
     private lateinit var bufferingInfo: TextView
     private lateinit var scrimTop: View
     private lateinit var scrimBottom: View
@@ -1486,6 +1500,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         postPlayNext = findViewById(R.id.post_play_next)
         postPlayCredits = findViewById(R.id.post_play_credits)
         postPlayGo = findViewById(R.id.post_play_go)
+        skipButton = findViewById(R.id.skip_button)
+        skipButton.setOnClickListener { skipPart() }
         dimmer = findViewById(R.id.dimmer)
         postPlayGo.countdown = { postPlayProgress() }
         bufferingInfo = findViewById(R.id.buffering_info)
@@ -1706,6 +1722,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private val postPlayTick = object : Runnable {
         override fun run() {
             lookUpWhenFree()
+            updateSkip()
             updatePostPlay()
             noteWhilePlaying()
             handler.postDelayed(this, 200)
@@ -1725,12 +1742,17 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val duration = p?.duration ?: C.TIME_UNSET
         val known = duration != C.TIME_UNSET
         val position = p?.currentPosition ?: 0L
-        val showAt = duration - POST_PLAY_LEAD_MS
+        // Where the credits start, when this file's chapters or TheIntroDB say so; something after them (a scene, a
+        // preview) means no card at all: the next episode starts when this one really ends.
+        val parts = segments?.takeIf { segmentsFor?.startsWith(entries.getOrNull(index)?.key + "|") == true }
+        val credits = parts?.endCardAt?.takeIf { known && it >= duration / 2 && it < duration - 5_000 }
+        val playsToEnd = parts?.afterCredits != null
+        val showAt = credits ?: (duration - POST_PLAY_LEAD_MS)
         // Going back out of the credits brings the card back when they come again.
         if (known && postPlayDismissedFor == index && position < showAt - 5_000) postPlayDismissedFor = -1
         val due = p != null && next?.nextEpisode == true && prefs.playNextEpisode && !sleepAtEnd && known &&
             duration > 3 * POST_PLAY_LEAD_MS && !p.isCurrentMediaItemLive && position >= showAt &&
-            postPlayDismissedFor != index && !seeking && !controlsShown && !panel.isOpen && !episodesSheet.isOpen &&
+            !playsToEnd && postPlayDismissedFor != index && !seeking && !controlsShown && !panel.isOpen && !episodesSheet.isOpen &&
             errorBox.visibility != View.VISIBLE && !resumeDialogShowing
         if (!due || p == null || next == null) {
             if (postPlay.visibility == View.VISIBLE) hidePostPlay()
@@ -1776,6 +1798,81 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         countShownAt = now
         return countShown
+    }
+
+    /**
+     * Skip intro, Skip recap or Skip credits (when something follows them), Netflix-style: shown while that part plays
+     * and the controls are down; OK jumps past it. Where the parts are comes from [lookUpSegments].
+     */
+    private fun updateSkip() {
+        val p = player
+        val entry = currentEntry()
+        val duration = p?.duration ?: C.TIME_UNSET
+        if (p != null && entry != null && duration != C.TIME_UNSET && duration > 0 && !p.isCurrentMediaItemLive) {
+            lookUpSegments(entry, duration)
+        }
+        val skip = if (p == null) null else segments?.skip(p.currentPosition)
+        val show = skip != null && skip.start != skipDismissed && prefs.skipIntro && !seeking && !controlsShown &&
+            !panel.isOpen && !episodesSheet.isOpen && postPlay.visibility != View.VISIBLE &&
+            errorBox.visibility != View.VISIBLE && !resumeDialogShowing
+        if (!show || skip == null) {
+            if (skipButton.visibility == View.VISIBLE) skipButton.visibility = View.GONE
+            return
+        }
+        skipStart = skip.start
+        skipTarget = skip.target
+        if (skipButton.text.toString() != skip.label) skipButton.text = skip.label
+        if (skipButton.visibility != View.VISIBLE) {
+            skipButton.alpha = 0f
+            skipButton.visibility = View.VISIBLE
+            skipButton.animate().alpha(1f).setDuration(250).start()
+            skipButton.requestFocus()
+        }
+    }
+
+    private fun skipPart() {
+        val p = player ?: return
+        skipButton.visibility = View.GONE
+        if (skipTarget > p.currentPosition) p.seekTo(skipTarget)
+    }
+
+    /**
+     * Finds where this episode's recap, intro and credits are: the file's own chapters first (exact for this file),
+     * then TheIntroDB for what they don't say, for an episode surely matched to TMDB and only when the file's length
+     * agrees with TMDB's (see [IntroDb]). Asked again when the episode or its match changes.
+     */
+    private fun lookUpSegments(entry: Entry, duration: Long) {
+        val g = guide
+        val ep = guideEpisode(entry)?.takeIf { g != null && g.tmdbId > 0 && it.match == ShowGuide.Match.SURE }
+        val want = entry.key + "|" + (ep?.let { "${g!!.tmdbId}/${it.season}/${it.number}" } ?: "-")
+        if (want == segmentsFor) return
+        segmentsFor = want
+        segments = null
+        skipDismissed = -1L
+        if (!prefs.skipIntro) return
+        val uri = entry.uri
+        val key = entry.key
+        val known = chapterSegments.containsKey(key)
+        val knownChapters = chapterSegments[key]
+        // A second, short connection to read the start of the file: only where previews are allowed one too.
+        val readChapters = !known && prefs.seekPreviews && uri.scheme?.startsWith("http") == true &&
+            uri.lastPathSegment?.endsWith(".mkv", ignoreCase = true) == true
+        if (ep == null && !readChapters && knownChapters == null) return
+        val headers = headersFromIntent()
+        val app = applicationContext
+        val tmdbShow = g?.tmdbId ?: 0
+        thread(name = "FirePlayerSegments", isDaemon = true, priority = Thread.MIN_PRIORITY) {
+            val chapters = if (readChapters) MkvChapters.segments(uri, headers, duration) else knownChapters
+            val db = ep?.let { IntroDb.episode(app, tmdbShow, it.season, it.number, it.tmdbMin, duration) }
+            val found = chapters?.or(db) ?: db
+            handler.post {
+                if (readChapters) chapterSegments[key] = chapters
+                if (isFinishing || segmentsFor != want) return@post
+                segments = found
+                if (found != null) android.util.Log.i("FirePlayerSegments", "From ${found.from}: recap ${found.recap}, " +
+                    "intro ${found.intro}, credits ${found.creditsAt}, after ${found.afterCredits}")
+            }
+        }
     }
 
     private fun hidePostPlay() {
@@ -2658,6 +2755,18 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (isOk && seeking) {
             commitSeek()
             return true
+        }
+        if (skipButton.visibility == View.VISIBLE && !controlsShown) {
+            if (isOk) {
+                if (event.repeatCount == 0) skipPart()
+                return true
+            }
+            if (code == KeyEvent.KEYCODE_BACK) {
+                consumeBackUp = true
+                skipDismissed = skipStart
+                skipButton.visibility = View.GONE
+                return true
+            }
         }
         if (postPlay.visibility == View.VISIBLE) {
             when (code) {
