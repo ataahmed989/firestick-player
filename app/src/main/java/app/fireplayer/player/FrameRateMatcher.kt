@@ -143,11 +143,8 @@ class FrameRateMatcher(private val activity: Activity) {
         /** Nothing: the mode suits, matching is off, or this film is done asking. */
         object Leave : Rematch()
 
-        /** The player's own switch is still settling: look again in [ms]. */
+        /** The player's own switch is still settling, or it asked a moment ago: look again in [ms]. */
         class Wait(val ms: Long) : Rematch()
-
-        /** The TV left the mode right after it was asked for: it won't keep it, so this film stops asking. */
-        object Refused : Rematch()
 
         /** Ask for the film's mode again. */
         object Ask : Rematch()
@@ -165,8 +162,13 @@ class FrameRateMatcher(private val activity: Activity) {
 
         /**
          * After the TV's mode changed under a film: [matchedThisFilm] means its rate was matched already (or found
-         * suiting), [refused] that the TV wouldn't keep it before. [switchAtMs] is when the player last had the TV switch,
+         * suiting), [refused] that it was asked for again the most times already. [switchAtMs] is when the player last had the TV switch,
          * [askedAtMs] when this window last asked for a mode.
+         *
+         * A mode that changes again within [againMs] of being asked for is asked for again only once that time is up,
+         * not taken as the TV refusing it: a TV coming on often drops its HDMI connection a second time a few seconds
+         * later (a soundbar or receiver coming on does too), and Fire OS puts its own mode back each time. Only the most
+         * asks for one video ends the asking.
          */
         fun rematch(
             nowMs: Long,
@@ -178,12 +180,13 @@ class FrameRateMatcher(private val activity: Activity) {
             switchAtMs: Long,
             askedAtMs: Long,
             settleMs: Long,
-            refusedMs: Long,
+            againMs: Long,
         ): Rematch {
             if (!matchOn || !matchedThisFilm || refused || fps <= 0f || suits) return Rematch.Leave
             val settling = switchAtMs + settleMs - nowMs
             if (switchAtMs > 0 && settling > 0) return Rematch.Wait(settling)
-            if (askedAtMs > 0 && nowMs - askedAtMs < refusedMs) return Rematch.Refused
+            val asked = askedAtMs + againMs - nowMs
+            if (askedAtMs > 0 && asked > 0) return Rematch.Wait(asked)
             return Rematch.Ask
         }
 

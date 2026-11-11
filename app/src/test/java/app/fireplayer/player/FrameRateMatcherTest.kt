@@ -64,7 +64,7 @@ class FrameRateMatcherTest {
         suits: Boolean = false,
         switchAt: Long = 0L,
         askedAt: Long = 0L,
-    ) = FrameRateMatcher.rematch(now, matchOn, matched, refused, fps, suits, switchAt, askedAt, settleMs = 3_000L, refusedMs = 10_000L)
+    ) = FrameRateMatcher.rematch(now, matchOn, matched, refused, fps, suits, switchAt, askedAt, settleMs = 3_000L, againMs = 10_000L)
 
     @Test
     fun theTvTurnedOnMinutesLaterIsAskedAgain() {
@@ -94,10 +94,17 @@ class FrameRateMatcherTest {
     }
 
     @Test
-    fun aTvThatLeavesTheModeRightAfterIsntAskedAgain() {
+    fun aTvThatLeavesTheModeRightAfterIsAskedAgainOnceTheTimeIsUp() {
+        // Asked when the TV came on, and Fire OS put its own mode back 4 s later (a second HDMI hotplug): not given up on.
         val now = 1_000_000L
-        assertSame(Rematch.Refused, rematch(now = now, switchAt = now - 4_000L, askedAt = now - 4_000L))
-        assertSame(Rematch.Refused, rematch(now = now, switchAt = now - 9_999L, askedAt = now - 9_999L))
+        val soon = rematch(now = now, switchAt = now - 4_000L, askedAt = now - 4_000L)
+        assertTrue(soon is Rematch.Wait)
+        assertEquals(6_000L, (soon as Rematch.Wait).ms)
+        assertEquals(1L, (rematch(now = now, switchAt = now - 9_999L, askedAt = now - 9_999L) as Rematch.Wait).ms)
         assertSame(Rematch.Ask, rematch(now = now, switchAt = now - 10_000L, askedAt = now - 10_000L))
+        // The film's own first ask counts the same: a soundbar turned on just after play is asked through.
+        assertEquals(8_000L, (rematch(now = now, askedAt = now - 2_000L) as Rematch.Wait).ms)
+        // Once the most asks are made for the video, nothing more.
+        assertSame(Rematch.Leave, rematch(now = now, refused = true, switchAt = now - 4_000L, askedAt = now - 4_000L))
     }
 }

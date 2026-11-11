@@ -18,7 +18,8 @@ import androidx.media3.exoplayer.video.MediaCodecVideoRenderer
  * Stick 4K Plus). Here the TV's refreshes are timed from when frames actually reached the screen, and each frame goes
  * to the refresh after the one before; the film's own times only move that on by a refresh when the two drift more
  * than [FramePacer.SLACK] of one apart, as they must when the film's rate isn't quite the TV's. When the screen's times
- * don't fit the refresh measured, frames go out on Media3's times and [VsyncFix] measures again (see [FramePacer]).
+ * don't fit the refresh measured, frames go out on Media3's times and [VsyncFix] measures again, until they fit again
+ * (see [FramePacer]).
  */
 @OptIn(UnstableApi::class)
 class PacedVideoRenderer(builder: Builder, private val vsync: VsyncFix) : MediaCodecVideoRenderer(builder) {
@@ -28,10 +29,14 @@ class PacedVideoRenderer(builder: Builder, private val vsync: VsyncFix) : MediaC
 
     private val rendered = MediaCodecAdapter.OnFrameRenderedListener { _, _, nanoTime ->
         val periodNs = vsync.tvPeriodNs
+        val wasOff = pacer.offGridPeriodNs != 0L
         if (pacer.rendered(nanoTime, vsync.unaligned, periodNs, vsync.modes)) {
             Log.i(TAG, "Frames reached the screen between the TV's refreshes as measured (every ${periodNs / 1000} us): " +
                 "Media3 times them until it's measured again")
             vsync.screenDisagrees()
+        } else if (wasOff && pacer.offGridPeriodNs == 0L) {
+            Log.i(TAG, "Frames reach the screen on the TV's refreshes as measured again (every ${periodNs / 1000} us): " +
+                "each on its own refresh again")
         }
     }
 

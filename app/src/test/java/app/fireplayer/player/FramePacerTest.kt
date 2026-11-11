@@ -82,6 +82,25 @@ class FramePacerTest {
         val after = run.gaps(from = from)
         val even = after.count { it == 2L || it == 3L }
         assertTrue("$even of ${after.size} even", even >= after.size * 99 / 100)
+        // Still judged on Media3's times, and still not fitting: left to Media3.
+        assertEquals(TvRefresh.periodNs(23.976f), run.pacer.offGridPeriodNs)
+    }
+
+    @Test
+    fun aScreenThatFitsAgainOnTheSameModeIsPacedAgain() {
+        // The TV off or reconnecting for a moment, with Fire OS keeping the 23.976 Hz mode: frames reach the screen out of
+        // step with the refresh measured, so they go out on Media3's times.
+        val pacer = FramePacer()
+        val period = TvRefresh.periodNs(23.976f)
+        Run(screenNs = TvRefresh.periodNs(59.94f), pacer = pacer, periodNs = period).play(48)
+        assertEquals(period, pacer.offGridPeriodNs)
+        // The TV back on the same mode, measured the same: once the frames fit its refreshes again, they're paced again.
+        val back = Run(screenNs = FILM_NS, pacer = pacer, periodNs = period)
+        back.play(200, startNs = 10_000_000_000L)
+        assertEquals(0L, pacer.offGridPeriodNs)
+        assertEquals(-1, back.trippedAfter)
+        assertTrue(back.gaps(from = 60).all { it == 1L })
+        assertNotEquals(20_000_000_000L, pacer.paced(20_000_000_000L, true, period, 1))
     }
 
     @Test

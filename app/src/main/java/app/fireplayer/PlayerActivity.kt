@@ -974,6 +974,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         retryPending = false
         handler.removeCallbacks(retryRunnable)
         rebuildOnRetry = false
+        // A new player behind the freeze message (a setting changed in front of it) answers it as OK would: the film is
+        // watched from the first step again, or a second freeze would go unseen.
+        if (frozeOut) freezeWatch.reset()
         frozeOut = false
         freezeWatch.jumped()
         cannotOpen = false
@@ -1279,6 +1282,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             }
             findNextEpisode()
             errorBox.visibility = View.GONE
+            // The stopped player loaded again behind the freeze message (a subtitle added): it plays, so it's answered.
+            if (frozeOut) {
+                frozeOut = false
+                freezeWatch.reset()
+            }
             waitingSince = 0L
             retries = 0
             retryPending = false
@@ -2698,7 +2706,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
      * The TV's mode changed under the film and has settled: turned on, reconnected, or Fire OS putting its own mode back
      * (once the TV came on at 59.94 Hz in the middle of a 23.976 fps film, and stayed there). If the film's rate was
      * matched and the mode no longer suits it, it's asked for again, with the usual pause. A TV that leaves the mode
-     * again right after being asked won't keep it: this video doesn't ask again.
+     * again right after being asked may still be coming on: it's asked again once [REMATCH_AGAIN_MS] have passed, up to
+     * [REMATCH_MAX] times for one video.
      */
     private fun rematchFrameRate() {
         val p = player ?: return
@@ -2716,20 +2725,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             switchAtMs = displaySwitchAt,
             askedAtMs = frameRateMatcher.askedAt,
             settleMs = DISPLAY_SETTLE_MS,
-            refusedMs = REMATCH_REFUSED_MS,
+            againMs = REMATCH_AGAIN_MS,
         )
         when (decision) {
             is FrameRateMatcher.Rematch.Wait -> {
                 handler.removeCallbacks(rematchLater)
                 handler.postDelayed(rematchLater, decision.ms)
             }
-            FrameRateMatcher.Rematch.Refused -> {
-                refusedForIndex = index
-                android.util.Log.i(TAG, "The TV went back to ${tvHz()} Hz right after being asked for the film's rate: " +
-                    "not asking again for this video")
-            }
             FrameRateMatcher.Rematch.Ask -> {
-                // A TV that keeps going back, however slowly, is left alone after a few tries: no pause again and again.
+                // A TV that keeps going back, soon or late, is left alone after a few tries: no pause again and again.
                 if (++rematches >= REMATCH_MAX) refusedForIndex = index
                 android.util.Log.i(TAG, "The TV went to ${tvHz()} Hz while the film plays (turned on or reconnected): " +
                     "asking for ${FpsMeter.snap(fps)} fps again")
@@ -4958,8 +4962,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         const val DEVICE_RETRY_WINDOW_MS = 60_000L
         /** How long after a refresh-rate switch the TV's sound output may still be coming back. */
         const val DISPLAY_SETTLE_MS = 3_000L
-        /** The TV leaving the film's mode this soon after it was asked for won't keep it: not asked again. */
-        const val REMATCH_REFUSED_MS = 10_000L
+        /**
+         * The TV leaving the film's mode this soon after it was asked for is asked again only when this is up: a TV coming
+         * on can drop its HDMI connection again a few seconds later, and Fire OS puts its own mode back each time.
+         */
+        const val REMATCH_AGAIN_MS = 10_000L
         /** The most times one video asks for its rate again after the TV changed mode under it. */
         const val REMATCH_MAX = 3
         /** File missing, no permission and cleartext blocked won't fix themselves. */
