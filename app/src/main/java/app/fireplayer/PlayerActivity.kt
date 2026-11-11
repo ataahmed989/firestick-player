@@ -55,6 +55,7 @@ import androidx.media3.exoplayer.source.LoadEventInfo
 import androidx.media3.exoplayer.source.MediaLoadData
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.SubtitleView
+import app.fireplayer.data.Dimmer
 import app.fireplayer.data.Prefs
 import app.fireplayer.history.ContinueWatching
 import app.fireplayer.history.WatchHistory
@@ -223,7 +224,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private lateinit var postPlayNext: TextView
     private lateinit var postPlayCredits: CountdownPill
     private lateinit var postPlayGo: CountdownPill
-    private lateinit var dimmer: View
+    private lateinit var dimmerView: View
+    private lateinit var dimmer: Dimmer
     // The episode whose end card was put away (Watch credits, or Back), so it doesn't come straight back.
     private var postPlayDismissedFor = -1
     // Where the end card's count started, and how long it runs.
@@ -486,6 +488,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         DecoderCheck.ask()
         setContentView(R.layout.activity_player)
         prefs = Prefs(this)
+        dimmer = Dimmer(this)
         presets = SubtitlePresets(prefs)
         styler = SubtitleStyler(this)
         pictureText = PictureText { handler.post { if (readingPictures != null) showCues() } }
@@ -1663,7 +1666,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         skipPod = findViewById(R.id.skip_pod)
         skipPod.pod = true
         skipPod.setOnClickListener { skipPart() }
-        dimmer = findViewById(R.id.dimmer)
+        dimmerView = findViewById(R.id.dimmer)
         postPlayGo.countdown = { postPlayProgress() }
         postPlayIcon = postPlayGo.compoundDrawablesRelative[0]
         bufferingInfo = findViewById(R.id.buffering_info)
@@ -2447,7 +2450,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         moreItems["audio"]?.value?.text = audio
         moreItems["audioDelay"]?.value?.text = formatDelay(delays.audioUs)
         moreItems["display"]?.value?.text = DISPLAY_MODES[displayMode]
-        moreItems["dim"]?.value?.text = prefs.dimLevel.let { if (it == 0) "Off" else "$it" }
+        moreItems["dim"]?.value?.text = dimmer.label()
         moreItems["sleep"]?.value?.text = sleepLabel()
         moreItems["settings"]?.value?.text = "Settings"
     }
@@ -3591,22 +3594,120 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
     }
 
+    /**
+     * Screen dimmer: Off, the levels 1 to 10 (the film only), and the customs, each with a display amount (the film)
+     * and a glass amount (all glass, Glass look). The custom on is set with arrows under the list; Custom 1 keeps
+     * changes at once, the others when Save custom is pressed. Whatever is picked or saved stays on for every video.
+     */
     private fun openDimPanel(from: View) = openPanel("Screen dimmer", from) {
-        (0..10).forEach { level ->
-            row(if (level == 0) "Off" else "$level", checked = level == prefs.dimLevel) {
-                prefs.dimLevel = level
+        val active = dimmer.active()
+        val level = dimmer.level
+        (0..10).forEach { l ->
+            row(if (l == 0) "Off" else "$l", checked = active == null && l == level) {
+                dimmer.chooseLevel(l)
                 applyDim()
                 refreshLabels()
                 refresh()
             }
         }
+        dimmer.customs().forEach { c ->
+            val on = c.id == active?.id
+            row(c.name, value = if (on) null else "${c.display}% · ${c.glass}%", checked = on) {
+                dimmer.chooseCustom(c.id)
+                applyDim()
+                refreshLabels()
+                refresh()
+            }
+        }
+        if (active == null) {
+            message("Pick a custom to set the display and glass on their own.")
+            return@openPanel
+        }
+        header(active.name)
+        stepper("Display dimmer", "${active.display}%") { dir ->
+            dimmer.stepDisplay(dir)
+            applyDim()
+        }
+        stepper("Glass dimmer", "${active.glass}%") { dir ->
+            dimmer.stepGlass(dir)
+            applyDim()
+        }
+        row("Auto", if (active.auto) "On" else "Off") {
+            dimmer.toggleAuto()
+            applyDim()
+            refresh()
+        }
+        message(
+            when {
+                !prefs.glassLook -> "Glass dimmer darkens the glass when Glass look is on (Settings, Look)."
+                active.auto -> "Auto keeps the glass as dim as the display."
+                else -> "Glass dimmer darkens every glass button and window."
+            },
+        )
+        if (dimmer.hasUnsaved()) message("Changed. Press Save custom to keep it.")
+        spacer(6)
+        row("Save custom") { saveCustomDim(this) }
+        if (active.id != Dimmer.FIRST_ID) {
+            row("Delete \"${active.name}\"") {
+                FireDialog.ask(
+                    this@PlayerActivity,
+                    "Delete \"${active.name}\"?",
+                    listOf<Pair<String, () -> Unit>>(
+                        "Delete" to { dimmer.delete(active.id); applyDim(); refreshLabels(); refresh() },
+                        "Keep it" to {},
+                    ),
+                    // Starts on the safe answer, so a double press doesn't delete.
+                    focus = 1,
+                    fromPanel = true,
+                )
+            }
+        }
     }
 
-    /** Darkens the film by the chosen level: 8% a step, so 10 leaves a fifth of the light. */
+    /**
+     * Save custom: keeps the changes to the custom on, renames it, or saves what's on as a new custom. Custom 1
+     * keeps its changes at once, so for it Save custom is for renaming it or making a new one.
+     */
+    private fun saveCustomDim(panel: SidePanel) {
+        val active = dimmer.active() ?: return
+        fun askName(title: String, initial: String, except: String?, done: (String) -> Unit) {
+            SidePanel.prompt(this, title, initial) { name ->
+                val clean = name.trim()
+                val problem = dimmer.nameProblem(clean, except)
+                if (problem != null) askName(problem, clean, except, done) else done(clean)
+            }
+        }
+        val after = { applyDim(); refreshLabels(); panel.refresh() }
+        val answers = ArrayList<Pair<String, () -> Unit>>()
+        if (dimmer.hasUnsaved()) answers += "Save \"${active.name}\"" to { dimmer.saveChanges(); after() }
+        answers += "Rename \"${active.name}\"" to {
+            askName("New name", active.name, active.id) { dimmer.rename(it); after() }
+        }
+        answers += "Save as a new custom" to {
+            askName("Custom name", "", null) { dimmer.saveAsNew(it); after() }
+        }
+        FireDialog.ask(this, "Save custom", answers, fromPanel = true)
+    }
+
+    /**
+     * Darkens the film by the display amount, and every piece of glass by the glass amount (Glass look). The
+     * glass shows a copy of the film taken from under the dimmer, so it's dimmed on its own.
+     */
     private fun applyDim() {
-        val level = prefs.dimLevel
-        dimmer.alpha = level * 0.08f
-        dimmer.visibility = if (level == 0) View.GONE else View.VISIBLE
+        val amounts = dimmer.amounts()
+        dimmerView.alpha = amounts.display / 100f
+        dimmerView.visibility = if (amounts.display == 0) View.GONE else View.VISIBLE
+        val glass = amounts.glass / 100f
+        if (Glass.dim != glass) {
+            Glass.dim = glass
+            // Every glass shape reads it as it draws: draw them all again.
+            redrawAll(window.decorView)
+        }
+    }
+
+    private fun redrawAll(view: View) {
+        view.invalidate()
+        if (view is ViewGroup) for (i in 0 until view.childCount) redrawAll(view.getChildAt(i))
     }
 
     private fun openSleepPanel(from: View) = openPanel("Sleep timer", from) {

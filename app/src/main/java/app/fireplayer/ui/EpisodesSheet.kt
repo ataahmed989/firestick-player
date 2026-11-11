@@ -47,16 +47,13 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
     private val accent = color(R.color.accent)
 
     private val root = FrameLayout(activity).apply {
-        setBackgroundColor(0x66000000)
+        setBackgroundColor(SHADE)
         isClickable = true
         visibility = View.GONE
     }
     private val sheet = LinearLayout(activity).apply {
         orientation = LinearLayout.VERTICAL
-        background = GradientDrawable(
-            GradientDrawable.Orientation.TOP_BOTTOM,
-            intArrayOf(0x00080A0E, 0xD6080A0E.toInt(), 0xF2080A0E.toInt()),
-        )
+        background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, SHEET_SHADE)
         clipChildren = false
         clipToPadding = false
         setPadding(dp(42), dp(34), dp(42), dp(14))
@@ -125,6 +122,39 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
         sheet.addView(cardsScroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = 0 })
         root.addView(sheet, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
         host.addView(root, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        // The pods' film follows the shade where they sit, which is only known once they're laid out.
+        sheet.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> dimGlass() }
+    }
+
+    /**
+     * Glass look: the film in each glass pod is darkened as much as the shade around it (the sheet's dark wash and
+     * its gradient at that height), so the pods sit in the dimmed picture instead of glowing out of it. This is
+     * the sheet's own shade, whatever the Screen dimmer is set to; the dimmer's glass amount still applies on top.
+     */
+    private fun dimGlass() {
+        if (!Glass.on) return
+        (listOf(source, count) + pills).forEach { dimGlass(it) }
+    }
+
+    private fun dimGlass(view: View) {
+        val glass = view.background as? GlassDrawable ?: return
+        val h = sheet.height
+        if (h <= 0) return
+        // The view's middle, down the sheet (layout positions: the sheet slides in with translationY).
+        var y = view.top + view.height / 2f
+        var p = view.parent as? View
+        while (p != null && p !== sheet) {
+            y += p.top - p.scrollY
+            p = p.parent as? View
+        }
+        val t = (y / h).coerceIn(0f, 1f)
+        // The gradient's darkness at t: 0 at the top, the middle stop at half, the last at the bottom.
+        val a0 = Color.alpha(SHEET_SHADE[0]) / 255f
+        val a1 = Color.alpha(SHEET_SHADE[1]) / 255f
+        val a2 = Color.alpha(SHEET_SHADE[2]) / 255f
+        val g = if (t < 0.5f) a0 + (a1 - a0) * (t / 0.5f) else a1 + (a2 - a1) * ((t - 0.5f) / 0.5f)
+        val light = (1f - Color.alpha(SHADE) / 255f) * (1f - g)
+        glass.backdropDim = 1f - light
     }
 
     /** Puts the sheet up, saying [waiting] until the episodes are known. */
@@ -172,6 +202,7 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
             Glass.background(pod, Glass.Kind.CHIP)
             pod.visibility = View.VISIBLE
         }
+        dimGlass()
         source.text = "From ${guide.portal}"
         count.text = "$episodes episode" + if (episodes == 1) "" else "s"
         status.visibility = View.GONE
@@ -269,24 +300,26 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
         val chosen = pill.tag == season
         val fill = when {
             focused -> color(R.color.focus_fill)
-            chosen -> 0x473D8BFF
+            chosen -> 0x663D8BFF
             else -> 0x12FFFFFF
         }
         val rim = when {
             focused -> accent
-            chosen -> 0xBF3D8BFF.toInt()
+            chosen -> ACCENT_RIM
             else -> 0x1FFFFFFF
         }
         // Glass look: a season neither selected nor the one shown is a clear glass pod, like the other buttons.
         if (Glass.on && !focused && !chosen) {
             pill.background = Glass.drawable(activity, Glass.Kind.PILL)
             pill.setTextColor(color(R.color.text))
+            dimGlass(pill)
             return
         }
         pill.background = GradientDrawable().apply {
             cornerRadius = dp(16).toFloat()
             setColor(fill)
-            setStroke(dp(1).coerceAtLeast(1), rim)
+            // The season shown has a stronger ring, so it stands out from the others.
+            setStroke(if (chosen && !focused) (1.5f * density).toInt().coerceAtLeast(2) else dp(1).coerceAtLeast(1), rim)
         }
         pill.setTextColor(if (focused) color(R.color.text_dark) else if (chosen) color(R.color.text) else color(R.color.text_muted))
     }
@@ -446,5 +479,11 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
     private companion object {
         const val CARD_W = 210
         val MONTHS = listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+        /** The dark wash over the whole screen while the sheet is up. */
+        const val SHADE = 0x66000000
+        /** The ring of the season shown: the accent blue, solid. */
+        const val ACCENT_RIM = 0xFF3D8BFF.toInt()
+        /** The sheet's own gradient, from clear at its top to nearly black at the bottom. */
+        val SHEET_SHADE = intArrayOf(0x00080A0E, 0xD6080A0E.toInt(), 0xF2080A0E.toInt())
     }
 }

@@ -147,10 +147,7 @@ class Prefs(context: Context) {
         get() = sp.getInt("display_mode", 0)
         set(v) = sp.edit().putInt("display_mode", v).apply()
 
-    /** Screen dimmer, 0 (off) to 10 (darkest); kept from one film to the next. */
-    var dimLevel: Int
-        get() = sp.getInt("dim_level", 0).coerceIn(0, 10)
-        set(v) = sp.edit().putInt("dim_level", v).apply()
+    // The screen dimmer's choices are kept by Dimmer.
 
     // Resume points, keyed by the video's URI.
     fun savedPosition(key: String): Long = sp.getLong("pos:$key", 0L)
