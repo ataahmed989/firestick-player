@@ -45,7 +45,35 @@ class OffsetTracker(
     knownJumps: List<Long> = emptyList(),
     /** Whether the delays worth trying first are tried ([guess]); off, every change is searched for. */
     private val guessing: Boolean = true,
+    /** How a guess is proven ([guess]); tests try others. */
+    val rules: GuessRules = GuessRules(),
+    /**
+     * The timeline is the film's own subtitle track ([ReferenceSync]), not talking heard: matched against it, the right
+     * delay overlaps nearly perfectly, so a match that near-perfect is sure on far less ([cleanSure]), and the delay in
+     * use not fitting any more shows on less too.
+     */
+    private val clean: Boolean = false,
 ) {
+
+    /**
+     * How a delay tried first is proven ([guess]): the first look on the latest [talkMs] of talking with [lines] lines,
+     * standing out by [z1]; the second on [freshMs] of talking since (waiting up to [freshMaxMs]) by [z2]; on both
+     * looks, the delay in use overlapping less than [misfitR] (it has stopped fitting), and on both together the best
+     * of every shift in reach being the guess, the next best at most [runnerUp] of it. With [needsHint], only after a
+     * hint; with [fromHint], on talking after it only.
+     */
+    data class GuessRules(
+        val talkMs: Long = 10_000,
+        val lines: Int = 3,
+        val z1: Double = 2.5,
+        val freshMs: Long = 6_000,
+        val freshMaxMs: Long = 20_000,
+        val z2: Double = 2.5,
+        val misfitR: Double = Double.POSITIVE_INFINITY,
+        val runnerUp: Double = 0.9,
+        val needsHint: Boolean = true,
+        val fromHint: Boolean = true,
+    )
 
     /** From film time [fromMs] on, until the next one, subtitles are shown [delayMs] later. */
     data class Segment(val fromMs: Long, val delayMs: Long)
@@ -107,6 +135,9 @@ class OffsetTracker(
         var waitTalkMs = CONFIRM_TALK_MS
     }
 
+    /** A guess [delayMs] that stood out on the talking [fromMs]..[toMs] in the segment from [segmentFromMs] ([guess]). */
+    private class Tried(val delayMs: Long, val segmentFromMs: Long, val fromMs: Long, val toMs: Long)
+
     private val map = ArrayList<Segment>(tidy(known))
     // Seconds of film where a match agreed with the map as it is: playing them again needs no matching.
     private val verified = BitSet()
@@ -133,10 +164,12 @@ class OffsetTracker(
     private val knownJumps = knownJumps.filter { abs(it) >= MIN_SHIFT_MS && abs(it) <= RANGE_MS - EDGE_MS }.take(GUESS_MAX)
     // Where the sound's format changed (an ad spliced in starts and ends with one, often): ad lengths to try.
     private val formats = TreeSet<Long>()
-    // A guess that came out best once ([guess]), and when: the same again on talking since moves the delay.
-    private var guessed: Long? = null
-    private var guessedAt = -1L
-    private var guessedFrom = -1L
+    // A guess that stood out on the latest talking ([guess]): it moves the delay once talking since bears it out too.
+    private var tried: Tried? = null
+    // Talking up to here went into a guess that wasn't borne out: the next one is looked for on talking after it.
+    private var guessFloorMs = -1L
+    // Film played since the last full step: the matching that costs is done every [FULL_STEP_MS], guesses every step.
+    private var sinceFullStepMs = 0L
     // Where the talking a guess was proven on began ([guess]): once there's plenty more, the delay is fitted exactly.
     private var polishFromMs = -1L
 
@@ -184,14 +217,23 @@ class OffsetTracker(
      */
     fun step(timeline: SpeechTimeline, nowMs: Long, playedMs: Long): Decision {
         sinceCheckMs += playedMs
+        sinceFullStepMs += playedMs
         // Gone back before it: nothing between there and here to look at.
         if (suspectMs > nowMs) suspectMs = -1
         // Gone back before the first of two matches: a second would be of another stretch.
         candidate?.let { if (it.toMs > nowMs) candidate = null }
-        if (guessedAt > nowMs) guessed = null
+        tried?.let { if (it.toMs > nowMs) tried = null }
+        if (guessFloorMs > nowMs) guessFloorMs = -1
         // Gone back before where Resync was pressed: elsewhere in the film, the delay turned down may well be right.
         if (nowMs < resyncAtMs) rejectedMs = null
-        return if (map.isEmpty()) learnStep(timeline, nowMs, playedMs) else followStep(timeline, nowMs)
+        // Called every [STEP_MS]; all but guessing waits for [FULL_STEP_MS], as it always did.
+        val full = sinceFullStepMs >= FULL_STEP_MS
+        if (full) sinceFullStepMs = 0
+        if (map.isEmpty()) {
+            learnPlayedMs += playedMs
+            return if (full) learnStep(timeline, nowMs) else waiting(nowMs)
+        }
+        return followStep(timeline, nowMs, full)
     }
 
     /** Something outside the talking suggests the timing may change at [atMs] (a format change, say). */
@@ -246,13 +288,16 @@ class OffsetTracker(
         exact.clear()
         floors.clear()
         candidate = null
-        guessed = null
+        tried = null
+        guessFloorMs = -1
         polishFromMs = -1
         lastCheckToMs = -1
         learnCenterMs = centerMs
         learnRangeMs = RANGE_MS
         learnPlayedMs = 0
         sinceCheckMs = 0
+        // The first step after Resync matches at once, with what was heard already.
+        sinceFullStepMs = FULL_STEP_MS
         misses = 0
         suspectMs = since
         suspectWhy = Hint.RESYNC
@@ -262,12 +307,11 @@ class OffsetTracker(
 
     // ---- Finding the first delay ----------------------------------------------
 
-    private fun learnStep(tl: SpeechTimeline, now: Long, playedMs: Long): Decision {
-        learnPlayedMs += playedMs
+    private fun learnStep(tl: SpeechTimeline, now: Long): Decision {
         val c = candidate
         val from = maxOf(0L, suspectMs, now - LEARN_WINDOW_MS, c?.fitsFromMs ?: 0L)
         val due = if (c != null) talkingMs(tl, c.toMs, now) >= c.waitTalkMs else lastCheckToMs !in from..now || talkingMs(tl, lastCheckToMs, now) >= FRESH_TALK_MS
-        val d = if (!due || talkingMs(tl, from, now) < MIN_TALK_MS) waiting(now) else learnCheck(tl, from, now)
+        val d = if (!due || talkingMs(tl, from, now) < minTalkMs) waiting(now) else learnCheck(tl, from, now)
         if (d.outcome != Outcome.LEARNED && learnPlayedMs >= LEARN_MAX_MS) {
             return Decision(Outcome.GAVE_UP, segments, d.delayMs, now, from, now, d.result, Double.NaN, "no sure match in ${LEARN_MAX_MS / 60_000} min")
         }
@@ -325,15 +369,17 @@ class OffsetTracker(
 
     // ---- Following it through the film -------------------------------------------
 
-    private fun followStep(tl: SpeechTimeline, now: Long): Decision {
+    private fun followStep(tl: SpeechTimeline, now: Long, full: Boolean): Decision {
         val i = indexAt(now)
         val seg = map[i]
         if (suspectMs >= 0 && (suspectMs < seg.fromMs || now - suspectMs > SUSPECT_FOR_MS)) suspectMs = -1
         candidate?.let { if (it.segmentFromMs != seg.fromMs) candidate = null }
+        tried?.let { if (it.segmentFromMs != seg.fromMs) tried = null }
         val floor = floors[seg.fromMs]?.takeIf { it < now } ?: seg.fromMs
-        if (suspectMs < 0 && candidate == null) lookForBreaks(tl, now, seg.delayMs, floor)
-        polish(tl, i, now)?.let { return it }
-        if (guessing) guess(tl, i, floor, now)?.let { return it }
+        if (full && suspectMs < 0 && candidate == null) lookForBreaks(tl, now, seg.delayMs, floor)
+        if (full) polish(tl, i, now)?.let { return it }
+        if (guessing && (suspectMs >= 0 || !rules.needsHint)) guess(tl, i, floor, now)?.let { return it }
+        if (!full) return waiting(now)
         val c = candidate
         // A second match looks only at the talking the first fitted from: after the break, not the break itself.
         val from = maxOf(floor, suspectMs, now - WINDOW_MS, c?.fitsFromMs ?: 0L)
@@ -343,7 +389,7 @@ class OffsetTracker(
             suspectMs >= 0 -> sinceCheckMs >= spacing() && (lastCheckToMs !in from..now || talkingMs(tl, lastCheckToMs, now) >= FRESH_TALK_MS)
             else -> sinceCheckMs >= PERIOD_MS && !mostlyVerified(from, now)
         }
-        if (!due || talkingMs(tl, from, now) < MIN_TALK_MS) return waiting(now)
+        if (!due || talkingMs(tl, from, now) < minTalkMs) return waiting(now)
         return check(tl, i, from, now)
     }
 
@@ -436,50 +482,84 @@ class OffsetTracker(
      * The quick way back after a break. A few delays are worth trying before searching every shift: the delay in use
      * plus a jump this film made before (or other episodes of the show did: bumpers and ads are often the same length
      * each time), plus two such jumps (a jump past both), the delays used elsewhere in the film, and the delay plus the
-     * length of an ad the sound's format marked at both ends. On the latest talking, when one of them beats the delay
-     * in use as clearly as any change must, the whole reach is searched: its best match must be that very guess, and
-     * stand well clear of the next best anywhere. As only a few were guessed, that is far less likely by chance than
-     * any one best match, so it is proof once it comes out the same again on talking since: well under a minute of
-     * talking, where a search of every shift wants minutes. Else the search goes on as before.
+     * length of an ad the sound's format marked at both ends. Being few and named beforehand, one of them standing out
+     * means far more than the best of every shift doing so, so they're proven on far less talking, in two looks that
+     * share none of it ([rules]):
+     *  1. On the latest [GuessRules.talkMs] of talking (never across a jump, nor before the segment's own proof, nor
+     *     before the hint), the guess that fits best must beat the delay in use as clearly as any change must, and
+     *     stand out from all the shifts in reach by [GuessRules.z1].
+     *  2. On talking since, at least [GuessRules.freshMs] of it, that same guess must again beat the delay in use and
+     *     stand out by [GuessRules.z2]; and on both looks together, the best of every shift in reach must be that very
+     *     guess. Not borne out by [GuessRules.freshMaxMs] of talking since, it's dropped, and the next guess is looked
+     *     for on talking after that.
+     * Only while something says the timing may have changed (a hint: the sound's format, a quiet stretch where lines
+     * were expected, the delay in use no longer fitting, a jump) and from there on: in ordinary talking, a wrong guess
+     * fits a few lines now and then by chance, and looked at every few seconds all through the film, that adds up.
+     * Looked at every [STEP_MS] of film, so it's in use as soon as the talking allows. Else the search goes on as before.
      */
     private fun guess(tl: SpeechTimeline, i: Int, floor: Long, now: Long): Decision? {
         val seg = map[i]
         val cur = seg.delayMs
+        // Never on talking from both sides of a jump, nor on talking a guess that wasn't borne out already had.
+        val start = maxOf(floor, heardFrom(tl, now), guessFloorMs, if (rules.fromHint) suspectMs else -1L)
+        tried?.let { t ->
+            if (t.fromMs < start || t.delayMs == cur) tried = null else return confirmGuess(tl, i, t, now)
+        }
         val tries = guesses(cur, now)
-        if (tries.isEmpty()) { guessed = null; return null }
-        // The latest talking only (an ad full of talking before it would drown a guess right after it); chosen by no guess.
-        val b = maxOf(floor, talkFrom(tl, now, GUESS_WINDOW_TALK_MS))
-        if (talkingMs(tl, b, now) < GUESS_TALK_MS) return null
+        if (tries.isEmpty()) return null
+        val b = maxOf(start, talkFrom(tl, now, rules.talkMs))
+        if (b < 0 || talkingMs(tl, b, now) < rules.talkMs) return null
         val h = SyncMatcher.heard(tl.speech, tl.heard, frame(b), frame(now) + 1) ?: return null
         val rHere = SyncMatcher.rAt(h, lines, cur)
         var best = 0L
         var bestR = Double.NEGATIVE_INFINITY
         for (g in tries) {
-            if (lines.onScreen(g, b, now) < GUESS_LINES) continue
+            if (lines.onScreen(g, b, now) < rules.lines) continue
             val r = SyncMatcher.rAt(h, lines, g)
             if (r > bestR) { bestR = r; best = g }
         }
-        if (bestR < MIN_GUESS_R || bestR - rHere < maxOf(MIN_GAIN, GAIN_SHARE * bestR)) { guessed = null; return null }
-        val res = SyncMatcher.match(h, lines, cur, RANGE_MS)
-        if (abs(res.delayMs - best) > GUESS_SLACK_MS || res.r < MIN_GUESS_R || res.runnerUp > GUESS_RUNNER_UP * res.r ||
-            abs(res.delayMs - cur) < MIN_SHIFT_MS) { guessed = null; return null }
-        val note = "tried first (${SyncMatcher.formatShift(best - cur)})"
-        // Once could be luck: the same again on talking since is proof.
-        val g = guessed
-        if (g == null || abs(g - res.delayMs) > AGREE_GUESS_MS || talkingMs(tl, guessedAt, now) < GUESS_FRESH_TALK_MS) {
-            if (g == null || abs(g - res.delayMs) > AGREE_GUESS_MS) { guessed = res.delayMs; guessedAt = now; guessedFrom = b }
-            return Decision(Outcome.NOT_SURE, segments, res.delayMs, now, b, now, res, rHere, "$note, once")
+        if (rHere >= rules.misfitR || bestR < MIN_GUESS_R || bestR - rHere < maxOf(MIN_GAIN, GAIN_SHARE * bestR)) return null
+        val z = SyncMatcher.zAt(h, lines, best, cur, RANGE_MS)
+        if (z < rules.z1) return null
+        tried = Tried(best, seg.fromMs, b, now)
+        return Decision(Outcome.NOT_SURE, segments, best, now, b, now, null, rHere,
+            "tried first (${SyncMatcher.formatShift(best - cur)}), stands out once (z=${"%.1f".format(java.util.Locale.ROOT, z)})")
+    }
+
+    /** The second look at guess [t] ([guess]): on talking since its first, and on both together. */
+    private fun confirmGuess(tl: SpeechTimeline, i: Int, t: Tried, now: Long): Decision? {
+        val seg = map[i]
+        val cur = seg.delayMs
+        val fresh = talkingMs(tl, t.toMs, now)
+        if (fresh < rules.freshMs) return null
+        val note = "tried first (${SyncMatcher.formatShift(t.delayMs - cur)})"
+        fun notYet(why: String): Decision? {
+            if (fresh < rules.freshMaxMs) return null
+            tried = null
+            guessFloorMs = now
+            return Decision(Outcome.NOT_SURE, segments, t.delayMs, now, t.fromMs, now, null, Double.NaN, "$note, $why")
         }
-        guessed = null
-        // The proof is the talking both looks went by (after the break, not the break itself); on all of it, the
-        // exact delay (to a tenth of a second or two).
-        val proofFrom = maxOf(floor, minOf(guessedFrom, b))
-        val hp = SyncMatcher.heard(tl.speech, tl.heard, frame(proofFrom), frame(now) + 1)
-        val fitted = hp?.let { SyncMatcher.match(it, lines, res.delayMs, GUESS_REFINE_MS).delayMs }
-            ?.takeIf { abs(it - res.delayMs) <= GUESS_SLACK_MS } ?: res.delayMs
-        // The same bumper again is most likely the very same jump: the guess itself, unless the talking says otherwise.
-        val delay = if (hp != null && SyncMatcher.rAt(hp, lines, best) >= SyncMatcher.rAt(hp, lines, fitted) - GUESS_PRIOR_R) best else fitted
+        val h2 = SyncMatcher.heard(tl.speech, tl.heard, frame(t.toMs), frame(now) + 1) ?: return notYet("too little heard since")
+        val r2 = SyncMatcher.rAt(h2, lines, t.delayMs)
+        val rHere2 = SyncMatcher.rAt(h2, lines, cur)
+        if (rHere2 >= rules.misfitR || r2 - rHere2 < maxOf(MIN_GAIN, GAIN_SHARE * r2)) return notYet("not better than the delay in use since")
+        val z2 = SyncMatcher.zAt(h2, lines, t.delayMs, cur, RANGE_MS)
+        if (z2 < rules.z2) return notYet("not borne out since (z=${"%.1f".format(java.util.Locale.ROOT, z2)})")
+        // Both looks together: the best of every shift in reach is the guess itself (the same jump, give or take a
+        // few frames), clear of the next best.
+        val hp = SyncMatcher.heard(tl.speech, tl.heard, frame(t.fromMs), frame(now) + 1) ?: return notYet("too little heard")
+        val res = SyncMatcher.match(hp, lines, cur, RANGE_MS)
+        val rHere = SyncMatcher.rAt(hp, lines, cur)
+        if (abs(res.delayMs - t.delayMs) > GUESS_SLACK_MS || res.r < MIN_GUESS_R || res.runnerUp > rules.runnerUp * res.r) {
+            return notYet("another shift fits both looks as well")
+        }
+        tried = null
+        // On all of it, the exact delay (to a tenth of a second or two); the same bumper again is most likely the very
+        // same jump, so the guess itself unless the talking clearly prefers that.
+        val fitted = SyncMatcher.match(hp, lines, res.delayMs, GUESS_REFINE_MS).delayMs.takeIf { abs(it - t.delayMs) <= GUESS_SLACK_MS } ?: res.delayMs
+        val delay = if (SyncMatcher.rAt(hp, lines, t.delayMs) >= SyncMatcher.rAt(hp, lines, fitted) - GUESS_PRIOR_R) t.delayMs else fitted
         if (map.size >= MAX_SEGMENTS) return null
+        val proofFrom = t.fromMs
         val at = moveAt(tl, i, delay, proofFrom, now)
         if (!put(tl, i, at, delay, proofFrom, now, verified)) return null
         if (proofFrom > at) floors[maxOf(at, seg.fromMs)] = proofFrom
@@ -491,7 +571,25 @@ class OffsetTracker(
         noteBreak(at)
         joinNeighbours()
         polishFromMs = proofFrom
-        return Decision(Outcome.MOVED, segments, delayAt(at) ?: delay, at, proofFrom, now, res, rHere, "$note, twice")
+        return Decision(Outcome.MOVED, segments, delayAt(at) ?: delay, at, proofFrom, now, res, rHere,
+            "$note, borne out (z=${"%.1f".format(java.util.Locale.ROOT, z2)} since)")
+    }
+
+    /**
+     * Where the stretch heard up to [now] began: after the last part not heard for [GAP_MS] or more (a jump), looking
+     * back at most [WINDOW_MS]. Pieces dropped here and there don't end it.
+     */
+    private fun heardFrom(tl: SpeechTimeline, now: Long): Long {
+        val limit = frame(maxOf(0L, now - WINDOW_MS))
+        var f = frame(now)
+        while (f > limit) {
+            val gapEnd = tl.heard.previousClearBit(f)
+            if (gapEnd < limit) return limit * 10L
+            val before = tl.heard.previousSetBit(gapEnd)
+            if (before < 0 || (gapEnd - before) * 10L >= GAP_MS) return (gapEnd + 1) * 10L
+            f = before
+        }
+        return limit * 10L
     }
 
     /**
@@ -552,7 +650,7 @@ class OffsetTracker(
             return
         }
         // The delay in use no longer fits the last minute and a half, though there were lines and talking in it.
-        val from = maxOf(floor, now - MISFIT_WINDOW_MS)
+        val from = maxOf(floor, now - misfitWindowMs)
         if (mostlyVerified(from, now)) return
         if (fitsLatest(tl, cur, from, now)) return
         hint(fitEnd(tl, cur, floor, now), Hint.MISFIT)
@@ -560,8 +658,8 @@ class OffsetTracker(
 
     /** Whether [delay] fits the last minute and a half of [from]..[now]; true when there are too few lines or talking to say. */
     private fun fitsLatest(tl: SpeechTimeline, delay: Long, from: Long, now: Long): Boolean {
-        val a = maxOf(from, now - MISFIT_WINDOW_MS)
-        if (lines.onScreen(delay, a, now) < MISFIT_LINES || talkingMs(tl, a, now) < MISFIT_TALK_MS) return true
+        val a = maxOf(from, now - misfitWindowMs)
+        if (lines.onScreen(delay, a, now) < misfitLines || talkingMs(tl, a, now) < MISFIT_TALK_MS) return true
         val h = SyncMatcher.heard(tl.speech, tl.heard, frame(a), frame(now) + 1) ?: return true
         return SyncMatcher.rAt(h, lines, delay) >= MISFIT_R
     }
@@ -569,7 +667,7 @@ class OffsetTracker(
     /** The latest place before [now] where [delay] still fitted: where its running overlap peaked. */
     private fun fitEnd(tl: SpeechTimeline, delay: Long, floor: Long, now: Long): Long {
         val from = maxOf(floor, now - WINDOW_MS)
-        val h = SyncMatcher.heard(tl.speech, tl.heard, frame(from), frame(now) + 1) ?: return maxOf(from, now - MISFIT_WINDOW_MS)
+        val h = SyncMatcher.heard(tl.speech, tl.heard, frame(from), frame(now) + 1) ?: return maxOf(from, now - misfitWindowMs)
         val f = SyncMatcher.fits(h, lines, delay)
         var sum = 0.0
         var best = 0.0
@@ -608,7 +706,7 @@ class OffsetTracker(
      */
     private fun confirmsAtOnce(tl: SpeechTimeline, delay: Long, center: Long, range: Long, from: Long, now: Long): Boolean {
         val m = talkFrom(tl, now, AT_ONCE_TALK_MS)
-        if (m <= from || talkingMs(tl, from, m) < MIN_TALK_MS) return false
+        if (m <= from || talkingMs(tl, from, m) < minTalkMs) return false
         val first = SyncMatcher.heard(tl.speech, tl.heard, frame(from), frame(m)) ?: return false
         val a = SyncMatcher.match(first, lines, center, range)
         if (!sure(a, center, range) || abs(a.delayMs - delay) > AGREE_MS) return false
@@ -691,12 +789,39 @@ class OffsetTracker(
             score += f0[k - 1] - f1[k - 1]
             if (score >= best) { best = score; bestK = k }
         }
+        // On the film's own subtitles, a break is where they show nothing for a while: the split goes in the middle of it.
+        if (clean) lineless(tl, h.blockMs(bestK), lo, hi)?.let { return it }
         // Next to a stretch not heard, a few seconds of talking can't tell the two apart: the split goes to its end.
         var k = bestK
         for (j in maxOf(1, bestK - SNAP_BLOCKS)..minOf(h.blocks - 1, bestK + SNAP_BLOCKS)) {
             if (h.blockMs(j) - h.blockMs(j - 1) >= GAP_MS) { k = j; if (j >= bestK) break }
         }
         return if (k < h.blocks) h.blockMs(k) else h.blockMs(h.blocks - 1) + 100
+    }
+
+    /**
+     * On the film's own subtitles ([clean]): the middle of the longest stretch loaded with no line on screen that reaches
+     * within [LINELESS_NEAR_MS] of [atMs], if one of at least [LINELESS_MS] does, between [lo] and [hi]. Lines either
+     * side of it fit one delay or the other, but nothing in it says which, and its middle is furthest from both (the
+     * film's own lines and the downloaded ones can start and end a second apart).
+     */
+    private fun lineless(tl: SpeechTimeline, atMs: Long, lo: Long, hi: Long): Long? {
+        val first = frame(maxOf(lo, atMs - LINELESS_NEAR_MS))
+        val last = frame(minOf(hi, atMs + LINELESS_NEAR_MS))
+        var bestLen = 0
+        var bestMiddle = -1
+        var f = first
+        while (f < last) {
+            // A run with no line, loaded all through: from after the line before it to the next line (or the end).
+            val start = tl.speech.nextClearBit(f)
+            if (start >= last) break
+            val end = minOf(tl.speech.nextSetBit(start).let { if (it < 0) Int.MAX_VALUE else it }, frame(hi))
+            val from = maxOf(tl.speech.previousSetBit(start) + 1, frame(lo))
+            val loaded = tl.heard.get(from, maxOf(from, end)).cardinality()
+            if (end - from == loaded && end - from > bestLen) { bestLen = end - from; bestMiddle = (from + end) / 2 }
+            f = maxOf(end, start + 1)
+        }
+        return if (bestLen * 10L >= LINELESS_MS) bestMiddle * 10L else null
     }
 
     /**
@@ -769,7 +894,21 @@ class OffsetTracker(
 
     /** Sure by [SyncMatcher], and not at the edge of the shifts tried: a best there is likely a slope up to one beyond. */
     private fun sure(res: SyncMatcher.Result, centerMs: Long, rangeMs: Long) =
-        res.confident && abs(res.delayMs - centerMs) <= rangeMs - EDGE_MS
+        (res.confident || clean && cleanSure(res)) && abs(res.delayMs - centerMs) <= rangeMs - EDGE_MS
+
+    /**
+     * On the film's own subtitles: the best overlap near-perfect ([CLEAN_R]), standing out as far as any sure match
+     * must, and well clear of the next best, on [CLEAN_TALK_MS] of lines and [CLEAN_LINES] of them. Talking heard never
+     * overlaps that well (music, pauses within lines, lines missed), so this is only ever met there.
+     */
+    private fun cleanSure(res: SyncMatcher.Result) =
+        res.r >= CLEAN_R && res.z >= CLEAN_Z && res.runnerUp <= res.r * CLEAN_RUNNER_UP &&
+            res.speechMs >= CLEAN_TALK_MS && res.lines >= CLEAN_LINES
+
+    // Talking needed before a match is tried, and the stretch the delay in use must have stopped fitting over.
+    private val minTalkMs = if (clean) CLEAN_TALK_MS else MIN_TALK_MS
+    private val misfitWindowMs = if (clean) CLEAN_MISFIT_WINDOW_MS else MISFIT_WINDOW_MS
+    private val misfitLines = if (clean) CLEAN_MISFIT_LINES else MISFIT_LINES
 
     private fun unsureNote(res: SyncMatcher.Result) = if (res.confident) "at the edge of the shifts tried" else ""
 
@@ -815,6 +954,10 @@ class OffsetTracker(
         const val AGREE_MS = 100L
         /** Changes smaller than this only fine-tune the delay in use (it's still about right where it is). */
         const val MIN_SHIFT_MS = 400L
+        /** How often (film time) the caller steps the tracker: guesses are looked at each time ([guess]). */
+        const val STEP_MS = 5_000L
+        /** Matching that costs (searching every shift) is looked at no more often than this. */
+        const val FULL_STEP_MS = 15_000L
         /** Without a hint, a check every this much film. */
         const val PERIOD_MS = 3 * 60_000L
         /** The most film one check matches: its cost is this × the shifts tried. */
@@ -844,32 +987,39 @@ class OffsetTracker(
         // Hints: this long without talking where at least so many lines are expected...
         private const val QUIET_MS = 20_000L
         private const val QUIET_LINES = 3
-        // ...or the delay in use overlapping less than this over the last minute and a half, with lines and talking in it.
-        // Trying known jumps first ([guess]): on the latest GUESS_WINDOW_TALK_MS of talking (at least GUESS_TALK_MS, with
-        // GUESS_LINES lines); the best of the whole reach within GUESS_SLACK_MS of the guess (the same jump, give or take
-        // a few frames), the next best at most GUESS_RUNNER_UP of it; then the same again (AGREE_GUESS_MS) with
-        // GUESS_FRESH_TALK_MS of talking since. At most GUESS_MAX guesses; two closer than GUESS_SAME_MS are one.
-        private const val GUESS_TALK_MS = 12_000L
-        private const val GUESS_WINDOW_TALK_MS = 25_000L
-        private const val GUESS_LINES = 4
-        private const val GUESS_RUNNER_UP = 0.9
+        // Trying known jumps first ([guess], [GuessRules]): a guess must overlap at least MIN_GUESS_R, and on both looks
+        // together the best of the whole reach be within GUESS_SLACK_MS of it (the same jump, give or take a few frames).
+        // A wrong delay named beforehand stands out by 2.5 on 10 s of talking under 1% of the time, the right one 60% of
+        // the time in a talkative film and nearly always on 20 s (ResyncBench prints what the rules give). At most
+        // GUESS_MAX guesses; two closer than GUESS_SAME_MS are one.
         private const val MIN_GUESS_R = 0.15
         private const val GUESS_SLACK_MS = 300L
         private const val GUESS_REFINE_MS = 1_000L
         private const val GUESS_PRIOR_R = 0.02
         private const val POLISH_TALK_MS = 90_000L
-        private const val AGREE_GUESS_MS = 150L
-        private const val GUESS_FRESH_TALK_MS = 5_000L
         private const val GUESS_SAME_MS = 300L
         private const val GUESS_MAX = 8
         const val JUMPS_KEPT = 4
         // An ad marked by format changes at both ends lasts this long.
         private const val AD_MIN_MS = 3_000L
         private const val AD_MAX_MS = 4 * 60_000L
+        // ...or the delay in use overlapping less than this over the last minute and a half, with lines and talking in it.
         private const val MISFIT_WINDOW_MS = 90_000L
         private const val MISFIT_LINES = 6
         private const val MISFIT_TALK_MS = 10_000L
         private const val MISFIT_R = 0.05
+        // On the film's own subtitles ([clean]): sure on this little, at least this near-perfect...
+        private const val CLEAN_R = 0.6
+        private const val CLEAN_Z = 4.5
+        private const val CLEAN_RUNNER_UP = 0.6
+        private const val CLEAN_TALK_MS = 12_000L
+        private const val CLEAN_LINES = 5
+        // ...and the delay in use not fitting the last half minute (with lines in it) says it may have changed.
+        private const val CLEAN_MISFIT_WINDOW_MS = 30_000L
+        private const val CLEAN_MISFIT_LINES = 3
+        // ...and a change is put in a stretch with no line this long, reaching this near where it was found.
+        private const val LINELESS_MS = 3_000L
+        private const val LINELESS_NEAR_MS = 10_000L
         // A hint not followed up this long after is dropped (checks carry on every PERIOD_MS).
         private const val SUSPECT_FOR_MS = 8 * 60_000L
         // Follow-ups of a hint that weren't sure of anything, before they're spaced out; the step they start from.

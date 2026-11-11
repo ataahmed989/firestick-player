@@ -29,6 +29,11 @@ import kotlin.math.abs
  * after which the subtitles are late. What it finds is a delay by film position, so going back across a break brings
  * the earlier delay back. It's kept per subtitle file and film, so the same pair is lined up at once next time.
  *
+ * When the film has subtitles of its own ([EmbeddedCues]: any language, text or pictures), their timing is used instead
+ * of the talking: a track muxed into the file is timed to this very file, ads included, and it's read as the film loads,
+ * so a change is usually found before it's on screen, and nothing is listened to meanwhile. Without one, or when it
+ * turns out to have too few lines (forced only), it listens as before; Resync always listens.
+ *
  * A delay set by hand always wins ([handOff]): it's one delay for the whole film, and auto sync stays out of it for
  * these subtitles. [resync] forgets that and everything found and finds the delay again around where the film is,
  * then carries on following. The viewer has said the delay in use is wrong there, so that one only comes back on
@@ -54,6 +59,10 @@ class AutoSync(
     private val onChanged: () -> Unit,
     /** The show the film is an episode of ("tmdb:ID"), or null: its jumps are remembered for its other episodes. */
     private val showKey: () -> String? = { null },
+    /** The film's own subtitle tracks as they load, lined up against when there's one (see [EmbeddedCues]). */
+    private val embedded: EmbeddedCues? = null,
+    /** The address the film playing now was loaded from (its key in [embedded]); on the main thread. */
+    private val filmUri: () -> String? = { null },
 ) {
 
     enum class State { OFF, LISTENING, SYNCED, NOT_SYNCED }
@@ -85,6 +94,10 @@ class AutoSync(
     private var byHand = false
     // The delays found, by film position: the main thread's copy of the listening thread's (empty while none).
     private var segments: List<OffsetTracker.Segment> = emptyList()
+    // Whether the delays found were lined up against the film's own subtitles rather than the talking.
+    private var byReference = false
+    // Resync was pressed for these subtitles (their saved key): the talking is what it goes by from then on.
+    private var listenOnlyKey: String? = null
 
     private val jobRef = java.util.concurrent.atomic.AtomicReference<Job?>(null)
     private var job: Job?
@@ -108,6 +121,8 @@ class AutoSync(
         val relearnAtMs: Long?,
         /** Jumps other episodes of the show made, tried first after a break. */
         val jumps: List<Long> = emptyList(),
+        /** Where the film was loaded from, to find its own subtitles in [embedded] by; null to only listen. */
+        val filmUri: String? = null,
     )
 
     private var generation = 0
@@ -124,6 +139,7 @@ class AutoSync(
         key = filmKey
         undoUs = null
         byHand = false
+        byReference = false
         lines = null
         segments = emptyList()
         if (subtitle == null || filmKey == null) {
@@ -165,9 +181,13 @@ class AutoSync(
         stopListening()
         clearMapping()
         byHand = false
+        byReference = false
         segments = emptyList()
         prefs.forgetSyncedDelay(savedKey())
         prefs.forgetHandDelay(savedKey())
+        // The viewer says what was found is wrong here: lined up against the film's own subtitles, it would be found
+        // the same again, so this time (and for these subtitles from now on) it goes by the talking.
+        listenOnlyKey = savedKey()
         val at = position().first
         if (lines == null) loadLines(f) { start(relearnAtMs = at) } else start(relearnAtMs = at)
     }
@@ -254,7 +274,11 @@ class AutoSync(
     private fun syncedText(): String {
         val i = OffsetTracker.indexAt(segments, position().first)
         val ms = segments.getOrNull(i)?.delayMs ?: (delayUs() / 1000)
-        val what = if (i == 0) "Lined up with the speech" else "Lined up again after a break"
+        val what = when {
+            i > 0 -> "Lined up again after a break"
+            byReference -> "Lined up with the film's own subtitles"
+            else -> "Lined up with the speech"
+        }
         return "$what: ${SyncMatcher.formatShift(ms)}."
     }
 
@@ -283,11 +307,12 @@ class AutoSync(
         val gen = ++generation
         val known = if (relearnAtMs == null) segments else emptyList()
         val jumps = showKey()?.let { prefs.showJumps(it) } ?: emptyList()
+        val uri = if (embedded != null && relearnAtMs == null && listenOnlyKey != savedKey()) filmUri() else null
         job = if (relearnAtMs != null) {
             // Resync looks further either way, around the delay in use: after a few breaks it can be minutes.
             Job(gen, k, l, known, delayUs() / 1000, OffsetTracker.RANGE_MS, relearnAtMs, jumps)
         } else {
-            Job(gen, k, l, known, 0, SyncMatcher.RANGE_MS, null, jumps)
+            Job(gen, k, l, known, 0, SyncMatcher.RANGE_MS, null, jumps, uri)
         }
         if (known.isEmpty()) setState(State.LISTENING, "Listening for speech. Usually takes a minute or two of talking.")
         ensureWorker()
@@ -346,6 +371,57 @@ class AutoSync(
         // The sound's format just before, to notice it change in the middle of the film.
         var lastKind: SpeechTap.Kind? = null
         val cost = Cost()
+        // Lining up against the film's own subtitles ([reference] non-null) instead of listening; when to look for
+        // them next, and whether this job is done with them (they turned out not worth it).
+        var reference: ReferenceSync? = null
+        var referenceCheckAt = 0L
+        var referenceDone = false
+        var referenceSince = 0L
+
+        /** A decision of [tr]'s, on [tl]: put in, logged, and the skip times told. False: the job ended. */
+        fun handle(current: Job, tr: OffsetTracker, tl: SpeechTimeline, d: OffsetTracker.Decision, cpuMs: Long): Boolean {
+            val onReference = reference != null
+            if (d.outcome != Outcome.WAIT) {
+                cost.matched(cpuMs)
+                Log.i(TAG, if (onReference) "film's subtitles: $d" else d.toString())
+            }
+            when (d.outcome) {
+                Outcome.LEARNED, Outcome.MOVED, Outcome.TUNED -> main.post { decided(current, d, onReference) }
+                Outcome.GAVE_UP -> if (!onReference) {
+                    jobRef.compareAndSet(current, null)
+                    main.post { notFound(current) }
+                    return false
+                }
+                else -> {}
+            }
+            // What's confirmed grew or the offsets changed: the main thread gets a fresh snapshot for the skip times,
+            // after decided() (a first delay learnt has made it SYNCED by then).
+            val segs = tr.segments
+            val changes = tr.changeFrom(tl)
+            if (tr.confirmedCount != publishedCount || segs != publishedSegments || changes != publishedChanges) {
+                publishedCount = tr.confirmedCount
+                publishedSegments = segs
+                publishedChanges = changes
+                val confirmed = tr.confirmedSeconds()
+                main.post { publishMapping(current, segs, confirmed, changes) }
+            }
+            return true
+        }
+
+        /** Back to listening, carrying on from what the film's subtitles found ([why] for the log). */
+        fun listenInstead(current: Job, why: String) {
+            Log.i(TAG, "not lining up with the film's subtitles any more ($why): listening instead")
+            reference = null
+            referenceDone = true
+            val known = tracker?.segments?.takeIf { it.isNotEmpty() } ?: current.segments
+            tracker = OffsetTracker(current.lines, known, current.centerMs, current.rangeMs, knownJumps = current.jumps)
+            cursor = -1.0
+            played = 0
+            stepAt = 0
+            lastKind = null
+            cost.against = "speech"
+            main.post { referenceEnded(current) }
+        }
 
         fun mark(talking: Boolean) {
             if (cursor >= 0) {
@@ -413,11 +489,74 @@ class AutoSync(
                     stepAt = if (current.relearnAtMs != null) -TRY_EVERY_FRAMES else 0
                     lastKind = null
                     decoder?.flush()
+                    reference = null
+                    referenceCheckAt = 0L
+                    referenceDone = current.filmUri == null || embedded == null
+                    referenceSince = SystemClock.elapsedRealtime()
+                    cost.against = "speech"
                 }
                 val wait = backOffUntil - SystemClock.elapsedRealtime()
                 if (wait > 0) {
                     try { Thread.sleep(minOf(wait, 1_000)) } catch (_: InterruptedException) { break }
                     continue
+                }
+                // The film's own subtitles: looked for every few seconds until there's a track worth lining up against,
+                // then followed as the film loads, with nothing listened to meanwhile.
+                if (!referenceDone) {
+                    val now = SystemClock.elapsedRealtime()
+                    val source = embedded?.source(current.filmUri)
+                    if (reference == null && now >= referenceCheckAt) {
+                        referenceCheckAt = now + REFERENCE_CHECK_MS
+                        val snap = source?.snapshot()
+                        if (snap != null && snap.cueCount >= REFERENCE_MIN_CUES) {
+                            Log.i(TAG, "lining up with the film's own subtitles: ${snap.track}, ${snap.cueCount} lines so far " +
+                                "(tracks: ${source?.describe()}); not listening meanwhile")
+                            val known = tracker?.segments?.takeIf { it.isNotEmpty() } ?: current.segments
+                            tracker = OffsetTracker(current.lines, known, current.centerMs, current.rangeMs, knownJumps = current.jumps, clean = true)
+                            reference = ReferenceSync()
+                            decoder?.release(); decoder = null; decoderKind = null
+                            cost.against = "film's subtitles (${snap.track})"
+                            main.post { referenceStarted(current) }
+                        } else if (if (source == null) now - referenceSince > REFERENCE_WAIT_MS else source.tracksKnown && !source.hasCandidates()) {
+                            // Nothing of the film read here (a stream in pieces, say), or no track but forced ones.
+                            Log.i(TAG, "no subtitles of the film's own to line up against${source?.let { ": " + it.describe() } ?: ""}")
+                            referenceDone = true
+                        }
+                    }
+                    val ref = reference
+                    val tr = tracker
+                    if (ref != null && tr != null) {
+                        cost.maybeLog(ref.timeline, current.lines, tr)
+                        // Only once there's more loaded to go over (a few seconds' worth), or loading jumped.
+                        if (source == null) {
+                            listenInstead(current, "the film's subtitles are gone")
+                        } else if (ref.due(source)) {
+                            val snap = source.snapshot()
+                            if (snap == null) {
+                                // The track turned out to have only some lines (forced, signs): not worth lining up against.
+                                listenInstead(current, "too few lines: ${source.describe()}")
+                            } else {
+                                val cpu0 = SystemClock.currentThreadTimeMillis()
+                                val decisions = try {
+                                    ref.advance(snap, tr)
+                                } catch (t: Exception) {
+                                    Log.e(TAG, "Lining up with the film's subtitles failed", t)
+                                    listenInstead(current, "failed")
+                                    emptyList()
+                                }
+                                val cpuMs = (SystemClock.currentThreadTimeMillis() - cpu0) / maxOf(1, decisions.count { it.outcome != Outcome.WAIT })
+                                for (d in decisions) {
+                                    if (job !== current) break
+                                    if (d.outcome == Outcome.GAVE_UP) { listenInstead(current, "no delay fits"); break }
+                                    if (!handle(current, tr, ref.timeline, d, cpuMs)) break
+                                }
+                            }
+                        }
+                        if (reference != null) {
+                            try { Thread.sleep(REFERENCE_EVERY_MS) } catch (_: InterruptedException) { break }
+                            continue
+                        }
+                    }
                 }
                 cost.maybeLog(timeline, current.lines, tracker)
                 // Waiting here is where release() usually finds the thread: its interrupt ends listening.
@@ -444,9 +583,13 @@ class AutoSync(
                                 // Its decode thread, for what it costs.
                                 cost.decoderThreads = threadIds() - before
                             }
-                            if (decoder == null) stopped(current, CANT_HEAR)
+                            // While the film's own subtitles may yet do instead, the sound not being heard can wait.
+                            if (decoder == null && referenceDone) stopped(current, CANT_HEAR)
                         }
-                        val d = decoder ?: continue
+                        val d = decoder ?: run {
+                            if (referenceDone && decoderKind != null) stopped(current, CANT_HEAR)
+                            null
+                        } ?: continue
                         var tries = 0
                         while (!d.queue(piece.bytes, piece.size, piece.filmUs) && tries++ < 50) {
                             d.drain { pcm, ch, rate, us -> feed(pcm, us, ch, rate, false) }
@@ -479,29 +622,7 @@ class AutoSync(
                     stopped(current, "Couldn't line up with the speech. Try Resync, or set the delay by hand.")
                     continue
                 }
-                if (d.outcome != Outcome.WAIT) {
-                    cost.matched(SystemClock.currentThreadTimeMillis() - cpu0)
-                    Log.i(TAG, d.toString())
-                }
-                when (d.outcome) {
-                    Outcome.LEARNED, Outcome.MOVED, Outcome.TUNED -> main.post { decided(current, d) }
-                    Outcome.GAVE_UP -> {
-                        jobRef.compareAndSet(current, null)
-                        main.post { notFound(current) }
-                    }
-                    else -> {}
-                }
-                // What's confirmed grew or the offsets changed: the main thread gets a fresh snapshot for the skip times,
-                // after decided() (a first delay learnt has made it SYNCED by then).
-                val segs = tr.segments
-                val changes = tr.changeFrom(timeline)
-                if (tr.confirmedCount != publishedCount || segs != publishedSegments || changes != publishedChanges) {
-                    publishedCount = tr.confirmedCount
-                    publishedSegments = segs
-                    publishedChanges = changes
-                    val confirmed = tr.confirmedSeconds()
-                    main.post { publishMapping(current, segs, confirmed, changes) }
-                }
+                handle(current, tr, timeline, d, SystemClock.currentThreadTimeMillis() - cpu0)
             }
         } finally {
             runCatching { decoder?.release() }
@@ -525,6 +646,8 @@ class AutoSync(
         private var matches = 0
         private var matchMs = 0L
         private var worstMs = 0L
+        /** What's lined up against: the talking, or the film's own subtitles. */
+        var against = "speech"
 
         fun matched(ms: Long) {
             matches++
@@ -554,7 +677,7 @@ class AutoSync(
                     "side decoder $decoderMs ms ${share(decoderMs)}, whole player $process ms ${share(process)}; " +
                     "matching $matches × ${if (matches > 0) matchMs / matches else 0} ms (worst $worstMs ms), " +
                     "sound pieces dropped ${tap.dropped - droppedSince}, frame-drop back-offs ${backOffs - backOffsSince}, " +
-                    "memory ~$kb KB, segments ${tracker?.segments?.size ?: 0}",
+                    "memory ~$kb KB, segments ${tracker?.segments?.size ?: 0}, lining up against $against",
             )
             since = SystemClock.elapsedRealtime()
             cpuSince = SystemClock.currentThreadTimeMillis()
@@ -577,9 +700,27 @@ class AutoSync(
         }
     }
 
-    /** On the main thread: a delay found (the first, one after a break, or a fine-tuning), put in and kept. */
-    private fun decided(current: Job, d: OffsetTracker.Decision) {
+    /** On the main thread: lining up against the film's own subtitles, so there's nothing to listen to. */
+    private fun referenceStarted(current: Job) {
+        if (current.generation != generation) return
+        tap.listening = false
+        if (state == State.LISTENING) setState(State.LISTENING, "Lining up with the film's own subtitles.")
+    }
+
+    /** On the main thread: the film's own subtitles weren't worth it after all, so it listens instead. */
+    private fun referenceEnded(current: Job) {
+        if (current.generation != generation) return
+        tap.listening = true
+        if (state == State.LISTENING) setState(State.LISTENING, "Listening for speech. Usually takes a minute or two of talking.")
+    }
+
+    /**
+     * On the main thread: a delay found (the first, one after a break, or a fine-tuning), put in and kept; [reference]:
+     * found against the film's own subtitles.
+     */
+    private fun decided(current: Job, d: OffsetTracker.Decision, reference: Boolean) {
         if (current.generation != generation || byHand || d.segments.isEmpty()) return
+        if (d.outcome != Outcome.TUNED) byReference = reference
         segments = d.segments
         prefs.saveSyncedSegments(savedKey(), OffsetTracker.encode(segments))
         // Also the one delay older versions read.
@@ -631,10 +772,18 @@ class AutoSync(
 
     companion object {
         private const val TAG = "AutoSync"
-        // Matching is tried at most this often: every 15 s of film played.
-        private const val TRY_EVERY_FRAMES = 1_500L
+        // The tracker is stepped this often: every 5 s of film played (it matches every 15 s at most, and in between
+        // only looks at the few delays worth trying first).
+        private const val TRY_EVERY_FRAMES = OffsetTracker.STEP_MS / 10
         // Further than this (10 s) from where the last sound ended is a jump, not a gap from pieces dropped.
         private const val JUMP_FRAMES = 1_000
+        // While lining up with the film's own subtitles: how often what has loaded is looked at, how often a film
+        // without a track worth it is looked at again for one, and how many lines one needs before it's taken up.
+        private const val REFERENCE_EVERY_MS = 1_000L
+        private const val REFERENCE_CHECK_MS = 3_000L
+        private const val REFERENCE_MIN_CUES = 8
+        // Nothing of the film read for this long (it's not a file Media3 reads itself): only listening, then.
+        private const val REFERENCE_WAIT_MS = 30_000L
         // How often the delay is matched to where the film is, while it changes along the film.
         private const val FOLLOW_EVERY_MS = 300L
         private const val COST_EVERY_MS = 5 * 60_000L

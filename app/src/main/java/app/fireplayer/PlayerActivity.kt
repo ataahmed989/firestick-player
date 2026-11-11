@@ -77,6 +77,7 @@ import app.fireplayer.player.TitleInfo
 import app.fireplayer.player.VsyncFix
 import app.fireplayer.player.XtreamAccount
 import app.fireplayer.subs.AutoSync
+import app.fireplayer.subs.EmbeddedCues
 import app.fireplayer.subs.FontImport
 import app.fireplayer.subs.MovieHash
 import app.fireplayer.subs.SavedSubtitles
@@ -89,6 +90,7 @@ import app.fireplayer.titles.TitleService
 import app.fireplayer.subs.PictureText
 import app.fireplayer.subs.SubtitlePresets
 import app.fireplayer.subs.SubtitleStyler
+import app.fireplayer.subs.placedLikePicture
 import app.fireplayer.ui.CountdownPill
 import app.fireplayer.player.SkipTimes
 import app.fireplayer.player.MkvChapters
@@ -198,6 +200,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private val delays = Delays()
     // Subtitle auto sync: listens to a copy of the sound while it lines downloaded subtitles up (see AutoSync).
     private val speechTap = SpeechTap()
+    // The timing of the film's own subtitle tracks as they load: auto sync lines downloaded subtitles up against it.
+    private val embeddedCues = EmbeddedCues()
     private lateinit var autoSync: AutoSync
     // The Subtitle delay window is open, so auto sync's news shows in it at once.
     private var delayPanelOpen = false
@@ -517,6 +521,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 val entry = currentEntry()
                 if (g != null && g.tmdbId > 0 && entry != null && guideEpisode(entry) != null) "tmdb:${g.tmdbId}" else null
             },
+            embedded = embeddedCues,
+            filmUri = { player?.currentMediaItem?.localConfiguration?.uri?.toString() },
         )
         autoSync.onMappingChanged = { syncMappingChanged() }
         settingsPanels.onAutoSyncChanged = { autoSync.setOn(prefs.autoSync); followSubtitle() }
@@ -901,6 +907,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             vsync = vsync,
             displaySwitch = displaySwitch,
             speechTap = speechTap,
+            embeddedCues = embeddedCues,
         )
         vsyncFix = vsync.also { it.start() }
         val p = built.player
@@ -1454,8 +1461,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val read = lastPictureCues.indices.filter { texts[it]!!.isNotEmpty() }
             .sortedBy { lastPictureCues[it].line.takeIf { line -> line != Cue.DIMEN_UNSET } ?: 0f }
         if (read.isEmpty()) return
-        val text = read.joinToString("\n") { texts[it]!! }
-        shownTextCues = lastTextCues + Cue.Builder().setText(text).build()
+        shownTextCues = if (styler.filePosition) {
+            // "As in the file": each picture's words go where the picture was (bottom ones still stack at the bottom).
+            lastTextCues + read.map { placedLikePicture(lastPictureCues[it], texts[it]!!) }
+        } else {
+            lastTextCues + Cue.Builder().setText(read.joinToString("\n") { texts[it]!! }).build()
+        }
         shownPictureCues = lastPictureCues.filterIndexed { i, _ -> texts[i]!!.isEmpty() }
     }
 
@@ -3224,6 +3235,17 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             }
             if (isOk) {
                 if (event.repeatCount == 0) togglePlay()
+                return true
+            }
+        }
+        // The icon row under the arrow wraps around: left from the first goes to the last, right from the last to the
+        // first. Only on a fresh press, so holding the D-pad stops at the end instead of spinning round.
+        if (moreShown && (code == KeyEvent.KEYCODE_DPAD_LEFT || code == KeyEvent.KEYCODE_DPAD_RIGHT)) {
+            val items = (0 until moreRow.childCount).map { moreRow.getChildAt(it) }.filter { it.visibility == View.VISIBLE }
+            val at = items.indexOf(currentFocus)
+            val left = code == KeyEvent.KEYCODE_DPAD_LEFT
+            if (at >= 0 && items.size > 1 && (left && at == 0 || !left && at == items.size - 1)) {
+                if (event.repeatCount == 0) (if (left) items.last() else items.first()).requestFocus()
                 return true
             }
         }

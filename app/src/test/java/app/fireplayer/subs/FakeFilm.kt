@@ -34,7 +34,17 @@ class FakeFilm private constructor(
 
     val subs = SyncMatcher.Lines(lines)
 
+    /** Line lengths and pauses: [lineMs] plus up to [lineSpreadMs], pauses [gapMs] plus up to [gapSpreadMs]. */
+    class Pace(val lineMs: Long, val lineSpreadMs: Int, val gapMs: Long, val gapSpreadMs: Int)
+
+    /** Talking film time from [fromMs] to [toMs], as the speech detector marks it. */
+    fun talkMs(fromMs: Long, toMs: Long): Long =
+        if (toMs <= fromMs) 0 else talking.get((fromMs / 10).toInt(), (toMs / 10).toInt()).cardinality() * 10L
+
     companion object {
+        val SPARSE = Pace(2_000, 3_000, 1_000, 11_000)
+        val TALKY = Pace(1_500, 2_500, 300, 2_400)
+
         fun make(
             seed: Long,
             minutes: Int,
@@ -43,14 +53,17 @@ class FakeFilm private constructor(
             noise: Double = 0.08,
             missed: Double = 0.1,
             adTalk: Boolean = true,
+            /** How long lines last and the pauses between them (shortest, and how much longer at most), in ms. The
+             *  defaults talk sparsely (about 6 lines a minute); [TALKY] is a talkative TV episode (about 13). */
+            pace: Pace = SPARSE,
         ): FakeFilm {
             val rnd = Random(seed)
             var lines = ArrayList<SubtitleTimes.Line>()
             var t = 5_000L
             while (t < minutes * 60_000L) {
-                val length = 2_000L + rnd.nextInt(3_000)
+                val length = pace.lineMs + rnd.nextInt(pace.lineSpreadMs)
                 lines += SubtitleTimes.Line(t, t + length)
-                t += length + 1_000 + rnd.nextInt(11_000)
+                t += length + pace.gapMs + rnd.nextInt(pace.gapSpreadMs)
             }
             // A break falls between lines; where the subtitles left a gap for it, there are none in the gap.
             for (b in breaks) {
@@ -114,7 +127,7 @@ class FakeFilm private constructor(
 
 /**
  * Plays a [FakeFilm] through an [OffsetTracker] the way [AutoSync]'s listening thread does: marks each 10 ms heard,
- * steps every 15 s of film played, says when the sound's format changes (at each ad's start and end, if [formatHints])
+ * steps every [OffsetTracker.STEP_MS] of film played, says when the sound's format changes (at each ad's start and end, if [formatHints])
  * and when playing jumps. Like the listening thread, it steps at any 10 ms, not on whole seconds: pieces of 1.01 s.
  * Another subtitle file for the same film carries on with the [timeline] heard so far.
  */
@@ -142,7 +155,7 @@ class Playback(
             for (f in (posMs / 10).toInt() until (end / 10).toInt()) timeline.mark(f, film.talking.get(f))
             sinceStep += end - posMs
             posMs = end
-            if (sinceStep >= 15_000) {
+            if (sinceStep >= OffsetTracker.STEP_MS) {
                 decisions += tracker.step(timeline, posMs, sinceStep)
                 sinceStep = 0
             }

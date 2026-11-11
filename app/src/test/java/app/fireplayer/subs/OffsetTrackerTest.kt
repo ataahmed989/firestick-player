@@ -276,12 +276,13 @@ class OffsetTrackerTest {
     fun aChangeOfSecondsInSparseTalkIsJudgedNearTheDelayInUse() {
         // 3 s more after 20:00 in a film whose talking is hard to hear (music, lines missed). Among all the shifts within
         // 3 minutes, chance matches keep it "not sure" for many minutes, or for good; among those within 20 s, it stands
-        // out. Never a delay that's neither.
+        // out. Never a delay that's neither. (Searching only: the sound's format marking the 3 s ad at both ends, the
+        // delay plus 3 s is tried first and found, see aBumperTheSameLengthAgainIsFollowedQuickly.)
         var wideFound = 0
         for (seed in 1L..8L) {
             val film = FakeFilm.make(seed, minutes = 45, delayMs = 1_400, breaks = listOf(Break(20 * min, adMs = 3_150)), noise = 0.2, missed = 0.3)
             val times = listOf(0L, OffsetTracker.NEAR_MS).map { nearMs ->
-                val p = Playback(film, OffsetTracker(film.subs, nearMs = nearMs))
+                val p = Playback(film, OffsetTracker(film.subs, nearMs = nearMs, guessing = false))
                 p.play(film.lengthMs)
                 assertTrue(p.story(), p.tracker.segments.all { near(1_400, it.delayMs, 300) || near(4_550, it.delayMs, 300) })
                 p.moves.firstOrNull { near(4_550, it.delayMs, 300) }?.let { it.toMs - 20 * min }
