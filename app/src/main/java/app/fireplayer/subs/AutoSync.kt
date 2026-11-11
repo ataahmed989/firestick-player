@@ -100,7 +100,20 @@ class AutoSync(
         rechecked = false
         lines = emptyList()
         marks = BitSet()
-        if (subtitle == null || filmKey == null || !prefs.autoSync) {
+        if (subtitle == null || filmKey == null) {
+            setState(State.OFF, null)
+            return
+        }
+        // Set by hand the last time these subtitles were on: that delay again, without listening.
+        val hand = prefs.handDelayMs(savedKey())
+        if (hand != null) {
+            byHand = true
+            moveDelay(hand * 1000)
+            setState(State.OFF, "Your delay from last time: ${SyncMatcher.formatShift(hand)}.")
+            loadLines(subtitle) {}
+            return
+        }
+        if (!prefs.autoSync) {
             setState(State.OFF, null)
             return
         }
@@ -123,12 +136,15 @@ class AutoSync(
         byHand = false
         rechecked = true
         prefs.forgetSyncedDelay(savedKey())
+        prefs.forgetHandDelay(savedKey())
         if (lines.isEmpty()) loadLines(file!!) { start(recheck = false) } else start(recheck = false)
     }
 
-    /** The delay was changed by hand: auto sync stays out of it for this subtitle. */
-    fun handOff() {
-        if (file == null || state == State.OFF) return
+    /** The delay was changed by hand: auto sync stays out of it for this subtitle, and the delay is kept for it. */
+    fun handOff(delayUs: Long) {
+        if (file == null) return
+        prefs.saveHandDelay(savedKey(), delayUs / 1000)
+        if (state == State.OFF) return
         stopListening()
         byHand = true
         undoUs = null

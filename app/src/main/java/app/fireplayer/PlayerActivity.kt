@@ -78,6 +78,7 @@ import app.fireplayer.player.XtreamAccount
 import app.fireplayer.subs.AutoSync
 import app.fireplayer.subs.FontImport
 import app.fireplayer.subs.MovieHash
+import app.fireplayer.subs.SavedSubtitles
 import app.fireplayer.subs.OpenSubtitles
 import app.fireplayer.subs.SubtitleRanker
 import app.fireplayer.subs.Tmdb
@@ -322,6 +323,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private var savedTrackParams: TrackSelectionParameters? = null
     private var savedPlayWhenReady = true
     private var pendingExternalSubId: String? = null
+    /** Downloaded subtitles in the videos' lists: their file in SavedSubtitles.dir, by subtitle id. */
+    private val savedFiles = HashMap<String, String>()
     private var externalCounter = 0
 
     // UI state
@@ -463,6 +466,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         openSubtitles = OpenSubtitles(prefs)
         tmdb = Tmdb(prefs)
         matchFixes = MatchFixes(this)
+        // Downloaded subtitles unused for a while go, with what was found for their timing.
+        io.execute { SavedSubtitles.prune(applicationContext) }
         @Suppress("DEPRECATION")
         overridePendingTransition(android.R.anim.fade_in, 0)
         autoSync = AutoSync(
@@ -681,6 +686,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             entries[startIndex].handedSubtitles += uri to name
         }
         entries.forEach { it.subtitles += localSubtitles(it.uri) }
+        // Subtitles downloaded for these videos before; the one on when the video was left goes on again.
+        entries.forEachIndexed { i, e -> attachSaved(e, chooseOn = i == startIndex) }
 
         // Some apps send the position as an Int, others as a Long.
         @Suppress("DEPRECATION")
@@ -743,6 +750,24 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             .setLabel(label)
             .setId("$EXT_PREFIX$externalCounter")
             .build()
+    }
+
+    /** Puts the subtitles downloaded for this video before in its list, last used first. */
+    private fun attachSaved(entry: Entry, chooseOn: Boolean) {
+        val dir = SavedSubtitles.dir(this)
+        SavedSubtitles.forVideo(this, entry.key).forEach { s ->
+            val config = subtitleConfig(Uri.fromFile(File(dir, s.file)), null, s.language)
+            val id = config.id ?: return@forEach
+            entry.subtitles += config
+            savedFiles[id] = s.file
+            if (chooseOn && s.on && pendingExternalSubId == null) pendingExternalSubId = id
+        }
+    }
+
+    /** The downloaded file behind a subtitle track, if it is one. */
+    private fun savedFileOf(trackId: String?): String? {
+        trackId ?: return null
+        return savedFiles.entries.firstOrNull { (id, _) -> trackId == id || trackId.endsWith(":$id") }?.value
     }
 
     private fun headersFromIntent(): Map<String, String> {
@@ -1249,6 +1274,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             if (option != null) {
                 pendingExternalSubId = null
                 selectTrack(option)
+                // A downloaded one back on screen counts as used.
+                savedFiles[id]?.let { name -> currentEntry()?.let { SavedSubtitles.use(this, it.key, name) } }
             }
         }
         // Adding a subtitle reloads the video; stay on the audio track that was playing.
@@ -1782,6 +1809,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 if (entries.lastOrNull()?.key != last.key || !prefs.playNextEpisode) return@post
                 // Its link ends in its own file type, so the type this one came with is left out.
                 val entry = Entry(next.uri, next.title, null, nextEpisode = true)
+                attachSaved(entry, chooseOn = false)
                 entries += entry
                 playing.addMediaItem(mediaItem(entry))
                 updateTitle()
@@ -3028,6 +3056,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             f.language, f.label, f.roleFlags, f.selectionFlags and C.SELECTION_FLAG_FORCED != 0, f.channelCount,
         )
         selectTrack(o)
+        // Downloaded subtitles chosen (or others instead): remembered as the ones on, last used first.
+        if (type == C.TRACK_TYPE_TEXT) currentEntry()?.let { SavedSubtitles.use(this, it.key, savedFileOf(f.id)) }
         // The sound picked for a film or show is picked again when it's opened another time.
         if (type == C.TRACK_TYPE_AUDIO) currentEntry()?.let { e -> audioKey(e)?.let { rememberAudio(it, trackWishes[type]!!) } }
         // For as long as the player is open, that language comes first (Settings keeps the default).
@@ -3108,6 +3138,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     private fun subtitlesOff() {
         trackWishes.remove(C.TRACK_TYPE_TEXT)
+        currentEntry()?.let { SavedSubtitles.use(this, it.key, null) }
         val p = player ?: return
         p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
             .clearOverridesOfType(C.TRACK_TYPE_TEXT)
@@ -3118,7 +3149,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private fun openSubtitlesPanel(from: View) = openPanel("Subtitles", from) {
         val options = trackOptions(C.TRACK_TYPE_TEXT)
         val embedded = options.filter { !it.external }
-        val other = options.filter { it.external }
+        // Downloaded ones first, last used first; then the rest.
+        val order = currentEntry()?.let { e -> SavedSubtitles.forVideo(this@PlayerActivity, e.key).map { it.file } }.orEmpty()
+        val other = options.filter { it.external }.sortedBy { o ->
+            val at = order.indexOf(savedFileOf(o.group.getTrackFormat(o.trackIndex).id))
+            if (at < 0) Int.MAX_VALUE else at
+        }
         val anySelected = options.any { it.selected }
         header("In this video")
         if (embedded.isEmpty()) message("No subtitles inside this video.")
@@ -3128,13 +3164,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         row("Off", checked = !anySelected) { subtitlesOff(); handler.postDelayed({ refreshLabels(); refresh() }, 150) }
         header("Other subtitles")
         other.forEach { o ->
-            row(o.label, checked = o.selected) { chooseTrack(o); handler.postDelayed({ refreshLabels(); refresh() }, 150) }
+            // A downloaded one says which release it was made for.
+            val release = savedFileOf(o.group.getTrackFormat(o.trackIndex).id)?.let { savedRelease(it) }
+            row(o.label, release, checked = o.selected) { chooseTrack(o); handler.postDelayed({ refreshLabels(); refresh() }, 150) }
         }
         row("Search online") { panel.close(); openFindPanel(from) }
         spacer(6)
         stepper("Delay", formatDelay(delays.subtitleUs)) { dir ->
             delays.subtitleUs += dir * 100_000L
-            autoSync.handOff()
+            autoSync.handOff(delays.subtitleUs)
             refreshLabels()
         }
     }
@@ -3145,13 +3183,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             message("Left makes subtitles earlier, right makes them later.")
             stepper("Delay", formatDelay(delays.subtitleUs)) { dir ->
                 delays.subtitleUs += dir * 100_000L
-                autoSync.handOff()
+                autoSync.handOff(delays.subtitleUs)
                 refreshLabels()
             }
             renderAutoSync(this)
             row("Reset") {
                 delays.subtitleUs = 0
-                autoSync.handOff()
+                autoSync.handOff(delays.subtitleUs)
                 refreshLabels()
                 refresh()
             }
@@ -3212,7 +3250,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     /** Where Search online puts the subtitles it downloads. */
-    private fun downloadDir() = File(cacheDir, "subs")
+    private fun downloadDir() = SavedSubtitles.dir(this)
 
     private fun openAudioPanel(from: View) = openPanel("Audio", from) {
         val options = trackOptions(C.TRACK_TYPE_AUDIO)
@@ -3465,6 +3503,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val name = guide?.searchName ?: current.info.title
         val raw = String.format(Locale.ROOT, "%s S%02dE%02d %s", name, ep.season, ep.number, ep.name).trim()
         val entry = Entry(NextEpisode.episodeUri(current.uri, ep.id, ep.extension), raw, null, nextEpisode = true)
+        attachSaved(entry, chooseOn = false)
         entries += entry
         p.addMediaItem(mediaItem(entry))
         nextLookedUpFor = null
@@ -3931,7 +3970,21 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             val loadedId = findLoadedSubId
             val inUse = loadedId != null && shownId != null &&
                 (shownId == loadedId || shownId.endsWith(":$loadedId") || loadedId.endsWith(":$shownId"))
-            findResults.forEach { ranked ->
+            // Downloaded for this video before: last used first, ready without searching again.
+            val saved = SavedSubtitles.forVideo(this@PlayerActivity, entry.key)
+            val shownFile = savedFileOf(shownId)
+            if (saved.isNotEmpty()) {
+                header("Downloaded before")
+                saved.forEach { s ->
+                    val on = s.file == shownFile
+                    val lang = s.language?.let { Locale.forLanguageTag(it).getDisplayLanguage(Locale.ENGLISH) }.orEmpty()
+                    val notes = listOf(if (on) "In use" else usedAgo(s.lastUsed), lang).filter { it.isNotEmpty() }.joinToString(" · ")
+                    resultRow(readableRelease(s.release), notes, null, selected = on) { useSaved(entry, s) }
+                }
+                if (findResults.isNotEmpty()) header("Search results")
+            }
+            val savedIds = saved.mapTo(HashSet()) { it.fileId }
+            findResults.filter { it.result.fileId !in savedIds }.forEach { ranked ->
                 val r = ranked.result
                 val lang = Locale.forLanguageTag(r.language).getDisplayLanguage(Locale.ENGLISH)
                 val loaded = r.fileId == findLoaded
@@ -3948,6 +4001,39 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 }
             }
         }
+    }
+
+    /** Puts a subtitle downloaded before back on screen. */
+    private fun useSaved(entry: Entry, s: SavedSubtitles.Saved) {
+        val id = savedFiles.entries.firstOrNull { it.value == s.file }?.key
+        val option = id?.let { i -> trackOptions(C.TRACK_TYPE_TEXT).firstOrNull { sameId(it, i) } }
+        if (option != null) {
+            chooseTrack(option)
+            handler.postDelayed({ refreshLabels(); if (panel.isOpen) panel.refresh() }, 150)
+        } else {
+            addExternalSubtitle(Uri.fromFile(File(SavedSubtitles.dir(this), s.file)), s.language)
+            pendingExternalSubId?.let { savedFiles[it] = s.file }
+            SavedSubtitles.use(this, entry.key, s.file)
+            panel.close()
+        }
+    }
+
+    /** "Used today", "Used yesterday", "Used 5 days ago". */
+    private fun usedAgo(at: Long): String {
+        val days = ((System.currentTimeMillis() - at) / 86_400_000L).toInt()
+        return when {
+            days <= 0 -> "Used today"
+            days == 1 -> "Used yesterday"
+            else -> "Used $days days ago"
+        }
+    }
+
+    /** The release group a downloaded subtitle was made for ("KILLERS"), shown beside it in Subtitles. */
+    private fun savedRelease(file: String): String? {
+        val entry = currentEntry() ?: return null
+        val release = SavedSubtitles.forVideo(this, entry.key).firstOrNull { it.file == file }?.release ?: return null
+        val group = release.substringBeforeLast(".srt").substringAfterLast('-').trim()
+        return group.takeIf { it.length in 2..14 && it != release } ?: "Downloaded"
     }
 
     /** "Breaking.Bad.S02E03.720p.BluRay.x264-DEMAND" → "Breaking Bad S02E03 720p BluRay x264-DEMAND", to wrap nicely. */
@@ -4031,7 +4117,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val length = player?.duration?.takeIf { it != C.TIME_UNSET && it > 0 } ?: 0L
         io.execute {
             val result = runCatching {
-                openSubtitles.download(r, dir).also { SubtitleRanker.stretch(it, ranked.stretch) }
+                openSubtitles.download(r, dir).also { SubtitleRanker.stretch(it, ranked.stretch) }.let { got ->
+                    // Named by its OpenSubtitles file too, so two downloads with one name don't overwrite each other.
+                    val named = File(dir, "${r.fileId}-${got.name}")
+                    if (got.name.startsWith("${r.fileId}-") || !got.renameTo(named)) got else named
+                }
             }
             val last = result.getOrNull()?.let { SubtitleRanker.lastTime(it) } ?: 0L
             handler.post {
@@ -4041,6 +4131,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                     findLoaded = r.fileId
                     addExternalSubtitle(Uri.fromFile(file), r.language)
                     findLoadedSubId = pendingExternalSubId
+                    // Kept for this video, to be there next time.
+                    pendingExternalSubId?.let { savedFiles[it] = file.name }
+                    currentEntry()?.let { SavedSubtitles.add(this, it.key, file, r.language, r.release, r.fileId) }
                     panel.close()
                     // Made for a longer or shorter cut (extended, or with a recap): the next one may fit better.
                     if (length > 10 * 60_000L && last > 0 && (last > length + 90_000L || last < length * 7 / 10)) {
