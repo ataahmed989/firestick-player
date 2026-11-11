@@ -46,25 +46,73 @@ class SkipRulesTest {
         assertTrue(SkipRules.skipDb(Part.OUTRO, SkipDbSegment(10 * 60_000L, 11 * 60_000L, "exact", 0, 0.9), length) is Pick.Rejected)
     }
 
+    private fun ev(tmdb: Boolean, creditsEndHere: Boolean) = SkipRules.Evidence(tmdb, creditsEndHere)
+
     @Test
-    fun introDbNeedsTmdbsLengthToAgree() {
-        val seg = IntroDbSegment(2_500, 58_000, 0.92)
-        assertTrue(SkipRules.introDb(Part.INTRO, seg, false, SkipRules.runtimeAgrees(47, length), length) is Pick.Found)
-        assertTrue(SkipRules.introDb(Part.INTRO, seg, false, SkipRules.runtimeAgrees(58, length), length) is Pick.Rejected)
-        assertTrue(SkipRules.introDb(Part.INTRO, seg, false, SkipRules.runtimeAgrees(0, length), length) is Pick.Rejected)
-        assertTrue(SkipRules.introDb(Part.INTRO, null, true, true, length) is Pick.None)
-        assertTrue(SkipRules.introDb(Part.INTRO, null, false, true, length) is Pick.Missing)
+    fun tmdbsLengthAloneIsNeverEnough() {
+        val seg = IntroDbSegment(2_500, 58_000, 0.7)
+        assertTrue(SkipRules.runtimeAgrees(47, length))
+        assertTrue(!SkipRules.runtimeAgrees(58, length))
+        assertTrue(!SkipRules.runtimeAgrees(0, length))
+        // TMDB agreeing and nothing else: left out. With IntroDB's credits ending here too: used.
+        assertTrue(SkipRules.introDb(Part.INTRO, seg, false, ev(true, false), length) is Pick.Rejected)
+        assertTrue(SkipRules.introDb(Part.INTRO, seg, false, ev(true, true), length) is Pick.Found)
+        // Credits never come from TMDB's length: their own end has to land on the file's.
+        val credits = IntroDbSegment(length - 90_000, length - 1_000, 1.0)
+        assertTrue(SkipRules.introDb(Part.OUTRO, credits, false, ev(true, false), length) is Pick.Rejected)
+        assertTrue(SkipRules.introDb(Part.OUTRO, credits, false, ev(false, true), length) is Pick.Found)
+        assertTrue(SkipRules.introDb(Part.INTRO, null, true, ev(true, true), length) is Pick.None)
+        assertTrue(SkipRules.introDb(Part.INTRO, null, false, ev(true, true), length) is Pick.Missing)
     }
 
     @Test
-    fun introDbCreditsEndingWithTheFileVouchForIt() {
-        // X-Men '97 S1E1: TMDB has no length for it; IntroDB's credits end at 1830.17 s, the file is 1830 s long.
+    fun xMen97() {
+        // S1E1: no SkipDB times, TMDB has no length for it; IntroDB's credits end at 1830.17 s, the file is 1830 s.
         val file = 1_830_000L
-        assertTrue(SkipRules.outroAnchors(IntroDbSegment(1_712_510, 1_830_170, 1.0), file))
-        assertTrue(SkipRules.introDb(Part.INTRO, IntroDbSegment(4_000, 75_000, 1.0), false, SkipRules.outroAnchors(IntroDbSegment(1_712_510, 1_830_170, 1.0), file), file) is Pick.Found)
-        // A file 40 s longer (an ad bumper, another cut): not vouched for.
-        assertTrue(!SkipRules.outroAnchors(IntroDbSegment(1_712_510, 1_830_170, 1.0), file + 40_000))
-        assertTrue(!SkipRules.outroAnchors(null, file))
+        val outro = IntroDbSegment(1_712_510, 1_830_170, 1.0)
+        val e = ev(SkipRules.runtimeAgrees(0, file), SkipRules.outroAnchors(outro, file))
+        assertTrue(SkipRules.introDb(Part.INTRO, IntroDbSegment(4_000, 75_000, 1.0), false, e, file) is Pick.Found)
+        assertTrue(SkipRules.introDb(Part.OUTRO, outro, false, e, file) is Pick.Found)
+        // The buttons, but nothing by itself: the times fit by length only.
+        val s = SkipRules.segments(mapOf(
+            Part.INTRO to Pick.Found(4_000, 75_000), Part.OUTRO to Pick.Found(1_712_510, file),
+        ), file, "introdb")!!
+        assertEquals("Skip intro", s.skip(10_000)!!.label)
+        assertEquals(1_712_510L, s.exitAt)
+        assertNull(s.autoAt)
+    }
+
+    @Test
+    fun aLongerCopyWithAnAdAfterTheIntroKeepsItsIntroOnly() {
+        // 60 s of ads after the intro: the intro is where IntroDB says, the credits are 60 s later than it says.
+        val timed = length
+        val file = length + 60_000
+        val outro = IntroDbSegment(timed - 90_000, timed, 1.0)
+        val e = ev(SkipRules.runtimeAgrees(47, file), SkipRules.outroAnchors(outro, file))
+        assertTrue(SkipRules.introDb(Part.INTRO, IntroDbSegment(5_000, 60_000, 0.95), false, e, file) is Pick.Found)
+        assertTrue(SkipRules.introDb(Part.OUTRO, outro, false, e, file) is Pick.Rejected)
+        // Less sure of the intro: two signs are missing, so it's left out too.
+        assertTrue(SkipRules.introDb(Part.INTRO, IntroDbSegment(5_000, 60_000, 0.6), false, e, file) is Pick.Rejected)
+        // SkipDB, asked with the longer length, says its times are for another cut: left out.
+        assertTrue(SkipRules.skipDb(Part.INTRO, SkipDbSegment(5_000, 60_000, "out-of-range", -60_000, 0.6), file) is Pick.Rejected)
+    }
+
+    @Test
+    fun anEqualLengthCopyWithAShiftedIntroNeverActsByItself() {
+        // Same length, but a bumper before the intro moved it 20 s and the end was trimmed: nothing in the length can
+        // tell. The times still get a button, which does nothing unless pressed, and nothing happens by itself.
+        val s = SkipRules.segments(mapOf(
+            Part.INTRO to SkipRules.skipDb(Part.INTRO, SkipDbSegment(61_000, 91_000, "exact", 0, 0.9), length),
+            Part.OUTRO to SkipRules.skipDb(Part.OUTRO, SkipDbSegment(length - 60_000, length, "exact", 0, 0.9), length),
+        ), length, "skipdb")!!
+        assertEquals("Skip intro", s.skip(70_000)!!.label)
+        assertEquals(length - 60_000, s.endCardAt)
+        assertNull(s.autoAt)
+        // The file's own chapters are the only times that may count down and act.
+        val own = Segments(null, 61_000L..91_000L, length - 60_000, null, "chapters", creditsToEnd = true, creditsFromFile = true)
+        assertEquals(length - 60_000, own.autoAt)
+        assertEquals(length - 60_000, own.or(s).autoAt)
+        assertNull(s.or(own).autoAt)
     }
 
     @Test
