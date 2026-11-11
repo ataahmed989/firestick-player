@@ -48,6 +48,16 @@ class CountdownPill @JvmOverloads constructor(context: Context, attrs: Attribute
             refreshColors()
         }
 
+    /**
+     * With the glass look: unselected, it's a clear glass pod like the other buttons (its background, set by the
+     * player), instead of the flat grey; chosen, focused or counting, it's drawn as before.
+     */
+    var glass = false
+        set(value) {
+            field = value
+            invalidate()
+        }
+
     private var drawn = -1f
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val rect = RectF()
@@ -109,7 +119,8 @@ class CountdownPill @JvmOverloads constructor(context: Context, attrs: Attribute
             counting -> PALE_COUNTING
             else -> PALE
         }
-        canvas.drawRoundRect(rect, corner, corner, paint)
+        val plain = !isFocused && !chosen && !counting
+        if (!(glass && plain)) canvas.drawRoundRect(rect, corner, corner, paint)
         val progress = if (counting) countdown?.invoke()?.coerceIn(0f, 1f) ?: 0f else 0f
         if (progress > 0f) {
             // The same rounded shape in white, cut off straight where the count has got to. Drawn as one smoothed
