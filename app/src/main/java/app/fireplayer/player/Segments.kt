@@ -23,6 +23,8 @@ class Segments(
     val afterCredits: Long?,
     val from: String,
     val creditsToEnd: Boolean = false,
+    /** The credits' times are the file's own (its chapters), not a database's matched by length. */
+    val creditsFromFile: Boolean = false,
 ) {
     /** The button to show at [position], and where it jumps to, or null. */
     fun skip(position: Long): Skip? {
@@ -44,11 +46,18 @@ class Segments(
     /** When "Exit" may come up: at the credits, only when they surely run to the end. */
     val exitAt: Long? get() = creditsAt?.takeIf { afterCredits == null && creditsToEnd }
 
+    /**
+     * When something may happen by itself at the credits (Next episode or Exit counting down): only with the file's own
+     * times. A database's times fit by length only, which is evidence, not proof: they get buttons, never automatic.
+     */
+    val autoAt: Long? get() = exitAt?.takeIf { creditsFromFile }
+
     /** These, with what [other] knows and this doesn't. */
     fun or(other: Segments?): Segments = if (other == null) this else Segments(
         recap ?: other.recap, intro ?: other.intro,
         creditsAt ?: other.creditsAt, if (creditsAt != null) afterCredits else other.afterCredits, from,
         if (creditsAt != null) creditsToEnd else other.creditsToEnd,
+        if (creditsAt != null) creditsFromFile else other.creditsFromFile,
     )
 
     companion object {
@@ -94,7 +103,8 @@ object MkvChapters {
         // A chapter after the credits that isn't more credits, and long enough to be something.
         val after = creditsEnd?.takeIf { durationMs - it > AFTER_MIN_MS }
         if (recap == null && intro == null && creditsAt == null) return null
-        return Segments(recap, intro, creditsAt, after, "chapters", creditsEnd != null && durationMs - creditsEnd <= TO_END_MS)
+        return Segments(recap, intro, creditsAt, after, "chapters", creditsEnd != null && durationMs - creditsEnd <= TO_END_MS,
+            creditsFromFile = creditsAt != null)
     }
 
     private const val AFTER_MIN_MS = 15_000L

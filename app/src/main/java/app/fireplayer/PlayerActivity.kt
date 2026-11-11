@@ -1841,10 +1841,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     /**
      * The end of an episode, Netflix-style: when a show has a next episode, a card comes up where the credits start
-     * (only with times for them). When they surely run to the end, Next episode counts 10 s of playing and starts the
-     * next one; when that isn't sure, it fills up until the real end. Watch credits puts the card away.
-     * With nothing next, once only the credits remain (they surely run to the end, nothing after them), "Exit · 10s"
-     * counts 10 s of playing, then leaves; Keep watching puts it away, pausing pauses it, a jump starts it again.
+     * (only with times for them). Only on the file's own times ([Segments.autoAt]: its chapters say the credits run to
+     * the end) does anything happen by itself: Next episode counts 10 s of playing and starts the next one, or, with
+     * nothing next, "Exit · 10s" counts and leaves. On a database's times (they fit by length, evidence but not proof)
+     * the card is the same but waits: Next episode fills up until the real end, Exit waits to be pressed.
+     * Watch credits / Keep watching put it away, pausing pauses a count, a jump starts it again.
      */
     private fun updatePostPlay() {
         val p = player
@@ -1869,7 +1870,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             (lookupInFlight || nextLookedUpFor != current.key)
         val exitAt = if (!nextOk && next == null && !nextUnknown && prefs.skipIntro) inCredits(parts?.exitAt) else null
         val exit = !nextOk && exitAt != null
-        val auto = nextOk && inCredits(parts?.exitAt) != null
+        // Counting down by itself only on the file's own credits times; a database's get the card, no countdown.
+        val sure = inCredits(parts?.autoAt) != null
+        val auto = (nextOk || exit) && sure
         val showAt = if (exit) exitAt!! else credits ?: Long.MAX_VALUE
         // Going back out of the credits brings the card back when they come again.
         if (known && showAt != Long.MAX_VALUE && postPlayDismissedFor == index && position < showAt - 5_000) postPlayDismissedFor = -1
@@ -1882,7 +1885,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             return
         }
         // Up for the other kind (a next episode turned up, say): it comes back as the right one.
-        if (postPlay.visibility == View.VISIBLE && postPlayExit != exit) hidePostPlay()
+        if (postPlay.visibility == View.VISIBLE && (postPlayExit != exit || postPlayAuto != auto)) hidePostPlay()
         if (postPlay.visibility != View.VISIBLE) {
             postPlayExit = exit
             postPlayAuto = auto
@@ -1901,10 +1904,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             // The count starts with the card. Exit counts 10 s of playing; Next episode fills up to the real end and
             // never starts it early: the next one plays when this one ends, or when Next episode is pressed.
             postPlayFrom = position
-            postPlayCountMs = if (exit || auto) EXIT_COUNT_MS else (duration - position).coerceAtLeast(1L)
+            postPlayCountMs = if (auto) EXIT_COUNT_MS else (duration - position).coerceAtLeast(1L)
             countShown = 0f
             countShownAt = 0L
-            postPlayGo.counting = true
+            postPlayGo.counting = auto || !exit
             postPlay.alpha = 0f
             postPlay.visibility = View.VISIBLE
             postPlay.animate().alpha(1f).setDuration(250).start()
@@ -1914,10 +1917,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         postPlayGo.invalidate()
         if (exit) {
             val left = ((postPlayFrom + postPlayCountMs - position + 999) / 1000).coerceAtLeast(0)
-            val label = "Exit · ${left}s"
+            val label = if (postPlayAuto) "Exit · ${left}s" else "Exit"
             if (postPlayGo.text.toString() != label) postPlayGo.text = label
             // Paused, the position stands still and so does the count.
-            if (position >= postPlayFrom + postPlayCountMs && p.playWhenReady) exitAfterCredits()
+            if (postPlayAuto && position >= postPlayFrom + postPlayCountMs && p.playWhenReady) exitAfterCredits()
         } else if (postPlayAuto && position >= postPlayFrom + postPlayCountMs && p.playWhenReady) {
             playNextEpisode()
         }
@@ -1940,7 +1943,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (postPlay.visibility != View.VISIBLE) return
         val duration = player?.duration ?: return
         postPlayFrom = position
-        postPlayCountMs = if (postPlayExit || postPlayAuto) EXIT_COUNT_MS else (duration - position).coerceAtLeast(1L)
+        postPlayCountMs = if (postPlayAuto) EXIT_COUNT_MS else (duration - position).coerceAtLeast(1L)
         countShown = 0f
         countShownAt = 0L
     }

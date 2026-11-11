@@ -5,8 +5,10 @@ package app.fireplayer.player
  * and of the network so it can be tested on its own.
  *
  * SkipDB is asked with the file's length and says how its times fit it (exact, shifted, or too different); IntroDB
- * doesn't know any length, so its times count only when TMDB's length for the title agrees with the file's. Times
- * are never stretched: a time that doesn't fit is left out, and the next source may fill that part in.
+ * doesn't know any length, so each of its parts is weighed on its own (an ad put in after the intro moves the credits
+ * and leaves the intro right): see [introDb]. Times are never stretched: a time that doesn't fit is left out, and the
+ * next source may fill that part in. Lengths agreeing is evidence, never proof: a database's times only ever get
+ * buttons; nothing happens by itself on them (see [Segments.autoAt]).
  */
 object SkipRules {
 
@@ -37,6 +39,7 @@ object SkipRules {
     const val EXACT_MIN_CONFIDENCE = 0.5
     const val SHIFTED_MIN_CONFIDENCE = 0.7
     const val INTRODB_MIN_CONFIDENCE = 0.5
+    const val INTRODB_SURE = 0.9
     // TMDB gives whole minutes, sometimes rounded either way.
     const val RUNTIME_SLACK_MS = 90_000L
     const val OUTRO_ANCHOR_MS = 5_000L
@@ -66,14 +69,31 @@ object SkipRules {
     }
 
     /**
-     * IntroDB's word on one part. [none] is its "confirmed: no such part". [runtimeAgrees]: TMDB's length for the
-     * title is within [RUNTIME_SLACK_MS] of the file's, the only sign its times were taken on a file like this one.
+     * What there is to go on that IntroDB's times were taken on a file like this one. [tmdbAgrees]: TMDB's length for
+     * the title is within [RUNTIME_SLACK_MS] of the file's. [creditsEndHere]: IntroDB's own credits end where this
+     * file does (see [outroAnchors]).
      */
-    fun introDb(part: Part, s: IntroDbSegment?, none: Boolean, runtimeAgrees: Boolean, duration: Long): Pick {
+    class Evidence(val tmdbAgrees: Boolean, val creditsEndHere: Boolean)
+
+    /**
+     * IntroDB's word on one part. [none] is its "confirmed: no such part". Each part is weighed on its own:
+     * - credits (and what follows them) need their own end to land on this file's end; TMDB's length says nothing
+     *   about where in the file they are.
+     * - an intro or recap needs two signs out of three: TMDB's length agreeing, IntroDB's credits ending here (the
+     *   same length), and IntroDB being sure of it ([INTRODB_SURE]). TMDB's length alone is never enough, and a copy
+     *   longer for an ad after the intro keeps its intro when the other two signs hold.
+     */
+    fun introDb(part: Part, s: IntroDbSegment?, none: Boolean, evidence: Evidence, duration: Long): Pick {
         if (none) return Pick.None
         if (s == null) return Pick.Missing
-        if (!runtimeAgrees) return Pick.Rejected("length doesn't agree with TMDB's")
         if (s.confidence < INTRODB_MIN_CONFIDENCE) return Pick.Rejected("confidence ${s.confidence}")
+        when (part) {
+            Part.OUTRO, Part.PREVIEW -> if (!evidence.creditsEndHere) return Pick.Rejected("credits don't end where this file does")
+            Part.INTRO, Part.RECAP -> {
+                val signs = listOf(evidence.tmdbAgrees, evidence.creditsEndHere, s.confidence >= INTRODB_SURE).count { it }
+                if (signs < 2) return Pick.Rejected("only $signs sign the times fit this file")
+            }
+        }
         return fits(part, s.start, s.end, duration)
     }
 
@@ -82,8 +102,8 @@ object SkipRules {
         tmdbMinutes > 0 && duration > 0 && Math.abs(duration - tmdbMinutes * 60_000L) <= RUNTIME_SLACK_MS
 
     /**
-     * True when IntroDB's credits end where this file ends (within [OUTRO_ANCHOR_MS]): its times were taken on a file
-     * as long as this one, which counts like TMDB's length agreeing (TMDB often has no length for an episode).
+     * True when IntroDB's credits end where this file ends (within [OUTRO_ANCHOR_MS]): its credits were timed on a
+     * file that ends like this one. Evidence for the credits; for the intro, one sign among others.
      */
     fun outroAnchors(outro: IntroDbSegment?, duration: Long): Boolean =
         outro != null && duration > 0 && outro.confidence >= INTRODB_MIN_CONFIDENCE &&
