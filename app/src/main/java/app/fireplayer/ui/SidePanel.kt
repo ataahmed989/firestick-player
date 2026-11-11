@@ -264,7 +264,7 @@ class SidePanel(private val activity: Activity) {
         val row = rows.base()
         // Blue while it's the one in use, like the current choice elsewhere.
         row.isSelected = selected
-        row.setPadding(rows.dp(12), rows.dp(9), rows.dp(12), rows.dp(9))
+        row.setPadding(rows.dp(16), rows.dp(10), rows.dp(16), rows.dp(10))
         val column = RowLayout(activity, rows.textColors).apply {
             orientation = LinearLayout.VERTICAL
             // Takes the row's state, so its texts are recoloured with it.
@@ -277,8 +277,9 @@ class SidePanel(private val activity: Activity) {
             })
             // One line per kind of note ("Best match · Same release", then "23.976 fps · 12k downloads · English").
             notes.split('\n').filter { it.isNotBlank() }.forEachIndexed { i, line ->
-                addView(rows.text(line).apply {
-                    isSingleLine = false
+                addView(FactsText(activity, line.split(" · ")).apply {
+                    typeface = ResourcesCompat.getFont(activity, R.font.figtree_600)
+                    setTextColor(rows.textColors)
                     maxLines = 2
                     ellipsize = android.text.TextUtils.TruncateAt.END
                     alpha = if (i == 0) 0.9f else 0.72f
@@ -364,5 +365,30 @@ class SidePanel(private val activity: Activity) {
             hint: String? = null,
             onDone: (String) -> Unit,
         ) = FireDialog.prompt(activity, title, initial, password, inputType, hint, onDone)
+    }
+}
+
+/**
+ * Notes such as "HDTV · 23.976 FPS · 165k downloads · English": wrapped between the parts, never inside one,
+ * so no line ends on a dangling dot.
+ */
+private class FactsText(context: android.content.Context, private val parts: List<String>) : android.widget.TextView(context) {
+    private var laidFor = -1
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val width = View.MeasureSpec.getSize(widthMeasureSpec) - paddingLeft - paddingRight
+        if (width > 0 && width != laidFor) {
+            laidFor = width
+            val lines = ArrayList<String>()
+            var line = ""
+            parts.map { it.trim() }.filter { it.isNotEmpty() }.forEach { part ->
+                val joined = if (line.isEmpty()) part else "$line · $part"
+                if (line.isEmpty() || paint.measureText(joined) <= width) line = joined
+                else { lines += line; line = part }
+            }
+            if (line.isNotEmpty()) lines += line
+            text = lines.joinToString("\n")
+        }
+        super.onMeasure(widthMeasureSpec, heightMeasureSpec)
     }
 }

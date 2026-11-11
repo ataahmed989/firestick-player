@@ -168,6 +168,19 @@ class Prefs(context: Context) {
 
     fun forgetSyncedDelay(key: String) = sp.edit().remove("sync|$key").apply()
 
+    /** A delay set by hand for a downloaded subtitle on one video, used again when it's chosen another time. */
+    fun handDelayMs(key: String): Long? = if (sp.contains("subdelay|$key")) sp.getLong("subdelay|$key", 0L) else null
+
+    fun saveHandDelay(key: String, ms: Long) = sp.edit().putLong("subdelay|$key", ms).apply()
+
+    fun forgetHandDelay(key: String) = sp.edit().remove("subdelay|$key").apply()
+
+    /** A downloaded subtitle file was let go: what was found or set for its timing goes with it. */
+    fun forgetSubtitleTimes(fileName: String) {
+        val gone = sp.all.keys.filter { it.startsWith("sync|$fileName|") || it.startsWith("subdelay|$fileName|") }
+        if (gone.isNotEmpty()) sp.edit().apply { gone.forEach { remove(it) } }.apply()
+    }
+
     /** Name of the subtitle font sent from the phone, or "" when there isn't one. */
     var customFontName: String
         get() = sp.getString("custom_font", "") ?: ""

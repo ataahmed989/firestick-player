@@ -379,7 +379,9 @@ internal object GlassBakes {
         return when (kind) {
             Glass.Kind.PANEL -> min(22f * density, half)
             Glass.Kind.POPUP, Glass.Kind.DIALOG_POPUP -> min(15f * density, half)
-            Glass.Kind.CIRCLE, Glass.Kind.MORE_ICON, Glass.Kind.PILL, Glass.Kind.CHIP, Glass.Kind.ROW -> half
+            Glass.Kind.CIRCLE, Glass.Kind.MORE_ICON, Glass.Kind.PILL, Glass.Kind.CHIP -> half
+            // A pill while one line high; taller rows (search results) keep soft corners instead of round ends.
+            Glass.Kind.ROW -> min(18f * density, half)
         }
     }
 }
