@@ -3565,7 +3565,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (tracks.isEmpty() && chosen == null) return@with
         val inUse = tracks.firstOrNull { it.info.key == autoSync.trackInUse }
         val auto = when {
-            inUse != null -> "Auto (${inUse.info.name()}, ${inUse.strength.label})"
+            // Just the track: the row's value has room for little more, and the list says how well each matches.
+            inUse != null -> "Auto (${inUse.info.name()})"
             tracks.isNotEmpty() && autoSync.trackInUse == null && autoSync.state != AutoSync.State.LISTENING -> "Auto (speech)"
             else -> "Auto"
         }

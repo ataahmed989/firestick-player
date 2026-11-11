@@ -75,14 +75,19 @@ class SidePanel(private val activity: Activity) {
         title.text = text
     }
 
-    /** Redraws the window, keeping focus on the same row and the list where it was. */
+    /**
+     * Redraws the window, keeping focus on the same row and the list where it was. The row is found again by what it
+     * says, not where it was: a row that appears or goes above it (Undo, say) mustn't move the highlight onto another
+     * row, where the next press of OK would land.
+     */
     fun refresh() {
         if (!isOpen) return
-        val index = focusables().indexOfFirst { it.hasFocus() }
-        rebuild(if (index >= 0) index else 0)
+        val rows = focusables()
+        val index = rows.indexOfFirst { it.hasFocus() }
+        rebuild(if (index >= 0) index else 0, if (index >= 0) rowKey(rows, index) else null)
     }
 
-    private fun rebuild(focusIndex: Int) {
+    private fun rebuild(focusIndex: Int, key: Pair<String, Int>? = null) {
         // Park focus on the window itself while its rows are replaced, so it can't wander off.
         root.isFocusable = true
         root.requestFocus()
@@ -92,12 +97,26 @@ class SidePanel(private val activity: Activity) {
         scroll.scrollTo(0, y)
         val focusRows = focusables()
         if (focusRows.isNotEmpty()) {
-            val row = focusRows[focusIndex.coerceIn(0, focusRows.size - 1)]
+            val same = key?.let { k -> focusRows.indices.firstOrNull { rowKey(focusRows, it) == k } }
+            val row = focusRows[(same ?: focusIndex).coerceIn(0, focusRows.size - 1)]
             row.requestFocus()
             // The new row is already the selected one: show it white at once instead of fading in from dark.
             row.jumpDrawablesToCurrentState()
         }
         root.isFocusable = false
+    }
+
+    /** A row by what it says (its label) and which of the rows saying that it is. */
+    private fun rowKey(rows: List<View>, index: Int): Pair<String, Int> {
+        val label = labelOf(rows[index])
+        return label to (0 until index).count { labelOf(rows[it]) == label }
+    }
+
+    /** The first words in a row: its label. */
+    private fun labelOf(view: View): String = when (view) {
+        is TextView -> view.text.toString()
+        is ViewGroup -> (0 until view.childCount).asSequence().map { labelOf(view.getChildAt(it)) }.firstOrNull { it.isNotEmpty() } ?: ""
+        else -> ""
     }
 
     /** The rows the D-pad can reach, in order; a row with a button beside it gives both. */

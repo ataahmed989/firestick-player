@@ -629,6 +629,26 @@ class OffsetTrackerTest {
     }
 
     @Test
+    fun aStretchTooShortToBeRealIsDroppedWhenReadBack() {
+        // Kept by an older version on a Fire TV: 13 s at the first stretch's delay between two breaks.
+        val kept = listOf(
+            Segment(0, 1_400), Segment(779_000, 3_400), Segment(1_197_000, 1_400), Segment(1_210_000, 4_700),
+            Segment(1_748_000, 6_500),
+        )
+        assertEquals(
+            listOf(Segment(0, 1_400), Segment(779_000, 3_400), Segment(1_210_000, 4_700), Segment(1_748_000, 6_500)),
+            OffsetTracker.restore(OffsetTracker.encode(kept), null),
+        )
+        // Left with the same delay on both sides of it, the two become one.
+        val same = listOf(Segment(0, 1_400), Segment(600_000, 4_700), Segment(990_000, 1_400), Segment(1_000_000, 4_700))
+        assertEquals(listOf(Segment(0, 1_400), Segment(600_000, 4_700)), OffsetTracker.restore(OffsetTracker.encode(same), null))
+        // The last stretch runs to the end of the film, however late it starts; the first is always kept.
+        val late = listOf(Segment(0, 1_400), Segment(2_000_000, 3_000))
+        assertEquals(late, OffsetTracker.restore(OffsetTracker.encode(late), null))
+        assertEquals(listOf(Segment(0, 900), Segment(5_000, 1_400)), OffsetTracker.withoutSlivers(listOf(Segment(0, 900), Segment(5_000, 1_400))))
+    }
+
+    @Test
     fun segmentsAreKeptAndReadBack() {
         val segs = listOf(Segment(0, 1_400), Segment(1_213_400, 16_400), Segment(3_000_000, -2_000))
         assertEquals(segs, OffsetTracker.decode(OffsetTracker.encode(segs)))

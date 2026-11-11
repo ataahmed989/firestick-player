@@ -1383,7 +1383,23 @@ class OffsetTracker(
          * version kept for the whole film ([legacyMs]); null when neither.
          */
         fun restore(text: String?, legacyMs: Long?): List<Segment>? =
-            decode(text) ?: legacyMs?.let { listOf(Segment(0, it)) }
+            decode(text)?.let { withoutSlivers(it) } ?: legacyMs?.let { listOf(Segment(0, it)) }
+
+        /**
+         * Delays kept by an older version can hold a stretch shorter than any found now ([MIN_SEGMENT_MS]): a few
+         * seconds at another delay between two breaks, which no film has. Such a stretch goes (the one before it
+         * carries on), and neighbours left with the same delay become one.
+         */
+        internal fun withoutSlivers(list: List<Segment>): List<Segment> {
+            val out = ArrayList<Segment>()
+            for ((i, seg) in list.withIndex()) {
+                val next = list.getOrNull(i + 1)
+                if (i > 0 && next != null && next.fromMs - seg.fromMs < MIN_SEGMENT_MS) continue
+                if (out.isNotEmpty() && out.last().delayMs == seg.delayMs) continue
+                out += seg
+            }
+            return out
+        }
 
         /**
          * The delay auto sync puts in at film time [positionMs], or null to leave the delay alone: a delay set by hand

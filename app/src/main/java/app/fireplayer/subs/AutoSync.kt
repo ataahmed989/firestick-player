@@ -118,6 +118,8 @@ class AutoSync(
     private var speechFirstKey: String? = null
     private val droppedTracks = HashMap<String, String>()
     private var lastResyncAt = 0L
+    // The delays found before the last Resync, for Undo to put back (null when Undo goes back to before auto sync).
+    private var beforeResync: List<OffsetTracker.Segment>? = null
     // Where Resync was last pressed, while its check is going on (the panel says so), or -1.
     private var checkingAt = -1L
 
@@ -200,6 +202,7 @@ class AutoSync(
         file = subtitle
         key = filmKey
         undoUs = null
+        beforeResync = null
         byHand = false
         basis = Basis.NONE
         priorMs = null
@@ -272,6 +275,9 @@ class AutoSync(
         if (!byHand && segments.isNotEmpty() && state == State.SYNCED && prefs.autoSync) {
             stopHolding()
             checkingAt = at
+            // Undo puts back what was found before this press, and auto sync carries on from it.
+            beforeResync = segments
+            undoUs = delayUs()
             val ask = {
                 // Not following now (it stopped, or was finding the first delay afresh): it carries on from what's known.
                 if (job.let { it == null || it.relearnAtMs != null }) start()
@@ -285,6 +291,7 @@ class AutoSync(
         stopListening()
         clearMapping()
         stopHolding()
+        beforeResync = null
         byHand = false
         basis = Basis.NONE
         priorMs = null
@@ -304,6 +311,7 @@ class AutoSync(
         clearMapping()
         byHand = true
         undoUs = null
+        beforeResync = null
         segments = emptyList()
         prefs.forgetSyncedDelay(savedKey())
         setState(State.OFF, "Off for these subtitles, as the delay was set by hand.")
@@ -317,13 +325,37 @@ class AutoSync(
             stopListening()
             clearMapping()
             stopHolding()
+            beforeResync = null
             setState(State.OFF, null)
         }
     }
 
-    /** Puts the delay back to what it was before auto sync moved it. */
+    /**
+     * Puts the delay back to what it was before auto sync moved it. Right after Resync, it's what Resync might have
+     * changed that goes back: the delays found before the press, everywhere in the film, with auto sync still on.
+     */
     fun undo() {
         val before = undoUs ?: return
+        val kept = beforeResync
+        beforeResync = null
+        if (kept != null && kept.isNotEmpty() && !byHand && prefs.autoSync) {
+            stopListening()
+            clearMapping()
+            stopHolding()
+            undoUs = null
+            checkingAt = -1
+            // A Resync after this is a first press again, checked against the film's own subtitles if it has them.
+            lastResyncAt = 0L
+            if (speechFirstKey == savedKey()) speechFirstKey = null
+            segments = kept
+            prefs.saveSyncedSegments(savedKey(), OffsetTracker.encode(kept))
+            prefs.saveSyncedDelay(savedKey(), kept[0].delayMs)
+            moveDelay(OffsetTracker.delayAt(kept, position().first)?.times(1000) ?: before)
+            setState(State.SYNCED, "Put back as it was before Resync: ${SyncMatcher.formatShift(delayUs() / 1000)} here.")
+            startFollowing()
+            start()
+            return
+        }
         stopListening()
         clearMapping()
         stopHolding()
@@ -436,7 +468,8 @@ class AutoSync(
 
     /** What the panel says while Resync's check is going on. */
     private fun checkingText(): String =
-        if (trackInUse != null) "Checking the timing here again against the film's own subtitles and the speech…"
+        // Pressed again soon after, it's the talking alone that decides (see [resync]).
+        if (trackInUse != null && speechFirstKey != savedKey()) "Checking the timing here again against the film's own subtitles and the speech…"
         else "Listening to check the timing here again…"
 
     /** The show's last episode's starting delay for subtitles from this source, if known. */
