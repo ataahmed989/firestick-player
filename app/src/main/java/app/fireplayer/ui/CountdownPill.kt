@@ -34,6 +34,13 @@ class CountdownPill @JvmOverloads constructor(context: Context, attrs: Attribute
             refreshColors()
         }
 
+    /** Fully round ends, a pod, instead of the flat end-card shape. */
+    var pod = false
+        set(value) {
+            field = value
+            invalidate()
+        }
+
     /** Always drawn as the chosen button (white, dark text): for a button that is the only thing on screen. */
     var chosen = false
         set(value) {
@@ -96,19 +103,20 @@ class CountdownPill @JvmOverloads constructor(context: Context, attrs: Attribute
 
     override fun onDraw(canvas: Canvas) {
         rect.set(0f, 0f, width.toFloat(), height.toFloat())
+        val corner = if (pod) height / 2f else radius
         paint.color = when {
             (isFocused || chosen) && !counting -> Color.WHITE
             counting -> PALE_COUNTING
             else -> PALE
         }
-        canvas.drawRoundRect(rect, radius, radius, paint)
+        canvas.drawRoundRect(rect, corner, corner, paint)
         val progress = if (counting) countdown?.invoke()?.coerceIn(0f, 1f) ?: 0f else 0f
         if (progress > 0f) {
             // The same rounded shape in white, cut off straight where the count has got to. Drawn as one smoothed
             // shape rather than clipped to whole pixels, so its edge glides between pixels instead of stepping.
             paint.color = Color.WHITE
             shape.reset()
-            shape.addRoundRect(rect, radius, radius, Path.Direction.CW)
+            shape.addRoundRect(rect, corner, corner, Path.Direction.CW)
             cut.reset()
             cut.addRect(0f, 0f, width * progress, height.toFloat(), Path.Direction.CW)
             filled.op(shape, cut, Path.Op.INTERSECT)
