@@ -133,7 +133,38 @@ class NextEpisode(context: Context, private val headers: Map<String, String>) {
         remember(link, seriesId, name, series.episodes)
         // The name it came with reads best; one that was only its number gets the provider's name for the show.
         val shown = if (named) show else TitleInfo.parse(name, null).title
-        return Found(name, after(link, shown, series.episodes), seriesId, series)
+        val next = after(link, shown, series.episodes) ?: elsewhere(link, seriesId, listOf(name, show), series, shown)
+        return Found(name, next, seriesId, series)
+    }
+
+    /**
+     * The episode after the last one this show's entry has, when the provider lists the show's later seasons as a
+     * separate show ("X-Men '97 S02" beside "X-Men '97"). Only a show with exactly this show's name (season, year or
+     * quality marks aside), the same TMDB id when both say one, and episodes after this one counts.
+     */
+    private fun elsewhere(link: Link, seriesId: String, names: List<String>, series: Series, show: String): Next? {
+        val here = series.episodes.firstOrNull { it.id == link.episodeId } ?: return null
+        val wanted = names.mapNotNull { nameOf(it) }.distinctBy { it.squeezed }
+        if (wanted.isEmpty()) return null
+        val shows = shows(link, false) ?: return null
+        val same = shows.filter { s ->
+            s.id != seriesId && listOf(s.name, s.title).any { n ->
+                val have = nameOf(n) ?: return@any false
+                wanted.any { w -> have.squeezed == w.squeezed || (w.words.isNotEmpty() && have.words.containsAll(w.words) && (have.words - w.words).all { SEASON_WORD.matches(it) }) }
+            }
+        }.take(MAX_CANDIDATES)
+        var best: Episode? = null
+        for (candidate in same) {
+            val other = series(link, candidate.id) ?: continue
+            if (series.tmdb > 0 && other.tmdb > 0 && series.tmdb != other.tmdb) continue
+            val later = other.episodes.filter { it.season > here.season || (it.season == here.season && it.number > here.number) }
+                .minWithOrNull(compareBy({ it.season }, { it.number })) ?: continue
+            val b = best
+            if (b == null || later.season < b.season || (later.season == b.season && later.number < b.number)) best = later
+        }
+        val next = best ?: return null
+        Log.i(TAG, "Next episode found in another entry of the show: season ${next.season}, episode ${next.number}")
+        return nextOf(link, show, next)
     }
 
     private fun after(link: Link, show: String, episodes: List<Episode>): Next? {
@@ -144,6 +175,10 @@ class NextEpisode(context: Context, private val headers: Map<String, String>) {
             status = "This is the last episode your provider has."
             return null
         }
+        return nextOf(link, show, next)
+    }
+
+    private fun nextOf(link: Link, show: String, next: Episode): Next {
         // The same link with the next episode's file at the end, the login exactly as it came.
         val folder = link.uri.encodedPath.orEmpty().substringBeforeLast('/')
         val uri = link.uri.buildUpon().encodedPath("$folder/${Uri.encode(next.id)}.${Uri.encode(next.extension)}").build()
@@ -458,6 +493,8 @@ class NextEpisode(context: Context, private val headers: Map<String, String>) {
         private const val SHOWS_FOR_MS = 24 * 60 * 60_000L
         private const val MAX_INFO_BYTES = 8 shl 20
         private const val MAX_CANDIDATES = 8
+        /** Words a provider adds to a show's name for a season of it: "S02", "Season 2", a year, a quality or language. */
+        private val SEASON_WORD = Regex("""s\d{1,2}|season|seasons|saison|staffel|temporada|stagione|part|vol|\d{1,4}|4k|uhd|fhd|hd|sd|hevc|en|eng|english|multi|sub|dub""")
         private const val MAX_SHOWS = 300
         private const val MAX_HALVINGS = 17
         private const val MAX_ASKED = 40

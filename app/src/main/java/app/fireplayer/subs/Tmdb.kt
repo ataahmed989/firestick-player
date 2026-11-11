@@ -299,6 +299,34 @@ class Tmdb(private val key: () -> String, private val memory: Memory) {
         }
     }
 
+    /**
+     * Whether season [season] episode [episode] is the show's very last: the show has ended (or was cancelled) and
+     * this is its last episode out, in its last season. Null when TMDB doesn't say. Blocks.
+     */
+    fun isSeriesFinale(showId: Int, season: Int, episode: Int): Boolean? {
+        if (showId <= 0) return null
+        val item = try {
+            JSONObject(request("tv/$showId", listOf("language" to "en-US")))
+        } catch (e: HttpError) {
+            if (e.code == 404) return null
+            throw e
+        }
+        val status = item.optString("status")
+        if (status.isEmpty()) return null
+        if (status != "Ended" && status != "Canceled" && status != "Cancelled") return false
+        // Its last episode out, else the last season's episode count.
+        item.optJSONObject("last_episode_to_air")?.let { last ->
+            val s = last.optInt("season_number", -1)
+            val n = last.optInt("episode_number", -1)
+            if (s > 0 && n > 0) return season == s && episode == n
+        }
+        val seasons = item.optJSONArray("seasons") ?: return null
+        val last = (0 until seasons.length()).mapNotNull { seasons.optJSONObject(it) }
+            .filter { it.optInt("season_number") > 0 && it.optInt("episode_count") > 0 }
+            .maxByOrNull { it.optInt("season_number") } ?: return null
+        return season == last.optInt("season_number") && episode == last.optInt("episode_count")
+    }
+
     /** The numbers of a show's seasons, specials (season 0) left out. Blocks. */
     fun seasonNumbers(showId: Int): List<Int> {
         val seasons = JSONObject(request("tv/$showId", listOf("language" to "en-US"))).optJSONArray("seasons") ?: return emptyList()
