@@ -276,12 +276,13 @@ class OffsetTrackerTest {
     fun aChangeOfSecondsInSparseTalkIsJudgedNearTheDelayInUse() {
         // 3 s more after 20:00 in a film whose talking is hard to hear (music, lines missed). Among all the shifts within
         // 3 minutes, chance matches keep it "not sure" for many minutes, or for good; among those within 20 s, it stands
-        // out. Never a delay that's neither.
+        // out. Never a delay that's neither. (Searching only: the sound's format marking the 3 s ad at both ends, the
+        // delay plus 3 s is tried first and found, see aBumperTheSameLengthAgainIsFollowedQuickly.)
         var wideFound = 0
         for (seed in 1L..8L) {
             val film = FakeFilm.make(seed, minutes = 45, delayMs = 1_400, breaks = listOf(Break(20 * min, adMs = 3_150)), noise = 0.2, missed = 0.3)
             val times = listOf(0L, OffsetTracker.NEAR_MS).map { nearMs ->
-                val p = Playback(film, OffsetTracker(film.subs, nearMs = nearMs))
+                val p = Playback(film, OffsetTracker(film.subs, nearMs = nearMs, guessing = false))
                 p.play(film.lengthMs)
                 assertTrue(p.story(), p.tracker.segments.all { near(1_400, it.delayMs, 300) || near(4_550, it.delayMs, 300) })
                 p.moves.firstOrNull { near(4_550, it.delayMs, 300) }?.let { it.toMs - 20 * min }
@@ -625,6 +626,26 @@ class OffsetTrackerTest {
         p.play(15 * min)
         assertTrue(p.story(), p.decisions.any { it.outcome == Outcome.GAVE_UP })
         assertTrue(p.tracker.learning)
+    }
+
+    @Test
+    fun aStretchTooShortToBeRealIsDroppedWhenReadBack() {
+        // Kept by an older version on a Fire TV: 13 s at the first stretch's delay between two breaks.
+        val kept = listOf(
+            Segment(0, 1_400), Segment(779_000, 3_400), Segment(1_197_000, 1_400), Segment(1_210_000, 4_700),
+            Segment(1_748_000, 6_500),
+        )
+        assertEquals(
+            listOf(Segment(0, 1_400), Segment(779_000, 3_400), Segment(1_210_000, 4_700), Segment(1_748_000, 6_500)),
+            OffsetTracker.restore(OffsetTracker.encode(kept), null),
+        )
+        // Left with the same delay on both sides of it, the two become one.
+        val same = listOf(Segment(0, 1_400), Segment(600_000, 4_700), Segment(990_000, 1_400), Segment(1_000_000, 4_700))
+        assertEquals(listOf(Segment(0, 1_400), Segment(600_000, 4_700)), OffsetTracker.restore(OffsetTracker.encode(same), null))
+        // The last stretch runs to the end of the film, however late it starts; the first is always kept.
+        val late = listOf(Segment(0, 1_400), Segment(2_000_000, 3_000))
+        assertEquals(late, OffsetTracker.restore(OffsetTracker.encode(late), null))
+        assertEquals(listOf(Segment(0, 900), Segment(5_000, 1_400)), OffsetTracker.withoutSlivers(listOf(Segment(0, 900), Segment(5_000, 1_400))))
     }
 
     @Test

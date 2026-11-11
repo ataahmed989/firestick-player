@@ -81,6 +81,7 @@ import app.fireplayer.player.TitleInfo
 import app.fireplayer.player.VsyncFix
 import app.fireplayer.player.XtreamAccount
 import app.fireplayer.subs.AutoSync
+import app.fireplayer.subs.EmbeddedCues
 import app.fireplayer.subs.FontImport
 import app.fireplayer.subs.MovieHash
 import app.fireplayer.subs.SavedSubtitles
@@ -93,6 +94,7 @@ import app.fireplayer.titles.TitleService
 import app.fireplayer.subs.PictureText
 import app.fireplayer.subs.SubtitlePresets
 import app.fireplayer.subs.SubtitleStyler
+import app.fireplayer.subs.placedLikePicture
 import app.fireplayer.ui.CountdownPill
 import app.fireplayer.player.SkipTimes
 import app.fireplayer.player.MkvChapters
@@ -202,6 +204,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private val delays = Delays()
     // Subtitle auto sync: listens to a copy of the sound while it lines downloaded subtitles up (see AutoSync).
     private val speechTap = SpeechTap()
+    // The timing of the film's own subtitle tracks as they load: auto sync lines downloaded subtitles up against it.
+    private val embeddedCues = EmbeddedCues()
     private lateinit var autoSync: AutoSync
     // The Subtitle delay window is open, so auto sync's news shows in it at once.
     private var delayPanelOpen = false
@@ -540,8 +544,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 val entry = currentEntry()
                 if (g != null && g.tmdbId > 0 && entry != null && guideEpisode(entry) != null) "tmdb:${g.tmdbId}" else null
             },
+            embedded = embeddedCues,
+            filmUri = { player?.currentMediaItem?.localConfiguration?.uri?.toString() },
         )
         autoSync.onMappingChanged = { syncMappingChanged() }
+        // A line held back for auto sync is shown once it's lined up (or has waited long enough).
+        autoSync.onHoldEnded = { showCues() }
         settingsPanels.onAutoSyncChanged = { autoSync.setOn(prefs.autoSync); followSubtitle() }
         settingsPanels.onFontChanged = {
             styler.reloadImportedFont()
@@ -928,6 +936,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             vsync = vsync,
             displaySwitch = displaySwitch,
             speechTap = speechTap,
+            embeddedCues = embeddedCues,
         )
         vsyncFix = vsync.also { it.start() }
         // The TV's mode can change under the film (turned on, reconnected): its rate is asked for again then.
@@ -1465,7 +1474,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         readPictures()
         // libass draws its own subtitles; picture subtitles are images. Example text would sit on top of them.
         val otherShowing = lastPictureCues.isNotEmpty() || libassShowing()
-        val text = styler.normalize(shownTextCues)
+        // A new episode's first downloaded lines can wait a moment for auto sync to say where they go.
+        val held = shownTextCues.isNotEmpty() && ::autoSync.isInitialized && autoSync.holdsCues()
+        val text = if (held) emptyList() else styler.normalize(shownTextCues)
         val preview = stylePreviewing && text.isEmpty() && !otherShowing && player?.playWhenReady != true
         screenSubtitles.setCues(if (preview) styler.sample() else text)
         frameSubtitles.setCues(styler.pictures(shownPictureCues))
@@ -1504,8 +1515,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val read = lastPictureCues.indices.filter { texts[it]!!.isNotEmpty() }
             .sortedBy { lastPictureCues[it].line.takeIf { line -> line != Cue.DIMEN_UNSET } ?: 0f }
         if (read.isEmpty()) return
-        val text = read.joinToString("\n") { texts[it]!! }
-        shownTextCues = lastTextCues + Cue.Builder().setText(text).build()
+        shownTextCues = if (styler.filePosition) {
+            // "As in the file": each picture's words go where the picture was (bottom ones still stack at the bottom).
+            lastTextCues + read.map { placedLikePicture(lastPictureCues[it], texts[it]!!) }
+        } else {
+            lastTextCues + Cue.Builder().setText(read.joinToString("\n") { texts[it]!! }).build()
+        }
         shownPictureCues = lastPictureCues.filterIndexed { i, _ -> texts[i]!!.isEmpty() }
     }
 
@@ -3452,6 +3467,17 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 return true
             }
         }
+        // The icon row under the arrow wraps around: left from the first goes to the last, right from the last to the
+        // first. Only on a fresh press, so holding the D-pad stops at the end instead of spinning round.
+        if (moreShown && (code == KeyEvent.KEYCODE_DPAD_LEFT || code == KeyEvent.KEYCODE_DPAD_RIGHT)) {
+            val items = (0 until moreRow.childCount).map { moreRow.getChildAt(it) }.filter { it.visibility == View.VISIBLE }
+            val at = items.indexOf(currentFocus)
+            val left = code == KeyEvent.KEYCODE_DPAD_LEFT
+            if (at >= 0 && items.size > 1 && (left && at == 0 || !left && at == items.size - 1)) {
+                if (event.repeatCount == 0) (if (left) items.last() else items.first()).requestFocus()
+                return true
+            }
+        }
         when (code) {
             KeyEvent.KEYCODE_BACK -> {
                 consumeBackUp = true
@@ -3750,7 +3776,30 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (downloaded && prefs.autoSync) {
             row("Resync") { autoSync.resync(); refresh() }
             if (autoSync.undoUs != null) row("Undo auto sync") { autoSync.undo(); refresh() }
+            syncWithRow(panel)
         }
+    }
+
+    /**
+     * "Sync with": what auto sync lines up against, when the film has subtitles of its own. Auto (the best of them,
+     * named), each of them with how well it matches the downloaded subtitles, or the speech only. Kept for the show.
+     */
+    private fun syncWithRow(panel: SidePanel) = with(panel) {
+        val tracks = autoSync.tracks
+        val chosen = autoSync.syncWith()
+        if (tracks.isEmpty() && chosen == null) return@with
+        val inUse = tracks.firstOrNull { it.info.key == autoSync.trackInUse }
+        val auto = when {
+            // Just the track: the row's value has room for little more, and the list says how well each matches.
+            inUse != null -> "Auto (${inUse.info.name()})"
+            tracks.isNotEmpty() && autoSync.trackInUse == null && autoSync.state != AutoSync.State.LISTENING -> "Auto (speech)"
+            else -> "Auto"
+        }
+        val keys = listOf<String?>(null) + tracks.map { it.info.key } + AutoSync.SPEECH
+        val options = listOf(auto) + tracks.map { "${it.info.name()}, ${it.strength.label}" } + "Speech only"
+        // A track chosen before that this film doesn't have: shown as Auto.
+        val selected = keys.indexOf(chosen).let { if (it < 0) 0 else it }
+        choice("Sync with", options, selected) { i -> autoSync.chooseSyncWith(keys[i]); refreshLabels() }
     }
 
     /** Tells auto sync which subtitles are on: a file from Search online, or anything else (left alone). */
@@ -3764,7 +3813,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         val path = config?.uri?.takeIf { it.scheme == "file" }?.path
         val file = path?.let { File(it) }?.takeIf { it.parentFile == downloadDir() && it.isFile }
-        autoSync.follow(file, entry?.key)
+        // Which release they were made for (subtitles from the same source start from the last episode's delay).
+        val saved = if (file == null || entry == null) null else SavedSubtitles.forVideo(this, entry.key).firstOrNull { it.file == file.name }
+        autoSync.follow(file, entry?.key, saved?.release, saved?.language)
     }
 
     /** Where Search online puts the subtitles it downloads. */

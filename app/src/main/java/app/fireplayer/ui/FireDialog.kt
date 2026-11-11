@@ -55,7 +55,8 @@ object FireDialog {
         val list = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
         scroll.addView(list)
         options.forEachIndexed { i, option ->
-            val row = rows.build(option, null, if (i == selected) R.drawable.ic_check else null)
+            // A long option (a film's subtitle track and how well it matches) takes a second line instead of being cut off.
+            val row = rows.build(option, null, if (i == selected) R.drawable.ic_check else null, labelLines = 2)
             row.isSelected = i == selected
             row.setOnClickListener {
                 dialog.dismiss()
