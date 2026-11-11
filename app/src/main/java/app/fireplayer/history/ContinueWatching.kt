@@ -20,6 +20,7 @@ import java.security.SecureRandom
 import java.text.Normalizer
 import java.util.Locale
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /**
  * FirePlayer's side of Glass Home's Continue Watching row. The player notes what it plays ([watched]); Glass Home reads
@@ -169,6 +170,13 @@ object ContinueWatching {
      */
     fun resumeIntent(context: Context, id: String?): Intent? {
         if (id.isNullOrEmpty()) return null
+        // Played and closed a moment ago: what the player noted last is kept first, so the row plays the episode and
+        // place it shows now, never the one before.
+        try {
+            worker.submit {}.get(3, TimeUnit.SECONDS)
+        } catch (e: Exception) {
+            Log.w(TAG, "Resuming before what was watched was kept: ${e.javaClass.simpleName}")
+        }
         val record = synchronized(lock) { current(context.applicationContext).record(id) } ?: return null
         val resume = record.resume
         val intent = Intent(Intent.ACTION_VIEW).setDataAndType(Uri.parse(resume.uri), resume.type)

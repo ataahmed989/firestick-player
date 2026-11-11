@@ -77,7 +77,7 @@ class Prefs(context: Context) {
 
     /** The optional see-through glass look for the controls and windows; off keeps the classic look. */
     var glassLook: Boolean
-        get() = sp.getBoolean("glass_look", false)
+        get() = sp.getBoolean("glass_look", true)
         set(v) = sp.edit().putBoolean("glass_look", v).apply()
 
     /** How many times a second the glass copies the playing film (Settings, Look, Glass refresh): 2, 4 or 8. */

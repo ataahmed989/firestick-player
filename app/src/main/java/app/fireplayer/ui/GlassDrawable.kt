@@ -412,7 +412,9 @@ private class Baker(private val density: Float) {
                 val margin = px(3f)
                 val body = RectF(rect).apply { inset(margin, margin) }
                 if (body.width() > 0f && body.height() > 0f) {
-                    val br = min(body.width(), body.height()) / 2f
+                    // Round ends on a one-line row; a taller one (a search result with its cover) keeps the row's
+                    // soft corners, so what's inside never pokes out of the white.
+                    val br = min(min(body.width(), body.height()) / 2f, r - margin)
                     outside(c, pad, w, h, body, br, ROW_GLOW)
                     focusedBody(c, pad, w, h, body, br)
                 }
