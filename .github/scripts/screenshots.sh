@@ -119,9 +119,14 @@ adb logcat -d -v time ${pid:+--pid=$pid} | grep -E "Ocr|OCR|Subtitle|PGS|Pgs|Exo
 # Episodes, and This episode in Settings. The look-up waits for the film to be well ahead, so this waits too.
 movie "http://10.0.2.2:8000/series/demo/demo/2003.mkv" "EN - Breaking Bad (2008) - S02E03 - Bit by a Dead Bee"
 # Its chapters say the intro runs from 0:05 to 1:00: Skip intro shows while the controls are down.
-shot 16-episode-playing 25
+shot 16-episode-playing 7
+shot 16b-skip-gone 10
 key KEYCODE_DPAD_UP
 shot 17-episode-controls 1.5
+# Still in the intro: the skip pod sits over the time bar. Up, up selects it; down, down goes back to Play.
+key KEYCODE_DPAD_UP KEYCODE_DPAD_UP
+shot 17a-skip-pod-selected 0.5
+key KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN
 # Right from Play: Watch from start, Next episode, Episodes.
 key KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT
 shot 17b-episodes-button 1
