@@ -14,6 +14,7 @@ import app.fireplayer.player.NextPick
 import app.fireplayer.player.TitleInfo
 import app.fireplayer.subs.Tmdb
 import app.fireplayer.titles.TitleBook
+import app.fireplayer.history.WatchHistory.Companion.matched
 import java.io.File
 import java.security.SecureRandom
 import java.text.Normalizer
@@ -60,6 +61,10 @@ object ContinueWatching {
          */
         val next: Pair<Uri, String?>?,
         val nextReal: NextPick.Real? = null,
+        /** What FirePlayer's own TMDB match says it is (the show's guide, or a Fix match for a film); wins when given. */
+        val match: WatchHistory.Match? = null,
+        /** The same for the episode after it. */
+        val nextMatch: WatchHistory.Match? = null,
     )
 
     private const val TAG = "FirePlayerContinue"
@@ -120,6 +125,30 @@ object ContinueWatching {
         val rows = synchronized(lock) { current(app).rows() }
         lookUp(app, rows)
         return rows
+    }
+
+    /**
+     * A match put right by hand (Fix match) for the video at [uri]: its row, and its show's, take the TMDB id, name, year
+     * and numbers at once, and Glass Home is told.
+     */
+    fun rematch(context: Context, uri: Uri, episode: Boolean, match: WatchHistory.Match) {
+        val app = context.applicationContext
+        worker.execute {
+            try {
+                val link = StreamLink.parse(uri.toString()) ?: return@execute
+                val videoKey = link.id?.let { "${if (episode) "e" else "m"}|${link.server}|$it" } ?: "u|$uri"
+                val showId = if (episode) runCatching { NextEpisode.rememberedShowId(app, uri) }.getOrNull() else null
+                val keys = setOfNotNull(videoKey, showId?.let { "s|${link.server}|$it" })
+                val kind = if (episode) WatchHistory.Kind.EPISODE else WatchHistory.Kind.MOVIE
+                val changed = synchronized(lock) {
+                    val h = load(app)
+                    h.rematch(kind, keys, videoKey, match).also { if (it) save(app, h) }
+                }
+                if (changed) app.contentResolver.notifyChange(ITEMS, null)
+            } catch (e: Exception) {
+                Log.w(TAG, "Couldn't put the match right: ${e.javaClass.simpleName}")
+            }
+        }
     }
 
     /** Removes one row; false when there's no such row. */
@@ -184,7 +213,8 @@ object ContinueWatching {
                 look { book?.about(server, TitleBook.Kind.MOVIE, id) }
             } else null
             val shown = about?.title?.let { TitleInfo.parse(it, null) } ?: p.shown
-            val name = shown.searchQuery.ifBlank { shown.title }.takeIf { it != TitleInfo.NO_NAME } ?: return null
+            val name = shown.searchQuery.ifBlank { shown.title }.takeIf { it != TitleInfo.NO_NAME }
+                ?: p.match?.title?.takeIf { it.isNotBlank() } ?: return null
             val year = yearIn(shown) ?: about?.year?.takeIf { it > 0 } ?: 0
             return WatchHistory.Watch(
                 kind = WatchHistory.Kind.MOVIE,
@@ -198,7 +228,7 @@ object ContinueWatching {
                 playedMs = p.playedMs,
                 finished = p.finished,
                 resume = resume,
-            )
+            ).matched(p.match)
         }
         // The provider's numbers for it, not its place in TiviMate's list (which counts copies of an episode too): as the
         // title server noted them, or as the player knew them when the database couldn't be read just now.
@@ -210,18 +240,21 @@ object ContinueWatching {
         val englishShow = about?.title?.let { TitleInfo.parse(it, null) }
         // A name that's only the episode's number ("S01E03 - Pilot") says nothing of the show.
         val shown = englishShow ?: p.shown.takeIf { it.named }
+        // The show's guide knows the show even when the link's name is only the episode's number.
         val name = shown?.let { it.searchQuery.ifBlank { it.title } }?.takeIf { it != TitleInfo.NO_NAME }
+            ?: p.match?.title?.takeIf { it.isNotBlank() }
         val showId = noted?.series?.toString() ?: runCatching { NextEpisode.rememberedShowId(context, p.uri) }.getOrNull()
         val keys = listOfNotNull(
             showId?.let { "s|${link.server}|$it" },
             name?.let { nameKey(it) },
+            p.match?.title?.takeIf { it.isNotBlank() }?.let { nameKey(it) },
             // Its names as TiviMate sent it and as shown too, so it's the same show before and after the English name is known.
             p.shown.takeIf { it.named }?.let { nameKey(it.searchQuery) },
             TitleInfo.parse(p.rawTitle, p.uri).takeIf { it.named && it.season != null }?.let { nameKey(it.searchQuery) },
         ).filter { it.length > 2 }.toSet()
-        if (shown == null || name == null || keys.isEmpty()) return null
-        val year = yearIn(shown) ?: about?.year?.takeIf { it > 0 } ?: 0
-        val next = if (p.finished) nextOf(p, link, book, noted, shown.title, resume) else null
+        if (name == null || keys.isEmpty()) return null
+        val year = shown?.let { yearIn(it) } ?: about?.year?.takeIf { it > 0 } ?: 0
+        val next = if (p.finished) nextOf(p, link, book, noted, shown?.title ?: name, resume) else null
         return WatchHistory.Watch(
             kind = WatchHistory.Kind.EPISODE,
             keys = keys,
@@ -237,7 +270,7 @@ object ContinueWatching {
             finished = p.finished,
             next = next,
             resume = resume,
-        )
+        ).matched(p.match)
     }
 
     /**
@@ -259,9 +292,9 @@ object ContinueWatching {
                 ?.let { NextPick.Real.of(it.series, it.season, it.number) } ?: p.nextReal
             return WatchHistory.Next(
                 videoKey = nextLink?.id?.let { "e|${nextLink.server}|$it" } ?: "u|$uri",
-                season = numbered?.season ?: info.season ?: 0,
-                episode = numbered?.episode ?: info.episode ?: 0,
-                episodeTitle = null,
+                season = p.nextMatch?.season?.takeIf { it > 0 } ?: numbered?.season ?: info.season ?: 0,
+                episode = p.nextMatch?.takeIf { it.season > 0 }?.episode ?: numbered?.episode ?: info.episode ?: 0,
+                episodeTitle = p.nextMatch?.takeIf { it.season > 0 }?.episodeTitle,
                 resume = WatchHistory.Resume(uri = uri.toString(), title = title, headers = resume.headers),
             )
         }

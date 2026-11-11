@@ -22,6 +22,11 @@ ffmpeg -loglevel error -y -f lavfi -i "$video,$clock" -f lavfi -i "sine=frequenc
   -t 300 -map 0:v -map 1:a -map 2:s -c:v libx264 -preset veryfast -pix_fmt yuv420p -g 48 \
   -c:a aac -ac 2 -c:s srt -metadata:s:a:0 language=eng -metadata:s:s:0 language=eng media/movie.mkv
 
+# The show's episodes play the same film with chapters, as some releases have: an intro and the end credits.
+printf ';FFMETADATA1\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=5000\ntitle=Cold open\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=5000\nEND=60000\ntitle=Intro\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=60000\nEND=260000\ntitle=Episode\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=260000\nEND=300000\ntitle=Credits\n' > media/chapters.txt
+ffmpeg -loglevel error -y -i media/movie.mkv -i media/chapters.txt -map 0 -map_metadata 1 -map_chapters 1 -c copy media/episode.mkv \
+  || cp media/movie.mkv media/episode.mkv
+
 # The same film with one picture-based (Blu-ray PGS) subtitle track instead, at the same times as the SRT.
 # Not having it only costs the PGS screenshots, so a failure here doesn't stop the run.
 python3 -c 'import PIL' 2>/dev/null \

@@ -56,6 +56,16 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("play_next_episode", true)
         set(v) = sp.edit().putBoolean("play_next_episode", v).apply()
 
+    /** The info pods above the time bar left out by hand: "quality", "fps", "sound", "source". */
+    var hiddenChips: Set<String>
+        get() = sp.getStringSet("chips_hidden", emptySet())?.toSet().orEmpty()
+        set(v) = sp.edit().putStringSet("chips_hidden", v).apply()
+
+    /** Skip intro / recap / credits buttons, and the end card at the credits, from chapters or TheIntroDB. */
+    var skipIntro: Boolean
+        get() = sp.getBoolean("skip_intro", true)
+        set(v) = sp.edit().putBoolean("skip_intro", v).apply()
+
     var matchFrameRate: Boolean
         get() = sp.getBoolean("match_frame_rate", true)
         set(v) = sp.edit().putBoolean("match_frame_rate", v).apply()
@@ -145,6 +155,18 @@ class Prefs(context: Context) {
         if (positionMs <= 0L) editor.remove("pos:$key") else editor.putLong("pos:$key", positionMs)
         editor.apply()
     }
+
+    /** Downloaded subtitles are lined up with the film's dialogue by themselves (see [app.fireplayer.subs.AutoSync]). */
+    var autoSync: Boolean
+        get() = sp.getBoolean("auto_sync", true)
+        set(v) = sp.edit().putBoolean("auto_sync", v).apply()
+
+    // The subtitle delay auto sync found (ms), keyed by the subtitle file's name and the film.
+    fun syncedDelayMs(key: String): Long? = if (sp.contains("sync|$key")) sp.getLong("sync|$key", 0L) else null
+
+    fun saveSyncedDelay(key: String, ms: Long) = sp.edit().putLong("sync|$key", ms).apply()
+
+    fun forgetSyncedDelay(key: String) = sp.edit().remove("sync|$key").apply()
 
     /** Name of the subtitle font sent from the phone, or "" when there isn't one. */
     var customFontName: String

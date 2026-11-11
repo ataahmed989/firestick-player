@@ -22,7 +22,7 @@ movie() {
   key KEYCODE_BACK KEYCODE_BACK
   sleep 2
   adb shell am force-stop $PKG
-  adb shell "am start -W -a android.intent.action.VIEW -d '$1' -t video/x-matroska -n $PKG/.PlayerActivity --es title '$2'"
+  adb shell "am start -W -a android.intent.action.VIEW -d '$1' -t video/x-matroska -n $PKG/.PlayerActivity --es title '$2' $3"
 }
 
 adb install -r FirePlayer.apk || exit 1
@@ -66,9 +66,16 @@ shot 09-size-picker 1.5
 key KEYCODE_BACK KEYCODE_BACK
 key KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_CENTER
 shot 10-settings 1.5
+# Down to Auto sync subtitles, at the top of Online subtitles.
+key KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN
+shot 10b-settings-auto-sync 1.5
 key KEYCODE_BACK
 key KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT KEYCODE_DPAD_CENTER
 shot 11-subtitles 1.5
+key KEYCODE_BACK
+# Subtitle delay, next to Subtitles: these subtitles came with the video, so auto sync leaves them alone.
+key KEYCODE_DPAD_RIGHT KEYCODE_DPAD_CENTER
+shot 11b-subtitle-delay 1.5
 key KEYCODE_BACK
 key KEYCODE_MEDIA_PLAY_PAUSE
 shot 12-paused 1.5
@@ -104,6 +111,7 @@ adb logcat -d -v time ${pid:+--pid=$pid} | grep -E "Ocr|OCR|Subtitle|PGS|Pgs|Exo
 # A show's episode from the small provider served alongside: its name beside the numbers, the provider's chip,
 # Episodes, and This episode in Settings. The look-up waits for the film to be well ahead, so this waits too.
 movie "http://10.0.2.2:8000/series/demo/demo/2003.mkv" "EN - Breaking Bad (2008) - S02E03 - Bit by a Dead Bee"
+# Its chapters say the intro runs from 0:05 to 1:00: Skip intro shows while the controls are down.
 shot 16-episode-playing 25
 key KEYCODE_DPAD_UP
 shot 17-episode-controls 1.5
@@ -125,7 +133,13 @@ key KEYCODE_DPAD_CENTER
 shot 20-this-episode-open 1.5
 key KEYCODE_BACK
 pid=$(adb shell pidof $PKG | tr -d '\r')
-adb logcat -d -v time ${pid:+--pid=$pid} | grep -E "FirePlayerNext|FirePlayerGuide|AndroidRuntime" | tail -100 > "$OUT/logcat-episodes.txt"
+adb logcat -d -v time ${pid:+--pid=$pid} | grep -E "FirePlayerNext|FirePlayerGuide|FirePlayerSegments|AndroidRuntime" | tail -100 > "$OUT/logcat-episodes.txt"
+
+# The next episode, started near its end: its chapters put the credits at 4:20, so the end card is up.
+movie "http://10.0.2.2:8000/series/demo/demo/2004.mkv" "EN - Breaking Bad (2008) - S02E04 - Down" "--el position 262000"
+shot 21-credits-card 9
+pid=$(adb shell pidof $PKG | tr -d '\r')
+adb logcat -d -v time ${pid:+--pid=$pid} | grep -E "FirePlayerNext|FirePlayerSegments|AndroidRuntime" | tail -60 > "$OUT/logcat-credits.txt"
 
 # Coming back to the same film asks where to start.
 movie "http://10.0.2.2:8000/movie.mkv" "EN - 4K UHD - Dune: Part Two (2024)"

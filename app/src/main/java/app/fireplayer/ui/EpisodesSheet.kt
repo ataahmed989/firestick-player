@@ -125,8 +125,9 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
         root.visibility = View.VISIBLE
         root.alpha = 0f
         sheet.translationY = dp(30).toFloat()
-        root.animate().alpha(1f).setDuration(180).start()
-        sheet.animate().translationY(0f).setDuration(220).start()
+        // Drawn into a layer while they move: one copy slides instead of every card being drawn again each frame.
+        root.animate().alpha(1f).setDuration(180).withLayer().start()
+        sheet.animate().translationY(0f).setDuration(240).setInterpolator(android.view.animation.DecelerateInterpolator(1.6f)).withLayer().start()
         // Holds focus until the cards come.
         root.isFocusable = true
         root.requestFocus()
@@ -215,11 +216,27 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
                 }
             }
             pill.setOnClickListener { focusCard(0) }
-            pill.setOnKeyListener { _, keyCode, event ->
-                if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
-                    if (event.action == KeyEvent.ACTION_DOWN) focusCard(playingIndex().coerceAtLeast(0))
-                    true
-                } else keyCode == KeyEvent.KEYCODE_DPAD_UP
+            pill.setOnKeyListener { v, keyCode, event ->
+                val down = event.action == KeyEvent.ACTION_DOWN
+                when (keyCode) {
+                    KeyEvent.KEYCODE_DPAD_DOWN -> {
+                        if (down) focusCard(playingIndex().coerceAtLeast(0))
+                        true
+                    }
+                    // Explicit, so the remote always steps season to season.
+                    KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                        if (down) {
+                            val at = pills.indexOf(v) + if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) 1 else -1
+                            pills.getOrNull(at)?.let { next ->
+                                next.requestFocus()
+                                seasonsScroll.smoothScrollTo((next.left - dp(40)).coerceAtLeast(0), 0)
+                            }
+                        }
+                        true
+                    }
+                    KeyEvent.KEYCODE_DPAD_UP -> true
+                    else -> false
+                }
             }
             pills += pill
             seasonsRow.addView(pill, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(6) })
@@ -347,7 +364,8 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
         card.setOnFocusChangeListener { v, has ->
             ring.visibility = if (has) View.VISIBLE else View.INVISIBLE
             thumb.elevation = if (has) dp(6).toFloat() else 0f
-            v.animate().translationY(if (has) -dp(3).toFloat() else 0f).setDuration(140).start()
+            v.animate().translationY(if (has) -dp(3).toFloat() else 0f).setDuration(140)
+                .setInterpolator(android.view.animation.DecelerateInterpolator()).start()
             if (has) scrollToCard(v)
         }
         card.setOnClickListener { onPlay(ep) }

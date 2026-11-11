@@ -165,6 +165,8 @@ object PlayerFactory {
         vsync: VsyncFix,
         /** When the TV last switched refresh rate, which passthrough sound waits out (see [SwitchTolerantAudioSink]). */
         displaySwitch: DisplaySwitch,
+        /** A copy of the sound for subtitle auto sync, taken only while it listens (see [SpeechTap]). */
+        speechTap: SpeechTap,
     ): Built {
         val serverSwitch = ServerSwitch()
         val dataSourceFactory = dataSourceFactory(context, headers, serverSwitch)
@@ -172,7 +174,7 @@ object PlayerFactory {
         val extractors = DefaultExtractorsFactory()
             .setConstantBitrateSeekingEnabled(true)
 
-        val baseRenderers = TvRenderersFactory(context, passthrough, displaySwitch, vsync)
+        val baseRenderers = TvRenderersFactory(context, passthrough, displaySwitch, vsync, speechTap)
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
             .setEnableDecoderFallback(true)
 
@@ -604,6 +606,7 @@ private class TvRenderersFactory(
     private val passthrough: Boolean,
     private val displaySwitch: DisplaySwitch,
     private val vsync: VsyncFix,
+    private val speechTap: SpeechTap,
 ) : DefaultRenderersFactory(context) {
     /** Media3's video renderer, with the same settings, as [PacedVideoRenderer]. */
     override fun buildVideoRenderers(
@@ -642,16 +645,19 @@ private class TvRenderersFactory(
     ): AudioSink? {
         if (passthrough) {
             return super.buildAudioSink(context, enableFloatOutput, enableAudioTrackPlaybackParams)
-                ?.let { SwitchTolerantAudioSink(it, displaySwitch) }
+                ?.let { SpeechTapAudioSink(SwitchTolerantAudioSink(it, displaySwitch), speechTap) }
         }
         // Without a context the sink uses these fixed capabilities instead of what the TV reports,
         // so surround formats get decoded to PCM rather than passed through.
         @Suppress("DEPRECATION")
-        return DefaultAudioSink.Builder()
-            .setAudioCapabilities(AudioCapabilities.DEFAULT_AUDIO_CAPABILITIES)
-            .setEnableFloatOutput(enableFloatOutput)
-            .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
-            .build()
+        return SpeechTapAudioSink(
+            DefaultAudioSink.Builder()
+                .setAudioCapabilities(AudioCapabilities.DEFAULT_AUDIO_CAPABILITIES)
+                .setEnableFloatOutput(enableFloatOutput)
+                .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+                .build(),
+            speechTap,
+        )
     }
 }
 

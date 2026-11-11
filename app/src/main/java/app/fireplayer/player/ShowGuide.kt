@@ -51,6 +51,8 @@ class ShowGuide(
         val match: Match,
         /** Why FirePlayer isn't sure, in words for Settings; null when it is. */
         val why: String?,
+        /** TMDB's own length for it, in minutes; 0 when TMDB doesn't say (unlike [runtimeMin], never the provider's). */
+        val tmdbMin: Int = 0,
     ) {
         val label: String get() = "S$season E$number"
     }
@@ -70,14 +72,14 @@ class ShowGuide(
                 put(JSONObject().put("id", e.id).put("ext", e.extension).put("ps", e.providerSeason).put("pn", e.providerNumber)
                     .put("pt", e.providerTitle).put("s", e.season).put("n", e.number).put("name", e.name).put("ov", e.overview)
                     .put("img", e.image ?: "").put("rt", e.runtimeMin).put("air", e.airDate).put("m", e.match.name)
-                    .put("why", e.why ?: ""))
+                    .put("why", e.why ?: "").put("tm", e.tmdbMin))
             }
         })
 
     companion object {
         private const val TAG = "FirePlayerGuide"
         // A guide written under older rules is built again rather than read.
-        private const val VERSION = 1
+        private const val VERSION = 2
         private const val SEASON_KEPT_MS = 3 * 24 * 60 * 60_000L
         private const val MAX_SEASONS = 40
 
@@ -99,7 +101,7 @@ class ShowGuide(
                     season = e.optInt("s"), number = e.optInt("n"), name = e.optString("name"), overview = e.optString("ov"),
                     image = e.optString("img").ifEmpty { null }, runtimeMin = e.optInt("rt"), airDate = e.optString("air"),
                     match = runCatching { Match.valueOf(e.optString("m")) }.getOrDefault(Match.NONE),
-                    why = e.optString("why").ifEmpty { null },
+                    why = e.optString("why").ifEmpty { null }, tmdbMin = e.optInt("tm"),
                 )
             }
             ShowGuide(key, o.optString("series"), o.optString("portal"), o.optString("show"), o.optString("search"), o.optInt("tmdb"), episodes)
@@ -240,7 +242,8 @@ class ShowGuide(
                 } else {
                     Ep(e.id, e.extension, e.season, e.number, title, picked.season, picked.number, picked.name,
                         picked.overview.ifEmpty { e.plot }, picked.still ?: e.image,
-                        picked.runtime.takeIf { it > 0 } ?: (e.durationSecs / 60), picked.airDate.ifEmpty { e.airDate }, match, why)
+                        picked.runtime.takeIf { it > 0 } ?: (e.durationSecs / 60), picked.airDate.ifEmpty { e.airDate }, match, why,
+                        picked.runtime)
                 }
             }
         }
@@ -400,12 +403,26 @@ class MatchFixes(context: Context) {
     /** Fix match on a film: the name it goes by, by the provider and its id for it. */
     fun film(portal: String, id: String): String? = prefs.getString("film|$portal|$id", null)
 
-    fun setFilm(portal: String, id: String, title: String) = prefs.edit().putString("film|$portal|$id", title).apply()
+    /** A film put right by hand: TMDB's id for it, its name and year (0 when TMDB gives none). */
+    class Film(val tmdbId: Int, val name: String, val year: Int)
+
+    /** The film as put right by hand, with its TMDB id; null for none, or one fixed before ids were kept. */
+    fun filmMatch(portal: String, id: String): Film? {
+        val parts = prefs.getString("filmtmdb|$portal|$id", null)?.split('\t') ?: return null
+        val tmdb = parts.getOrNull(0)?.toIntOrNull() ?: return null
+        return Film(tmdb, parts.getOrNull(2).orEmpty(), parts.getOrNull(1)?.toIntOrNull() ?: 0)
+    }
+
+    fun setFilm(portal: String, id: String, title: String, tmdbId: Int = 0, name: String = "", year: Int = 0) {
+        prefs.edit().putString("film|$portal|$id", title).apply {
+            if (tmdbId > 0) putString("filmtmdb|$portal|$id", "$tmdbId\t$year\t${name.replace('\t', ' ')}")
+        }.apply()
+    }
 
     /** Forgets every fix made for a provider (when its playlist is gone from TiviMate). */
     fun forgetPortal(portal: String) {
         val editor = prefs.edit()
-        prefs.all.keys.filter { it.startsWith("film|$portal|") || (it.startsWith("show|") && it.contains("/$portal|")) }
+        prefs.all.keys.filter { it.startsWith("film|$portal|") || it.startsWith("filmtmdb|$portal|") || (it.startsWith("show|") && it.contains("/$portal|")) }
             .forEach { editor.remove(it) }
         editor.apply()
     }

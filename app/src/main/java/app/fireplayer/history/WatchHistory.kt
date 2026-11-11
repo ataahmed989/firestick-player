@@ -74,6 +74,20 @@ class WatchHistory(records: List<Record> = emptyList()) {
         val resume: Resume,
     )
 
+    /**
+     * What FirePlayer's own TMDB match says a film or episode is (the show's guide, or a Fix match): the TMDB id (for an
+     * episode, its show's), the name without the year, the year, and for an episode TMDB's numbers and English name
+     * (0 / null when the episode itself isn't matched). It wins over names and numbers read from the link.
+     */
+    data class Match(
+        val tmdbId: Int,
+        val title: String,
+        val year: Int = 0,
+        val season: Int = 0,
+        val episode: Int = 0,
+        val episodeTitle: String? = null,
+    )
+
     /** What the player saw of one video: where it is, how long it played since it last said, and whether it finished. */
     data class Watch(
         val kind: Kind,
@@ -165,6 +179,34 @@ class WatchHistory(records: List<Record> = emptyList()) {
         return rows() != before
     }
 
+    /**
+     * A match put right by hand (Fix match): the entries of this [kind] with any of [keys], or at [videoKey], take its
+     * TMDB id, name and year at once, whatever they had; the numbers too for the one at that very video. True when a
+     * row changed.
+     */
+    fun rematch(kind: Kind, keys: Set<String>, videoKey: String, m: Match): Boolean {
+        if (m.tmdbId <= 0) return false
+        var changed = false
+        for (i in records.indices) {
+            val r = records[i]
+            if (r.kind != kind || (r.videoKey != videoKey && r.keys.none { it in keys })) continue
+            val here = r.videoKey == videoKey && m.season > 0
+            val fixed = r.copy(
+                tmdbId = m.tmdbId,
+                title = m.title.ifBlank { r.title },
+                year = m.year.takeIf { it > 0 } ?: r.year,
+                season = if (here) m.season else r.season,
+                episode = if (here) m.episode else r.episode,
+                episodeTitle = if (here) m.episodeTitle else r.episodeTitle,
+            )
+            if (fixed != r) {
+                records[i] = fixed
+                if (r.shown) changed = true
+            }
+        }
+        return changed
+    }
+
     /** Removed from the row: forgotten, so only playing it again for a while brings it back. True when it was there. */
     fun remove(id: String): Boolean {
         val record = record(id) ?: return false
@@ -220,6 +262,20 @@ class WatchHistory(records: List<Record> = emptyList()) {
     }
 
     companion object {
+        /** This watch as FirePlayer's own match says it is (see [Match]); as it was without one. */
+        fun Watch.matched(m: Match?): Watch {
+            if (m == null || m.tmdbId <= 0) return this
+            val numbered = kind == Kind.EPISODE && m.season > 0
+            return copy(
+                title = m.title.ifBlank { title },
+                year = m.year.takeIf { it > 0 } ?: year,
+                tmdbId = m.tmdbId,
+                season = if (numbered) m.season else season,
+                episode = if (numbered) m.episode else episode,
+                episodeTitle = if (numbered) m.episodeTitle ?: episodeTitle else episodeTitle,
+            )
+        }
+
         /** Real playing time before a title shows. */
         /** How a show's provider id begins among its keys (see ContinueWatching). */
         const val SHOW_KEY = "s|"

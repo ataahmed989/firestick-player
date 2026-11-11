@@ -57,6 +57,7 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.SubtitleView
 import app.fireplayer.data.Prefs
 import app.fireplayer.history.ContinueWatching
+import app.fireplayer.history.WatchHistory
 import app.fireplayer.player.BufferWait
 import app.fireplayer.player.DecoderCheck
 import app.fireplayer.player.Delays
@@ -68,11 +69,13 @@ import app.fireplayer.player.NextEpisode
 import app.fireplayer.player.MatchFixes
 import app.fireplayer.player.NextPick
 import app.fireplayer.player.ShowGuide
+import app.fireplayer.player.SpeechTap
 import app.fireplayer.player.PlayerFactory
 import app.fireplayer.player.ServerSwitch
 import app.fireplayer.player.TitleInfo
 import app.fireplayer.player.VsyncFix
 import app.fireplayer.player.XtreamAccount
+import app.fireplayer.subs.AutoSync
 import app.fireplayer.subs.FontImport
 import app.fireplayer.subs.MovieHash
 import app.fireplayer.subs.OpenSubtitles
@@ -85,6 +88,9 @@ import app.fireplayer.subs.PictureText
 import app.fireplayer.subs.SubtitlePresets
 import app.fireplayer.subs.SubtitleStyler
 import app.fireplayer.ui.CountdownPill
+import app.fireplayer.player.IntroDb
+import app.fireplayer.player.MkvChapters
+import app.fireplayer.player.Segments
 import app.fireplayer.ui.EpisodesSheet
 import app.fireplayer.ui.FireDialog
 import app.fireplayer.ui.Glass
@@ -188,6 +194,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     // FirePlayer's title server's names, opened when first needed (on [io]).
     private var titleBook: TitleBook? = null
     private val delays = Delays()
+    // Subtitle auto sync: listens to a copy of the sound while it lines downloaded subtitles up (see AutoSync).
+    private val speechTap = SpeechTap()
+    private lateinit var autoSync: AutoSync
+    // The Subtitle delay window is open, so auto sync's news shows in it at once.
+    private var delayPanelOpen = false
 
     private var player: ExoPlayer? = null
     // Keeps the film's frames evenly paced on a TV switched to the film's refresh rate (see VsyncFix).
@@ -217,6 +228,17 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     // Where the end card's count started, and how long it runs.
     private var postPlayFrom = 0L
     private var postPlayCountMs = POST_PLAY_COUNT_MS
+
+    // Where this episode's intro and credits are ([Segments]), worked out for [segmentsFor] (entry key and episode).
+    private var segments: Segments? = null
+    private var segmentsFor: String? = null
+    // A file's own chapters, read once per file, by entry key (null: it has none to use).
+    private val chapterSegments = HashMap<String, Segments?>()
+    private lateinit var skipButton: CountdownPill
+    private var skipStart = -1L
+    private var skipTarget = -1L
+    // The part whose button was put away with Back, so it doesn't come straight back.
+    private var skipDismissed = -1L
     private lateinit var bufferingInfo: TextView
     private lateinit var scrimTop: View
     private lateinit var scrimBottom: View
@@ -280,6 +302,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     // The sound and subtitles picked by hand, to pick the same kind again in the next episode.
     private val trackWishes = HashMap<Int, TrackWish>()
     private var reapplyWishes = false
+    // The film or show whose remembered sound was put back, so it's done once per title.
+    private var audioRecalledFor: String? = null
     // The film was paused for the TV to change refresh rate, and goes on by itself afterwards.
     private var pausedForSwitch = false
     // A sleep timer's time left while the player is away; it only counts down on screen.
@@ -441,6 +465,18 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         matchFixes = MatchFixes(this)
         @Suppress("DEPRECATION")
         overridePendingTransition(android.R.anim.fade_in, 0)
+        autoSync = AutoSync(
+            speechTap,
+            prefs,
+            delayUs = { delays.subtitleUs },
+            setDelayUs = { delays.subtitleUs = it; refreshLabels() },
+            position = { player?.let { it.currentPosition to it.duration.coerceAtLeast(0L) } ?: (0L to 0L) },
+            onChanged = {
+                refreshLabels()
+                if (delayPanelOpen && panel.isOpen) panel.refresh()
+            },
+        )
+        settingsPanels.onAutoSyncChanged = { autoSync.setOn(prefs.autoSync); followSubtitle() }
         settingsPanels.onFontChanged = {
             styler.reloadImportedFont()
             applySubtitleStyle()
@@ -456,6 +492,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         buildMoreRow()
         applyLook()
         settingsPanels.onLookChanged = { applyLook() }
+        settingsPanels.onChipsChanged = { updateChips() }
         displayMode = prefs.displayMode
         applyDim()
 
@@ -588,6 +625,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         pictureText.release()
         backdrop?.release()
+        autoSync.release()
         io.shutdownNow()
         handler.removeCallbacksAndMessages(null)
         FontImport.stopAll()
@@ -769,6 +807,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             pictureText = pictureText,
             vsync = vsync,
             displaySwitch = displaySwitch,
+            speechTap = speechTap,
         )
         vsyncFix = vsync.also { it.start() }
         val p = built.player
@@ -779,6 +818,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         p.setVideoSurfaceView(surfaceView)
         p.addListener(this)
         p.addAnalyticsListener(filmLoadErrors)
+        p.addAnalyticsListener(droppedFrames)
         p.setVideoFrameMetadataListener(fpsMeter)
         fpsMeter.reset()
         p.pauseAtEndOfMediaItems = sleepAtEnd
@@ -979,8 +1019,42 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 real = entry.real,
                 next = next?.let { it.uri to it.rawTitle },
                 nextReal = next?.real,
+                match = matchFor(entry),
+                nextMatch = next?.let { matchFor(it) },
             ),
         )
+    }
+
+    /**
+     * What FirePlayer's own TMDB match says [entry] is, for Continue Watching: the show's guide (its TMDB id, name, year,
+     * and the episode's TMDB numbers and name when the episode is matched), or a film's Fix match. Null for neither.
+     */
+    private fun matchFor(entry: Entry): WatchHistory.Match? {
+        val g = guide
+        val ep = guideEpisode(entry)
+        if (g != null && ep != null && g.tmdbId > 0) {
+            val m = SHOW_YEAR.matchEntire(g.show)
+            val numbered = ep.match != ShowGuide.Match.NONE
+            return WatchHistory.Match(
+                tmdbId = g.tmdbId,
+                title = m?.groupValues?.get(1)?.trim() ?: g.show,
+                year = m?.groupValues?.get(2)?.toIntOrNull() ?: 0,
+                season = if (numbered) ep.season else 0,
+                episode = if (numbered) ep.number else 0,
+                episodeTitle = if (numbered) ep.name.ifEmpty { null } else null,
+            )
+        }
+        if (entry.info.episode != null || NextEpisode.isEpisodeLink(entry.uri)) return null
+        val portal = NextEpisode.portal(entry.uri) ?: return null
+        val id = entry.uri.lastPathSegment?.substringBeforeLast('.') ?: return null
+        val f = matchFixes.filmMatch(portal, id) ?: return null
+        return WatchHistory.Match(f.tmdbId, f.name, f.year)
+    }
+
+    /** After a Fix match: Continue Watching's row for this video takes the new match at once. */
+    private fun noteRematch(entry: Entry, episode: Boolean) {
+        val m = matchFor(entry) ?: return
+        ContinueWatching.rematch(applicationContext, entry.uri, episode, m)
     }
 
     /** From [postPlayTick]: now and then while it plays, so a crash, a power cut or Fire OS stopping it loses little. */
@@ -1185,7 +1259,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 if (!option.selected) selectTrack(option)
             }
         }
+        recallAudio()
         if (reapplyWishes) reapplyChoices()
+        followSubtitle()
         refreshLabels()
         updateChips()
         matchFrameRate()
@@ -1447,6 +1523,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
      * keeps it. Only the film's own link counts (not a subtitle file), and only an answer that means "no" or a
      * connection dropped at that moment (not a hiccup the film retries past).
      */
+    // Auto sync waits while the picture drops frames: the film comes first.
+    private val droppedFrames = object : AnalyticsListener {
+        override fun onDroppedVideoFrames(eventTime: AnalyticsListener.EventTime, droppedFrames: Int, elapsedMs: Long) {
+            autoSync.framesDropped()
+        }
+    }
+
     private val filmLoadErrors = object : AnalyticsListener {
         override fun onLoadError(
             eventTime: AnalyticsListener.EventTime,
@@ -1486,6 +1569,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         postPlayNext = findViewById(R.id.post_play_next)
         postPlayCredits = findViewById(R.id.post_play_credits)
         postPlayGo = findViewById(R.id.post_play_go)
+        skipButton = findViewById(R.id.skip_button)
+        skipButton.chosen = true
+        skipButton.pod = true
+        skipButton.setOnClickListener { skipPart() }
         dimmer = findViewById(R.id.dimmer)
         postPlayGo.countdown = { postPlayProgress() }
         bufferingInfo = findViewById(R.id.buffering_info)
@@ -1578,12 +1665,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private fun focusEffect(button: View, scale: Float, label: View? = null) {
         button.setOnFocusChangeListener { v, hasFocus ->
             val s = if (hasFocus) scale else 1f
-            v.animate().scaleX(s).scaleY(s).setDuration(140).start()
+            // Eased, like the rest of the controls, rather than at an even pace.
+            v.animate().scaleX(s).scaleY(s).setDuration(140).setInterpolator(FOCUS_EASE).start()
             if (label != null) {
                 label.pivotX = v.left + v.width / 2f - label.left
                 label.pivotY = v.top + v.height / 2f - label.top
                 if (hasFocus) label.visibility = View.VISIBLE
-                label.animate().alpha(if (hasFocus) 1f else 0f).scaleX(s).scaleY(s).setDuration(140)
+                label.animate().alpha(if (hasFocus) 1f else 0f).scaleX(s).scaleY(s).setDuration(140).setInterpolator(FOCUS_EASE)
                     .withEndAction { if (!v.isFocused) label.visibility = View.INVISIBLE }
                     .start()
             }
@@ -1706,6 +1794,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private val postPlayTick = object : Runnable {
         override fun run() {
             lookUpWhenFree()
+            updateSkip()
             updatePostPlay()
             noteWhilePlaying()
             handler.postDelayed(this, 200)
@@ -1725,12 +1814,17 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val duration = p?.duration ?: C.TIME_UNSET
         val known = duration != C.TIME_UNSET
         val position = p?.currentPosition ?: 0L
-        val showAt = duration - POST_PLAY_LEAD_MS
+        // Where the credits start, when this file's chapters or TheIntroDB say so; something after them (a scene, a
+        // preview) means no card at all: the next episode starts when this one really ends.
+        val parts = segments?.takeIf { segmentsFor?.startsWith(entries.getOrNull(index)?.key + "|") == true }
+        val credits = parts?.endCardAt?.takeIf { known && it >= duration / 2 && it < duration - 5_000 }
+        val playsToEnd = parts?.afterCredits != null
+        val showAt = credits ?: (duration - POST_PLAY_LEAD_MS)
         // Going back out of the credits brings the card back when they come again.
         if (known && postPlayDismissedFor == index && position < showAt - 5_000) postPlayDismissedFor = -1
         val due = p != null && next?.nextEpisode == true && prefs.playNextEpisode && !sleepAtEnd && known &&
             duration > 3 * POST_PLAY_LEAD_MS && !p.isCurrentMediaItemLive && position >= showAt &&
-            postPlayDismissedFor != index && !seeking && !controlsShown && !panel.isOpen && !episodesSheet.isOpen &&
+            !playsToEnd && postPlayDismissedFor != index && !seeking && !controlsShown && !panel.isOpen && !episodesSheet.isOpen &&
             errorBox.visibility != View.VISIBLE && !resumeDialogShowing
         if (!due || p == null || next == null) {
             if (postPlay.visibility == View.VISIBLE) hidePostPlay()
@@ -1776,6 +1870,81 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         countShownAt = now
         return countShown
+    }
+
+    /**
+     * Skip intro, Skip recap or Skip credits (when something follows them), Netflix-style: shown while that part plays
+     * and the controls are down; OK jumps past it. Where the parts are comes from [lookUpSegments].
+     */
+    private fun updateSkip() {
+        val p = player
+        val entry = currentEntry()
+        val duration = p?.duration ?: C.TIME_UNSET
+        if (p != null && entry != null && duration != C.TIME_UNSET && duration > 0 && !p.isCurrentMediaItemLive) {
+            lookUpSegments(entry, duration)
+        }
+        val skip = if (p == null) null else segments?.skip(p.currentPosition)
+        val show = skip != null && skip.start != skipDismissed && prefs.skipIntro && !seeking && !controlsShown &&
+            !panel.isOpen && !episodesSheet.isOpen && postPlay.visibility != View.VISIBLE &&
+            errorBox.visibility != View.VISIBLE && !resumeDialogShowing
+        if (!show || skip == null) {
+            if (skipButton.visibility == View.VISIBLE) skipButton.visibility = View.GONE
+            return
+        }
+        skipStart = skip.start
+        skipTarget = skip.target
+        if (skipButton.text.toString() != skip.label) skipButton.text = skip.label
+        if (skipButton.visibility != View.VISIBLE) {
+            skipButton.alpha = 0f
+            skipButton.visibility = View.VISIBLE
+            skipButton.animate().alpha(1f).setDuration(250).start()
+            skipButton.requestFocus()
+        }
+    }
+
+    private fun skipPart() {
+        val p = player ?: return
+        skipButton.visibility = View.GONE
+        if (skipTarget > p.currentPosition) p.seekTo(skipTarget)
+    }
+
+    /**
+     * Finds where this episode's recap, intro and credits are: the file's own chapters first (exact for this file),
+     * then TheIntroDB for what they don't say, for an episode surely matched to TMDB and only when the file's length
+     * agrees with TMDB's (see [IntroDb]). Asked again when the episode or its match changes.
+     */
+    private fun lookUpSegments(entry: Entry, duration: Long) {
+        val g = guide
+        val ep = guideEpisode(entry)?.takeIf { g != null && g.tmdbId > 0 && it.match == ShowGuide.Match.SURE }
+        val want = entry.key + "|" + (ep?.let { "${g!!.tmdbId}/${it.season}/${it.number}" } ?: "-")
+        if (want == segmentsFor) return
+        segmentsFor = want
+        segments = null
+        skipDismissed = -1L
+        if (!prefs.skipIntro) return
+        val uri = entry.uri
+        val key = entry.key
+        val known = chapterSegments.containsKey(key)
+        val knownChapters = chapterSegments[key]
+        // A second, short connection to read the start of the file: only where previews are allowed one too.
+        val readChapters = !known && prefs.seekPreviews && uri.scheme?.startsWith("http") == true &&
+            uri.lastPathSegment?.endsWith(".mkv", ignoreCase = true) == true
+        if (ep == null && !readChapters && knownChapters == null) return
+        val headers = headersFromIntent()
+        val app = applicationContext
+        val tmdbShow = g?.tmdbId ?: 0
+        thread(name = "FirePlayerSegments", isDaemon = true, priority = Thread.MIN_PRIORITY) {
+            val chapters = if (readChapters) MkvChapters.segments(uri, headers, duration) else knownChapters
+            val db = ep?.let { IntroDb.episode(app, tmdbShow, it.season, it.number, it.tmdbMin, duration) }
+            val found = chapters?.or(db) ?: db
+            handler.post {
+                if (readChapters) chapterSegments[key] = chapters
+                if (isFinishing || segmentsFor != want) return@post
+                segments = found
+                if (found != null) android.util.Log.i("FirePlayerSegments", "From ${found.from}: recap ${found.recap}, " +
+                    "intro ${found.intro}, credits ${found.creditsAt}, after ${found.afterCredits}")
+            }
+        }
     }
 
     private fun hidePostPlay() {
@@ -1995,16 +2164,20 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     private fun updateChips() {
         val p = player ?: return
+        // Pods turned off in Settings > Look > Info pods stay hidden.
+        val hidden = prefs.hiddenChips
+        fun pod(chip: TextView, key: String, text: String?) = setChip(chip, text.takeIf { key !in hidden })
         val video = selectedFormat(C.TRACK_TYPE_VIDEO)
         val audio = selectedFormat(C.TRACK_TYPE_AUDIO)
         val w = p.videoSize.width.takeIf { it > 0 } ?: video?.width ?: 0
         val h = p.videoSize.height.takeIf { it > 0 } ?: video?.height ?: 0
-        setChip(chipResolution, if (w > 0 && h > 0) "$w×$h" else null)
+        pod(chipResolution, "quality", if (w > 0 && h > 0) "$w×$h" else null)
         val fps = videoFps()
-        setChip(chipFps, if (fps > 0) fpsLabel(fps) else null)
+        pod(chipFps, "fps", if (fps > 0) fpsLabel(fps) else null)
         val channels = audio?.channelCount ?: Format.NO_VALUE
-        setChip(
+        pod(
             chipAudio,
+            "sound",
             when (channels) {
                 1 -> "Mono"
                 2 -> "Stereo"
@@ -2015,7 +2188,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             },
         )
         // Which provider it plays from: "premium-pro2.com:8789".
-        setChip(chipPortal, entries.getOrNull(p.currentMediaItemIndex)?.let { NextEpisode.portal(it.uri) })
+        pod(chipPortal, "source", entries.getOrNull(p.currentMediaItemIndex)?.let { NextEpisode.portal(it.uri) })
     }
 
     private fun setChip(chip: TextView, text: String?) {
@@ -2148,9 +2321,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val ease = DecelerateInterpolator(1.6f)
         if (show.alpha >= 1f) { show.alpha = 0f; show.translationY = -shift }
         if (showArrow.alpha >= 1f) showArrow.alpha = 0f
-        show.animate().alpha(1f).translationY(0f).setStartDelay(0).setDuration(220).setInterpolator(ease).start()
+        show.animate().alpha(1f).translationY(0f).setStartDelay(0).setDuration(220).setInterpolator(ease).withLayer().start()
         showArrow.animate().alpha(1f).setStartDelay(80).setDuration(160).setInterpolator(ease).start()
-        hide.animate().alpha(0f).translationY(shift).setStartDelay(0).setDuration(160).setInterpolator(ease).withEndAction {
+        hide.animate().alpha(0f).translationY(shift).setStartDelay(0).setDuration(160).setInterpolator(ease).withLayer().withEndAction {
             hide.visibility = View.GONE; hide.alpha = 1f; hide.translationY = 0f
         }.start()
         hideArrow.animate().alpha(0f).setStartDelay(0).setDuration(100).withEndAction {
@@ -2659,6 +2832,18 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             commitSeek()
             return true
         }
+        if (skipButton.visibility == View.VISIBLE && !controlsShown) {
+            if (isOk) {
+                if (event.repeatCount == 0) skipPart()
+                return true
+            }
+            if (code == KeyEvent.KEYCODE_BACK) {
+                consumeBackUp = true
+                skipDismissed = skipStart
+                skipButton.visibility = View.GONE
+                return true
+            }
+        }
         if (postPlay.visibility == View.VISIBLE) {
             when (code) {
                 KeyEvent.KEYCODE_DPAD_LEFT -> { postPlayCredits.requestFocus(); return true }
@@ -2843,6 +3028,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             f.language, f.label, f.roleFlags, f.selectionFlags and C.SELECTION_FLAG_FORCED != 0, f.channelCount,
         )
         selectTrack(o)
+        // The sound picked for a film or show is picked again when it's opened another time.
+        if (type == C.TRACK_TYPE_AUDIO) currentEntry()?.let { e -> audioKey(e)?.let { rememberAudio(it, trackWishes[type]!!) } }
         // For as long as the player is open, that language comes first (Settings keeps the default).
         val p = player ?: return
         val language = f.language ?: return
@@ -2878,6 +3065,47 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
     }
 
+    /** One key per film (its link's file on its provider) or show (its name), for the sound last picked for it. */
+    private fun audioKey(entry: Entry): String? {
+        val episode = entry.info.episode != null || NextEpisode.isEpisodeLink(entry.uri)
+        if (episode) {
+            val name = entry.info.searchQuery.trim().lowercase(Locale.ROOT)
+            return if (name.isEmpty() || name == TitleInfo.NO_NAME.lowercase(Locale.ROOT)) null else "show|$name"
+        }
+        val file = entry.uri.lastPathSegment ?: return null
+        return "film|${NextEpisode.portal(entry.uri) ?: entry.uri.authority.orEmpty()}|$file"
+    }
+
+    private fun audioMemory() = getSharedPreferences("audio_choices", MODE_PRIVATE)
+
+    private fun rememberAudio(key: String, wish: TrackWish) {
+        val sp = audioMemory()
+        val value = listOf(wish.language.orEmpty(), wish.label.orEmpty(), wish.roleFlags, wish.channels, System.currentTimeMillis())
+            .joinToString("\u0001")
+        val editor = sp.edit().putString(key, value)
+        // Only the latest few hundred titles are kept.
+        val all = sp.all
+        if (all.size > AUDIO_KEPT) {
+            all.entries.sortedBy { (it.value as? String)?.substringAfterLast('\u0001')?.toLongOrNull() ?: 0L }
+                .take(all.size - AUDIO_KEPT).forEach { editor.remove(it.key) }
+        }
+        editor.apply()
+    }
+
+    /** Once the tracks of a title opened again are in: the sound picked for it last time is picked again. */
+    private fun recallAudio() {
+        val entry = currentEntry() ?: return
+        val key = audioKey(entry) ?: return
+        if (key == audioRecalledFor || trackOptions(C.TRACK_TYPE_AUDIO).size < 2) return
+        audioRecalledFor = key
+        val parts = audioMemory().getString(key, null)?.split('\u0001') ?: return
+        if (parts.size < 4 || parts[0].isEmpty()) return
+        trackWishes[C.TRACK_TYPE_AUDIO] = TrackWish(
+            parts[0], parts[1].ifEmpty { null }, parts[2].toIntOrNull() ?: 0, false, parts[3].toIntOrNull() ?: 0,
+        )
+        reapplyWishes = true
+    }
+
     private fun subtitlesOff() {
         trackWishes.remove(C.TRACK_TYPE_TEXT)
         val p = player ?: return
@@ -2906,18 +3134,85 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         spacer(6)
         stepper("Delay", formatDelay(delays.subtitleUs)) { dir ->
             delays.subtitleUs += dir * 100_000L
+            autoSync.handOff()
             refreshLabels()
         }
     }
 
-    private fun openSubtitleDelayPanel(from: View) = openPanel("Subtitle delay", from) {
-        message("Left makes subtitles earlier, right makes them later.")
-        stepper("Delay", formatDelay(delays.subtitleUs)) { dir ->
-            delays.subtitleUs += dir * 100_000L
-            refreshLabels()
+    private fun openSubtitleDelayPanel(from: View) {
+        delayPanelOpen = true
+        openPanel("Subtitle delay", from, onClosed = { delayPanelOpen = false }) {
+            message("Left makes subtitles earlier, right makes them later.")
+            stepper("Delay", formatDelay(delays.subtitleUs)) { dir ->
+                delays.subtitleUs += dir * 100_000L
+                autoSync.handOff()
+                refreshLabels()
+            }
+            renderAutoSync(this)
+            row("Reset") {
+                delays.subtitleUs = 0
+                autoSync.handOff()
+                refreshLabels()
+                refresh()
+            }
         }
-        row("Reset") { delays.subtitleUs = 0; refreshLabels(); refresh() }
     }
+
+    /**
+     * Auto sync in the Subtitle delay window: its state as a badge, like the ones in Settings ("Synced" in blue,
+     * "Listening" or "Off" in gray), a line on what it found, and Resync and Undo. Pressing the badge's row turns it
+     * on or off for these subtitles.
+     */
+    private fun renderAutoSync(panel: SidePanel) = with(panel) {
+        val downloaded = autoSync.file != null
+        val (badge, style) = when {
+            !prefs.autoSync -> "Off" to Rows.Badge.INACTIVE
+            !downloaded -> "Off" to Rows.Badge.INACTIVE
+            else -> when (autoSync.state) {
+                AutoSync.State.SYNCED -> "Synced" to Rows.Badge.ACTIVE
+                AutoSync.State.LISTENING -> "Listening" to Rows.Badge.BUSY
+                AutoSync.State.NOT_SYNCED -> "Not synced" to Rows.Badge.INACTIVE
+                AutoSync.State.OFF -> "Off" to Rows.Badge.INACTIVE
+            }
+        }
+        spacer(6)
+        badgeRow("Auto sync", badge, style) {
+            when {
+                !prefs.autoSync -> { prefs.autoSync = true; autoSync.setOn(true); followSubtitle() }
+                !downloaded -> {}
+                autoSync.state == AutoSync.State.OFF || autoSync.state == AutoSync.State.NOT_SYNCED -> autoSync.resync()
+                else -> autoSync.setOn(false)
+            }
+            refresh()
+        }
+        val note = when {
+            !prefs.autoSync -> "Turned off in Settings. Press to turn it on."
+            !downloaded -> "Lines up subtitles found with Search online. These came with the video."
+            else -> autoSync.detail
+        }
+        note?.let { message(it) }
+        if (downloaded && prefs.autoSync) {
+            row("Resync") { autoSync.resync(); refresh() }
+            if (autoSync.undoUs != null) row("Undo auto sync") { autoSync.undo(); refresh() }
+        }
+    }
+
+    /** Tells auto sync which subtitles are on: a file from Search online, or anything else (left alone). */
+    private fun followSubtitle() {
+        if (!::autoSync.isInitialized) return
+        val entry = entries.getOrNull(player?.currentMediaItemIndex ?: playingIndex)
+        val id = selectedFormat(C.TRACK_TYPE_TEXT)?.id
+        val config = if (id == null || entry == null) null else entry.subtitles.firstOrNull { c ->
+            val cid = c.id ?: return@firstOrNull false
+            id == cid || id.endsWith(":$cid")
+        }
+        val path = config?.uri?.takeIf { it.scheme == "file" }?.path
+        val file = path?.let { File(it) }?.takeIf { it.parentFile == downloadDir() && it.isFile }
+        autoSync.follow(file, entry?.key)
+    }
+
+    /** Where Search online puts the subtitles it downloads. */
+    private fun downloadDir() = File(cacheDir, "subs")
 
     private fun openAudioPanel(from: View) = openPanel("Audio", from) {
         val options = trackOptions(C.TRACK_TYPE_AUDIO)
@@ -3223,6 +3518,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 rebuildFromFix()
                 refresh()
             }
+            if (tmdb.isConfigured && g.tmdbId > 0) row("Show details") { openDetails(from, show = true) }
             if (tmdb.isConfigured) row("Fix match") { panel.close(); openFixShow(from) }
             if (portal != null) row("Source", portal) {}
         } else if (portal != null && entry.info.episode == null) {
@@ -3237,9 +3533,141 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 refresh()
             }
             if (!thisTitleOpen) return
+            if (tmdb.isConfigured) row("Film details") { openDetails(from, show = false) }
             if (tmdb.isConfigured) row("Fix match") { panel.close(); openFixFilm(from) }
             else message("Add a TMDB API key below to fix this film's name.")
             row("Source", portal) {}
+        }
+    }
+
+    // Show details / Film details: TMDB's cover and story for the video they were asked for.
+    private var aboutFor: String? = null
+    private var about: Tmdb.About? = null
+    private var aboutStatus: String? = null
+
+    private fun openDetails(from: View, show: Boolean) {
+        val entry = currentEntry() ?: return
+        if (aboutFor != entry.key || (about == null && aboutStatus != LOADING)) {
+            aboutFor = entry.key
+            about = null
+            aboutStatus = LOADING
+            loadAbout(entry, show)
+        }
+        panel.close()
+        openPanel(if (show) "Show details" else "Film details", from) {
+            val a = about
+            if (a == null) message(aboutStatus ?: LOADING)
+            else view(detailsView(a, if (show) guideEpisode(entry) else null, NextEpisode.portal(entry.uri)), top = 2, bottom = 6)
+        }
+    }
+
+    private fun loadAbout(entry: Entry, show: Boolean) {
+        val key = entry.key
+        val showId = guide?.tmdbId ?: 0
+        val film = if (show) null else matchFor(entry)?.tmdbId
+        io.execute {
+            val found = runCatching {
+                val id = if (show) showId else film ?: filmTmdbId(entry)
+                if (id > 0) tmdb.about(id, show) else null
+            }
+            handler.post {
+                if (isFinishing || aboutFor != key) return@post
+                about = found.getOrNull()
+                aboutStatus = when {
+                    found.isFailure -> "Couldn't reach TMDB just now."
+                    about == null -> "TMDB has no details for this ${if (show) "show" else "film"}. Fix match finds it."
+                    else -> null
+                }
+                if (panel.isOpen) panel.refresh()
+            }
+        }
+    }
+
+    /** Blocks; on [io]. A film's TMDB id: as the title server matched it, else as TMDB finds its name. 0 for none. */
+    private fun filmTmdbId(entry: Entry): Int {
+        val server = TitleProxy.serverIn(entry.uri)
+        val id = entry.uri.lastPathSegment?.substringBeforeLast('.')?.toIntOrNull()
+        if (server != null && id != null) {
+            runCatching { book().about(server, TitleBook.Kind.MOVIE, id)?.tmdb }.getOrNull()?.takeIf { it > 0 }?.let { return it }
+        }
+        val info = entry.info
+        val year = YEAR_IN_NAME.find(info.title)?.groupValues?.get(1)?.toIntOrNull()
+        return tmdb.find(info.searchQuery, year, false)?.id ?: 0
+    }
+
+    /** The cover on the left, name and facts beside it, then the story (and the episode's, for a show). */
+    private fun detailsView(a: Tmdb.About, ep: ShowGuide.Ep?, source: String?): View {
+        val d = resources.displayMetrics.density
+        fun dp(v: Int) = (v * d).toInt()
+        fun text(value: CharSequence, sp: Float, color: Int, font: Int, top: Int = 0) = TextView(this).apply {
+            text = value
+            setTextColor(ContextCompat.getColor(this@PlayerActivity, color))
+            setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, sp)
+            typeface = androidx.core.content.res.ResourcesCompat.getFont(this@PlayerActivity, font)
+            setLineSpacing(2f * d, 1f)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                .apply { topMargin = dp(top) }
+        }
+        val poster = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            background = android.graphics.drawable.GradientDrawable().apply { cornerRadius = 8 * d; setColor(0x22FFFFFF) }
+            clipToOutline = true
+            contentDescription = a.name
+        }
+        app.fireplayer.ui.ImageLoader.load(a.poster, poster, dp(110))
+        val facts = listOfNotNull(
+            a.year,
+            a.genres.takeIf { it.isNotEmpty() }?.joinToString(", "),
+            a.runtime.takeIf { it > 0 }?.let { if (it >= 60) "${it / 60}h ${it % 60}m" else "${it}m" },
+            a.seasons.takeIf { it > 0 }?.let { if (it == 1) "1 season" else "$it seasons" },
+        ).joinToString(" · ")
+        val side = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(text(a.name, 17f, R.color.text, R.font.figtree_700))
+            if (facts.isNotEmpty()) addView(text(facts, 12f, R.color.text_muted, R.font.figtree_500, top = 4))
+            // Age rating as a small outlined badge, then TMDB's score, on one line.
+            if (a.ageRating.isNotEmpty() || a.rating > 0) addView(LinearLayout(this@PlayerActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                if (a.ageRating.isNotEmpty()) addView(text(a.ageRating, 11f, R.color.text, R.font.figtree_700).apply {
+                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                    setPadding(dp(6), dp(1), dp(6), dp(1))
+                    background = android.graphics.drawable.GradientDrawable().apply {
+                        cornerRadius = 4 * d
+                        setStroke(dp(1).coerceAtLeast(1), 0x99FFFFFF.toInt())
+                    }
+                    contentDescription = "Rated ${a.ageRating}"
+                })
+                if (a.rating > 0) addView(text(String.format(Locale.ROOT, "★ %.1f", a.rating), 12f, R.color.text_muted, R.font.figtree_500).apply {
+                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                        .apply { if (a.ageRating.isNotEmpty()) marginStart = dp(10) }
+                })
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6) }
+            })
+            if (a.tagline.isNotEmpty()) addView(text(a.tagline, 12f, R.color.text, R.font.figtree_500, top = 8))
+            // Where this copy plays from.
+            source?.let { addView(text("Source  ·  $it", 12f, R.color.text_muted, R.font.figtree_600, top = 8)) }
+        }
+        val top = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(poster, LinearLayout.LayoutParams(dp(96), dp(144)))
+            addView(side, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(14) })
+        }
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(top)
+            // Kept to what fits the window: it has nothing to move focus to, so it isn't scrolled.
+            if (a.overview.isNotEmpty()) addView(text(a.overview, 13f, R.color.text, R.font.figtree_500, top = 14).apply {
+                maxLines = if (ep != null) 7 else 12
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            })
+            if (ep != null && (ep.name.isNotEmpty() || ep.overview.isNotEmpty())) {
+                addView(text(episodeLine(ep.label, ep.name), 13f, R.color.text_muted, R.font.figtree_600, top = 16))
+                if (ep.overview.isNotEmpty()) addView(text(ep.overview, 13f, R.color.text, R.font.figtree_500, top = 4).apply {
+                    maxLines = 5
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                })
+            }
         }
     }
 
@@ -3333,7 +3761,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val entry = currentEntry() ?: return
         val portal = NextEpisode.portal(entry.uri) ?: return
         val id = entry.uri.lastPathSegment?.substringBeforeLast('.') ?: return
-        matchFixes.setFilm(portal, id, hit.label)
+        matchFixes.setFilm(portal, id, hit.label, hit.id, hit.name, hit.year?.toIntOrNull() ?: 0)
+        noteRematch(entry, episode = false)
         panel.close()
         updateTitle()
         showNotice("Saved: ${hit.label}", 2_500)
@@ -3417,7 +3846,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         matchFixes.place(g.key, show.id, ep.id, ep.providerSeason, ep.providerNumber, fixSeason, fixNumber, fixRest)
         panel.close()
         showNotice("Saving the match…", 2_500)
-        rebuildFromFix { showNotice("Match saved", 2_000) }
+        rebuildFromFix {
+            showNotice("Match saved", 2_000)
+            noteRematch(entry, episode = true)
+        }
     }
 
     // Find subtitles (OpenSubtitles)
@@ -3425,6 +3857,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private var findResults: List<SubtitleRanker.Ranked> = emptyList()
     // The result loaded last (its file id), so "Try the next one" can load the one after it.
     private var findLoaded = 0L
+    // Its subtitle track, to tell whether it's still the one shown.
+    private var findLoadedSubId: String? = null
     // The show's TMDB id from its guide, so the search asks for exactly that show.
     private var findTmdb = 0
     private var findStatus: String? = null
@@ -3450,6 +3884,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             findStatus = null
             findMatch = null
             findLoaded = 0L
+            findLoadedSubId = null
             findTmdb = 0
             // The show as matched for its guide: TMDB's name, numbers and id.
             val g = guide
@@ -3492,17 +3927,35 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             findResults.getOrNull(loadedAt + 1)?.takeIf { loadedAt >= 0 }?.let { next ->
                 row("Try the next one", "${next.score}%") { downloadSubtitle(next) }
             }
+            val shownId = selectedFormat(C.TRACK_TYPE_TEXT)?.id
+            val loadedId = findLoadedSubId
+            val inUse = loadedId != null && shownId != null &&
+                (shownId == loadedId || shownId.endsWith(":$loadedId") || loadedId.endsWith(":$shownId"))
             findResults.forEach { ranked ->
                 val r = ranked.result
                 val lang = Locale.forLanguageTag(r.language).getDisplayLanguage(Locale.ENGLISH)
-                val notes = listOfNotNull(
-                    if (r.fileId == findLoaded) "Loaded" else null,
+                val loaded = r.fileId == findLoaded
+                // First line: why it should fit. Second: the facts (frame rate, downloads, language).
+                val (why, facts) = ranked.notes.partition { n -> HIGHLIGHTS.any { n.startsWith(it) } }
+                val first = listOfNotNull(
+                    if (loaded) (if (inUse) "In use" else "Loaded") else null,
                     if (ranked.best) "Best match" else null,
-                ) + ranked.notes + listOfNotNull(lang.takeIf { it.isNotEmpty() })
-                resultRow(r.release, notes.joinToString(" · "), "${ranked.score}%") { downloadSubtitle(ranked) }
+                ) + why
+                val second = facts + listOfNotNull(lang.takeIf { it.isNotEmpty() })
+                val notes = listOf(first, second).filter { it.isNotEmpty() }.joinToString("\n") { it.joinToString(" · ") }
+                resultRow(readableRelease(r.release), notes, "${ranked.score}%", selected = loaded && inUse) {
+                    downloadSubtitle(ranked)
+                }
             }
         }
     }
+
+    /** "Breaking.Bad.S02E03.720p.BluRay.x264-DEMAND" → "Breaking Bad S02E03 720p BluRay x264-DEMAND", to wrap nicely. */
+    private fun readableRelease(name: String): String =
+        name.substringBeforeLast(".srt")
+            .replace(Regex("(\\d)\\.(\\d)(?!\\d)"), "$1\u0000$2") // 5.1, 2.0 stay as they are
+            .replace('_', ' ').replace('.', ' ').replace('\u0000', '.')
+            .replace(Regex("\\s+"), " ").trim()
 
     /** English or Arabic: the last one chosen, else the default subtitle language when it's one of them. */
     private fun searchLanguage(): String =
@@ -3574,7 +4027,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val r = ranked.result
         findStatus = "Downloading…"
         panel.refresh()
-        val dir = File(cacheDir, "subs").apply { mkdirs() }
+        val dir = downloadDir().apply { mkdirs() }
         val length = player?.duration?.takeIf { it != C.TIME_UNSET && it > 0 } ?: 0L
         io.execute {
             val result = runCatching {
@@ -3587,6 +4040,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                     findStatus = null
                     findLoaded = r.fileId
                     addExternalSubtitle(Uri.fromFile(file), r.language)
+                    findLoadedSubId = pendingExternalSubId
                     panel.close()
                     // Made for a longer or shorter cut (extended, or with a recap): the next one may fit better.
                     if (length > 10 * 60_000L && last > 0 && (last > length + 90_000L || last < length * 7 / 10)) {
@@ -3693,6 +4147,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         /** How long the decoder list may take before the player says the decoder service is stuck. */
         private const val DECODER_STUCK_MS = 10_000L
         const val POST_PLAY_LEAD_MS = 20_000L
+        private const val AUDIO_KEPT = 300
+        private val FOCUS_EASE = DecelerateInterpolator(1.4f)
+        private const val LOADING = "Loading from TMDB…"
+        private val YEAR_IN_NAME = Regex("""\((\d{4})\)""")
+        // "Breaking Bad (2008)": the name and the year.
+        private val SHOW_YEAR = Regex("""^(.*?)\s*\((\d{4})\)$""")
         // A next-episode look-up starts with this much of the film loaded, after this long at most, and no later than
         // this long before the end card.
         const val LOOKUP_AHEAD_MS = 60_000L
@@ -3703,6 +4163,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // Two film drops just after the preview connected, this close together, mean the server cuts one off.
         const val CUT_OFF_PAIR_MS = 60_000L
         const val POST_PLAY_COUNT_MS = 10_000L
+        // Find subtitles: the notes that say why a result should fit, shown on their own line.
+        private val HIGHLIGHTS = listOf("Made for this exact file", "Same release", "Same source")
         /** How often what's playing is noted for Continue Watching while it plays. */
         const val WATCH_NOTE_EVERY_MS = 60_000L
         /** How long a note about previews stays up. */
