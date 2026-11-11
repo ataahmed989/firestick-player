@@ -425,6 +425,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private var resumedFromRow = false
     // When the player last went off screen without closing (the TV slept, the screensaver, Home while paused).
     private var stoppedAt = 0L
+    // A newer title was handed to this player (onNewIntent): it starts over with that one, the old film never shows.
+    private var replaced = false
     private var pendingAudioId: String? = null
     private var notice = false
     private var pendingNotice: String? = null
@@ -537,8 +539,24 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         applySubtitleStyle()
     }
 
+    /**
+     * Another title handed to this player while it's still around, rather than to a new one (the app that opened it
+     * brought it back to the front with the new link): it starts over with the new title at once, so the film it had
+     * never plays again in its place.
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (stale || (intent.data == null && intent.action != ContinueWatching.ACTION_RESUME)) return
+        replaced = true
+        setIntent(intent)
+        // The old film is silenced now; the rebuilt player reads the new intent from the start.
+        player?.pause()
+        recreate()
+    }
+
     override fun onStart() {
         super.onStart()
+        if (replaced) return
         // Come back to after a while away (the app that opened it reopened, Back pressed there): the film it had is
         // long over, and it closes before showing, so an old film never pops up. Back sooner, it's there but paused,
         // and never starts again by itself.
