@@ -187,7 +187,7 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
     }
 
     /**
-     * Shows the show's episodes, on the season playing, with the one after [playing] chosen. [progress] says how far
+     * Shows the show's episodes, on the season playing, with the one [playing] chosen. [progress] says how far
      * each was watched (0 to 1).
      */
     fun show(guide: ShowGuide, playing: String?, progress: (ShowGuide.Ep) -> Float) {
@@ -213,13 +213,8 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
         if (firstTime) {
             val list = guide.inSeason(season)
             val at = list.indexOfFirst { it.id == playing }
-            // The one after the episode playing, as Netflix opens on.
-            val focus = when {
-                at < 0 -> 0
-                at + 1 < list.size -> at + 1
-                else -> at
-            }
-            focusCard(focus)
+            // The episode playing (Ahmed's choice over Netflix's "the one after").
+            focusCard(if (at < 0) 0 else at)
             root.isFocusable = false
         }
     }

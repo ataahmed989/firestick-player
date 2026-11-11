@@ -1985,6 +1985,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
      * asking (the provider's list of shows can be megabytes) waits until the film is well ahead, see [lookUpWhenFree].
      */
     private fun findNextEpisode() {
+        // The show's episodes are known already (Episodes lists them): the next one is lined up from them at once.
+        entries.lastOrNull()?.let { if (lineUpFromGuide(it)) return }
         // An episode named only by its number wants its show's name on screen at once; only the next episode can wait.
         if (entries.lastOrNull()?.info?.named == false) {
             startNextEpisodeLookup()
@@ -2014,6 +2016,34 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (!free) return
         lookupWantedAt = 0L
         startNextEpisodeLookup()
+    }
+
+    /**
+     * Lines up the episode after [last] from the show's guide, the same list Episodes shows, without asking the
+     * provider again: after an episode that played on by itself, or one picked in Episodes. False when it can't
+     * (no guide for this show yet, the last episode it knows, Play next episode off, or something already after it).
+     */
+    private fun lineUpFromGuide(last: Entry): Boolean {
+        val p = player ?: return false
+        if (!prefs.playNextEpisode || !findsNextEpisode) return false
+        if (entries.lastOrNull() !== last || p.mediaItemCount != entries.size || p.currentMediaItemIndex != entries.lastIndex) return false
+        val g = guide ?: return false
+        val here = guideEpisode(last) ?: return false
+        val next = g.episodes
+            .filter { it.id != here.id && (it.season > here.season || (it.season == here.season && it.number > here.number)) }
+            .minWithOrNull(compareBy({ it.season }, { it.number })) ?: return false
+        val name = g.searchName.ifEmpty { last.info.title }
+        val raw = String.format(Locale.ROOT, "%s S%02dE%02d %s", name, next.season, next.number, next.name).trim()
+        val entry = Entry(NextEpisode.episodeUri(last.uri, next.id, next.extension), raw, null, nextEpisode = true)
+        attachSaved(entry, chooseOn = false)
+        entries += entry
+        p.addMediaItem(mediaItem(entry))
+        // Found: the provider needn't be asked for this one.
+        nextLookedUpFor = last.key
+        lookupWantedAt = 0L
+        updateTitle()
+        learnRealEpisodes()
+        return true
     }
 
     private fun startNextEpisodeLookup() {
@@ -4119,6 +4149,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 if (isFinishing || guide != null || saved.episode(NextEpisode.episodeId(uri)) == null) return@post
                 guide = saved
                 updateTitle()
+                entries.lastOrNull()?.let { lineUpFromGuide(it) }
             }
         }
     }
@@ -4145,6 +4176,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 if (isFinishing || made == null) return@post
                 guide = made
                 updateTitle()
+                entries.lastOrNull()?.let { lineUpFromGuide(it) }
                 showGuideInSheet()
                 if (panel.isOpen && settingsOpen) panel.refresh()
                 then?.invoke()
