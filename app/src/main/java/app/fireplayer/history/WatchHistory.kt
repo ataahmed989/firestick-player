@@ -38,6 +38,10 @@ class WatchHistory(records: List<Record> = emptyList()) {
         val positionMs: Long,
         val durationMs: Long,
         val lastWatched: Long,
+        /** The provider's address as FirePlayer's Source row shows it ([StreamLink.source]); null when it has none. */
+        val source: String? = null,
+        /** An episode whose show's episodes FirePlayer can list ([StreamLink.listsEpisodes]). */
+        val hasEpisodes: Boolean = false,
     )
 
     data class Record(
@@ -62,7 +66,14 @@ class WatchHistory(records: List<Record> = emptyList()) {
     ) {
         val shown: Boolean get() = playedMs >= MIN_PLAYED_MS
 
-        fun row() = Row(id, kind, title, year, season, episode, episodeTitle, tmdbId, positionMs, durationMs, lastWatched)
+        fun row(): Row {
+            val link = StreamLink.parse(resume.uri)
+            return Row(
+                id, kind, title, year, season, episode, episodeTitle, tmdbId, positionMs, durationMs, lastWatched,
+                source = link?.source,
+                hasEpisodes = kind == Kind.EPISODE && link?.listsEpisodes == true,
+            )
+        }
     }
 
     /** The episode after a finished one. */

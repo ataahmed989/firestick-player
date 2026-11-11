@@ -107,6 +107,9 @@ class ShowGuide(
             ShowGuide(key, o.optString("series"), o.optString("portal"), o.optString("show"), o.optString("search"), o.optInt("tmdb"), episodes)
         }.onFailure { Log.i(TAG, "Couldn't read a kept guide: $it") }.getOrNull()
 
+        /** When the guide for [key] was kept (as [System.currentTimeMillis]); 0 when there's none. */
+        fun savedAt(context: Context, key: String): Long = runCatching { guideFile(context, key).lastModified() }.getOrDefault(0L)
+
         private fun keep(context: Context, guide: ShowGuide) {
             runCatching { guideFile(context, guide.key).writeText(guide.toJson().toString()) }
         }
