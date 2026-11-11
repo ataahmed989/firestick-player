@@ -285,6 +285,10 @@ class SettingsPanels(
             message("Skip intro and Skip recap, Next episode at the credits and Exit after a film's credits. " +
                 "Times from the file's chapters, else SkipDB and IntroDB, with the TMDB key above.")
         }
+        val counts = COUNTDOWNS
+        choice("Next episode / Exit countdown", counts.map { "$it s" }, counts.indexOf(prefs.autoCountdownSec).let { if (it < 0) 1 else it }) {
+            prefs.autoCountdownSec = counts[it]
+        }
 
         header("App")
         row("Check for updates", updateStatus ?: "Version ${updater.installedName}") {
@@ -626,6 +630,7 @@ class SettingsPanels(
     }
 
     companion object {
+        private val COUNTDOWNS = listOf(5, 10, 15, 20, 30)
         const val FILE_POSITION = "As in the file"
         /** The pods above the time bar, by their keys in [Prefs.hiddenChips]. */
         val CHIPS = listOf("quality" to "Quality", "fps" to "Frame rate", "sound" to "Sound", "source" to "Source")

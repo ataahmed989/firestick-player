@@ -1842,8 +1842,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     /**
      * The end of an episode, Netflix-style: when a show has a next episode, a card comes up where the credits start
      * (only with times for them). Only on the file's own times ([Segments.autoAt]: its chapters say the credits run to
-     * the end) does anything happen by itself: Next episode counts 10 s of playing and starts the next one, or, with
-     * nothing next, "Exit · 10s" counts and leaves. On a database's times (they fit by length, evidence but not proof)
+     * the end) does anything happen by itself: Next episode counts [Prefs.autoCountdownSec] of playing and starts the next one, or, with
+     * nothing next, "Exit · 10s" counts the same and leaves. On a database's times (they fit by length, evidence but not proof)
      * the card is the same but waits: Next episode fills up until the real end, Exit waits to be pressed.
      * Watch credits / Keep watching put it away, pausing pauses a count, a jump starts it again.
      */
@@ -1901,10 +1901,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 postPlayGo.setCompoundDrawablesRelativeWithIntrinsicBounds(postPlayIcon, null, null, null)
                 postPlayGo.text = "Next episode"
             }
-            // The count starts with the card. Exit counts 10 s of playing; Next episode fills up to the real end and
+            // The count starts with the card. A sure one counts the chosen seconds of playing; Next episode fills up to the real end and
             // never starts it early: the next one plays when this one ends, or when Next episode is pressed.
             postPlayFrom = position
-            postPlayCountMs = if (auto) EXIT_COUNT_MS else (duration - position).coerceAtLeast(1L)
+            postPlayCountMs = if (auto) prefs.autoCountdownSec * 1000L else (duration - position).coerceAtLeast(1L)
             countShown = 0f
             countShownAt = 0L
             postPlayGo.counting = auto || !exit
@@ -1943,7 +1943,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (postPlay.visibility != View.VISIBLE) return
         val duration = player?.duration ?: return
         postPlayFrom = position
-        postPlayCountMs = if (postPlayAuto) EXIT_COUNT_MS else (duration - position).coerceAtLeast(1L)
+        postPlayCountMs = if (postPlayAuto) prefs.autoCountdownSec * 1000L else (duration - position).coerceAtLeast(1L)
         countShown = 0f
         countShownAt = 0L
     }
@@ -4328,7 +4328,6 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         /** How long the decoder list may take before the player says the decoder service is stuck. */
         private const val DECODER_STUCK_MS = 10_000L
         const val POST_PLAY_LEAD_MS = 20_000L
-        const val EXIT_COUNT_MS = 10_000L
         private const val AUDIO_KEPT = 300
         private val FOCUS_EASE = DecelerateInterpolator(1.4f)
         private const val LOADING = "Loading from TMDB…"
