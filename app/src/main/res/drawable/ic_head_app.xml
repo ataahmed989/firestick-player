@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A small line icon beside a heading in the settings windows. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:pathData="M9,12a3,3 0 1,0 6,0a3,3 0 1,0 -6,0" android:strokeColor="#FFFFFFFF" android:strokeWidth="2" android:strokeLineCap="round" android:strokeLineJoin="round" android:fillColor="#00000000" />
+    <path android:pathData="M12,2.8v3M12,18.2v3M2.8,12h3M18.2,12h3M5.5,5.5l2.1,2.1M16.4,16.4l2.1,2.1M5.5,18.5l2.1,-2.1M16.4,7.6l2.1,-2.1" android:strokeColor="#FFFFFFFF" android:strokeWidth="2" android:strokeLineCap="round" android:strokeLineJoin="round" android:fillColor="#00000000" />
+</vector>

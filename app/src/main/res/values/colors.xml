@@ -18,23 +18,37 @@
         selected row each turns darker, on a pale pill, so it stays readable.
     -->
     <color name="badge_on">#FF62A0FF</color>
-    <color name="badge_on_fill">#293D8BFF</color>
-    <color name="badge_on_rim">#4D3D8BFF</color>
+    <!-- An Active badge's word: light blue on its stronger blue pill, readable on any glass. -->
+    <color name="badge_on_text">#FFBBD6FF</color>
+    <color name="badge_on_fill">#613D8BFF</color>
+    <color name="badge_on_rim">#A678AFFF</color>
     <color name="badge_on_focused">#FF1556C9</color>
     <color name="badge_on_fill_focused">#243D8BFF</color>
-    <color name="badge_off">#FF80868D</color>
-    <color name="badge_off_fill">#12FFFFFF</color>
-    <color name="badge_off_rim">#1FFFFFFF</color>
-    <color name="badge_off_focused">#FF5F656B</color>
+    <color name="badge_off">#FFEDEFF2</color>
+    <color name="badge_off_fill">#38FFFFFF</color>
+    <color name="badge_off_rim">#61FFFFFF</color>
+    <color name="badge_off_focused">#FF464C52</color>
     <color name="badge_off_fill_focused">#0F000000</color>
     <!-- Without the glass look, an "Off" setting's word (On uses badge_on). -->
     <color name="value_off">#FF666C73</color>
     <color name="value_off_focused">#FF6E747A</color>
     <color name="badge_problem">#FFFF8A80</color>
-    <color name="badge_problem_fill">#24FF5A4F</color>
-    <color name="badge_problem_rim">#40FF5A4F</color>
+    <color name="badge_problem_fill">#40FF5A4F</color>
+    <color name="badge_problem_rim">#80FF5A4F</color>
     <color name="badge_problem_focused">#FFB3261E</color>
     <color name="badge_problem_fill_focused">#1AFF5A4F</color>
+
+    <!-- Headings in the settings windows: brighter than text_muted so they read on any glass; their icons light blue. -->
+    <color name="heading">#FFE3E6EA</color>
+    <color name="heading_icon">#FF9CC3FF</color>
+    <!-- A stepper's value and arrows ("‹ 50% ›"): blue, a deeper blue on the white selected row. -->
+    <color name="step_value">#FF7FB2FF</color>
+    <!-- Grouped rows (one card per section): the card, its rim, the lines between rows, a nested row's shade and dot. -->
+    <color name="group_fill_glass">#14FFFFFF</color>
+    <color name="group_rim_glass">#24FFFFFF</color>
+    <color name="group_divider">#1AFFFFFF</color>
+    <color name="group_sub_shade">#1A000000</color>
+    <color name="group_sub_dot">#73FFFFFF</color>
 
     <!-- The slim bar under TiviMate's titles switch: a faint track and a blue fill. -->
     <color name="progress_track">#24FFFFFF</color>
