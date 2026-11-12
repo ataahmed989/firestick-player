@@ -3365,6 +3365,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val code = event.keyCode
+        // A small window (a list of choices, a question) open over the screen takes the keys first.
+        if (FireDialog.dispatch(this, event)) return true
         if (event.action == KeyEvent.ACTION_UP) {
             if (code == KeyEvent.KEYCODE_BACK && consumeBackUp) {
                 consumeBackUp = false
@@ -3884,7 +3886,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val options = listOf(auto) + tracks.map { "${it.info.name()}, ${it.strength.label}" } + "Audio only"
         // A track chosen before that this film doesn't have: shown as Auto.
         val selected = keys.indexOf(chosen).let { if (it < 0) 0 else it }
-        choice("Sync with", options, selected) { i -> autoSync.chooseSyncWith(keys[i]); refreshLabels() }.asSubRow()
+        // With Auto on, what it's using now is ticked as well: the track, or Audio only while it listens to the sound.
+        val autoPick = when {
+            selected != 0 -> null
+            inUse != null -> keys.indexOf(inUse.info.key).takeIf { it > 0 }
+            auto == "Auto (audio)" -> keys.lastIndex
+            else -> null
+        }
+        choice("Sync with", options, selected, alsoChecked = autoPick) { i -> autoSync.chooseSyncWith(keys[i]); refreshLabels() }.asSubRow()
     }
 
     /** Tells auto sync which subtitles are on: a file from Search online, or anything else (left alone). */

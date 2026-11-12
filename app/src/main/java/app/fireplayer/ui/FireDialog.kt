@@ -1,18 +1,17 @@
 package app.fireplayer.ui
 
 import android.app.Activity
-import android.app.Dialog
 import android.content.Context
 import android.content.res.ColorStateList
-import android.graphics.Color
-import android.graphics.drawable.ColorDrawable
 import android.text.InputType
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
+import android.view.FocusFinder
 import android.view.ViewGroup
-import android.view.WindowManager
+import android.view.ViewTreeObserver
+import android.widget.FrameLayout
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
@@ -26,6 +25,10 @@ import app.fireplayer.R
 /**
  * Small pop-up windows in the player's style: pick one of several values,
  * answer a question, or type a name.
+ *
+ * They are drawn inside the screen's own window ([Popup]), not as windows of their own: on Fire TV a second window
+ * with a dimmed backdrop made the TV redraw the whole screen another way, and the settings window and subtitles came
+ * out shifted sideways, their far end showing at the other edge of the screen.
  */
 object FireDialog {
 
@@ -39,6 +42,8 @@ object FireDialog {
         options: List<String>,
         selected: Int,
         besidePanel: Boolean = false,
+        /** Another option ticked in blue as well: the one the chosen option stands for (Auto's pick). */
+        alsoChecked: Int? = null,
         onPick: (Int) -> Unit,
     ) {
         if (gone(activity)) return
@@ -56,8 +61,9 @@ object FireDialog {
         scroll.addView(list)
         options.forEachIndexed { i, option ->
             // A long option (a film's subtitle track and how well it matches) takes a second line instead of being cut off.
-            val row = rows.build(option, null, if (i == selected) R.drawable.ic_check else null, labelLines = 2)
-            row.isSelected = i == selected
+            val ticked = i == selected || i == alsoChecked
+            val row = rows.build(option, null, if (ticked) R.drawable.ic_check else null, labelLines = 2)
+            row.isSelected = ticked
             row.setOnClickListener {
                 dialog.dismiss()
                 onPick(i)
@@ -73,7 +79,8 @@ object FireDialog {
             if (besidePanel) {
                 // Just left of the settings window (31% of the screen plus its margin).
                 params.gravity = Gravity.END or Gravity.CENTER_VERTICAL
-                params.x = (screenWidth * 0.31f).toInt() + rows.dp(30)
+                params.marginEnd = (screenWidth * 0.31f).toInt() + rows.dp(30)
+                params.rightMargin = params.marginEnd
             }
         }
         list.getChildAt(selected.coerceIn(0, options.size - 1))?.requestFocus()
@@ -93,7 +100,7 @@ object FireDialog {
         busy: Boolean = false,
         /** Opened from a settings window: the menu button closes both (see [show]). */
         fromPanel: Boolean = false,
-    ): Dialog? {
+    ): Popup? {
         if (gone(activity)) return null
         val rows = Rows(activity)
         val dialog = newDialog(activity)
@@ -125,7 +132,7 @@ object FireDialog {
             // A plain message: no gap left under the title for answers that aren't there.
             (box.getChildAt(0).layoutParams as? ViewGroup.MarginLayoutParams)?.bottomMargin = rows.dp(2)
         }
-        dialog.setOnDismissListener { if (!answered) onDismiss?.invoke() }
+        dialog.onDismiss = { if (!answered) onDismiss?.invoke() }
         show(activity, dialog, box, rows.dp(260), menuPassesOn = fromPanel) {}
         list.getChildAt(focus.coerceIn(0, (answers.size - 1).coerceAtLeast(0)))?.requestFocus()
         return dialog
@@ -196,10 +203,7 @@ object FireDialog {
     /** A window can't be shown for an activity that is closing or already closed. */
     private fun gone(activity: Activity) = activity.isFinishing || activity.isDestroyed
 
-    private fun newDialog(activity: Activity) = Dialog(activity).apply {
-        requestWindowFeature(android.view.Window.FEATURE_NO_TITLE)
-        setCanceledOnTouchOutside(true)
-    }
+    private fun newDialog(activity: Activity) = Popup(activity)
 
     private fun box(activity: Activity, title: String): LinearLayout {
         val rows = Rows(activity)
@@ -218,50 +222,188 @@ object FireDialog {
     }
 
     /**
-     * The menu button (three lines) on a small window that [passMenuOn] covers: the window closes and the press goes
-     * on to the screen underneath, which closes its settings window, or opens Settings when none is open. True when
-     * it was the menu button.
-     */
-    fun passMenuOn(activity: Activity, dialog: Dialog, keyCode: Int, event: KeyEvent): Boolean {
-        if (keyCode != KeyEvent.KEYCODE_MENU) return false
-        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && dialog.isShowing) {
-            dialog.cancel()
-            activity.dispatchKeyEvent(event)
-        }
-        return true
-    }
-
-    /**
+     * Shows [box] as a small window over [activity]'s screen, [width] pixels wide and centred unless [place] moves it.
      * [menuPassesOn]: a window opened from Settings (a list of choices, a box to type in), or a link typed in on the
-     * home screen, which the menu button closes along with the settings window (see [passMenuOn]). The resume
-     * question and the update's windows keep the menu button to themselves.
+     * home screen, which the menu button (three lines) closes along with the settings window. The resume question and
+     * the update's windows keep the menu button to themselves.
      */
-    private fun show(
+    fun show(
         activity: Activity,
-        dialog: Dialog,
+        dialog: Popup,
         box: View,
         width: Int,
         menuPassesOn: Boolean,
-        place: (WindowManager.LayoutParams) -> Unit,
+        place: (FrameLayout.LayoutParams) -> Unit,
     ) {
-        dialog.setContentView(box)
-        val window = dialog.window ?: return
-        window.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-        window.setDimAmount(0.25f)
-        val params = window.attributes
-        params.width = width
-        params.height = WindowManager.LayoutParams.WRAP_CONTENT
-        place(params)
-        window.attributes = params
-        dialog.setOnKeyListener { _, keyCode, event ->
-            if (menuPassesOn && passMenuOn(activity, dialog, keyCode, event)) return@setOnKeyListener true
-            // Swallow the Back key-up too, so it doesn't reach the window underneath.
-            keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP && !dialog.isShowing
-        }
-        box.alpha = 0f
-        box.scaleX = 0.96f
-        box.scaleY = 0.96f
-        dialog.show()
-        box.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(140).start()
+        dialog.menuPassesOn = menuPassesOn
+        dialog.show(box, width, place)
     }
+
+    /** A window of its own content ([box]), as the font sender's, shown like the others. */
+    fun custom(activity: Activity, box: View, width: Int, menuPassesOn: Boolean): Popup? {
+        if (gone(activity)) return null
+        return Popup(activity).also { show(activity, it, box, width, menuPassesOn) {} }
+    }
+
+    /** The small windows open over each screen, the newest last. */
+    private val open = java.util.WeakHashMap<Activity, MutableList<Popup>>()
+
+    /**
+     * Where the selection goes when the small window open over [activity]'s screen closes: a row of a settings window
+     * that was redrawn behind it, so the row that opened it is a new one.
+     */
+    fun returnFocusTo(activity: Activity, view: View) {
+        open[activity]?.lastOrNull()?.returnTo = view
+    }
+
+    /** Whether a small window is open over [activity]'s screen. */
+    fun isShowing(activity: Activity): Boolean = open[activity]?.isNotEmpty() == true
+
+    /**
+     * Gives a key to the small window open over [activity]'s screen, if there is one. Each screen calls this first
+     * thing in its dispatchKeyEvent; true means the key was the window's. Play, pause and the other media keys still
+     * reach the film.
+     */
+    fun dispatch(activity: Activity, event: KeyEvent): Boolean {
+        val top = open[activity]?.lastOrNull() ?: return false
+        return top.dispatch(event)
+    }
+
+    /**
+     * A small window drawn inside the screen's own window: a faint shade over everything, the window's box on it.
+     * While it's open, keys go to it ([dispatch]) and the selection can't leave it.
+     */
+    class Popup internal constructor(private val activity: Activity) {
+        private val host: ViewGroup? = activity.findViewById(android.R.id.content)
+        private val shade = FrameLayout(activity).apply {
+            setBackgroundColor(SHADE)
+            // Takes touches, so nothing under it is pressed by mistake.
+            isClickable = true
+            descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+        }
+        var onDismiss: (() -> Unit)? = null
+        internal var menuPassesOn = false
+        var isShowing = false
+            private set
+        private var before: View? = null
+        internal var returnTo: View?
+            get() = before
+            set(v) { before = v }
+        private var backDown = false
+        private var lastInside: View? = null
+
+        // Anything else on screen that takes the selection while the window is open (a window being redrawn behind
+        // it, a button appearing) hands it straight back.
+        private val keepFocus = ViewTreeObserver.OnGlobalFocusChangeListener { _, now ->
+            if (!isShowing) return@OnGlobalFocusChangeListener
+            if (now != null && isInside(now)) {
+                lastInside = now
+            } else {
+                shade.post { if (isShowing && !shade.hasFocus()) focusInside() }
+            }
+        }
+
+        private fun isInside(view: View): Boolean {
+            var v: View? = view
+            while (v != null) {
+                if (v === shade) return true
+                v = v.parent as? View
+            }
+            return false
+        }
+
+        private fun focusInside() {
+            val target = lastInside?.takeIf { it.isAttachedToWindow && it.isShown && isInside(it) }
+                ?: FocusFinder.getInstance().findNextFocus(shade, null, View.FOCUS_DOWN)
+            if (target != null) {
+                target.requestFocus()
+            } else {
+                // A message with nothing to press: the shade itself holds the selection, so no key reaches the
+                // screen under it.
+                shade.isFocusable = true
+                shade.requestFocus()
+            }
+        }
+
+        internal fun show(box: View, width: Int, place: (FrameLayout.LayoutParams) -> Unit) {
+            val parent = host ?: return
+            if (isShowing) return
+            before = activity.currentFocus
+            val params = FrameLayout.LayoutParams(width, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER)
+            place(params)
+            shade.addView(box, params)
+            parent.addView(shade, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            isShowing = true
+            open.getOrPut(activity) { mutableListOf() }.add(this)
+            shade.viewTreeObserver.addOnGlobalFocusChangeListener(keepFocus)
+            shade.alpha = 0f
+            shade.animate().alpha(1f).setDuration(140).start()
+            box.scaleX = 0.96f
+            box.scaleY = 0.96f
+            box.animate().scaleX(1f).scaleY(1f).setDuration(140).start()
+            // The caller puts the selection on its row next; until then, the first one inside.
+            focusInside()
+        }
+
+        fun dismiss() {
+            if (!isShowing) return
+            isShowing = false
+            open[activity]?.remove(this)
+            shade.viewTreeObserver.takeIf { it.isAlive }?.removeOnGlobalFocusChangeListener(keepFocus)
+            shade.animate().cancel()
+            (shade.parent as? ViewGroup)?.removeView(shade)
+            // Back on what was selected before (the row that opened it), if it's still there.
+            val back = before
+            before = null
+            if (back != null && back.isAttachedToWindow && back.isShown) back.requestFocus()
+            onDismiss?.invoke()
+        }
+
+        fun cancel() = dismiss()
+
+        internal fun dispatch(event: KeyEvent): Boolean {
+            val code = event.keyCode
+            when (code) {
+                KeyEvent.KEYCODE_BACK -> {
+                    if (event.action == KeyEvent.ACTION_DOWN) {
+                        if (event.repeatCount == 0) {
+                            backDown = true
+                            cancel()
+                        }
+                    } else if (event.action == KeyEvent.ACTION_UP) {
+                        backDown = false
+                    }
+                    return true
+                }
+                KeyEvent.KEYCODE_MENU -> {
+                    if (!menuPassesOn) return true
+                    // Closes this window, and the press goes on to the screen, which closes its settings window.
+                    if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) cancel()
+                    return false
+                }
+                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_MEDIA_PLAY, KeyEvent.KEYCODE_MEDIA_PAUSE,
+                KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN, KeyEvent.KEYCODE_VOLUME_MUTE,
+                KeyEvent.KEYCODE_MEDIA_FAST_FORWARD, KeyEvent.KEYCODE_MEDIA_REWIND,
+                -> return false
+            }
+            if (!shade.hasFocus()) focusInside()
+            if (activity.window.superDispatchKeyEvent(event)) return true
+            // Moving the selection, kept inside this window.
+            if (event.action == KeyEvent.ACTION_DOWN) {
+                val direction = when (code) {
+                    KeyEvent.KEYCODE_DPAD_UP -> View.FOCUS_UP
+                    KeyEvent.KEYCODE_DPAD_DOWN -> View.FOCUS_DOWN
+                    KeyEvent.KEYCODE_DPAD_LEFT -> View.FOCUS_LEFT
+                    KeyEvent.KEYCODE_DPAD_RIGHT -> View.FOCUS_RIGHT
+                    else -> null
+                }
+                val from = shade.findFocus()
+                if (direction != null && from != null) FocusFinder.getInstance().findNextFocus(shade, from, direction)?.requestFocus()
+            }
+            return true
+        }
+    }
+
+    /** The shade over the screen while a small window is open (a quarter dark, as before). */
+    private const val SHADE = 0x40000000
 }
