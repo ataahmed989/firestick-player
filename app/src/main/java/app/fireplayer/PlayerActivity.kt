@@ -3835,9 +3835,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     /**
-     * Auto sync in the Subtitle delay window: its state as a badge, like the ones in Settings ("Synced" in blue, with how
-     * long it took when found this time, "Processing" or "Off" in gray), and Resync and Undo last sync. Pressing the badge's
-     * row turns it on or off for these subtitles: off, nothing moves the delay any more and it stays as it is.
+     * Auto sync in the Subtitle delay window: its state as a badge, like the ones in Settings. "Processing" (gray) while
+     * it looks; "Matched in 3 s" (lighter blue) once a delay it's sure of is in use and being confirmed; "Synced in 3 s"
+     * (blue) once it's confirmed; "Rechecking" (lighter blue) after Check sync until it's checked; "Off", "Not synced"
+     * (gray). Then Check sync and Undo last sync. Pressing the badge's row turns it on or off: off, nothing moves the delay
+     * any more and it stays as it is.
      */
     private fun renderAutoSync(panel: SidePanel) = with(panel) {
         val downloaded = autoSync.file != null
@@ -3846,8 +3848,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             !downloaded -> "Off" to Rows.Badge.INACTIVE
             else -> when (autoSync.state) {
                 // How long lining up took, when it was found this time ("Synced in 14 s").
-                AutoSync.State.SYNCED -> (autoSync.syncedInMs?.let { "Synced in ${AutoSync.tookText(it)}" } ?: "Synced") to Rows.Badge.ACTIVE
-                AutoSync.State.LISTENING -> "Processing" to Rows.Badge.BUSY
+                AutoSync.State.SYNCED -> if (autoSync.rechecking) "Rechecking" to Rows.Badge.LIGHT
+                    else (autoSync.syncedInMs?.let { "Synced in ${AutoSync.tookText(it)}" } ?: "Synced") to Rows.Badge.ACTIVE
+                AutoSync.State.LISTENING -> when {
+                    autoSync.rechecking -> "Rechecking" to Rows.Badge.LIGHT
+                    // In use already, being confirmed.
+                    else -> autoSync.matchedInMs?.let { "Matched in ${AutoSync.tookText(it)}" to Rows.Badge.LIGHT } ?: ("Processing" to Rows.Badge.BUSY)
+                }
                 AutoSync.State.NOT_SYNCED -> "Not synced" to Rows.Badge.INACTIVE
                 AutoSync.State.OFF -> "Off" to Rows.Badge.INACTIVE
             }
@@ -3864,7 +3871,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             refresh()
         }
         if (downloaded && prefs.autoSync) {
-            row("Resync") { autoSync.resync(); refresh() }.asSubRow()
+            row("Check sync") { autoSync.resync(); refresh() }.asSubRow()
             if (autoSync.undoUs != null) row("Undo last sync") { autoSync.undo(); refresh() }.asSubRow()
             syncWithRow(panel)
         }

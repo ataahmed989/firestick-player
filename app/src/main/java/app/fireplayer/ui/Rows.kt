@@ -239,7 +239,8 @@ class Rows(private val context: Context) {
     }
 
     /** How a [badge] looks: set (blue), not set (faded gray), refused (soft red), or being checked (gray). */
-    enum class Badge { ACTIVE, INACTIVE, PROBLEM, BUSY }
+    /** [LIGHT]: on, but a step before [ACTIVE] (in use while it's confirmed, or checking again): a lighter blue. */
+    enum class Badge { ACTIVE, LIGHT, INACTIVE, PROBLEM, BUSY }
 
     /**
      * A small pill on the right of a row saying how a setting stands ("Active", "Inactive"). It follows the row's
@@ -249,11 +250,13 @@ class Rows(private val context: Context) {
         fun color(res: Int) = ContextCompat.getColor(context, res)
         val (textRes, fillRes, rimRes) = when (style) {
             Badge.ACTIVE -> Triple(R.color.badge_on_text, R.color.badge_on_fill, R.color.badge_on_rim)
+            Badge.LIGHT -> Triple(R.color.badge_light_text, R.color.badge_light_fill, R.color.badge_light_rim)
             Badge.PROBLEM -> Triple(R.color.badge_problem, R.color.badge_problem_fill, R.color.badge_problem_rim)
             Badge.INACTIVE, Badge.BUSY -> Triple(R.color.badge_off, R.color.badge_off_fill, R.color.badge_off_rim)
         }
         val (focusedTextRes, focusedFillRes) = when (style) {
             Badge.ACTIVE -> R.color.badge_on_focused to R.color.badge_on_fill_focused
+            Badge.LIGHT -> R.color.badge_light_focused to R.color.badge_light_fill_focused
             Badge.PROBLEM -> R.color.badge_problem_focused to R.color.badge_problem_fill_focused
             Badge.INACTIVE, Badge.BUSY -> R.color.badge_off_focused to R.color.badge_off_fill_focused
         }

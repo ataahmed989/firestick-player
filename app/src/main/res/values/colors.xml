@@ -24,6 +24,12 @@
     <color name="badge_on_rim">#A678AFFF</color>
     <color name="badge_on_focused">#FF1556C9</color>
     <color name="badge_on_fill_focused">#243D8BFF</color>
+    <!-- A lighter blue pill, a step before badge_on: in use while it's confirmed ("Matched in 3 s"), "Rechecking". -->
+    <color name="badge_light_text">#FFE4EFFF</color>
+    <color name="badge_light_fill">#4D8DB9FF</color>
+    <color name="badge_light_rim">#B3BCD8FF</color>
+    <color name="badge_light_focused">#FF2F72D9</color>
+    <color name="badge_light_fill_focused">#1F8DB9FF</color>
     <color name="badge_off">#FFEDEFF2</color>
     <color name="badge_off_fill">#38FFFFFF</color>
     <color name="badge_off_rim">#61FFFFFF</color>
