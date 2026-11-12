@@ -650,6 +650,35 @@ class OffsetTrackerTest {
     }
 
     @Test
+    fun aBreakJustAfterListeningStartsDoesntHoldUpTheFirstDelay() {
+        // Listening starts a minute and a half before a short bumper that moves the delay by 2.3 s (Legion on the Fire TV
+        // Stick 4K Max: +6.7 s, then +9.0 s at 31:33). The talking either side of it fits two delays, so a look over both
+        // is sure of neither; the stretch after it, looked at alone, is.
+        val took = ArrayList<Long>()
+        val story = StringBuilder()
+        var wrong = 0
+        for (seed in 1L..10L) {
+            val film = FakeFilm.make(seed = 400 + seed, minutes = 30, delayMs = 6_700, breaks = listOf(Break(10 * min, adMs = 2_300)))
+            val start = film.ads.single().fromMs - 90_000
+            val p = Playback(film, OffsetTracker(film.subs), formatHints = false, startMs = start)
+            p.seek(start)
+            p.play(start + 12 * min)
+            val learned = p.decisions.firstOrNull { it.outcome == Outcome.LEARNED }
+            val after = film.ads.single().toMs + 60_000
+            val right = learned != null && near(9_000, p.tracker.delayAt(maxOf(after, learned.toMs)), 400)
+            if (!right) wrong++
+            took += learned?.let { it.toMs - start } ?: Long.MAX_VALUE
+            story.append("seed $seed: ${learned?.let { "${SyncMatcher.formatShift(it.delayMs)} after ${(it.toMs - start) / 1000} s" } ?: "never"}${if (right) "" else " WRONG"}\n")
+        }
+        val sorted = took.sorted()
+        println("learned across a break: median ${sorted[sorted.size / 2] / 1000} s, worst ${sorted.last() / 1000} s, wrong $wrong\n$story")
+        assertEquals(story.toString(), 0, wrong)
+        // Looking at the whole stretch only: median 303 s (the stretch had to move past the break). Now the part after it is
+        // looked at alone too: as soon as there's talking enough after the break to be sure (about 100 s of film here).
+        assertTrue(story.toString(), sorted[sorted.size / 2] <= 270_000)
+    }
+
+    @Test
     fun resyncWithNothingHeardListensAfresh() {
         val film = FakeFilm.make(seed = 81, minutes = 30, delayMs = 3_000)
         val tracker = OffsetTracker(film.subs, listOf(Segment(0, 9_000)))

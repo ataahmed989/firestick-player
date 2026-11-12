@@ -472,12 +472,30 @@ class OffsetTracker(
         return d
     }
 
-    private fun learnCheck(tl: SpeechTimeline, from: Long, now: Long): Decision {
+    private fun learnCheck(tl: SpeechTimeline, wholeFrom: Long, now: Long): Decision {
         sinceCheckMs = 0
         lastCheckToMs = now
+        var from = wholeFrom
         val h = SyncMatcher.heard(tl.speech, tl.heard, frame(from), frame(now) + 1) ?: return waiting(now)
         // By the talking, how far the best stands out is judged against shifts up to [RANGE_MS] away (see SyncMatcher.match)
-        val res = SyncMatcher.match(h, lines, learnCenterMs, learnRangeMs, if (clean) learnRangeMs else maxOf(learnRangeMs, RANGE_MS))
+        val zRange = if (clean) learnRangeMs else maxOf(learnRangeMs, RANGE_MS)
+        var res = SyncMatcher.match(h, lines, learnCenterMs, learnRangeMs, zRange)
+        // Not sure of the whole stretch: a break inside it (a bumper: the talking before and after it fits delays a second
+        // or two apart) blurs both, until the stretch has moved on past it, minutes later. The latest part alone, after
+        // where such a break would be, is looked at too: sure of it, that's what's gone by (confirmed as any first delay).
+        if (!clean && !sure(res, learnCenterMs, learnRangeMs)) {
+            for (span in LEARN_RECENT_MS) {
+                val recentFrom = now - span
+                if (recentFrom - from < LEARN_RECENT_MIN_CUT_MS || talkingMs(tl, recentFrom, now) < minTalkMs) continue
+                val hr = SyncMatcher.heard(tl.speech, tl.heard, frame(recentFrom), frame(now) + 1) ?: continue
+                val rr = SyncMatcher.match(hr, lines, learnCenterMs, learnRangeMs, zRange)
+                if (sure(rr, learnCenterMs, learnRangeMs)) {
+                    from = recentFrom
+                    res = rr
+                    break
+                }
+            }
+        }
         fun decide(o: Outcome, note: String = "") = Decision(o, segments, res.delayMs, now, from, now, res, Double.NaN, note)
         if (!sure(res, learnCenterMs, learnRangeMs)) {
             looselyConfirmed(tl, res, from, now)?.let { return it }
@@ -1281,6 +1299,10 @@ class OffsetTracker(
         const val WINDOW_MS = 4 * 60_000L
         /** While learning the first delay: the most film matched, and how long to try. */
         const val LEARN_WINDOW_MS = 6 * 60_000L
+        // Finding the first delay, not sure of the whole stretch: the latest this much of it looked at alone (the longest
+        // first), when it leaves at least [LEARN_RECENT_MIN_CUT_MS] of the stretch out.
+        val LEARN_RECENT_MS = longArrayOf(150_000L, 100_000L)
+        const val LEARN_RECENT_MIN_CUT_MS = 30_000L
         const val LEARN_MAX_MS = 6 * 60_000L
         // Talking needed in a stretch before matching it is worth it (SyncMatcher wants as much to be sure).
         private const val MIN_TALK_MS = 30_000L
