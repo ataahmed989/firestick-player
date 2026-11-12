@@ -263,8 +263,10 @@ class AutoSync(
         subtitleSource = release?.let { sourceOf(it) }
         subtitleLanguage = language
         if (subtitle == null || filmKey == null) {
-            endStandby()
             setState(State.OFF, null)
+            // No downloaded subtitles (yet): the sound loading is kept ready all the same, so subtitles picked later are
+            // synced in seconds.
+            if (filmKey != null) standbyAhead() else endStandby()
             return
         }
         // Set by hand the last time these subtitles were on: that delay again, without listening.
@@ -278,8 +280,9 @@ class AutoSync(
             return
         }
         if (!prefs.autoSync) {
-            endStandby()
             setState(State.OFF, null)
+            // Ready for auto sync to be turned on for this film.
+            standbyAhead()
             return
         }
         val saved = OffsetTracker.restore(prefs.syncedSegments(savedKey()), prefs.syncedDelayMs(savedKey()))
@@ -393,10 +396,9 @@ class AutoSync(
 
     /**
      * Auto sync turned on or off in Settings, or from the Subtitle delay window. Off, nothing moves the delay any more;
-     * [keepReady] (turned off from the window, for this film): the sound loading is still kept ready, so turned on again
-     * it's synced in seconds.
+     * the sound loading is still kept ready ([standbyAhead]), so turned on again it's synced in seconds.
      */
-    fun setOn(on: Boolean, keepReady: Boolean = false) {
+    fun setOn(on: Boolean) {
         if (on) {
             if (file != null && state == State.OFF) turnOn()
         } else {
@@ -409,8 +411,8 @@ class AutoSync(
             tentativeMs = null
             tentativeAt = 0L
             setState(State.OFF, null)
-            // Ready for it to be turned on again: off for these subtitles only, or off just now from the window.
-            if (prefs.autoSync || keepReady) standbyAhead(evenIfOff = keepReady) else endStandby()
+            // Ready for it to be turned on again (only copied meanwhile).
+            standbyAhead()
         }
     }
 
@@ -672,13 +674,13 @@ class AutoSync(
      * on: the sound loading is copied all the same, not decoded, the newest kept (about the two minutes loaded ahead,
      * at most 4 MB). Turned on (or Resync), that's heard at once, rather than only what loads from then on as the film
      * plays: seconds, not a minute or more; with the film's own subtitles to line up against, it checks them against the
-     * talking at once. Not while auto sync is off in Settings, unless it was turned off just now for this film
-     * ([evenIfOff]: from the Subtitle delay window, which turns it off in Settings too).
+     * talking at once. Also with no downloaded subtitles yet, and with auto sync off (in Settings too): it's only copied,
+     * so picking subtitles or turning auto sync on is as quick. On-demand films only ([armAhead]).
      */
-    private fun standbyAhead(evenIfOff: Boolean = false) {
+    private fun standbyAhead() {
         val l = lines
         // Too few lines to line up: nothing copied would ever be heard.
-        if (file == null || (!prefs.autoSync && !evenIfOff) || (l != null && l.lines.size < 20) || !armAhead()) {
+        if (key == null || (file != null && l != null && l.lines.size < 20) || !armAhead()) {
             endStandby()
             return
         }
