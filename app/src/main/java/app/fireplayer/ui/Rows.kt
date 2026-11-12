@@ -179,7 +179,17 @@ class Rows(private val context: Context) {
      * [labelLines] above 1 lets a long label (a subtitle file name) wrap instead of being cut short.
      * With the glass look an "On" / "Off" value is a switch, unless [asSwitch] is false (a picker's current value).
      */
-    fun build(label: String, value: String?, trailingIcon: Int?, labelLines: Int = 1, asSwitch: Boolean = true): LinearLayout {
+    /** A stepper's value and arrows: blue, a deeper blue on the white selected row. */
+    val stepColors: ColorStateList? = ContextCompat.getColorStateList(context, R.color.sel_step_value)
+
+    fun build(
+        label: String,
+        value: String?,
+        trailingIcon: Int?,
+        labelLines: Int = 1,
+        asSwitch: Boolean = true,
+        valueColors: ColorStateList? = null,
+    ): LinearLayout {
         val row = base()
         val labelView = text(label).apply {
             if (labelLines > 1) {
@@ -213,6 +223,14 @@ class Rows(private val context: Context) {
                 isDuplicateParentStateEnabled = true
                 setTextColor(ContextCompat.getColorStateList(context, if (value == "On") R.color.sel_value_on else R.color.sel_value_off))
             })
+        } else if (value != null && valueColors != null) {
+            row.addView(text(value).apply {
+                tag = KEEP_COLORS
+                // Before it's added, so the row passes its state changes on.
+                isDuplicateParentStateEnabled = true
+                setTextColor(valueColors)
+                maxWidth = dp(118)
+            })
         } else if (value != null) {
             row.addView(text(value).apply { alpha = 0.85f; maxWidth = dp(118) })
         }
@@ -230,7 +248,7 @@ class Rows(private val context: Context) {
     fun badge(label: String, style: Badge): TextView {
         fun color(res: Int) = ContextCompat.getColor(context, res)
         val (textRes, fillRes, rimRes) = when (style) {
-            Badge.ACTIVE -> Triple(R.color.badge_on, R.color.badge_on_fill, R.color.badge_on_rim)
+            Badge.ACTIVE -> Triple(R.color.badge_on_text, R.color.badge_on_fill, R.color.badge_on_rim)
             Badge.PROBLEM -> Triple(R.color.badge_problem, R.color.badge_problem_fill, R.color.badge_problem_rim)
             Badge.INACTIVE, Badge.BUSY -> Triple(R.color.badge_off, R.color.badge_off_fill, R.color.badge_off_rim)
         }

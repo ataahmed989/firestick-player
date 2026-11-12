@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- A settings row that joins the rows around it into one card (SidePanel, RowGroups). -->
+    <item name="group_row" type="id" />
+    <!-- A row nested under the setting that turns it on: indented, with a dot (RowGroups). -->
+    <item name="sub_row" type="id" />
+</resources>

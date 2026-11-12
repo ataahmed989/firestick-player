@@ -141,7 +141,7 @@ class SettingsPanels(
                     prefs.hiddenChips = if (key in hidden) hidden - key else hidden + key
                     onChipsChanged()
                     refresh()
-                }
+                }.asSubRow()
             }
         }
         row("Glass look", onOff(prefs.glassLook)) {
@@ -156,7 +156,7 @@ class SettingsPanels(
             val rates = listOf(2, 4, 8)
             choice("Glass refresh", rates.map { "$it times a second" }, rates.indexOf(prefs.glassRefreshPerSec).let { if (it < 0) 1 else it }) {
                 prefs.glassRefreshPerSec = rates[it]
-            }
+            }.asSubRow()
         }
 
         header("Skipping")
@@ -174,7 +174,6 @@ class SettingsPanels(
         row("Preview while skipping", onOff(prefs.seekPreviews)) {
             prefs.seekPreviews = !prefs.seekPreviews; refresh()
         }
-        if (prefs.seekPreviews) message("Uses a second connection to the server.")
 
         header("Defaults")
         val subLanguages = languages + ""
@@ -193,7 +192,6 @@ class SettingsPanels(
         row("Play next episode", onOff(prefs.playNextEpisode)) {
             prefs.playNextEpisode = !prefs.playNextEpisode; refresh()
         }
-        if (prefs.playNextEpisode) NextEpisode.status?.let { message(it) }
         row("Match frame rate", onOff(prefs.matchFrameRate)) {
             prefs.matchFrameRate = !prefs.matchFrameRate; refresh()
         }
@@ -217,7 +215,7 @@ class SettingsPanels(
                 prefs.customFontName = ""
                 onFontChanged()
                 refresh()
-            }
+            }.asSubRow()
         }
 
         header("Online subtitles and TMDB API")
@@ -226,7 +224,6 @@ class SettingsPanels(
             onAutoSyncChanged()
             refresh()
         }
-        message("Lines up subtitles from Search online with the speech, by itself.")
         keyRow("OpenSubtitles API key", KeyStore.Key.OPENSUBTITLES, whereFrom = "From opensubtitles.com › API consumers")
         // Optional: signing in raises how many subtitles can be downloaded a day.
         keyRow("OpenSubtitles username", KeyStore.Key.OPENSUBTITLES_USER, whereFrom = OPTIONAL_HINT)
@@ -344,7 +341,7 @@ class SettingsPanels(
                 if (inPlayer) checkNote = "Starts once the film is closed." else checkValue = "Started"
             }
             refresh()
-        }
+        }.asSubRow()
         when {
             !prefs.keys.isSet(KeyStore.Key.TMDB) -> message("Needs a TMDB API key (Online subtitles and TMDB API).")
             checkNote != null -> message(checkNote!!)
@@ -560,10 +557,6 @@ class SettingsPanels(
         row("Keep embedded styling", onOff(prefs.keepAssStyling)) {
             prefs.keepAssStyling = !prefs.keepAssStyling; onAssChanged(); refresh()
         }
-        message(
-            if (prefs.keepAssStyling) "Subtitles that come with their own colors and fonts keep them."
-            else "Your style is used for every subtitle, whatever the file says.",
-        )
 
         spacer(6)
         // Saving only makes sense once something has been changed.
@@ -605,16 +598,7 @@ class SettingsPanels(
     }
 
     /** Nests an option under the setting that turns it on. */
-    private fun View.indent(): View = apply {
-        val inset = (14 * activity.resources.displayMetrics.density).toInt()
-        // The left margin too: a start margin alone is applied only after the row is measured,
-        // so the row kept its full width, moved right and lost the end of its value.
-        (layoutParams as? ViewGroup.MarginLayoutParams)?.let {
-            it.marginStart = inset
-            it.leftMargin = inset
-            layoutParams = it
-        }
-    }
+    private fun View.indent(): View = asSubRow()
 
     private fun fontLabel(font: SubtitleFont): String =
         if (font == SubtitleFont.NETFLIX) importedFontName ?: font.label else font.label

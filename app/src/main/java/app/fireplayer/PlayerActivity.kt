@@ -109,6 +109,7 @@ import app.fireplayer.ui.SeekPreview
 import app.fireplayer.ui.SettingsPanels
 import app.fireplayer.ui.SidePanel
 import app.fireplayer.ui.Rows
+import app.fireplayer.ui.asSubRow
 import io.github.peerless2012.ass.media.AssHandler
 import java.io.File
 import java.io.IOException
@@ -3808,7 +3809,6 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private fun openSubtitleDelayPanel(from: View) {
         delayPanelOpen = true
         openPanel("Subtitle delay", from, onClosed = { delayPanelOpen = false }) {
-            message("Left makes subtitles earlier, right makes them later.")
             stepper("Delay", formatDelay(delays.subtitleUs)) { dir ->
                 delays.subtitleUs += dir * 100_000L
                 autoSync.handOff(delays.subtitleUs)
@@ -3851,15 +3851,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             }
             refresh()
         }
-        val note = when {
-            !prefs.autoSync -> "Turned off in Settings. Press to turn it on."
-            !downloaded -> "Lines up subtitles found with Search online. These came with the video."
-            else -> autoSync.detail
-        }
-        note?.let { message(it) }
         if (downloaded && prefs.autoSync) {
-            row("Resync") { autoSync.resync(); refresh() }
-            if (autoSync.undoUs != null) row("Undo auto sync") { autoSync.undo(); refresh() }
+            row("Resync") { autoSync.resync(); refresh() }.asSubRow()
+            if (autoSync.undoUs != null) row("Undo auto sync") { autoSync.undo(); refresh() }.asSubRow()
             syncWithRow(panel)
         }
     }
@@ -3883,7 +3877,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val options = listOf(auto) + tracks.map { "${it.info.name()}, ${it.strength.label}" } + "Speech only"
         // A track chosen before that this film doesn't have: shown as Auto.
         val selected = keys.indexOf(chosen).let { if (it < 0) 0 else it }
-        choice("Sync with", options, selected) { i -> autoSync.chooseSyncWith(keys[i]); refreshLabels() }
+        choice("Sync with", options, selected) { i -> autoSync.chooseSyncWith(keys[i]); refreshLabels() }.asSubRow()
     }
 
     /** Tells auto sync which subtitles are on: a file from Search online, or anything else (left alone). */
@@ -3919,7 +3913,6 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     private fun openAudioDelayPanel(from: View) = openPanel("Audio delay", from) {
-        message("Left makes the sound earlier, right makes it later.")
         stepper("Delay", formatDelay(delays.audioUs)) { dir ->
             delays.audioUs = (delays.audioUs + dir * 50_000L).coerceIn(MIN_AUDIO_DELAY_US, MAX_AUDIO_DELAY_US)
             refreshLabels()
@@ -3977,7 +3970,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 refresh()
             }
         }
-        header(active.name)
+        header(active.name, R.drawable.ic_head_moon)
         stepper("Display dimmer", "${active.display}%") { dir ->
             dimmer.stepDisplay(dir)
             applyDim()
@@ -3993,18 +3986,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             applyDim()
             refresh()
         }
-        message(
-            when {
-                !prefs.glassLook -> "Glass dimmer darkens the glass when Glass look is on (Settings, Look)."
-                active.auto -> "Auto keeps the glass as dim as the display."
-                else -> "Glass dimmer darkens every glass button and window."
-            },
-        )
         val changed = dimmer.hasUnsaved()
-        if (changed) message("Changed. Press Save custom to keep it.", accent = true)
         spacer(6)
-        // Blue, like the current choice, while there's something to save.
-        row("Save custom") { saveCustomDim(this) }.isSelected = changed
+        // Blue, like the current choice, and marked Unsaved while there's something to save.
+        row("Save custom", value = if (changed) "Unsaved" else null) { saveCustomDim(this) }.isSelected = changed
         if (active.id != Dimmer.FIRST_ID) {
             row("Delete \"${active.name}\"") {
                 FireDialog.ask(
@@ -4302,15 +4287,16 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 ep.name.isNotEmpty() -> "Matched on TMDB: ${ep.label} · ${ep.name}."
                 else -> "Matched on TMDB."
             }
-            message(why)
             if (ep.match == ShowGuide.Match.UNSURE) row("Looks right") {
                 matchFixes.confirm(g.key, ep.id)
                 rebuildFromFix()
                 refresh()
-            }
-            if (tmdb.isConfigured && g.tmdbId > 0) row("Show details") { openDetails(from, show = true) }
-            if (tmdb.isConfigured) row("Fix match") { panel.close(); openFixShow(from) }
-            if (portal != null) row("Source", portal) {}
+            }.asSubRow()
+            if (tmdb.isConfigured && g.tmdbId > 0) row("Show details") { openDetails(from, show = true) }.asSubRow()
+            if (tmdb.isConfigured) row("Fix match") { panel.close(); openFixShow(from) }.asSubRow()
+            if (portal != null) row("Source", portal) {}.asSubRow()
+            // Why it was matched so, under the card, so the card stays whole.
+            message(why)
         } else if (portal != null && entry.info.episode == null) {
             header("This film")
             val fixed = filmFix(entry)
@@ -4323,10 +4309,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 refresh()
             }
             if (!thisTitleOpen) return
-            if (tmdb.isConfigured) row("Film details") { openDetails(from, show = false) }
-            if (tmdb.isConfigured) row("Fix match") { panel.close(); openFixFilm(from) }
-            else message("Add a TMDB API key below to fix this film's name.")
-            row("Source", portal) {}
+            if (tmdb.isConfigured) row("Film details") { openDetails(from, show = false) }.asSubRow()
+            if (tmdb.isConfigured) row("Fix match") { panel.close(); openFixFilm(from) }.asSubRow()
+            row("Source", portal) {}.asSubRow()
+            if (!tmdb.isConfigured) message("Add a TMDB API key below to fix this film's name.")
         }
     }
 

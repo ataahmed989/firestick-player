@@ -63,6 +63,12 @@ class GlassDrawable(context: Context, val style: Glass.Kind, private val backdro
     private val fade = FocusFade()
     private var alphaValue = 255
 
+    /**
+     * Draws only the selected look, nothing while plain: a row inside a card of rows ([RowGroups]), where the card
+     * draws the plain glass.
+     */
+    var focusOnly = false
+
     private val laidOut = Rect()
     private val shape = RectF()
     private var radius = 0f
@@ -135,7 +141,7 @@ class GlassDrawable(context: Context, val style: Glass.Kind, private val backdro
         val a = alphaValue / 255f
         if (source != null) drawFilm(canvas, source, a)
         val t = fade.value(now)
-        if (t < 1f) drawBake(canvas, focusedLook = false, strength = a * (1f - t))
+        if (t < 1f && !focusOnly) drawBake(canvas, focusedLook = false, strength = a * (1f - t))
         if (t > 0f) drawBake(canvas, focusedLook = true, strength = a * t)
         if (fade.running) invalidateSelf()
     }
