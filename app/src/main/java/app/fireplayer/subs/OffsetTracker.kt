@@ -466,6 +466,7 @@ class OffsetTracker(
         val res = SyncMatcher.match(h, lines, learnCenterMs, learnRangeMs)
         fun decide(o: Outcome, note: String = "") = Decision(o, segments, res.delayMs, now, from, now, res, Double.NaN, note)
         if (!sure(res, learnCenterMs, learnRangeMs)) {
+            looselyConfirmed(tl, res, from, now)?.let { return it }
             candidate = null
             return decide(Outcome.NOT_SURE, unsureNote(res))
         }
@@ -901,6 +902,29 @@ class OffsetTracker(
     }
 
     /**
+     * The first delay, sure once, confirmed by the next look although that look isn't sure on its own: its best shift is
+     * still within [LOOSE_AGREE_MS] of it, and on the talking heard since the first look alone the delay stands out
+     * ([LOOSE_FRESH_Z]). Where music runs under nearly everything (a cartoon), every look's overlap stays low and two
+     * sure looks in a row took minutes; one sure look and the next one pointing the same way is proof enough. Null when
+     * it isn't confirmed this way.
+     */
+    private fun looselyConfirmed(tl: SpeechTimeline, res: SyncMatcher.Result, from: Long, now: Long): Decision? {
+        val c = candidate ?: return null
+        if (c.segmentFromMs >= 0 || abs(res.delayMs - c.delayMs) > LOOSE_AGREE_MS || res.r < LOOSE_MIN_R) return null
+        if (talkingMs(tl, c.toMs, now) < c.waitTalkMs || rejectedMs?.let { abs(c.delayMs - it) < MIN_SHIFT_MS } == true) return null
+        val h = SyncMatcher.heard(tl.speech, tl.heard, frame(c.toMs), frame(now) + 1) ?: return null
+        val z = SyncMatcher.zAt(h, lines, c.delayMs, learnCenterMs, learnRangeMs)
+        if (z < LOOSE_FRESH_Z || !fitsLatest(tl, c.delayMs, from, now)) return null
+        map.add(Segment(0, c.delayMs))
+        candidate = null
+        suspectMs = -1
+        rejectedMs = null
+        checked(tl, c.delayMs, c.fitsFromMs, now, exactly = false)
+        return Decision(Outcome.LEARNED, segments, c.delayMs, now, from, now, res, Double.NaN,
+            "sure once, the next look agreeing (z=${"%.1f".format(java.util.Locale.ROOT, z)} since)")
+    }
+
+    /**
      * Why a second sure match of [delay], agreeing with [c], doesn't confirm it yet, or null when it does. It must have
      * talking the first didn't, and on that talking alone [delay] must stand out from the other shifts around [center]:
      * two matches of mostly the same stretch would only repeat a chance best. Not borne out at the first look, it gets
@@ -1252,6 +1276,11 @@ class OffsetTracker(
         // 70% of the time on 10 s of talking and 90% on 20 s (OffsetTrackerTest prints these).
         private const val CONFIRM_TALK_MS = 10_000L
         private const val FRESH_Z = 2.0
+        // The looser confirmation of a first delay ([looselyConfirmed]): how near the next look's best must be, how far
+        // the delay must stand out on the talking since, and the least overlap that look may have.
+        private const val LOOSE_AGREE_MS = 500L
+        private const val LOOSE_FRESH_Z = 3.0
+        private const val LOOSE_MIN_R = 0.15
         // Confirming from talking already heard takes this much of the latest talking for the second stretch.
         private const val AT_ONCE_TALK_MS = 2 * CONFIRM_TALK_MS
         private const val AT_ONCE = "sure on two stretches at once"
