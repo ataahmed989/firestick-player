@@ -3858,8 +3858,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 !prefs.autoSync -> { prefs.autoSync = true; autoSync.setOn(true); followSubtitle() }
                 !downloaded -> {}
                 autoSync.state == AutoSync.State.OFF || autoSync.state == AutoSync.State.NOT_SYNCED -> autoSync.turnOn()
-                // Off: off in Settings too, the delay as it is; the sound stays ready for turning it on again here.
-                else -> { prefs.autoSync = false; autoSync.setOn(false, keepReady = true) }
+                // Off: off in Settings too, the delay as it is; the sound stays ready for turning it on again.
+                else -> { prefs.autoSync = false; autoSync.setOn(false) }
             }
             refresh()
         }
