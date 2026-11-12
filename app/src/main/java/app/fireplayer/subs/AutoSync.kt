@@ -1491,9 +1491,11 @@ class AutoSync(
                         if (crossAhead && !crossing && tr2 != null && !tr2.learning) {
                             if (aheadState == Ahead.OFF) {
                                 crossAhead = false
-                            } else if (aheadSkip != null || SystemClock.elapsedRealtime() - crossAheadSince > CROSS_MAX_WALL_MS) {
-                                // The sound loading can't be heard (too heavy, no decoder), or nothing came of it for long:
-                                // checked as the film plays instead, from now.
+                            } else if (aheadSkip != null || SystemClock.elapsedRealtime() - crossAheadSince > CROSS_MAX_WALL_MS ||
+                                (speechAhead.runFromMs < 0 && SystemClock.elapsedRealtime() - crossAheadSince > AHEAD_WAIT_MS)
+                            ) {
+                                // The sound loading can't be heard (too heavy, no decoder, protected so nothing is copied), or
+                                // nothing came of it for long: checked as the film plays instead, from now.
                                 Log.i(TAG, "not checking against the speech heard ahead (${aheadSkip ?: "too long"}): as the film plays")
                                 endCrossAhead(0)
                             } else {
