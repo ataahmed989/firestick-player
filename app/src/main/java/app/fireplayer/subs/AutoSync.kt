@@ -785,6 +785,7 @@ class AutoSync(
         var crossAheadRuns = 0
         var crossAheadChecks = 0
         var crossAheadJudgedTo = -1L
+        var crossAheadSince = 0L
         var aheadFast = false
         // Listening ahead: the sound copied as it loads, its decoder and format (and why it's left, when it is), the
         // state, whether it failed for this film, since when it's waited and been behind, and the tracker last stepped
@@ -981,10 +982,12 @@ class AutoSync(
             // The film's own subtitles are read as it loads already. What's heard ahead (the sound kept ready, or as it loads)
             // only checks them against the talking, once and at once ([crossAhead]); then nothing more is heard ahead.
             crossAhead = aheadState != Ahead.OFF
-            crossAheadFrom = -1
+            // Only from where the film is on: what was heard before (another job's stretch) goes by delays carried over.
+            crossAheadFrom = maxOf(playheadMs, -1L)
             crossAheadRuns = speechAhead.runs
             crossAheadChecks = 0
             crossAheadJudgedTo = -1
+            crossAheadSince = SystemClock.elapsedRealtime()
             aheadTracker = null
             cost.against = "film's subtitles ($key)"
             main.post { usingTrack(current, key) }
@@ -1240,13 +1243,16 @@ class AutoSync(
             crossNext = SystemClock.elapsedRealtime() + nextInMs
         }
 
-        /** The check against the talking heard ahead is done: nothing more is heard ahead (the usual checks go on). */
-        fun endCrossAhead() {
+        /**
+         * The check against the talking heard ahead is done: nothing more is heard ahead, and the usual checks as the film
+         * plays go on, the next in [nextInMs].
+         */
+        fun endCrossAhead(nextInMs: Long = CROSS_EVERY_MS) {
             crossAhead = false
             aheadFast = false
             if (aheadState != Ahead.OFF) aheadDisarm()
             aheadState = Ahead.OFF
-            crossNext = SystemClock.elapsedRealtime() + CROSS_EVERY_MS
+            crossNext = SystemClock.elapsedRealtime() + nextInMs
         }
 
         /** The talking is sure of another delay, twice: the track goes, and it's found by listening from what it said. */
@@ -1485,6 +1491,11 @@ class AutoSync(
                         if (crossAhead && !crossing && tr2 != null && !tr2.learning) {
                             if (aheadState == Ahead.OFF) {
                                 crossAhead = false
+                            } else if (aheadSkip != null || SystemClock.elapsedRealtime() - crossAheadSince > CROSS_MAX_WALL_MS) {
+                                // The sound loading can't be heard (too heavy, no decoder), or nothing came of it for long:
+                                // checked as the film plays instead, from now.
+                                Log.i(TAG, "not checking against the speech heard ahead (${aheadSkip ?: "too long"}): as the film plays")
+                                endCrossAhead(0)
                             } else {
                                 aheadFast = true
                                 val got = try { pumpAhead(current, 300) } catch (_: InterruptedException) { break }
@@ -1496,7 +1507,9 @@ class AutoSync(
                                     crossAheadJudgedTo = -1
                                 }
                                 val from = maxOf(crossAheadFrom, speechAhead.runFromMs)
-                                val to = speechAhead.edgeMs
+                                // Only as far as the film's own subtitles have been lined up: past that, the delays aren't
+                                // known yet (a break the track hasn't reached), so the talking would seem to disagree.
+                                val to = minOf(speechAhead.edgeMs, reference?.steppedToMs ?: -1L)
                                 val talk = if (from in 0 until to) timeline.speech.get((from / 10).toInt(), (to / 10).toInt()).cardinality() * 10L else 0L
                                 // Judged once there's talking enough, or once all that's loaded is heard (the sound kept
                                 // ready: seconds) with as much as a check needs; again only on more heard since.
