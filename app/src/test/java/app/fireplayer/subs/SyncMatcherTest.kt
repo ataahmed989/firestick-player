@@ -52,6 +52,24 @@ class SyncMatcherTest {
     }
 
     @Test
+    fun sentenceStartsFindTheDelayOnAMinuteOfTalking() {
+        // Talkative film: where each line starts meets where talking starts after a breath at the right shift. Whenever
+        // it stands out as far as the tracker goes by (OffsetTracker.ONSET_Z, ONSET_MIN_HITS), it's the right one, and
+        // on two minutes of film it nearly always does.
+        var used = 0
+        for (seed in 1L..8L) {
+            val film = FakeFilm.make(seed = 500 + seed, minutes = 10, delayMs = 3_000, pace = FakeFilm.TALKY)
+            val tl = SpeechTimeline()
+            for (f in 0 until 12_000) tl.mark(f, film.talking.get(f))
+            val m = SyncMatcher.onsetMatch(tl, film.subs, 0, 120_000, 0, SyncMatcher.RANGE_MS) ?: continue
+            if (m.z < OffsetTracker.ONSET_Z || m.hits < OffsetTracker.ONSET_MIN_HITS || m.runnerUp > m.hits * OffsetTracker.ONSET_RUNNER_UP) continue
+            used++
+            assertTrue("seed $seed: $m", abs(m.delayMs - 3_000) <= 200)
+        }
+        assertTrue("$used of 8", used >= 6)
+    }
+
+    @Test
     fun findsTheShift() {
         for ((i, offset) in listOf(0L, 1_400L, -2_300L, 8_000L, -45_000L, 25_000L).withIndex()) {
             val lines = lines(seed = 10L + i, minutes = 20)

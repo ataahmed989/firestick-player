@@ -188,7 +188,16 @@ class AutoSync(
     // Finding the first delay: the one sure once, put in use while it's confirmed ([tentative]), and since when.
     private var tentativeMs: Long? = null
     private var tentativeAt = 0L
-        private set
+    // Resync pressed with nothing kept (found afresh): checking again until it's found ([rechecking]).
+    private var resyncRelearn = false
+
+    /** A delay one look was sure of is in use, being confirmed: how long that took (the badge's "Matched in"), or null. */
+    val matchedInMs: Long?
+        get() = if (state == State.LISTENING && tentativeMs != null && tentativeAt > 0 && startedAt > 0) tentativeAt - startedAt else null
+
+    /** Resync was pressed and it's still checking (the badge's "Rechecking"). */
+    val rechecking: Boolean
+        get() = (state == State.SYNCED && checkingAt >= 0) || (state == State.LISTENING && resyncRelearn)
 
     /**
      * Listening for one subtitle file and film, carrying on from [segments] found before; with none, the first delay
@@ -242,6 +251,7 @@ class AutoSync(
      */
     fun follow(subtitle: File?, filmKey: String?, release: String? = null, language: String? = null) {
         if (subtitle == file && filmKey == key) return
+        resyncRelearn = false
         stopListening()
         // Other subtitles for the same film: what's kept stays (taken over below); another film's isn't wanted.
         if (filmKey == null || filmKey != key) endStandby()
@@ -322,9 +332,11 @@ class AutoSync(
     }
 
     /**
-     * Resync: the viewer says the timing is wrong where the film is. With delays found, the stretch around here is
-     * checked again (see the class notes) and the rest kept; with none (or after a delay set by hand), it's found
-     * afresh around where the film is. Meanwhile the delay stays as it is.
+     * Check sync (once called Resync): the timing where the film is gets checked again. With delays found, the stretch
+     * around here is matched again (see the class notes) and the rest kept: the delay in use stays if the talking bears
+     * it out, else another takes over. With none (or after a delay set by hand), it's found afresh around where the film
+     * is, from the delay in use. Pressed again soon after, the viewer says it's wrong there: the delay in use is turned
+     * down and the talking decides. Meanwhile the delay stays as it is.
      */
     fun resync() = resync(asked = true)
 
@@ -373,7 +385,9 @@ class AutoSync(
         tentativeAt = 0L
         prefs.forgetSyncedDelay(savedKey())
         prefs.forgetHandDelay(savedKey())
-        if (lines == null) loadLines(f) { start(relearnAtMs = at, rejectInUse = asked) } else start(relearnAtMs = at, rejectInUse = asked)
+        resyncRelearn = asked
+        // Check sync looks afresh from the delay in use; pressed again soon after, it's turned down.
+        if (lines == null) loadLines(f) { start(relearnAtMs = at, rejectInUse = again) } else start(relearnAtMs = at, rejectInUse = again)
     }
 
     /** The delay was changed by hand: auto sync stays out of it for this subtitle, and the delay is kept for it. */
@@ -440,7 +454,7 @@ class AutoSync(
             prefs.saveSyncedSegments(savedKey(), OffsetTracker.encode(kept))
             prefs.saveSyncedDelay(savedKey(), kept[0].delayMs)
             moveDelay(OffsetTracker.delayAt(kept, position().first)?.times(1000) ?: before)
-            setState(State.SYNCED, "Put back as it was before Resync: ${SyncMatcher.formatShift(delayUs() / 1000)} here.")
+            setState(State.SYNCED, "Put back as it was before Check sync: ${SyncMatcher.formatShift(delayUs() / 1000)} here.")
             startFollowing()
             start()
             return
@@ -719,7 +733,7 @@ class AutoSync(
         } catch (_: InterruptedException) {
         } catch (t: Throwable) {
             Log.e(TAG, "Listening stopped", t)
-            job?.let { stopped(it, "Couldn't line up with the speech. Try Resync, or set the delay by hand.") }
+            job?.let { stopped(it, "Couldn't line up with the speech. Try Check sync, or set the delay by hand.") }
         }
     }
 
@@ -1469,14 +1483,16 @@ class AutoSync(
                             // Heard ahead: the talking after the press (in the film) is mostly heard already, so it's
                             // checked at once, as against the film's own subtitles.
                             Log.i(TAG, "Resync at ${OffsetTracker.clock(rq.atMs)}: checking again against the speech heard ahead (to ${OffsetTracker.clock(speechAhead.steppedToMs)})")
-                            val d = tr2.recheck(rq.atMs, timeline, reject = true, nowMs = speechAhead.steppedToMs, heardToMs = heardTo)
+                            // Check sync: checked as it is (kept if the talking bears it out); pressed again soon after,
+                            // the viewer says it's wrong there, so the delay in use is turned down.
+                            val d = tr2.recheck(rq.atMs, timeline, reject = rq.speech, nowMs = speechAhead.steppedToMs, heardToMs = heardTo)
                             if (d != null) {
                                 if (d.outcome == Outcome.KEPT) keptTold = null
                                 handle(current, tr2, timeline, d, 0)
                             }
                         } else {
                             Log.i(TAG, "Resync at ${OffsetTracker.clock(rq.atMs)}: checking again against the speech")
-                            tracker?.recheck(rq.atMs, timeline, reject = true, heardToMs = heardTo)
+                            tracker?.recheck(rq.atMs, timeline, reject = rq.speech, heardToMs = heardTo)
                             stepAt = played - TRY_EVERY_FRAMES
                         }
                     }
@@ -1690,7 +1706,7 @@ class AutoSync(
                                 speechAhead.rebase(tr)
                             } catch (t: Exception) {
                                 Log.e(TAG, "Tracking ahead failed", t)
-                                stopped(current, "Couldn't line up with the speech. Try Resync, or set the delay by hand.")
+                                stopped(current, "Couldn't line up with the speech. Try Check sync, or set the delay by hand.")
                                 continue
                             }
                             if (d != null && !handle(current, tr, timeline, d, SystemClock.currentThreadTimeMillis() - cpu0)) {
@@ -1705,7 +1721,7 @@ class AutoSync(
                                 speechAhead.advance(tr)
                             } catch (t: Exception) {
                                 Log.e(TAG, "Tracking ahead failed at ${OffsetTracker.clock(speechAhead.steppedToMs)}", t)
-                                stopped(current, "Couldn't line up with the speech. Try Resync, or set the delay by hand.")
+                                stopped(current, "Couldn't line up with the speech. Try Check sync, or set the delay by hand.")
                                 continue
                             }
                             val cpuMs = (SystemClock.currentThreadTimeMillis() - cpu0) / maxOf(1, decisions.count { it.outcome != Outcome.WAIT })
@@ -1764,7 +1780,7 @@ class AutoSync(
                     tr.step(timeline, (cursor * 10).toLong(), playedMs)
                 } catch (t: Exception) {
                     Log.e(TAG, "Tracking failed at ${OffsetTracker.clock((cursor * 10).toLong())}", t)
-                    stopped(current, "Couldn't line up with the speech. Try Resync, or set the delay by hand.")
+                    stopped(current, "Couldn't line up with the speech. Try Check sync, or set the delay by hand.")
                     continue
                 }
                 if (!handle(current, tr, timeline, d, SystemClock.currentThreadTimeMillis() - cpu0)) {
@@ -2034,15 +2050,15 @@ class AutoSync(
         stopHolding()
         // One look was sure of a delay, never confirmed: that stays, unconfirmed.
         tentativeMs?.let {
-            setState(State.NOT_SYNCED, "Couldn't confirm ${SyncMatcher.formatShift(it)} here; it stays. Try Resync, or set it by hand.")
+            setState(State.NOT_SYNCED, "Couldn't confirm ${SyncMatcher.formatShift(it)} here; it stays. Try Check sync, or set it by hand.")
             return
         }
         // Started from the last episode's delay: that stays, unconfirmed.
         if (basis == Basis.PRIOR) {
-            setState(State.NOT_SYNCED, "Couldn't check the last episode's delay here (${SyncMatcher.formatShift(delayUs() / 1000)}). Try Resync, or set it by hand.")
+            setState(State.NOT_SYNCED, "Couldn't check the last episode's delay here (${SyncMatcher.formatShift(delayUs() / 1000)}). Try Check sync, or set it by hand.")
             return
         }
-        setState(State.NOT_SYNCED, "Couldn't line up with the speech. Try Resync, or set the delay by hand.")
+        setState(State.NOT_SYNCED, "Couldn't line up with the speech. Try Check sync, or set the delay by hand.")
     }
 
     private fun moveDelay(us: Long) {
@@ -2050,6 +2066,7 @@ class AutoSync(
     }
 
     private fun setState(s: State, text: String?) {
+        if (s != State.LISTENING) resyncRelearn = false
         state = s
         detail = text
         onChanged()
