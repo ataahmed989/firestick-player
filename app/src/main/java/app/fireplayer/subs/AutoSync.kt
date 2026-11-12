@@ -166,9 +166,6 @@ class AutoSync(
     private var worker: Thread? = null
     // Off for these subtitles, but the sound loading is copied all the same, for when it's turned on ([standbyAhead]).
     @Volatile private var aheadStandby = false
-    // Standing by, but turned on it lines up against the film's own subtitles first if it has any (nothing is heard
-    // ahead then): once they're found, standing by stops.
-    @Volatile private var standbyMayTrack = false
 
     /** Where the film is playing (ms), for the listening thread: updated every second while listening; -1 unknown. */
     @Volatile private var playheadMs = -1L
@@ -394,8 +391,12 @@ class AutoSync(
         standbyAhead()
     }
 
-    /** Auto sync turned on or off in Settings, or for this subtitle from the Subtitle delay window. */
-    fun setOn(on: Boolean) {
+    /**
+     * Auto sync turned on or off in Settings, or from the Subtitle delay window. Off, nothing moves the delay any more;
+     * [keepReady] (turned off from the window, for this film): the sound loading is still kept ready, so turned on again
+     * it's synced in seconds.
+     */
+    fun setOn(on: Boolean, keepReady: Boolean = false) {
         if (on) {
             if (file != null && state == State.OFF) turnOn()
         } else {
@@ -408,8 +409,8 @@ class AutoSync(
             tentativeMs = null
             tentativeAt = 0L
             setState(State.OFF, null)
-            // Off for these subtitles only (from the Subtitle delay window): ready for it to be turned on again.
-            if (prefs.autoSync) standbyAhead() else endStandby()
+            // Ready for it to be turned on again: off for these subtitles only, or off just now from the window.
+            if (prefs.autoSync || keepReady) standbyAhead(evenIfOff = keepReady) else endStandby()
         }
     }
 
@@ -670,32 +671,25 @@ class AutoSync(
      * Not listening to these subtitles (the delay set by hand, or auto sync turned off for them), but it may be turned
      * on: the sound loading is copied all the same, not decoded, the newest kept (about the two minutes loaded ahead,
      * at most 4 MB). Turned on (or Resync), that's heard at once, rather than only what loads from then on as the film
-     * plays: seconds, not a minute or more. Not while auto sync is off in Settings.
+     * plays: seconds, not a minute or more; with the film's own subtitles to line up against, it checks them against the
+     * talking at once. Not while auto sync is off in Settings, unless it was turned off just now for this film
+     * ([evenIfOff]: from the Subtitle delay window, which turns it off in Settings too).
      */
-    private fun standbyAhead() {
+    private fun standbyAhead(evenIfOff: Boolean = false) {
         val l = lines
-        val mayTrack = embedded != null && syncWith() != SPEECH && speechFirstKey != savedKey()
-        // Too few lines to line up, or the film's own subtitles to line up against (nothing heard ahead): not wanted.
-        if (file == null || !prefs.autoSync || (l != null && l.lines.size < 20) || (mayTrack && hasOwnSubtitles(filmUri())) || !armAhead()) {
+        // Too few lines to line up: nothing copied would ever be heard.
+        if (file == null || (!prefs.autoSync && !evenIfOff) || (l != null && l.lines.size < 20) || !armAhead()) {
             endStandby()
             return
         }
         embedded?.ahead?.keepNewest = true
-        standbyMayTrack = mayTrack
         aheadStandby = true
-        // Its idle look lets go of this if the film's own subtitles turn up meanwhile.
-        if (mayTrack) ensureWorker()
     }
-
-    /** Whether the film [uri] has subtitles of its own enough to line up against (as the listening thread judges). */
-    private fun hasOwnSubtitles(uri: String?): Boolean =
-        (embedded?.source(uri)?.candidates()?.maxOfOrNull { it.count } ?: 0) >= REFERENCE_MIN_CUES
 
     /** Copying for [standbyAhead] stops: what was kept is let go (by the listening thread when it's there). */
     private fun endStandby() {
         if (!aheadStandby) return
         aheadStandby = false
-        standbyMayTrack = false
         val e = embedded ?: return
         e.ahead.keepNewest = false
         if (job == null) e.aheadUri = null
@@ -784,6 +778,15 @@ class AutoSync(
         var crossNext = 0L
         var crossUrgent = false
         var lastVerdict: CrossCheck.Verdict? = null
+        // Lining up against the film's own subtitles: checked once, at once, against the talking heard ahead (the sound
+        // kept ready, or as it loads), at full speed ([aheadFast]); from the stretch from [crossAheadFrom], a few at most.
+        var crossAhead = false
+        var crossAheadFrom = -1L
+        var crossAheadRuns = 0
+        var crossAheadChecks = 0
+        var crossAheadJudgedTo = -1L
+        var crossAheadSince = 0L
+        var aheadFast = false
         // Listening ahead: the sound copied as it loads, its decoder and format (and why it's left, when it is), the
         // state, whether it failed for this film, since when it's waited and been behind, and the tracker last stepped
         // along it.
@@ -941,6 +944,9 @@ class AutoSync(
             reference = null
             trackKey = null
             crossing = false
+            // What's heard ahead goes on, now for the talking to line up against.
+            crossAhead = false
+            aheadFast = false
             mode = Mode.SPEECH
             tracker = OffsetTracker(current.lines, known, centerMs, if (known.isEmpty()) OffsetTracker.RANGE_MS else current.rangeMs,
                 knownJumps = current.jumps)
@@ -973,9 +979,15 @@ class AutoSync(
             toldTentative = null
             letDecoderGo()
             tap.listening = false
-            // The film's own subtitles are read as it loads already: nothing is heard ahead meanwhile.
-            if (aheadState != Ahead.OFF) aheadDisarm()
-            aheadState = Ahead.OFF
+            // The film's own subtitles are read as it loads already. What's heard ahead (the sound kept ready, or as it loads)
+            // only checks them against the talking, once and at once ([crossAhead]); then nothing more is heard ahead.
+            crossAhead = aheadState != Ahead.OFF
+            // Only from where the film is on: what was heard before (another job's stretch) goes by delays carried over.
+            crossAheadFrom = maxOf(playheadMs, -1L)
+            crossAheadRuns = speechAhead.runs
+            crossAheadChecks = 0
+            crossAheadJudgedTo = -1
+            crossAheadSince = SystemClock.elapsedRealtime()
             aheadTracker = null
             cost.against = "film's subtitles ($key)"
             main.post { usingTrack(current, key) }
@@ -1208,7 +1220,7 @@ class AutoSync(
                 r.recycle(piece)
             }
             val spent = SystemClock.elapsedRealtime() - t0
-            if (spent > 0) Thread.sleep(minOf(spent * if (tracker?.learning != false) AHEAD_REST_LEARNING else AHEAD_REST, 1_000L))
+            if (spent > 0) Thread.sleep(minOf(spent * if (aheadFast || tracker?.learning != false) AHEAD_REST_LEARNING else AHEAD_REST, 1_000L))
             return true
         }
 
@@ -1231,6 +1243,27 @@ class AutoSync(
             crossNext = SystemClock.elapsedRealtime() + nextInMs
         }
 
+        /**
+         * The check against the talking heard ahead is done: nothing more is heard ahead, and the usual checks as the film
+         * plays go on, the next in [nextInMs].
+         */
+        fun endCrossAhead(nextInMs: Long = CROSS_EVERY_MS) {
+            crossAhead = false
+            aheadFast = false
+            if (aheadState != Ahead.OFF) aheadDisarm()
+            aheadState = Ahead.OFF
+            crossNext = SystemClock.elapsedRealtime() + nextInMs
+        }
+
+        /** The talking is sure of another delay, twice: the track goes, and it's found by listening from what it said. */
+        fun dropTrack(current: Job, res: CrossCheck.Result, why: String) {
+            val key = trackKey ?: return
+            dropped = key
+            main.post { trackDropped(current, key) }
+            toSpeech(current, why, emptyList(), res.delayMs)
+            main.post { if (current.generation == generation) setState(state, "The film's own subtitles didn't match the speech, so it goes by the speech now.") }
+        }
+
         /** The talking heard in this check judged; a track the talking disagrees with is dropped. */
         fun judgeCross(current: Job, tr: OffsetTracker) {
             val to = (cursor * 10).toLong()
@@ -1243,13 +1276,7 @@ class AutoSync(
             val twice = verdict == CrossCheck.Verdict.DISAGREES && (urgent || lastVerdict == CrossCheck.Verdict.DISAGREES)
             if (verdict != CrossCheck.Verdict.UNSURE) lastVerdict = verdict
             if (twice) {
-                val key = trackKey ?: return
-                dropped = key
-                main.post { trackDropped(current, key) }
-                // The talking is sure of another delay: what the track found goes, and it's found again by listening,
-                // starting from what the talking said.
-                toSpeech(current, "it disagrees with the speech", emptyList(), res.delayMs)
-                main.post { if (current.generation == generation) setState(state, "The film's own subtitles didn't match the speech, so it goes by the speech now.") }
+                dropTrack(current, res, "it disagrees with the speech")
             } else if (urgent && verdict != CrossCheck.Verdict.UNSURE) {
                 main.post { checkDone(current) }
             }
@@ -1268,19 +1295,9 @@ class AutoSync(
                     aheadState = Ahead.OFF
                     val now = SystemClock.elapsedRealtime()
                     if (idleSince == 0L) idleSince = now
-                    // Kept while standing by for auto sync to be turned on for these subtitles ([standbyAhead]), unless
-                    // the film's own subtitles turned up (turned on, it lines up against those first, nothing heard ahead).
+                    // Kept while standing by for auto sync to be turned on for these subtitles ([standbyAhead]).
                     if (aheadStandby) {
-                        val uri = embedded?.aheadUri
-                        if (standbyMayTrack && uri != null && hasOwnSubtitles(uri)) {
-                            aheadStandby = false
-                            standbyMayTrack = false
-                            embedded.ahead.keepNewest = false
-                            if (job == null) {
-                                embedded.aheadUri = null
-                                ring?.release()
-                            }
-                        }
+                        // Nothing.
                     } else if (job != null) {
                         // A job just came out (its listening takes the copying over).
                     } else if (embedded?.aheadUri == null) {
@@ -1341,6 +1358,8 @@ class AutoSync(
                     tap.listening = true
                     // The new tracker is brought to what's been heard ahead (and matched there at once) once it's on.
                     aheadTracker = null
+                    crossAhead = false
+                    aheadFast = false
                     aheadArm(current)
                 }
                 val wait = backOffUntil - SystemClock.elapsedRealtime()
@@ -1467,6 +1486,56 @@ class AutoSync(
                     }
                     if (mode == Mode.TRACK) {
                         val tr2 = tracker
+                        // First, once something's found: the talking heard ahead is asked at once whether it agrees, at full
+                        // speed (the sound kept ready is heard in seconds), so a track from another cut is let go in seconds.
+                        if (crossAhead && !crossing && tr2 != null && !tr2.learning) {
+                            if (aheadState == Ahead.OFF) {
+                                crossAhead = false
+                            } else if (aheadSkip != null || SystemClock.elapsedRealtime() - crossAheadSince > CROSS_MAX_WALL_MS ||
+                                (speechAhead.runFromMs < 0 && SystemClock.elapsedRealtime() - crossAheadSince > AHEAD_WAIT_MS)
+                            ) {
+                                // The sound loading can't be heard (too heavy, no decoder, protected so nothing is copied), or
+                                // nothing came of it for long: checked as the film plays instead, from now.
+                                Log.i(TAG, "not checking against the speech heard ahead (${aheadSkip ?: "too long"}): as the film plays")
+                                endCrossAhead(0)
+                            } else {
+                                aheadFast = true
+                                val got = try { pumpAhead(current, 300) } catch (_: InterruptedException) { break }
+                                if (job !== current || mode != Mode.TRACK || !crossAhead || aheadState == Ahead.OFF) continue
+                                // Loading started somewhere else (a skip): the stretch starts afresh there.
+                                if (speechAhead.runs != crossAheadRuns) {
+                                    crossAheadRuns = speechAhead.runs
+                                    crossAheadFrom = -1
+                                    crossAheadJudgedTo = -1
+                                }
+                                val from = maxOf(crossAheadFrom, speechAhead.runFromMs)
+                                // Only as far as the film's own subtitles have been lined up: past that, the delays aren't
+                                // known yet (a break the track hasn't reached), so the talking would seem to disagree.
+                                val to = minOf(speechAhead.edgeMs, reference?.steppedToMs ?: -1L)
+                                val talk = if (from in 0 until to) timeline.speech.get((from / 10).toInt(), (to / 10).toInt()).cardinality() * 10L else 0L
+                                // Judged once there's talking enough, or once all that's loaded is heard (the sound kept
+                                // ready: seconds) with as much as a check needs; again only on more heard since.
+                                val fresh = crossAheadJudgedTo < 0 || to - crossAheadJudgedTo >= CROSS_AHEAD_MORE_MS
+                                val enough = talk >= CROSS_TALK_MS || to - from >= CROSS_MAX_FILM_MS || (!got && talk >= CrossCheck.MIN_TALK_MS)
+                                if (from in 0 until to && fresh && enough) {
+                                    crossAheadJudgedTo = to
+                                    crossAheadChecks++
+                                    val res = CrossCheck.judge(timeline, current.lines, tr2.segments, from, to)
+                                    Log.i(TAG, "checked against the speech heard ahead: $res")
+                                    val verdict = res.verdict
+                                    val twice = verdict == CrossCheck.Verdict.DISAGREES && lastVerdict == CrossCheck.Verdict.DISAGREES
+                                    if (verdict != CrossCheck.Verdict.UNSURE) lastVerdict = verdict
+                                    when {
+                                        twice -> dropTrack(current, res, "it disagrees with the speech heard ahead")
+                                        verdict == CrossCheck.Verdict.AGREES || crossAheadChecks >= CROSS_AHEAD_CHECKS -> endCrossAhead()
+                                        // Disagrees once: the next stretch heard ahead decides. Unsure: this one grows.
+                                        verdict == CrossCheck.Verdict.DISAGREES -> crossAheadFrom = to
+                                        else -> {}
+                                    }
+                                }
+                                continue
+                            }
+                        }
                         // Once something's found, the talking is asked now and then whether it agrees.
                         if (!crossing && tr2 != null && !tr2.learning && SystemClock.elapsedRealtime() >= crossNext) startCross(urgent = false)
                         if (crossing && tr2 != null) {
@@ -1910,6 +1979,10 @@ class AutoSync(
         private const val CROSS_TALK_MS = 40_000L
         private const val CROSS_MAX_FILM_MS = 4 * 60_000L
         private const val CROSS_MAX_WALL_MS = 6 * 60_000L
+        // Checks against the talking heard ahead, at most, before it's left to the usual ones as the film plays.
+        private const val CROSS_AHEAD_CHECKS = 3
+        // Film heard ahead since the last check before another.
+        private const val CROSS_AHEAD_MORE_MS = 30_000L
         // A downloaded line is held back at most this long at the start of a new episode with nothing to go on.
         private const val HOLD_MS = 6_000L
         // Resync pressed again within this long: the talking decides.
