@@ -150,6 +150,8 @@ class OffsetTracker(
     private class Candidate(val delayMs: Long, val segmentFromMs: Long, val fromMs: Long, val toMs: Long, val fitsFromMs: Long) {
         // Talking after [toMs] the second match waits for: one look at CONFIRM_TALK_MS, one more at twice that.
         var waitTalkMs = CONFIRM_TALK_MS
+        // Found by sentence starts ([SyncMatcher.onsetMatch]): borne out by the next look on fresh talking.
+        var byOnsets = false
     }
 
     /** A guess [delayMs] that stood out on the talking [fromMs]..[toMs] in the segment from [segmentFromMs] ([guess]). */
@@ -465,7 +467,10 @@ class OffsetTracker(
         val c = candidate
         val from = maxOf(0L, suspectMs, now - LEARN_WINDOW_MS, c?.fitsFromMs ?: 0L)
         val due = if (c != null) talkingMs(tl, c.toMs, now) >= c.waitTalkMs else lastCheckToMs !in from..now || talkingMs(tl, lastCheckToMs, now) >= FRESH_TALK_MS
-        val d = if (!due || talkingMs(tl, from, now) < minTalkMs) waiting(now) else learnCheck(tl, from, now)
+        // Talking enough to match, or (by the talking) film enough heard for sentence starts to go by: little of a
+        // monologue's sound counts as talking, though he talks all along.
+        val enough = talkingMs(tl, from, now) >= minTalkMs || !clean && heardMs(tl, from, now) >= ONSET_MIN_HEARD_MS
+        val d = if (!due || !enough) waiting(now) else learnCheck(tl, from, now)
         if (d.outcome != Outcome.LEARNED && learnPlayedMs >= LEARN_MAX_MS) {
             return Decision(Outcome.GAVE_UP, segments, d.delayMs, now, from, now, d.result, Double.NaN, "no sure match in ${LEARN_MAX_MS / 60_000} min")
         }
@@ -496,8 +501,30 @@ class OffsetTracker(
                 }
             }
         }
+        // Still not sure: sentence starts ([SyncMatcher.onsetMatch]), for when the overlap has too few pauses to go by
+        // (one person talking on, lines back to back). Standing out clearly, the overlap close to it puts it right.
+        var onset: SyncMatcher.OnsetResult? = null
+        if (!clean && !sure(res, learnCenterMs, learnRangeMs)) {
+            val om = SyncMatcher.onsetMatch(tl, lines, from, now, learnCenterMs, zRange)
+            if (om != null && om.z >= ONSET_Z && om.hits >= ONSET_MIN_HITS && om.runnerUp <= om.hits * ONSET_RUNNER_UP &&
+                abs(om.delayMs - learnCenterMs) <= learnRangeMs - EDGE_MS
+            ) {
+                onset = om
+                // The overlap close by puts it right when it has a clear best there (not at the edge of the shifts it
+                // tried); else it's the sentence starts' own, less the moment talking is heard after it starts.
+                val near = SyncMatcher.match(h, lines, om.delayMs - ONSET_LATE_MS, ONSET_REFINE_MS)
+                res = if (abs(near.delayMs - (om.delayMs - ONSET_LATE_MS)) < ONSET_REFINE_MS - EDGE_REFINE_MS && near.r >= ONSET_REFINE_R) {
+                    near
+                } else {
+                    SyncMatcher.Result(om.delayMs - ONSET_LATE_MS, false, near.r, near.runnerUp, near.z, near.speechMs, near.lines)
+                }
+            }
+        }
         fun decide(o: Outcome, note: String = "") = Decision(o, segments, res.delayMs, now, from, now, res, Double.NaN, note)
-        if (!sure(res, learnCenterMs, learnRangeMs)) {
+        // Looked at early, on less talking than a match needs (only for sentence starts): nothing else comes of it, and
+        // a delay sure once before is left waiting for its confirmation.
+        if (onset == null && talkingMs(tl, from, now) < minTalkMs) return waiting(now)
+        if (onset == null && !sure(res, learnCenterMs, learnRangeMs)) {
             looselyConfirmed(tl, res, from, now)?.let { return it }
             candidate = null
             return decide(Outcome.NOT_SURE, unsureNote(res))
@@ -510,8 +537,9 @@ class OffsetTracker(
             suspectWhy = Hint.RESYNC
             return decide(Outcome.NOT_SURE, "the delay Resync turned down: only talking from the press on can bring it back")
         }
-        // Sure, but it doesn't fit the latest talking: the delay before a break inside this stretch. Looks after it.
-        if (!fitsLatest(tl, res.delayMs, from, now)) {
+        // Sure, but it doesn't fit the latest talking: the delay before a break inside this stretch. Looks after it. (By
+        // sentence starts, the overlap is too weak to tell.)
+        if (onset == null && !fitsLatest(tl, res.delayMs, from, now)) {
             candidate = null
             suspectMs = fitEnd(tl, res.delayMs, from, now)
             suspectWhy = Hint.MISFIT
@@ -523,6 +551,28 @@ class OffsetTracker(
         // Only the talking the proof went by counts as found right: not what came before a break inside the stretch.
         var proofFrom = from
         if (before == null || abs(before.delayMs - res.delayMs) > AGREE_MS) {
+            if (onset != null) {
+                // Each half of the stretch, by its own sentence starts, at the same delay: two looks agreeing, kept at once
+                // (as the overlap's halves agreeing, [confirmsAtOnce]).
+                val mid = (from + now) / 2
+                val a = SyncMatcher.onsetMatch(tl, lines, from, mid, learnCenterMs, zRange)
+                val b = SyncMatcher.onsetMatch(tl, lines, mid, now, learnCenterMs, zRange)
+                if (a != null && b != null && a.z >= ONSET_HALF_Z && b.z >= ONSET_HALF_Z &&
+                    abs(a.delayMs - onset.delayMs) <= ONSET_AGREE_MS && abs(b.delayMs - onset.delayMs) <= ONSET_AGREE_MS
+                ) {
+                    map.add(Segment(0, res.delayMs))
+                    candidate = null
+                    suspectMs = -1
+                    rejectedMs = null
+                    checked(tl, res.delayMs, from, now, exactly = false)
+                    return decide(Outcome.LEARNED, "by sentence starts, both halves agreeing ($onset; $a; $b)")
+                }
+                candidate = Candidate(res.delayMs, -1, from, now, from).also {
+                    it.byOnsets = true
+                    it.waitTalkMs = LEARN_CONFIRM_TALK_MS
+                }
+                return decide(Outcome.NOT_SURE, "sure once, by sentence starts ($onset)")
+            }
             val fits = fitStart(tl, res.delayMs, from, now)
             if (!confirmsAtOnce(tl, res.delayMs, learnCenterMs, learnRangeMs, fits, now)) {
                 // The first delay: confirmed on a little fresh talking, as the subtitles are wrong until it is
@@ -531,6 +581,11 @@ class OffsetTracker(
             }
             proofFrom = fits
             note = AT_ONCE
+        } else if (before.byOnsets || onset != null) {
+            // By sentence starts on one look and the overlap, sure, on another: two ways agreeing, kept at once. By sentence
+            // starts again: borne out on fresh talking.
+            if (onset != null && talkingMs(tl, before.toMs, now) < before.waitTalkMs) return decide(Outcome.NOT_SURE, "waiting for fresh talking")
+            note = if (onset != null) "by sentence starts, borne out ($onset)" else "by sentence starts, the overlap agreeing"
         } else {
             confirmFails(tl, before, res.delayMs, learnCenterMs, learnRangeMs, now)?.let { return decide(Outcome.NOT_SURE, it) }
         }
@@ -1303,6 +1358,20 @@ class OffsetTracker(
         // first), when it leaves at least [LEARN_RECENT_MIN_CUT_MS] of the stretch out.
         val LEARN_RECENT_MS = longArrayOf(150_000L, 100_000L)
         const val LEARN_RECENT_MIN_CUT_MS = 30_000L
+        // Sentence starts ([SyncMatcher.onsetMatch]) go for a first delay when the best stands out this far (z), with at
+        // least this many line starts met and the next best place well behind; the overlap then looks this close to it.
+        const val ONSET_Z = 5.0
+        const val ONSET_MIN_HITS = 10
+        const val ONSET_RUNNER_UP = 0.75
+        const val ONSET_REFINE_MS = 250L
+        private const val EDGE_REFINE_MS = 50L
+        private const val ONSET_REFINE_R = 0.15
+        // Talking is marked a moment after it starts: sentence starts come out about this much later than the lines'.
+        const val ONSET_LATE_MS = 100L
+        const val ONSET_MIN_HEARD_MS = 30_000L
+        // Each half on its own: standing out this far, within this of the whole stretch's delay.
+        const val ONSET_HALF_Z = 4.0
+        const val ONSET_AGREE_MS = 200L
         const val LEARN_MAX_MS = 6 * 60_000L
         // Talking needed in a stretch before matching it is worth it (SyncMatcher wants as much to be sure).
         private const val MIN_TALK_MS = 30_000L

@@ -57,6 +57,11 @@ class SpeechAheadTest {
         private var playsAt = CUSHION_MS
         /** Each decision: the wall time and where the film was playing when it was made. */
         val decisions = ArrayList<Triple<Long, Long, OffsetTracker.Decision>>()
+        /** When a first delay was first in use (one look sure of it, or learned): the badge's "Matched in"; -1 before. */
+        var inUseWallMs = -1L
+            private set
+        var inUseMs = 0L
+            private set
 
         init {
             ahead.startRun(startMs)
@@ -74,6 +79,7 @@ class SpeechAheadTest {
             for (f in (heardMs / 10).toInt() until (to / 10).toInt()) ahead.mark(f, film.talking.get(f))
             heardMs = to
             for (d in ahead.advance(tracker)) decisions += Triple(wallMs, playMs, d)
+            if (inUseWallMs < 0) (tracker.tentativeMs ?: tracker.segments.firstOrNull()?.delayMs)?.let { inUseWallMs = wallMs; inUseMs = it }
         }
 
         /** Until the film has played to [toMs]. */
@@ -116,6 +122,7 @@ class SpeechAheadTest {
     fun aPhineasLikeEpisodeLinesUpMinutesSooner() {
         for (loadRate in listOf(8.0, 4.0)) {
             val walls = ArrayList<Long>()
+            val inUse = ArrayList<Long>()
             val playhead = ArrayList<Long>()
             for (seed in seeds) {
                 val film = phineas(seed)
@@ -125,6 +132,8 @@ class SpeechAheadTest {
                 assertNotNull("seed $seed ×$loadRate: never learned\n${run.story()}", learned)
                 assertTrue("seed $seed ×$loadRate: ${learned!!.third}\n${run.story()}", near(5_200, learned.third.delayMs))
                 walls += learned.first
+                assertTrue("seed $seed ×$loadRate: first in use ${run.inUseMs}\n${run.story()}", near(5_200, run.inUseMs, 400))
+                inUse += run.inUseWallMs
                 // The same, listening where the film plays (as before): the wall time is the film time plus the cushion.
                 val p = Playback(film, OffsetTracker(film.subs))
                 p.play(8 * min)
@@ -136,6 +145,8 @@ class SpeechAheadTest {
             val sooner = walls.indices.map { playhead[it] - walls[it] }
             val w = walls.sorted()
             val ph = playhead.sorted()
+            val u = inUse.sorted()
+            println("Phineas-like, loading ×$loadRate: in use (Matched) ${u.first() / 1000}..${u.last() / 1000} s, median ${u[u.size / 2] / 1000} s")
             println("Phineas-like, loading ×$loadRate, heard ahead ×12: first delay ${w.first() / 1000}..${w.last() / 1000} s after play " +
                 "(median ${w[w.size / 2] / 1000}); where it plays: ${ph.first() / 1000}..${ph.last() / 1000} s (median ${ph[ph.size / 2] / 1000}); " +
                 "sooner by ${sooner.minOrNull()!! / 1000}..${sooner.maxOrNull()!! / 1000} s")
@@ -144,6 +155,8 @@ class SpeechAheadTest {
             // rest need talking further in than the two minutes loaded ahead, and wait for the film to get there.
             for (d in sooner) assertTrue("ahead $walls, where it plays $playhead", d >= if (loadRate >= 8.0) 90_000 else 60_000)
             if (loadRate >= 8.0) assertTrue("$walls", w[w.size / 2] <= 31_000)
+            // In use ("Matched") sooner still: half within 15 s of pressing play at 8×, from the first minute of talking.
+            if (loadRate >= 8.0) assertTrue("$inUse", u[u.size / 2] <= 15_500)
         }
     }
 

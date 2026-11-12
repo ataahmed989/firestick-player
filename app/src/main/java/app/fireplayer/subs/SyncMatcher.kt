@@ -139,6 +139,90 @@ object SyncMatcher {
     private const val CLEAR_RUNNER_UP = 0.6
     private const val MIN_R = 0.15
 
+    /** [onsetMatch]'s best: the delay, how far it stands out ([z]), how many line starts met a sentence start there. */
+    class OnsetResult(val delayMs: Long, val z: Double, val hits: Int, val runnerUp: Int, val onsets: Int) {
+        override fun toString() = "delay=${delayMs}ms z=${"%.1f".format(java.util.Locale.ROOT, z)} hits=$hits next=$runnerUp onsets=$onsets"
+    }
+
+    /**
+     * Sentence starts: where talking starts after a pause ([ONSET_QUIET_MS] heard and quiet before it, talking a moment
+     * after), lined up with where subtitle lines start, at shifts every [ONSET_STEP_MS] within [centerMs] ± [rangeMs]:
+     * the shift where most line starts meet one (within [ONSET_TOL_MS]). The overlap ([match]) needs pauses between
+     * lines; one person talking on with lines back to back has few, but still a breath before each sentence. On a
+     * monologue (Legion, Fire TV Stick 4K Max) the right delay stood out after 60 s of film (z 6.8) where the overlap
+     * needed about 285 s. About 0.1–0.2 s late (talking is heard a moment after it starts): [match] near it puts it
+     * right. Null with too few sentence starts heard.
+     */
+    fun onsetMatch(tl: SpeechTimeline, subs: Lines, fromMs: Long, toMs: Long, centerMs: Long, rangeMs: Long): OnsetResult? {
+        val f0 = (maxOf(fromMs, 0L) / 10).toInt()
+        val f1 = (toMs / 10).toInt()
+        if (f1 <= f0) return null
+        val near = BitSet()
+        val tol = (ONSET_TOL_MS / 10).toInt()
+        var quiet = 0
+        var onsets = 0
+        var f = f0
+        while (f < f1) {
+            if (!tl.heard.get(f)) {
+                quiet = 0
+            } else if (tl.speech.get(f)) {
+                if (quiet >= ONSET_QUIET_MS / 10 && sustained(tl.speech, f)) {
+                    near.set(maxOf(f0, f - tol), minOf(f1, f + tol + 1))
+                    onsets++
+                }
+                quiet = 0
+            } else {
+                quiet++
+            }
+            f++
+        }
+        if (onsets < ONSET_MIN) return null
+        val starts = subs.starts
+        val lo = java.util.Arrays.binarySearch(starts, fromMs - centerMs - rangeMs).let { if (it < 0) -it - 1 else it }
+        val hi = java.util.Arrays.binarySearch(starts, toMs - centerMs + rangeMs).let { if (it < 0) -it - 1 else it }
+        if (hi - lo < ONSET_MIN) return null
+        val n = (2 * rangeMs / ONSET_STEP_MS).toInt() + 1
+        val scores = IntArray(n)
+        for (k in 0 until n) {
+            val d = centerMs - rangeMs + k * ONSET_STEP_MS
+            var hits = 0
+            for (i in lo until hi) {
+                val t = starts[i] + d
+                if (t < fromMs || t >= toMs) continue
+                if (near.get((t / 10).toInt())) hits++
+            }
+            scores[k] = hits
+        }
+        var best = 0
+        for (k in 1 until n) if (scores[k] > scores[best]) best = k
+        var sum = 0.0
+        var sq = 0.0
+        for (v in scores) { sum += v; sq += v.toDouble() * v }
+        val mean = sum / n
+        val sd = kotlin.math.sqrt(maxOf(sq / n - mean * mean, 1e-9))
+        val apart = (ONSET_APART_MS / ONSET_STEP_MS).toInt()
+        var runnerUp = 0
+        for (k in 0 until n) if (kotlin.math.abs(k - best) > apart && scores[k] > runnerUp) runnerUp = scores[k]
+        return OnsetResult(centerMs - rangeMs + best * ONSET_STEP_MS, (scores[best] - mean) / sd, scores[best], runnerUp, onsets)
+    }
+
+    // Talking for most of the next 80 ms: a sentence starting, not a click.
+    private fun sustained(speech: BitSet, f: Int): Boolean {
+        var j = 0
+        while (j < 8) {
+            if (!speech.get(f + j) && !speech.get(f + j + 1)) return false
+            j += 2
+        }
+        return true
+    }
+
+    private const val ONSET_QUIET_MS = 250L
+    private const val ONSET_TOL_MS = 150L
+    private const val ONSET_STEP_MS = 50L
+    private const val ONSET_MIN = 12
+    // The next best place counts only this far from the best (its own shoulder doesn't).
+    private const val ONSET_APART_MS = 500L
+
     class Result(
         /** How much later (positive) or earlier the subtitles should show, in ms: the subtitle delay. */
         val delayMs: Long,
@@ -170,6 +254,9 @@ object SyncMatcher {
             }
             detrend(ys, n)
         }
+
+        /** Where each line starts (ms), in order: what [onsetMatch] lines up with where talking starts. */
+        internal val starts: LongArray by lazy { lines.map { it.startMs }.sorted().toLongArray() }
 
         /** How many lines, shown [delayMs] later, are on screen at some point between film times [fromMs] and [toMs]. */
         fun onScreen(delayMs: Long, fromMs: Long, toMs: Long): Int =
