@@ -463,7 +463,8 @@ class OffsetTracker(
         sinceCheckMs = 0
         lastCheckToMs = now
         val h = SyncMatcher.heard(tl.speech, tl.heard, frame(from), frame(now) + 1) ?: return waiting(now)
-        val res = SyncMatcher.match(h, lines, learnCenterMs, learnRangeMs)
+        // By the talking, how far the best stands out is judged against shifts up to [RANGE_MS] away (see SyncMatcher.match)
+        val res = SyncMatcher.match(h, lines, learnCenterMs, learnRangeMs, if (clean) learnRangeMs else maxOf(learnRangeMs, RANGE_MS))
         fun decide(o: Outcome, note: String = "") = Decision(o, segments, res.delayMs, now, from, now, res, Double.NaN, note)
         if (!sure(res, learnCenterMs, learnRangeMs)) {
             looselyConfirmed(tl, res, from, now)?.let { return it }
@@ -493,7 +494,8 @@ class OffsetTracker(
         if (before == null || abs(before.delayMs - res.delayMs) > AGREE_MS) {
             val fits = fitStart(tl, res.delayMs, from, now)
             if (!confirmsAtOnce(tl, res.delayMs, learnCenterMs, learnRangeMs, fits, now)) {
-                candidate = Candidate(res.delayMs, -1, from, now, fits)
+                // The first delay: confirmed on a little fresh talking, as the subtitles are wrong until it is
+                candidate = Candidate(res.delayMs, -1, from, now, fits).also { if (!clean) it.waitTalkMs = LEARN_CONFIRM_TALK_MS }
                 return decide(Outcome.NOT_SURE, "sure once")
             }
             proofFrom = fits
@@ -1279,6 +1281,8 @@ class OffsetTracker(
         // The looser confirmation of a first delay ([looselyConfirmed]): how near the next look's best must be, how far
         // the delay must stand out on the talking since, and the least overlap that look may have.
         private const val LOOSE_AGREE_MS = 500L
+        // Fresh talking the first delay's confirming look needs (a later change needs [CONFIRM_TALK_MS]).
+        private const val LEARN_CONFIRM_TALK_MS = 5_000L
         private const val LOOSE_FRESH_Z = 3.0
         private const val LOOSE_MIN_R = 0.15
         // Confirming from talking already heard takes this much of the latest talking for the second stretch.
