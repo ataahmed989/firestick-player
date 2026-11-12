@@ -207,6 +207,19 @@ class Prefs(context: Context) {
 
     fun saveSyncTrack(key: String, track: String) = sp.edit().putString("sync|$key|track", track).apply()
 
+    /**
+     * How much the talking fine-tuned the film's own subtitle track [first] by (ms, [second]) for a subtitle and film, so
+     * it's put in again next time on the same track.
+     */
+    fun syncTrim(key: String): Pair<String, Long>? {
+        val v = sp.getString("sync|$key|trim", null) ?: return null
+        val track = v.substringBeforeLast(':', "").ifEmpty { return null }
+        val ms = v.substringAfterLast(':').toLongOrNull() ?: return null
+        return track to ms
+    }
+
+    fun saveSyncTrim(key: String, track: String, ms: Long) = sp.edit().putString("sync|$key|trim", "$track:$ms").apply()
+
     /** A delay set by hand for a downloaded subtitle on one video, used again when it's chosen another time. */
     fun handDelayMs(key: String): Long? = if (sp.contains("subdelay|$key")) sp.getLong("subdelay|$key", 0L) else null
 

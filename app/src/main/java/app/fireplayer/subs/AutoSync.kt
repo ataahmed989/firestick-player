@@ -222,6 +222,9 @@ class AutoSync(
         val listenAhead: Boolean = false,
         /** With [relearnAtMs]: Resync, so the delay in use was turned down; else auto sync was turned on ([turnOn]). */
         val rejectInUse: Boolean = true,
+        /** The talking's fine-tuning of the film's own track [trimTrack] found before ([trimMs]), put in again on it. */
+        val trimTrack: String? = null,
+        val trimMs: Long = 0,
     )
 
     /** Resync pressed: the stretch around [atMs] checked again; [speech]: by the talking, whatever there is. */
@@ -616,6 +619,7 @@ class AutoSync(
         val prior = priorMs.takeIf { known.isEmpty() && relearnAtMs == null }
         val preferred = listOfNotNull(subtitleLanguage, prefs.subtitleLanguage.ifEmpty { null }, "en").distinct()
         val ahead = armAhead()
+        val trim = prefs.syncTrim(savedKey())
         job = Job(
             gen, k, l, known,
             centerMs = if (relearnAtMs != null) delayUs() / 1000 else prior ?: 0,
@@ -632,6 +636,8 @@ class AutoSync(
             preferred = preferred,
             listenAhead = ahead,
             rejectInUse = rejectInUse,
+            trimTrack = trim?.first,
+            trimMs = trim?.second ?: 0L,
         )
         aheadStandby = false
         main.removeCallbacks(beat)
@@ -788,6 +794,11 @@ class AutoSync(
         var crossAheadChecks = 0
         var crossAheadJudgedTo = -1L
         var crossAheadSince = 0L
+        // On the film's own subtitles: how much the talking fine-tuned them by ([considerTrim]), and the first of the two
+        // looks that must agree before it does.
+        var trimMs = 0L
+        var trimCandidate: Long? = null
+        fun trimmed(segs: List<OffsetTracker.Segment>) = if (trimMs == 0L) segs else segs.map { it.copy(delayMs = it.delayMs + trimMs) }
         var aheadFast = false
         // Listening ahead: the sound copied as it loads, its decoder and format (and why it's left, when it is), the
         // state, whether it failed for this film, since when it's waited and been behind, and the tracker last stepped
@@ -893,7 +904,8 @@ class AutoSync(
             val ahead = !onTrack && aheadState == Ahead.ON
             if (d.outcome != Outcome.WAIT) {
                 cost.matched(cpuMs)
-                Log.i(TAG, if (onTrack) "film's subtitles: $d" else if (ahead) "ahead (playing ${OffsetTracker.clock(playheadMs)}): $d" else d.toString())
+                Log.i(TAG, if (onTrack) "film's subtitles: $d${if (trimMs != 0L) " | fine-tuned by the talking ${SyncMatcher.formatShift(trimMs)}" else ""}"
+                    else if (ahead) "ahead (playing ${OffsetTracker.clock(playheadMs)}): $d" else d.toString())
             }
             when (d.outcome) {
                 Outcome.LEARNED, Outcome.MOVED, Outcome.TUNED -> {
@@ -904,7 +916,11 @@ class AutoSync(
                         ahead -> "the speech heard ahead (to ${OffsetTracker.clock(d.toMs)}, playing ${OffsetTracker.clock(playheadMs)})"
                         else -> "the speech where the film plays"
                     }
-                    main.post { decided(current, d, b, how) }
+                    // On the film's own subtitles, fine-tuned by the talking: the delays as they're put in.
+                    val dd = if (onTrack && trimMs != 0L) {
+                        OffsetTracker.Decision(d.outcome, trimmed(d.segments), d.delayMs + trimMs, d.atMs, d.fromMs, d.toMs, d.result, d.rHere, d.note)
+                    } else d
+                    main.post { decided(current, dd, b, how) }
                 }
                 Outcome.KEPT -> {
                     val b = basisNow()
@@ -923,12 +939,13 @@ class AutoSync(
                 if (t != null && t != toldTentative) {
                     toldTentative = t
                     val how = if (onTrack) "the film's own subtitles" else if (ahead) "the speech heard ahead" else "the speech where the film plays"
-                    main.post { tentative(current, t, how) }
+                    val inUse = t + if (onTrack) trimMs else 0L
+                    main.post { tentative(current, inUse, how) }
                 }
             }
             // What's confirmed grew or the offsets changed: the main thread gets a fresh snapshot for the skip times,
             // after decided() (a first delay learnt has made it SYNCED by then).
-            val segs = tr.segments
+            val segs = if (onTrack) trimmed(tr.segments) else tr.segments
             val changes = tr.changeFrom(tl)
             if (tr.confirmedCount != publishedCount || segs != publishedSegments || changes != publishedChanges) {
                 publishedCount = tr.confirmedCount
@@ -949,6 +966,8 @@ class AutoSync(
             // What's heard ahead goes on, now for the talking to line up against.
             crossAhead = false
             aheadFast = false
+            trimMs = 0
+            trimCandidate = null
             mode = Mode.SPEECH
             tracker = OffsetTracker(current.lines, known, centerMs, if (known.isEmpty()) OffsetTracker.RANGE_MS else current.rangeMs,
                 knownJumps = current.jumps)
@@ -968,7 +987,13 @@ class AutoSync(
         /** Lining up against track [key] of the film's own from here on, carrying on from what's known. */
         fun toTrack(current: Job, key: String, why: String) {
             val source = embedded?.source(current.filmUri) ?: return
-            val known = tracker?.segments?.takeIf { it.isNotEmpty() } ?: current.segments
+            // What's known as it's put in (another track's fine-tuning added), then in this track's own terms: less the
+            // talking's fine-tuning found for it before, put in again.
+            val before = tracker?.segments?.takeIf { it.isNotEmpty() }?.let { if (mode == Mode.TRACK) trimmed(it) else it } ?: current.segments
+            trimMs = if (current.trimTrack == key) current.trimMs else 0L
+            trimCandidate = null
+            val known = if (trimMs == 0L) before else before.map { it.copy(delayMs = it.delayMs - trimMs) }
+            if (trimMs != 0L) Log.i(TAG, "the film's subtitles fine-tuned by the talking as before: ${SyncMatcher.formatShift(trimMs)}")
             Log.i(TAG, "lining up with the film's own subtitles ($why): $key; tracks: ${source.describe()}; not listening meanwhile")
             tracker = OffsetTracker(current.lines, known, current.centerMs, current.rangeMs, knownJumps = current.jumps, clean = true,
                 priorMs = current.priorMs.takeIf { known.isEmpty() })
@@ -1257,6 +1282,41 @@ class AutoSync(
             crossNext = SystemClock.elapsedRealtime() + nextInMs
         }
 
+        /**
+         * The talking, standing out clearly, says the film's own subtitles are a little off here: more than [TRIM_MIN_MS],
+         * less than a disagreement. Twice the same way (within [TRIM_AGREE_MS]), every delay is fine-tuned by it: the track
+         * still decides where the breaks are, the talking only how the whole lines up. Never more than [TRIM_LIMIT_MS] in
+         * all (further, the usual check lets the track go). The subtitles stay on screen, only moved.
+         */
+        fun considerTrim(current: Job, tr: OffsetTracker, res: CrossCheck.Result) {
+            val off = res.delayMs - res.inUseMs
+            val clear = !res.z.isNaN() && res.z >= TRIM_Z
+            if (!clear) return
+            if (abs(off) < TRIM_MIN_MS) {
+                // Agrees closely: nothing to fine-tune.
+                trimCandidate = null
+                return
+            }
+            if (abs(off) >= TRIM_MAX_MS) return
+            val first = trimCandidate
+            if (first == null || abs(first - off) > TRIM_AGREE_MS) {
+                trimCandidate = off
+                Log.i(TAG, "the talking says the film's subtitles are ${SyncMatcher.formatShift(off)} off here: checked again before fine-tuning")
+                return
+            }
+            trimCandidate = null
+            val by = (first + off) / 2
+            if (abs(trimMs + by) > TRIM_LIMIT_MS) return
+            trimMs += by
+            val segs = trimmed(tr.segments)
+            // Sent again with the next decision (the skip times).
+            publishedSegments = null
+            Log.i(TAG, "fine-tuned by the talking: ${SyncMatcher.formatShift(by)} (the film's subtitles ${SyncMatcher.formatShift(trimMs)} in all)")
+            val track = trackKey
+            val total = trimMs
+            main.post { trimmedByTalking(current, segs, by, track, total) }
+        }
+
         /** The talking is sure of another delay, twice: the track goes, and it's found by listening from what it said. */
         fun dropTrack(current: Job, res: CrossCheck.Result, why: String) {
             val key = trackKey ?: return
@@ -1269,7 +1329,7 @@ class AutoSync(
         /** The talking heard in this check judged; a track the talking disagrees with is dropped. */
         fun judgeCross(current: Job, tr: OffsetTracker) {
             val to = (cursor * 10).toLong()
-            val res = CrossCheck.judge(timeline, current.lines, tr.segments, crossFrom, to)
+            val res = CrossCheck.judge(timeline, current.lines, trimmed(tr.segments), crossFrom, to)
             Log.i(TAG, "checked against the speech: $res")
             val urgent = crossUrgent
             val verdict = res.verdict
@@ -1279,7 +1339,12 @@ class AutoSync(
             if (verdict != CrossCheck.Verdict.UNSURE) lastVerdict = verdict
             if (twice) {
                 dropTrack(current, res, "it disagrees with the speech")
-            } else if (urgent && verdict != CrossCheck.Verdict.UNSURE) {
+                return
+            }
+            considerTrim(current, tr, res)
+            // A little off once: checked again soon, before it's fine-tuned.
+            if (trimCandidate != null) crossNext = minOf(crossNext, SystemClock.elapsedRealtime() + CROSS_RETRY_MS)
+            if (urgent && verdict != CrossCheck.Verdict.UNSURE) {
                 main.post { checkDone(current) }
             }
         }
@@ -1389,7 +1454,7 @@ class AutoSync(
                         startCross(urgent = true)
                     } else {
                         if (mode == Mode.TRACK) {
-                            toSpeech(current, "Resync pressed again", tr?.segments ?: current.segments)
+                            toSpeech(current, "Resync pressed again", tr?.segments?.let { trimmed(it) } ?: current.segments)
                         }
                         val tr2 = tracker
                         if (aheadState == Ahead.ON && tr2 != null && tr2 === aheadTracker && speechAhead.steppedToMs >= 0) {
@@ -1440,7 +1505,7 @@ class AutoSync(
                         mode = Mode.SPEECH
                     } else if (source == null) {
                         trackFailed = true
-                        toSpeech(current, "the film's subtitles are gone", tr.segments)
+                        toSpeech(current, "the film's subtitles are gone", trimmed(tr.segments))
                     } else {
                         cost.maybeLog(ref.timeline, current.lines, tr)
                         val now = SystemClock.elapsedRealtime()
@@ -1455,7 +1520,7 @@ class AutoSync(
                             if (snap == null) {
                                 // The track turned out to have only some lines (forced, signs): not worth lining up against.
                                 trackFailed = true
-                                toSpeech(current, "too few lines: ${source.describe()}", tr.segments)
+                                toSpeech(current, "too few lines: ${source.describe()}", trimmed(tr.segments))
                             } else {
                                 val cpu0 = SystemClock.currentThreadTimeMillis()
                                 val decisions = try {
@@ -1463,7 +1528,7 @@ class AutoSync(
                                 } catch (t: Exception) {
                                     Log.e(TAG, "Lining up with the film's subtitles failed", t)
                                     trackFailed = true
-                                    toSpeech(current, "failed", tr.segments)
+                                    toSpeech(current, "failed", trimmed(tr.segments))
                                     emptyList()
                                 }
                                 val cpuMs = (SystemClock.currentThreadTimeMillis() - cpu0) / maxOf(1, decisions.count { it.outcome != Outcome.WAIT })
@@ -1477,7 +1542,7 @@ class AutoSync(
                                             jobRef.compareAndSet(current, null)
                                             main.post { notFound(current) }
                                         } else {
-                                            toSpeech(current, "no delay fits", tr.segments)
+                                            toSpeech(current, "no delay fits", trimmed(tr.segments))
                                         }
                                         break
                                     }
@@ -1522,16 +1587,20 @@ class AutoSync(
                                 if (from in 0 until to && fresh && enough) {
                                     crossAheadJudgedTo = to
                                     crossAheadChecks++
-                                    val res = CrossCheck.judge(timeline, current.lines, tr2.segments, from, to)
+                                    val res = CrossCheck.judge(timeline, current.lines, trimmed(tr2.segments), from, to)
                                     Log.i(TAG, "checked against the speech heard ahead: $res")
                                     val verdict = res.verdict
                                     val twice = verdict == CrossCheck.Verdict.DISAGREES && lastVerdict == CrossCheck.Verdict.DISAGREES
                                     if (verdict != CrossCheck.Verdict.UNSURE) lastVerdict = verdict
+                                    if (!twice && verdict != CrossCheck.Verdict.DISAGREES) considerTrim(current, tr2, res)
+                                    val trimPending = trimCandidate != null
                                     when {
                                         twice -> dropTrack(current, res, "it disagrees with the speech heard ahead")
-                                        verdict == CrossCheck.Verdict.AGREES || crossAheadChecks >= CROSS_AHEAD_CHECKS -> endCrossAhead()
-                                        // Disagrees once: the next stretch heard ahead decides. Unsure: this one grows.
-                                        verdict == CrossCheck.Verdict.DISAGREES -> crossAheadFrom = to
+                                        crossAheadChecks >= CROSS_AHEAD_CHECKS -> endCrossAhead(if (trimPending) CROSS_RETRY_MS else CROSS_EVERY_MS)
+                                        verdict == CrossCheck.Verdict.AGREES && !trimPending -> endCrossAhead()
+                                        // Disagrees once, or a little off once: the next stretch heard ahead decides. Unsure:
+                                        // this one grows.
+                                        verdict == CrossCheck.Verdict.DISAGREES || trimPending -> crossAheadFrom = to
                                         else -> {}
                                     }
                                 }
@@ -1872,6 +1941,27 @@ class AutoSync(
     }
 
     /**
+     * On the main thread: the talking fine-tuned the film's own subtitles by [byMs] ([totalMs] in all, on [track]): the
+     * delays [segs] put in and kept, the subtitles moved smoothly where the film is. Undo last sync puts back the delay
+     * from before.
+     */
+    private fun trimmedByTalking(current: Job, segs: List<OffsetTracker.Segment>, byMs: Long, track: String?, totalMs: Long) {
+        if (current.generation != generation || byHand || state != State.SYNCED || segs.isEmpty()) return
+        segments = segs
+        prefs.saveSyncedSegments(savedKey(), OffsetTracker.encode(segs))
+        prefs.saveSyncedDelay(savedKey(), segs[0].delayMs)
+        if (track != null) prefs.saveSyncTrim(savedKey(), track, totalMs)
+        val nowUs = delayUs()
+        val wantUs = OffsetTracker.delayAt(segs, position().first)?.times(1000)
+        if (wantUs != null && abs(wantUs - nowUs) >= MIN_MOVE_US) {
+            if (undoUs == null) undoUs = nowUs
+            moveDelay(wantUs)
+        }
+        detail = "Fine-tuned by the audio: ${SyncMatcher.formatShift(byMs)}."
+        onChanged()
+    }
+
+    /**
      * On the main thread: a delay found (the first, one after a break, or a fine-tuning), put in and kept; [b]: what it
      * was found against.
      */
@@ -1985,6 +2075,13 @@ class AutoSync(
         private const val CROSS_AHEAD_CHECKS = 3
         // Film heard ahead since the last check before another.
         private const val CROSS_AHEAD_MORE_MS = 30_000L
+        // The talking fine-tunes the film's own subtitles when they're off by this much or more, less than a disagreement
+        // (a second: the track goes), standing out this clearly, twice within this of each other; never more in all.
+        private const val TRIM_MIN_MS = 300L
+        private const val TRIM_MAX_MS = 1_000L
+        private const val TRIM_Z = 4.0
+        private const val TRIM_AGREE_MS = 200L
+        private const val TRIM_LIMIT_MS = 1_500L
         // A downloaded line is held back at most this long at the start of a new episode with nothing to go on.
         private const val HOLD_MS = 6_000L
         // Resync pressed again within this long: the talking decides.
