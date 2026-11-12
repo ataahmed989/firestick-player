@@ -15,8 +15,33 @@ import kotlin.math.log10
  */
 object SubtitleRanker {
 
-    /** What's known of the video playing: its file name (release), frame rate (0 if unknown) and the episode wanted. */
-    class Video(val name: String, val fps: Float, val season: Int?, val number: Int?)
+    /**
+     * What's known of the video playing: its file name (release), frame rate (0 if unknown) and the episode wanted.
+     * [names]: the episode's name (or, for a half-hour joined from two, both); subtitles whose episode name is one of
+     * them go up, and with [namesMust] those named for another episode are left out.
+     */
+    class Video(
+        val name: String,
+        val fps: Float,
+        val season: Int?,
+        val number: Int?,
+        val names: List<String> = emptyList(),
+        val namesMust: Boolean = false,
+    )
+
+    /** Whether a subtitle's [release] or its episode's [title] names one of [names]. Null when it can't tell. */
+    fun namesEpisode(title: String, release: String, names: List<String>): Boolean? {
+        val wanted = names.map { simple(it) }.filter { it.length >= 4 }
+        if (wanted.isEmpty()) return null
+        val inRelease = simple(release)
+        if (wanted.any { inRelease.contains(it) }) return true
+        val t = simple(title)
+        if (t.isEmpty()) return null
+        return wanted.any { t == it || t.contains(it) || it.contains(t) && t.length >= 6 }
+    }
+
+    private fun simple(s: String) = java.text.Normalizer.normalize(s.lowercase(), java.text.Normalizer.Form.NFD)
+        .replace(Regex("""\p{M}+"""), "").replace("&", "and").filter { it.isLetterOrDigit() }
 
     /** A result with its score (1 to 99) and short notes on why ([best] is the top one). */
     class Ranked(val result: OpenSubtitles.Result, val score: Int, val notes: List<String>, val stretch: Float) {
@@ -32,6 +57,14 @@ object SubtitleRanker {
             ) return@mapNotNull null
             var score = 40.0
             val notes = ArrayList<String>()
+            when (namesEpisode(r.episodeTitle, r.release, video.names)) {
+                true -> {
+                    score += 20
+                    notes += "Episode name matches"
+                }
+                false -> if (video.namesMust) return@mapNotNull null
+                null -> {}
+            }
             if (r.hashMatch) {
                 score += 45
                 notes += "Made for this exact file"

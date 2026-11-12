@@ -53,9 +53,23 @@ class ShowGuide(
         val why: String?,
         /** TMDB's own length for it, in minutes; 0 when TMDB doesn't say (unlike [runtimeMin], never the provider's). */
         val tmdbMin: Int = 0,
+        /**
+         * For a half-hour the provider joins from two of TMDB's short episodes (see [JoinedEpisodes]): those, in order.
+         * Empty for an episode that is one of TMDB's (or none), whose [season] and [number] are TMDB's own.
+         */
+        val parts: List<Part> = emptyList(),
     ) {
         val label: String get() = "S$season E$number"
+
+        /** Whether it is two (or more) of TMDB's episodes joined, numbered as the provider does rather than as TMDB. */
+        val joined: Boolean get() = parts.isNotEmpty()
+
+        /** TMDB's season and episode numbers for where it ends: its last part's when [joined], else its own. */
+        val tmdbEnd: Pair<Int, Int> get() = parts.lastOrNull()?.let { it.season to it.number } ?: (season to number)
     }
+
+    /** One of TMDB's episodes within a joined one: TMDB's numbers and name for it. */
+    class Part(val season: Int, val number: Int, val name: String)
 
     fun episode(id: String?): Ep? = if (id == null) null else episodes.firstOrNull { it.id == id }
 
@@ -72,14 +86,19 @@ class ShowGuide(
                 put(JSONObject().put("id", e.id).put("ext", e.extension).put("ps", e.providerSeason).put("pn", e.providerNumber)
                     .put("pt", e.providerTitle).put("s", e.season).put("n", e.number).put("name", e.name).put("ov", e.overview)
                     .put("img", e.image ?: "").put("rt", e.runtimeMin).put("air", e.airDate).put("m", e.match.name)
-                    .put("why", e.why ?: "").put("tm", e.tmdbMin))
+                    .put("why", e.why ?: "").put("tm", e.tmdbMin)
+                    .apply {
+                        if (e.parts.isNotEmpty()) put("parts", JSONArray().apply {
+                            e.parts.forEach { p -> put(JSONObject().put("s", p.season).put("n", p.number).put("name", p.name)) }
+                        })
+                    })
             }
         })
 
     companion object {
         private const val TAG = "FirePlayerGuide"
         // A guide written under older rules is built again rather than read.
-        private const val VERSION = 2
+        private const val VERSION = 3
         private const val SEASON_KEPT_MS = 3 * 24 * 60 * 60_000L
         private const val MAX_SEASONS = 40
 
@@ -102,6 +121,9 @@ class ShowGuide(
                     image = e.optString("img").ifEmpty { null }, runtimeMin = e.optInt("rt"), airDate = e.optString("air"),
                     match = runCatching { Match.valueOf(e.optString("m")) }.getOrDefault(Match.NONE),
                     why = e.optString("why").ifEmpty { null }, tmdbMin = e.optInt("tm"),
+                    parts = e.optJSONArray("parts")?.let { a ->
+                        (0 until a.length()).mapNotNull { a.optJSONObject(it) }.map { p -> Part(p.optInt("s"), p.optInt("n"), p.optString("name")) }
+                    }.orEmpty(),
                 )
             }
             ShowGuide(key, o.optString("series"), o.optString("portal"), o.optString("show"), o.optString("search"), o.optInt("tmdb"), episodes)
@@ -194,6 +216,10 @@ class ShowGuide(
                         ?.flatMap { load(it) }?.takeIf { it.size >= count - 2 }
                 } else null
             } else null
+            val joined = if (straight == null) {
+                runCatching { joinedSeasons(context, tmdb, tmdbId, provider, seasons, fix, showNames) }
+                    .onFailure { Log.i(TAG, "Couldn't pair joined episodes: $it") }.getOrNull().orEmpty()
+            } else emptyMap()
             val all = seasons.values.flatten()
             val byName = all.groupBy { simple(it.name) }.filterKeys { it.length >= 3 }
             fun find(season: Int, number: Int) = seasons[season]?.firstOrNull { it.number == number }
@@ -201,6 +227,22 @@ class ShowGuide(
             val ordered = provider.sortedWith(compareBy({ it.season }, { it.number }))
             return provider.map { e ->
                 val title = episodeName(e.title, showNames)
+                joined[e.id]?.let { (parts, sure) ->
+                    val ok = sure || (fix != null && e.id in fix.confirmed)
+                    val first = parts.first()
+                    return@map Ep(
+                        e.id, e.extension, e.season, e.number, title, e.season, e.number,
+                        parts.joinToString(" / ") { it.name },
+                        parts.map { it.overview }.filter { it.isNotEmpty() }.joinToString("\n\n").ifEmpty { e.plot },
+                        first.still ?: e.image,
+                        (e.durationSecs / 60).takeIf { it > 0 } ?: parts.sumOf { it.runtime },
+                        first.airDate.ifEmpty { e.airDate },
+                        if (ok) Match.SURE else Match.UNSURE,
+                        if (ok) null else "Your provider joins two of TMDB's short episodes into each half-hour; " +
+                            "FirePlayer paired them by their order and lengths, so check the name.",
+                        parts = parts.map { Part(it.season, it.number, it.name) },
+                    )
+                }
                 val titled = simple(title).takeIf { it.length >= 3 }?.let { byName[it]?.singleOrNull() }
                 val place = fix?.place(e.id, e.season, e.number)
                 val picked: Tmdb.TvEpisode?
@@ -259,6 +301,104 @@ class ShowGuide(
         }
 
         private fun Tmdb.TvEpisode.label() = "S$season E$number"
+
+        /**
+         * The provider's episodes in seasons it lists as half-hours joined from TMDB's short episodes (see
+         * [JoinedEpisodes]): each one's TMDB episodes, and whether the pairing is sure. Episodes placed by hand are
+         * left out, as are seasons that aren't joined.
+         */
+        private fun joinedSeasons(
+            context: Context,
+            tmdb: Tmdb,
+            tmdbId: Int,
+            provider: List<NextEpisode.Episode>,
+            seasons: Map<Int, List<Tmdb.TvEpisode>>,
+            fix: MatchFixes.Show?,
+            showNames: Set<String>,
+        ): Map<String, Pair<List<Tmdb.TvEpisode>, Boolean>> {
+            val out = HashMap<String, Pair<List<Tmdb.TvEpisode>, Boolean>>()
+            var groups: List<List<List<Pair<Int, Int>>>>? = null
+            var tvmaze: List<JoinedEpisodes.Story>? = null
+            for ((season, eps) in provider.groupBy { it.season }) {
+                val tmdbEps = seasons[season]?.sortedBy { it.number }.orEmpty()
+                if (tmdbEps.isEmpty()) continue
+                val mine = eps.filter { fix?.place(it.id, it.season, it.number) == null }
+                // Two copies of one episode count once.
+                val numbers = mine.map { it.number }.distinct().sorted()
+                if (numbers.size != eps.map { it.number }.distinct().size) continue
+                val count = numbers.size
+                val titles = numbers.map { n -> episodeName(mine.first { it.number == n }.title, showNames) }
+                var stories = tmdbEps.map { JoinedEpisodes.Story(it.season, it.number, it.name, it.runtime) }
+                val titled = JoinedEpisodes.byTitles(titles, stories) != null
+                val lengths = mine.map { it.durationSecs / 60 }.filter { it > 0 }.sorted()
+                val providerMin = lengths.getOrNull(lengths.size / 2) ?: 0
+                if (!JoinedEpisodes.looksJoined(count, numbers.last(), providerMin, stories, titled)) continue
+                val pairing = if (titled) JoinedEpisodes.pair(titles, count, stories, emptyList()) else {
+                    val all = groups ?: joinedGroups(context, tmdb, tmdbId).also { groups = it }
+                    val lengthsFrom = tvmaze ?: tvmazeStories(context, tmdb, tmdbId).also { tvmaze = it }
+                    stories = JoinedEpisodes.withLengths(stories, lengthsFrom)
+                    val orders = all.flatten().mapNotNull { JoinedEpisodes.orderIn(it, stories) }
+                    JoinedEpisodes.pair(titles, count, stories, orders)
+                } ?: continue
+                val byNumbers = tmdbEps.associateBy { it.season to it.number }
+                numbers.forEachIndexed { k, n ->
+                    val parts = pairing.parts.getOrNull(k)?.mapNotNull { byNumbers[it.season to it.number] } ?: return@forEachIndexed
+                    if (parts.isEmpty()) return@forEachIndexed
+                    mine.filter { it.number == n }.forEach { out[it.id] = parts to pairing.sure }
+                }
+                Log.i(TAG, "Season $season: $count half-hours from ${tmdbEps.size} of TMDB's episodes (sure: ${pairing.sure})")
+            }
+            return out
+        }
+
+        /** The show's TMDB episode groups made for a joined order, each its parts' TMDB numbers; kept a few days. */
+        private fun joinedGroups(context: Context, tmdb: Tmdb, id: Int): List<List<List<Pair<Int, Int>>>> {
+            val file = File(File(context.cacheDir, "tmdb").apply { mkdirs() }, "tv-$id-joined-groups.json")
+            if (file.exists() && System.currentTimeMillis() - file.lastModified() < SEASON_KEPT_MS) {
+                runCatching {
+                    val a = JSONArray(file.readText())
+                    return (0 until a.length()).map { g ->
+                        val parts = a.getJSONArray(g)
+                        (0 until parts.length()).map { p ->
+                            val eps = parts.getJSONArray(p)
+                            (0 until eps.length()).map { i -> eps.getJSONArray(i).let { it.getInt(0) to it.getInt(1) } }
+                        }
+                    }
+                }
+            }
+            val fresh = tmdb.episodeGroups(id).filter { JoinedEpisodes.isJoinedGroup(it.name, it.description) }
+                .take(4).map { tmdb.episodeGroup(it.id) }
+            runCatching {
+                file.writeText(JSONArray().apply {
+                    fresh.forEach { g ->
+                        put(JSONArray().apply { g.forEach { part -> put(JSONArray().apply { part.forEach { put(JSONArray().put(it.first).put(it.second)) } }) } })
+                    }
+                }.toString())
+            }
+            return fresh
+        }
+
+        /** TVmaze's lengths of the show's episodes (empty when it doesn't know it); kept a few days. */
+        private fun tvmazeStories(context: Context, tmdb: Tmdb, id: Int): List<JoinedEpisodes.Story> {
+            val file = File(File(context.cacheDir, "tmdb").apply { mkdirs() }, "tv-$id-tvmaze.json")
+            if (file.exists() && System.currentTimeMillis() - file.lastModified() < SEASON_KEPT_MS) {
+                runCatching {
+                    val a = JSONArray(file.readText())
+                    return (0 until a.length()).map { i ->
+                        a.getJSONObject(i).let { JoinedEpisodes.Story(it.optInt("s"), it.optInt("n"), it.optString("name"), it.optInt("rt")) }
+                    }
+                }
+            }
+            val imdb = runCatching { tmdb.ids(id, true)?.imdb }.getOrNull() ?: return emptyList()
+            val fresh = runCatching { JoinedEpisodes.tvmazeStories(imdb) }
+                .onFailure { Log.i(TAG, "TVmaze didn't answer: $it") }.getOrElse { return emptyList() }
+            runCatching {
+                file.writeText(JSONArray().apply {
+                    fresh.forEach { put(JSONObject().put("s", it.season).put("n", it.number).put("name", it.name).put("rt", it.minutes)) }
+                }.toString())
+            }
+            return fresh
+        }
 
         /** A season from TMDB, kept for a few days in the cache folder. */
         private fun season(context: Context, tmdb: Tmdb, id: Int, season: Int): List<Tmdb.TvEpisode> {
