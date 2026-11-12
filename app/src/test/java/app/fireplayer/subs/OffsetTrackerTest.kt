@@ -724,6 +724,28 @@ class OffsetTrackerTest {
     }
 
     @Test
+    fun aSkipOntoFilmNotHeardIsCheckedThereAndKept() {
+        // Delays known: a skip far ahead is counted (the panel says Rechecking) and a look after it keeps or moves the
+        // delay; going back over film heard already isn't a skip to check.
+        val film = FakeFilm.make(seed = 82, minutes = 40, delayMs = 2_000)
+        val tracker = OffsetTracker(film.subs)
+        val p = Playback(film, tracker)
+        p.play(8 * min)
+        assertTrue(p.story(), near(2_000, tracker.delayAt(5 * min)))
+        assertEquals(0, tracker.jumpChecks)
+        p.seek(25 * min)
+        assertEquals(1, tracker.jumpChecks)
+        assertEquals(25 * min, tracker.jumpedToMs)
+        val after = p.decisions.size
+        p.play(31 * min)
+        assertTrue("a look after the skip keeps or moves the delay\n${p.story()}", p.decisions.drop(after).any {
+            it.toMs > 25 * min && (it.outcome == Outcome.KEPT || it.outcome == Outcome.MOVED)
+        })
+        p.seek(26 * min)
+        assertEquals("back over film heard already", 1, tracker.jumpChecks)
+    }
+
+    @Test
     fun resyncWithNothingHeardListensAfresh() {
         val film = FakeFilm.make(seed = 81, minutes = 30, delayMs = 3_000)
         val tracker = OffsetTracker(film.subs, listOf(Segment(0, 9_000)))

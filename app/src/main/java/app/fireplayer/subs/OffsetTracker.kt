@@ -165,6 +165,14 @@ class OffsetTracker(
     // The latest place the timing may have changed that hasn't been checked yet, or -1.
     private var suspectMs = -1L
     private var suspectWhy: Hint? = null
+    /**
+     * How many times playing jumped onto film not heard yet while delays were known, and where to last: the timing there
+     * is checked (the panel says "Rechecking" till a look after it keeps or moves the delay).
+     */
+    var jumpChecks = 0
+        private set
+    var jumpedToMs = -1L
+        private set
     // Places the timing may have changed (hints, and where new delays took over): Resync starts from the last one.
     private val breaks = TreeSet<Long>()
     private var candidate: Candidate? = null
@@ -317,7 +325,10 @@ class OffsetTracker(
             hint(toMs, Hint.SEEK)
             // Still finding the first delay: a fresh try where the film is now (the minutes spent elsewhere don't count
             // towards giving up, and the best found there isn't this stretch's).
-            if (map.isEmpty()) learnAgain()
+            if (map.isEmpty()) learnAgain() else {
+                jumpChecks++
+                jumpedToMs = toMs
+            }
         }
     }
 
