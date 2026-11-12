@@ -786,8 +786,9 @@ class AutoSync(
         var crossNext = 0L
         var crossUrgent = false
         var lastVerdict: CrossCheck.Verdict? = null
-        // Lining up against the film's own subtitles: checked once, at once, against the talking heard ahead (the sound
-        // kept ready, or as it loads), at full speed ([aheadFast]); from the stretch from [crossAheadFrom], a few at most.
+        // Lining up against the film's own subtitles: checked against the talking heard ahead all through the film, the
+        // first at once at full speed ([aheadFast]) on the sound kept ready, then stretch by stretch (from [crossAheadFrom])
+        // as it loads, at the usual pace.
         var crossAhead = false
         var crossAheadFrom = -1L
         var crossAheadRuns = 0
@@ -1008,8 +1009,8 @@ class AutoSync(
             toldTentative = null
             letDecoderGo()
             tap.listening = false
-            // The film's own subtitles are read as it loads already. What's heard ahead (the sound kept ready, or as it loads)
-            // only checks them against the talking, once and at once ([crossAhead]); then nothing more is heard ahead.
+            // The film's own subtitles are read as it loads already. What's heard ahead (the sound kept ready, then as it loads)
+            // checks them against the talking all along ([crossAhead]), the first time at once.
             crossAhead = aheadState != Ahead.OFF
             // Only from where the film is on: what was heard before (another job's stretch) goes by delays carried over.
             crossAheadFrom = maxOf(playheadMs, -1L)
@@ -1560,13 +1561,15 @@ class AutoSync(
                     }
                     if (mode == Mode.TRACK) {
                         val tr2 = tracker
-                        // First, once something's found: the talking heard ahead is asked at once whether it agrees, at full
-                        // speed (the sound kept ready is heard in seconds), so a track from another cut is let go in seconds.
+                        // Once something's found: the talking heard ahead is asked whether it agrees, at once at full speed
+                        // (the sound kept ready is heard in seconds), then each stretch as it loads, so a track from another
+                        // cut is let go in seconds and a shift anywhere later is caught before it's on screen.
                         if (crossAhead && !crossing && tr2 != null && !tr2.learning) {
                             if (aheadState == Ahead.OFF) {
                                 crossAhead = false
-                            } else if (aheadSkip != null || SystemClock.elapsedRealtime() - crossAheadSince > CROSS_MAX_WALL_MS ||
-                                (speechAhead.runFromMs < 0 && SystemClock.elapsedRealtime() - crossAheadSince > AHEAD_WAIT_MS)
+                            } else if (aheadSkip != null || (crossAheadChecks == 0 &&
+                                    (SystemClock.elapsedRealtime() - crossAheadSince > CROSS_MAX_WALL_MS ||
+                                        (speechAhead.runFromMs < 0 && SystemClock.elapsedRealtime() - crossAheadSince > AHEAD_WAIT_MS)))
                             ) {
                                 // The sound loading can't be heard (too heavy, no decoder, protected so nothing is copied), or
                                 // nothing came of it for long: checked as the film plays instead, from now.
@@ -1575,7 +1578,8 @@ class AutoSync(
                                 if (aheadSkip != null) aheadDisarm()
                                 endCrossAhead(0)
                             } else {
-                                aheadFast = true
+                                // The first at full speed (the sound kept ready, in seconds); then as it loads, at the usual pace.
+                                aheadFast = crossAheadChecks == 0
                                 val got = try { pumpAhead(current, 300) } catch (_: InterruptedException) { break }
                                 if (job !== current || mode != Mode.TRACK || !crossAhead || aheadState == Ahead.OFF) continue
                                 // Loading started somewhere else (a skip): the stretch starts afresh there.
@@ -1602,14 +1606,12 @@ class AutoSync(
                                     val twice = verdict == CrossCheck.Verdict.DISAGREES && lastVerdict == CrossCheck.Verdict.DISAGREES
                                     if (verdict != CrossCheck.Verdict.UNSURE) lastVerdict = verdict
                                     if (!twice && verdict != CrossCheck.Verdict.DISAGREES) considerTrim(current, tr2, res)
-                                    val trimPending = trimCandidate != null
                                     when {
                                         twice -> dropTrack(current, res, "it disagrees with the speech heard ahead")
-                                        crossAheadChecks >= CROSS_AHEAD_CHECKS -> endCrossAhead(if (trimPending) CROSS_RETRY_MS else CROSS_EVERY_MS)
-                                        verdict == CrossCheck.Verdict.AGREES && !trimPending -> endCrossAhead()
-                                        // Disagrees once, or a little off once: the next stretch heard ahead decides. Unsure:
-                                        // this one grows.
-                                        verdict == CrossCheck.Verdict.DISAGREES || trimPending -> crossAheadFrom = to
+                                        // Checked on, stretch after stretch, all through the film: the next one decides
+                                        // what this one couldn't. Unsure: this one grows (up to twice a check's length).
+                                        verdict != CrossCheck.Verdict.UNSURE -> crossAheadFrom = to
+                                        to - from >= 2 * CROSS_MAX_FILM_MS -> crossAheadFrom = to - CROSS_MAX_FILM_MS
                                         else -> {}
                                     }
                                 }
@@ -2080,8 +2082,6 @@ class AutoSync(
         private const val CROSS_TALK_MS = 40_000L
         private const val CROSS_MAX_FILM_MS = 4 * 60_000L
         private const val CROSS_MAX_WALL_MS = 6 * 60_000L
-        // Checks against the talking heard ahead, at most, before it's left to the usual ones as the film plays.
-        private const val CROSS_AHEAD_CHECKS = 3
         // Film heard ahead since the last check before another.
         private const val CROSS_AHEAD_MORE_MS = 30_000L
         // The talking fine-tunes the film's own subtitles when they're off by this much or more, less than a disagreement
