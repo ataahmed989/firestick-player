@@ -2230,13 +2230,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val g = guide ?: return null
         val ep = guideEpisode(entry)?.takeIf { g.tmdbId > 0 && it.match != ShowGuide.Match.NONE } ?: return null
         if (!tmdb.isConfigured) return null
-        val key = "${entry.key}|${g.tmdbId}/${ep.season}/${ep.number}"
+        // A half-hour joined from two of TMDB's episodes ends where its last one does.
+        val (endSeason, endNumber) = ep.tmdbEnd
+        val key = "${entry.key}|${g.tmdbId}/$endSeason/$endNumber"
         if (key == finaleFor) return finaleKnown
         finaleFor = key
         finaleKnown = null
         val showId = g.tmdbId
         io.execute {
-            val answer = runCatching { tmdb.isSeriesFinale(showId, ep.season, ep.number) }
+            val answer = runCatching { tmdb.isSeriesFinale(showId, endSeason, endNumber) }
                 .onFailure { android.util.Log.w("FirePlayerEnd", "Couldn't ask TMDB about the show's end", it) }.getOrNull()
             handler.post { if (finaleFor == key) finaleKnown = answer }
         }
@@ -2386,7 +2388,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
      */
     private fun lookUpSegments(entry: Entry, duration: Long, again: Boolean = false) {
         val g = guide
-        val ep = guideEpisode(entry)?.takeIf { g != null && g.tmdbId > 0 && it.match == ShowGuide.Match.SURE }
+        // Not for a half-hour joined from two of TMDB's episodes: the times known are each one's alone.
+        val ep = guideEpisode(entry)?.takeIf { g != null && g.tmdbId > 0 && it.match == ShowGuide.Match.SURE && !it.joined }
         val film = ep == null && entry.info.episode == null && !NextEpisode.isEpisodeLink(entry.uri)
         val want = entry.key + "|" + (ep?.let { "${g!!.tmdbId}/${it.season}/${it.number}" } ?: if (film) "film" else "-") +
             "|" + duration / 1000
@@ -4298,8 +4301,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             if (!thisTitleOpen) return
             val why = when {
                 !tmdb.isConfigured -> "Add a TMDB API key below to match episodes with TMDB's names and numbers."
+                ep.why != null && ep.joined -> ep.why + " TMDB's: " + ep.parts.joinToString(" and ") { "S${it.season} E${it.number}" } + "."
                 ep.why != null -> ep.why.orEmpty()
                 ep.match == ShowGuide.Match.NONE -> "TMDB doesn't know this show by your provider's name. Fix match finds it."
+                ep.joined -> "Two of TMDB's episodes in one: " + ep.parts.joinToString(" and ") { "S${it.season} E${it.number} · ${it.name}" } + "."
                 ep.name.isNotEmpty() -> "Matched on TMDB: ${ep.label} · ${ep.name}."
                 else -> "Matched on TMDB."
             }
@@ -4895,6 +4900,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             name.substringBeforeLast('.').any { !it.isDigit() }
         } ?: entry.rawTitle.orEmpty()
         val fps = videoFps()
+        // A half-hour joined from two of TMDB's episodes: subtitles may be listed under either one's own numbers.
+        val here = guideEpisode(entry)?.takeIf { show && season == it.season && episode == it.number }
+        val parts = here?.parts.orEmpty()
+        // The episode's name (both halves' for a joined one), to put subtitles named for it first.
+        val names = if (parts.isNotEmpty()) parts.map { it.name } else listOfNotNull(here?.name?.takeIf { it.isNotEmpty() })
         io.execute {
             // With a TMDB key, the search asks for the exact film or show instead of anything with that name.
             // The show as its guide matched it, else asked of TMDB by name.
@@ -4904,10 +4914,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             // The file's fingerprint marks subtitles made for it; read only where a second connection is fine.
             val hash = if (hashable) MovieHash.of(entry.uri, headers) else null
             val result = runCatching {
-                SubtitleRanker.rank(
-                    openSubtitles.search(query, language, season, episode, found?.id, show, hash),
-                    SubtitleRanker.Video(release, fps, season, episode),
-                )
+                // A joined half-hour: asked by the provider's numbers and by each half's TMDB numbers, as the site may
+                // list it either way; those named for another episode are left out.
+                val asks = listOf(season to episode) + parts.map { it.season to it.number }
+                asks.distinct().flatMap { (s, n) ->
+                    SubtitleRanker.rank(
+                        openSubtitles.search(query, language, s, n, found?.id, show, hash),
+                        SubtitleRanker.Video(release, fps, s, n, names, namesMust = parts.isNotEmpty()),
+                    )
+                }.distinctBy { it.result.fileId }.sortedByDescending { it.score }.onEachIndexed { i, r -> r.best = i == 0 }
             }
             handler.post {
                 if (isFinishing || player == null) return@post

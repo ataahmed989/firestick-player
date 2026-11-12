@@ -29,6 +29,8 @@ class OpenSubtitles(private val prefs: Prefs) {
         val machine: Boolean = false,
         val trusted: Boolean = false,
         val hearingImpaired: Boolean = false,
+        /** The episode's name as the site has it ("" when it doesn't say). */
+        val episodeTitle: String = "",
     )
 
     // VIP accounts are sent to their own server when they sign in.
@@ -98,6 +100,7 @@ class OpenSubtitles(private val prefs: Prefs) {
                 machine = attrs.optBoolean("machine_translated", false) || attrs.optBoolean("ai_translated", false),
                 trusted = attrs.optBoolean("from_trusted", false),
                 hearingImpaired = attrs.optBoolean("hearing_impaired", false),
+                episodeTitle = if (s > 0 && e > 0) details?.optString("title").orEmpty() else "",
             )
         }
         return out.sortedByDescending { it.downloads }
