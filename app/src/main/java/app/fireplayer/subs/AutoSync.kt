@@ -1449,6 +1449,7 @@ class AutoSync(
             Log.i(TAG, "checked against the speech: $res")
             val urgent = crossUrgent
             val verdict = res.verdict
+            if (verdict == CrossCheck.Verdict.AGREES) main.post { checked(current, moved = false) }
             // Unsure after Resync: soon again; else as usual.
             endCross(if (verdict == CrossCheck.Verdict.UNSURE && urgent) CROSS_RETRY_MS else CROSS_EVERY_MS)
             val twice = verdict == CrossCheck.Verdict.DISAGREES && (urgent || lastVerdict == CrossCheck.Verdict.DISAGREES)
@@ -1719,6 +1720,8 @@ class AutoSync(
                                     val verdict = res.verdict
                                     val twice = verdict == CrossCheck.Verdict.DISAGREES && lastVerdict == CrossCheck.Verdict.DISAGREES
                                     if (verdict != CrossCheck.Verdict.UNSURE) lastVerdict = verdict
+                                    // The talking bears the film's own subtitles out: counted, for the panel's "In sync".
+                                    if (verdict == CrossCheck.Verdict.AGREES) main.post { checked(current, moved = false) }
                                     if (!twice && verdict != CrossCheck.Verdict.DISAGREES) considerTrim(current, tr2, res)
                                     when {
                                         twice -> dropTrack(current, res, "it disagrees with the speech heard ahead")
@@ -2159,6 +2162,8 @@ class AutoSync(
             if (undoUs == null) undoUs = nowUs
             moveDelay(wantUs)
         }
+        checkedAt = SystemClock.elapsedRealtime()
+        checkedMoved = true
         detail = "Fine-tuned by the audio: ${SyncMatcher.formatShift(byMs)}."
         onChanged()
     }
