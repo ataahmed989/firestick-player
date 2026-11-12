@@ -175,9 +175,11 @@ class OffsetTracker(
     private val floors = HashMap<Long, Long>()
     // Follow-ups of a hint in a row that weren't sure of anything: after a few, they're spaced out ([spacing]).
     private var misses = 0
-    // After Resync: the delay the viewer turned down, and where. It only comes back on talking heard after that.
+    // After Resync: the delay the viewer turned down, and where. It only comes back on talking heard after the press:
+    // from [freshFromMs] on (where it was pressed, or past what had been heard ahead of there by then).
     private var rejectedMs: Long? = null
     private var resyncAtMs = -1L
+    private var freshFromMs = -1L
     private val knownJumps = knownJumps.filter { abs(it) >= MIN_SHIFT_MS && abs(it) <= RANGE_MS - EDGE_MS }.take(GUESS_MAX)
     // Where the sound's format changed (an ad spliced in starts and ends with one, often): ad lengths to try.
     private val formats = TreeSet<Long>()
@@ -309,8 +311,9 @@ class OffsetTracker(
      *    there on is; where it seems to fit up to now, all since the last break is;
      *  - [centerMs] itself only comes back on talking heard after the press (so in a minute or two, as the subtitles
      *    stay as they are meanwhile); any other delay is taken from what was heard already, often at once.
+     * Listening ahead, the film up to [heardToMs] was heard before the press, though it's after [atMs].
      */
-    fun relearn(atMs: Long, centerMs: Long, timeline: SpeechTimeline) {
+    fun relearn(atMs: Long, centerMs: Long, timeline: SpeechTimeline, heardToMs: Long = -1) {
         val lastBreak = breaks.floor(atMs) ?: 0L
         val fit = fitEnd(timeline, centerMs, lastBreak, atMs)
         val since = if (atMs - fit <= FITS_TO_NOW_MS) lastBreak else fit
@@ -337,6 +340,7 @@ class OffsetTracker(
         suspectWhy = Hint.RESYNC
         rejectedMs = centerMs
         resyncAtMs = atMs
+        freshFromMs = maxOf(atMs, heardToMs)
     }
 
     /**
@@ -345,9 +349,10 @@ class OffsetTracker(
      * says the delay in use is wrong there, so it only comes back on talking heard after the press; without (lining up
      * against the film's own subtitles, which can't be wrong the way a guess from the talking can), it's simply checked
      * again. Given [nowMs] (where the timeline ends, ahead of where the film plays), that's done at once and the decision
-     * returned; else at the next [step]. Null with nothing known yet (then it's [relearn]).
+     * returned; else at the next [step]. Null with nothing known yet (then it's [relearn]). Listening ahead, the film up
+     * to [heardToMs] was heard before the press, though it's after [atMs].
      */
-    fun recheck(atMs: Long, timeline: SpeechTimeline, reject: Boolean, nowMs: Long? = null): Decision? {
+    fun recheck(atMs: Long, timeline: SpeechTimeline, reject: Boolean, nowMs: Long? = null, heardToMs: Long = -1): Decision? {
         if (map.isEmpty()) return null
         val i = indexAt(atMs)
         val seg = map[i]
@@ -376,6 +381,7 @@ class OffsetTracker(
         if (reject) {
             rejectedMs = seg.delayMs
             resyncAtMs = atMs
+            freshFromMs = maxOf(atMs, heardToMs)
         } else {
             rejectedMs = null
         }
@@ -473,9 +479,9 @@ class OffsetTracker(
         }
         // The delay the viewer turned down with Resync, from talking heard before: listens afresh for it.
         val rejected = rejectedMs
-        if (rejected != null && abs(res.delayMs - rejected) < MIN_SHIFT_MS && from < resyncAtMs) {
+        if (rejected != null && abs(res.delayMs - rejected) < MIN_SHIFT_MS && from < freshFromMs) {
             candidate = null
-            suspectMs = resyncAtMs
+            suspectMs = minOf(freshFromMs, now)
             suspectWhy = Hint.RESYNC
             return decide(Outcome.NOT_SURE, "the delay Resync turned down: only talking from the press on can bring it back")
         }
@@ -557,9 +563,9 @@ class OffsetTracker(
         // After Resync: the delay the viewer turned down, from talking heard before the press, doesn't count.
         val rejected = rejectedMs
         if (rejected != null && abs(res.delayMs - rejected) < TUNE_MS) {
-            if (from < resyncAtMs) {
+            if (from < freshFromMs) {
                 candidate = null
-                suspectMs = resyncAtMs
+                suspectMs = minOf(freshFromMs, now)
                 suspectWhy = Hint.RESYNC
                 return decide(Outcome.NOT_SURE, cur, "the delay Resync turned down: only talking from the press on can bring it back")
             }

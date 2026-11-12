@@ -1,6 +1,8 @@
 package app.fireplayer.subs
 
 import androidx.media3.common.C
+import androidx.media3.common.Format
+import androidx.media3.common.MimeTypes
 import app.fireplayer.subs.FakeFilm.Break
 import app.fireplayer.subs.OffsetTracker.Outcome
 import org.junit.Assert.assertEquals
@@ -266,6 +268,78 @@ class SpeechAheadTest {
             assertNotNull("seed $seed: $first ${rest.joinToString()}", learned)
             assertTrue("seed $seed: $learned", near(3_300, learned!!.delayMs))
         }
+    }
+
+    @Test
+    fun resyncTakesBackTheDelayTurnedDownOnlyFromTalkingHeardAfterThePress() {
+        // Resync three minutes in, on a delay found by listening ahead: the two minutes after the press in the film were
+        // heard before it, so they can't bring the delay turned down back; talking heard since can. With delays known
+        // (checked again), and with none (found afresh).
+        val took = ArrayList<Long>()
+        for (seed in seeds) for (afresh in listOf(false, true)) {
+            val film = phineas(seed)
+            val run = AheadLoading(film, OffsetTracker(film.subs))
+            run.playTo(3 * min)
+            val at = run.playMs
+            val turnedDown = run.tracker.delayAt(at)
+            assertTrue("seed $seed: $turnedDown", near(5_200, turnedDown))
+            val heardTo = run.ahead.edgeMs
+            assertTrue("seed $seed: heard to $heardTo", heardTo - at >= 90_000)
+            val n = run.decisions.size
+            val first = if (afresh) {
+                run.tracker.relearn(at, turnedDown!!, run.timeline, heardTo)
+                run.ahead.rebase(run.tracker)
+            } else {
+                run.tracker.recheck(at, run.timeline, reject = true, nowMs = run.ahead.steppedToMs, heardToMs = heardTo)
+            }
+            run.playTo(7 * min)
+            val after = listOfNotNull(first) + run.decisions.drop(n).map { it.third }
+            val back = after.filter { (it.outcome == Outcome.KEPT || it.outcome == Outcome.LEARNED) && near(turnedDown!!, it.delayMs) }
+            for (d in back) assertTrue("seed $seed afresh $afresh: $d\n${run.story()}", d.fromMs >= heardTo)
+            assertTrue("seed $seed afresh $afresh: never back\n${run.story()}", back.isNotEmpty())
+            took += back.first().toMs - heardTo
+        }
+        println("Resync on a delay found ahead: back on talking heard since, ${took.minOrNull()!! / 1000}..${took.maxOrNull()!! / 1000} s of film past what was heard by the press")
+    }
+
+    @Test
+    fun aSkipWhileTheListenerIsBehindIsANewStretch() {
+        // Continue Watching: paused at the start while the film loads far quicker than it's heard, so the pieces fill and
+        // samples are let go; then Resume at 8 minutes, and loading starts there. That's a jump (a new stretch, the
+        // tracker told), not a gap the tracker steps through as film it heard.
+        val film = phineas(1)
+        val raw = Format.Builder().setSampleMimeType(MimeTypes.AUDIO_RAW).setPcmEncoding(C.ENCODING_PCM_16BIT)
+            .setChannelCount(2).setSampleRate(48_000).build()
+        val ring = AheadAudio(staleMs = 60_000)
+        val ahead = SpeechAhead(SpeechTimeline())
+        val tracker = OffsetTracker(film.subs)
+        val decisions = ArrayList<OffsetTracker.Decision>()
+        // 20 ms of quiet stereo a sample.
+        val quiet = ByteArray(960 * 4)
+        fun load(fromMs: Long, seconds: Int) {
+            for (k in 0 until seconds * 50) ring.sample("film", 1, raw, quiet, 0, quiet.size, (fromMs + k * 20L) * 1_000)
+        }
+        fun listen() {
+            while (true) {
+                val p = ring.take(0) ?: break
+                if (p.afterDrop) ahead.expectGap()
+                for (i in 0 until p.count) {
+                    ahead.feed(ByteBuffer.wrap(p.bytes, p.startOf(i), p.ends[i] - p.startOf(i)), p.timesUs[i], 2, 48_000, C.ENCODING_PCM_16BIT)
+                }
+                ring.recycle(p)
+                while (ahead.due()) decisions += ahead.advance(tracker)
+            }
+        }
+        load(0, 30)
+        assertTrue(ring.droppedSamples > 0)
+        listen()
+        assertEquals(1, ahead.runs)
+        load(8 * min, 6)
+        listen()
+        assertEquals(2, ahead.runs)
+        assertEquals(8 * min, ahead.runFromMs)
+        assertTrue("${ahead.steppedToMs}", ahead.steppedToMs in 8 * min..8 * min + 6_000)
+        assertTrue(decisions.joinToString("\n"), decisions.none { it.outcome == Outcome.GAVE_UP })
     }
 
     @Test

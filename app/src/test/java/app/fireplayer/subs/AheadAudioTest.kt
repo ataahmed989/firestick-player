@@ -122,6 +122,23 @@ class AheadAudioTest {
     }
 
     @Test
+    fun aSkipWhileSamplesAreLetGoIsASkipNotAGap() {
+        val ring = AheadAudio(staleMs = 60_000)
+        // Nobody takes anything: the pieces fill, and the rest is let go.
+        for (k in 0 until 6_000) ring.add(k, k * 20_000L)
+        assertTrue(ring.droppedSamples > 0)
+        // The listener takes a few (pieces free again), then loading starts 12 minutes on (Resume, or a seek past
+        // what's loaded): what's waiting is of the film left behind, and the next piece follows a skip, not samples let go.
+        repeat(3) { ring.recycle(ring.take(0)!!) }
+        ring.add(10_000, 840_000_000)
+        assertEquals(0, ring.pending())
+        for (k in 1 until 101) ring.add(10_000 + k, 840_000_000L + k * 20_000L)
+        val p = ring.take(0)!!
+        assertEquals(840_000_000L, p.firstUs)
+        assertFalse(p.afterDrop)
+    }
+
+    @Test
     fun releaseLetsGoOfEverything() {
         val ring = AheadAudio(staleMs = 60_000)
         for (k in 0 until 400) ring.add(k, k * 20_000L)

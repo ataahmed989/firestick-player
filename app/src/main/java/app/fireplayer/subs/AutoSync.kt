@@ -715,6 +715,8 @@ class AutoSync(
         var behindSince = 0L
         var aheadTracker: OffsetTracker? = null
         var idleSince = 0L
+        // Listening ahead was on when the last job ended (nothing to do since): see Resync below.
+        var aheadWasOn = false
         // For the cost log: 10 ms marks heard where the film plays while listening ahead, the most pieces waiting.
         var filledFrames = 0L
         var aheadBacklog = 0
@@ -1165,6 +1167,7 @@ class AutoSync(
                     // go too, unless it's copied for listening about to start (for long, it isn't).
                     letDecoderGo()
                     letAheadDecoderGo()
+                    if (aheadState == Ahead.ON) aheadWasOn = true
                     aheadState = Ahead.OFF
                     val now = SystemClock.elapsedRealtime()
                     if (idleSince == 0L) idleSince = now
@@ -1210,7 +1213,11 @@ class AutoSync(
                     val t = tracker?.takeIf { relearn != null && it.lines === current.lines && !it.clean }
                         ?: OffsetTracker(current.lines, current.segments, current.centerMs, current.rangeMs, knownJumps = current.jumps,
                             priorMs = current.priorMs)
-                    relearn?.let { t.relearn(it, current.centerMs, timeline) }
+                    // Resync while listening ahead: the film heard ahead by the press was heard before it, though it's
+                    // after where it was pressed, so the delay turned down doesn't come back on that.
+                    val heardTo = if ((aheadState == Ahead.ON || aheadWasOn) && speechAhead.runFromMs >= 0) speechAhead.edgeMs else -1L
+                    aheadWasOn = false
+                    relearn?.let { t.relearn(it, current.centerMs, timeline, heardTo) }
                     tracker = t
                     // Resync tries at once, with what was heard already.
                     stepAt = if (relearn != null) -TRY_EVERY_FRAMES else 0
@@ -1231,6 +1238,9 @@ class AutoSync(
                 resyncRef.get()?.takeIf { (mode != Mode.LOOKING || it.speech) && resyncRef.compareAndSet(it, null) }?.let { rq ->
                     val tr = tracker
                     val ref = reference
+                    // Listening ahead: the film heard ahead by the press was heard before it, though it's after where it
+                    // was pressed, so the delay turned down doesn't come back on that.
+                    val heardTo = if (aheadState == Ahead.ON && speechAhead.runFromMs >= 0) speechAhead.edgeMs else -1L
                     if (mode == Mode.TRACK && tr != null && ref != null && !rq.speech) {
                         Log.i(TAG, "Resync at ${OffsetTracker.clock(rq.atMs)}: checking again against the film's subtitles, and the speech")
                         val d = tr.recheck(rq.atMs, ref.timeline, reject = false, nowMs = ref.steppedToMs)
@@ -1248,14 +1258,14 @@ class AutoSync(
                             // Heard ahead: the talking after the press (in the film) is mostly heard already, so it's
                             // checked at once, as against the film's own subtitles.
                             Log.i(TAG, "Resync at ${OffsetTracker.clock(rq.atMs)}: checking again against the speech heard ahead (to ${OffsetTracker.clock(speechAhead.steppedToMs)})")
-                            val d = tr2.recheck(rq.atMs, timeline, reject = true, nowMs = speechAhead.steppedToMs)
+                            val d = tr2.recheck(rq.atMs, timeline, reject = true, nowMs = speechAhead.steppedToMs, heardToMs = heardTo)
                             if (d != null) {
                                 if (d.outcome == Outcome.KEPT) keptTold = null
                                 handle(current, tr2, timeline, d, 0)
                             }
                         } else {
                             Log.i(TAG, "Resync at ${OffsetTracker.clock(rq.atMs)}: checking again against the speech")
-                            tracker?.recheck(rq.atMs, timeline, reject = true)
+                            tracker?.recheck(rq.atMs, timeline, reject = true, heardToMs = heardTo)
                             stepAt = played - TRY_EVERY_FRAMES
                         }
                     }

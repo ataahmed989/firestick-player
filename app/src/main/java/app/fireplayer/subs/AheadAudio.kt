@@ -104,16 +104,19 @@ class AheadAudio(
         val prevUs = lastUs
         lastUs = timeUs
         var p = filling
+        // Loading started somewhere else (a skip), judged against the last sample whether it was kept or let go: what's
+        // waiting is of the film left behind, and what comes next is a new stretch, not a gap after samples let go.
+        if (prevUs >= 0 && kotlin.math.abs(timeUs - prevUs) >= JUMP_US && (p == null || uri == p.uri)) {
+            drainReady()
+            if (p != null) recycleLocked(p)
+            filling = null
+            p = null
+            dropping = false
+        }
         if (p != null && p.count > 0) {
             val last = p.lastUs
             val gap = timeUs < last || timeUs - last > GAP_US
-            if (gap && kotlin.math.abs(timeUs - last) >= JUMP_US && uri == p.uri) {
-                // Loading started somewhere else (a skip): what's waiting is of the film left behind.
-                drainReady()
-                recycleLocked(p)
-                filling = null
-                p = null
-            } else if (gap || p.size + size > PIECE_BYTES || p.count == MAX_SAMPLES || timeUs - p.firstUs >= SPAN_US ||
+            if (gap || p.size + size > PIECE_BYTES || p.count == MAX_SAMPLES || timeUs - p.firstUs >= SPAN_US ||
                 p.track != track || p.format !== format || p.uri != uri
             ) {
                 handOver(p)
