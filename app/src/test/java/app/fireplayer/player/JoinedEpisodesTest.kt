@@ -198,4 +198,14 @@ class JoinedEpisodesTest {
         assertEquals(false, app.fireplayer.subs.SubtitleRanker.namesEpisode("Flop Starz", "Phineas.and.Ferb.S01E03", names))
         assertEquals(null, app.fireplayer.subs.SubtitleRanker.namesEpisode("", "Phineas.and.Ferb.S01E03", names))
     }
+
+    @Test
+    fun providerNamesWithDashesOrSomeSinglesDecide() {
+        val titles = aired.map { it.replace(" / ", " - ") }
+        val pairing = JoinedEpisodes.pair(titles, 26, tmdb, emptyList())!!
+        assertTrue(pairing.sure)
+        assertEquals(listOf(1, 7), pairing.parts[0].map { it.number })
+        // Only single names: not taken as joined by names.
+        assertEquals(null, JoinedEpisodes.byTitles(listOf("Rollercoaster", "Flop Starz"), tmdb))
+    }
 }
