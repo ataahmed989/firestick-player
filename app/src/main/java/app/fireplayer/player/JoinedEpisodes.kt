@@ -47,18 +47,30 @@ object JoinedEpisodes {
     fun byTitles(titles: List<String>, stories: List<Story>): List<List<Story>>? {
         if (titles.isEmpty()) return null
         val used = HashSet<Story>()
+        fun find(n: String) = stories.firstOrNull { it !in used && ShowGuide.sameName(n, it.name) }
+            ?: stories.firstOrNull { it !in used && nearly(n, it.name) }
+        var joined = 0
         val parts = titles.map { title ->
-            val names = title.split(SPLIT).map { it.trim() }.filter { it.isNotEmpty() }
-            if (names.isEmpty() || names.size > 2) return null
-            names.map { n ->
-                val s = stories.firstOrNull { it !in used && ShowGuide.sameName(n, it.name) }
-                    ?: stories.firstOrNull { it !in used && nearly(n, it.name) } ?: return null
-                used += s
-                s
-            }
+            // Both halves' names ("A / B", "A - B", "A & B"), else one story's whole name.
+            val halves = SPLITS.asSequence().map { title.split(it, limit = 2).map { p -> p.trim() } }
+                .filter { it.size == 2 && it.all { p -> p.isNotEmpty() } }
+                .mapNotNull { (a, b) ->
+                    val x = find(a) ?: return@mapNotNull null
+                    used += x
+                    val y = find(b)
+                    used -= x
+                    if (y != null) listOf(x, y) else null
+                }.firstOrNull()
+            val got = halves ?: listOfNotNull(find(title.trim())).takeIf { it.isNotEmpty() } ?: return null
+            if (got.size == 2) joined++
+            used += got
+            got
         }
-        return parts
+        // Named this way only when some name both halves.
+        return parts.takeIf { joined > 0 }
     }
+
+    private val SPLITS = listOf(Regex("""\s*/\s*"""), Regex("""\s+[-–—]\s+"""), Regex("""\s+&\s+"""), Regex("""\s+\+\s+"""), Regex("""\s*;\s*"""))
 
     /** The same name but for a letter or two ("Bowl-R-Ama Drama", "Bowl-R-Rama Drama"). */
     fun nearly(a: String, b: String): Boolean {
@@ -80,8 +92,6 @@ object JoinedEpisodes {
         }
         return prev[b.length]
     }
-
-    private val SPLIT = Regex("""\s+/\s+|\s*/\s*(?=\p{Lu})|\s+\+\s+""")
 
     /**
      * [order] split into [count] runs of one or two stories, in order: a long story alone and two short ones together

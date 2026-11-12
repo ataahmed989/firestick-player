@@ -130,6 +130,23 @@ class ShowGuide(
         // Only the kind of failure: a JSON error's message carries the text read, and the guide's key has the login
         }.onFailure { Log.i(TAG, "Couldn't read a kept guide (${it.javaClass.simpleName})") }.getOrNull()
 
+        private fun lengths(context: Context) = context.getSharedPreferences("show_lengths", Context.MODE_PRIVATE)
+
+        /** How long an episode of [season] of the show [key] played here really was, in minutes; 0 when none has. */
+        fun lengthOf(context: Context, key: String, season: Int): Int = lengths(context).getInt("$key|$season", 0)
+
+        /**
+         * Notes how long an episode of [season] of the show [key] really is (for providers that don't say, see
+         * [JoinedEpisodes]). True when that's new, so a guide made without it may come out otherwise now.
+         */
+        fun noteLength(context: Context, key: String, season: Int, minutes: Int): Boolean {
+            if (minutes <= 0) return false
+            val before = lengthOf(context, key, season)
+            if (before > 0 && kotlin.math.abs(before - minutes) <= 3) return false
+            lengths(context).edit().putInt("$key|$season", minutes).apply()
+            return true
+        }
+
         /** When the guide for [key] was kept (as [System.currentTimeMillis]); 0 when there's none. */
         fun savedAt(context: Context, key: String): Long = runCatching { guideFile(context, key).lastModified() }.getOrDefault(0L)
 
@@ -170,7 +187,7 @@ class ShowGuide(
             val showNames = listOf(found.showName, show, searchName, series.name.orEmpty()).map { simple(TitleInfo.parse(it, null).searchQuery) }
                 .filter { it.isNotEmpty() }.toSet()
             val episodes = if (tmdbId > 0) {
-                runCatching { paired(context, tmdb, tmdbId, series.episodes, fix, showNames) }
+                runCatching { paired(context, tmdb, tmdbId, series.episodes, fix, showNames) { lengthOf(context, key, it) } }
                     .onFailure { Log.i(TAG, "TMDB didn't answer about the episodes: $it") }
                     .getOrNull()
             } else null
@@ -199,6 +216,7 @@ class ShowGuide(
             provider: List<NextEpisode.Episode>,
             fix: MatchFixes.Show?,
             showNames: Set<String>,
+            played: (season: Int) -> Int = { 0 },
         ): List<Ep> {
             val wantedSeasons = (provider.map { it.season } + (fix?.seasons() ?: emptyList())).distinct().take(MAX_SEASONS)
             val seasons = HashMap<Int, List<Tmdb.TvEpisode>>()
@@ -217,7 +235,7 @@ class ShowGuide(
                 } else null
             } else null
             val joined = if (straight == null) {
-                runCatching { joinedSeasons(context, tmdb, tmdbId, provider, seasons, fix, showNames) }
+                runCatching { joinedSeasons(context, tmdb, tmdbId, provider, seasons, fix, showNames, played) }
                     .onFailure { Log.i(TAG, "Couldn't pair joined episodes: $it") }.getOrNull().orEmpty()
             } else emptyMap()
             val all = seasons.values.flatten()
@@ -315,6 +333,7 @@ class ShowGuide(
             seasons: Map<Int, List<Tmdb.TvEpisode>>,
             fix: MatchFixes.Show?,
             showNames: Set<String>,
+            played: (season: Int) -> Int,
         ): Map<String, Pair<List<Tmdb.TvEpisode>, Boolean>> {
             val out = HashMap<String, Pair<List<Tmdb.TvEpisode>, Boolean>>()
             var groups: List<List<List<Pair<Int, Int>>>>? = null
@@ -331,7 +350,8 @@ class ShowGuide(
                 var stories = tmdbEps.map { JoinedEpisodes.Story(it.season, it.number, it.name, it.runtime) }
                 val titled = JoinedEpisodes.byTitles(titles, stories) != null
                 val lengths = mine.map { it.durationSecs / 60 }.filter { it > 0 }.sorted()
-                val providerMin = lengths.getOrNull(lengths.size / 2) ?: 0
+                // The provider's lengths, else how long an episode of the season played here really was.
+                val providerMin = lengths.getOrNull(lengths.size / 2) ?: played(season)
                 if (!JoinedEpisodes.looksJoined(count, numbers.last(), providerMin, stories, titled)) continue
                 val pairing = if (titled) JoinedEpisodes.pair(titles, count, stories, emptyList()) else {
                     val all = groups ?: joinedGroups(context, tmdb, tmdbId).also { groups = it }
