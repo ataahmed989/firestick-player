@@ -771,11 +771,11 @@ class AutoSync(
             if (float) {
                 val fb = buf.asFloatBuffer()
                 val frames = fb.remaining() / channels
-                s.push(frames, { f, c -> fb.get(f * channels + c) }) { out, n -> detector.push(out, n) { mark(it) } }
+                s.push(frames, { f, c -> fb.get(f * channels + c) }) { out, side, n -> detector.push(out, side, n) { mark(it) } }
             } else {
                 val sb = buf.asShortBuffer()
                 val frames = sb.remaining() / channels
-                s.push(frames, { f, c -> sb.get(f * channels + c) / 32768f }) { out, n -> detector.push(out, n) { mark(it) } }
+                s.push(frames, { f, c -> sb.get(f * channels + c) / 32768f }) { out, side, n -> detector.push(out, side, n) { mark(it) } }
             }
             buf.position(start)
         }
