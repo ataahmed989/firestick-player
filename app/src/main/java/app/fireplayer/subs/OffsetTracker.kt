@@ -175,9 +175,11 @@ class OffsetTracker(
     private val floors = HashMap<Long, Long>()
     // Follow-ups of a hint in a row that weren't sure of anything: after a few, they're spaced out ([spacing]).
     private var misses = 0
-    // After Resync: the delay the viewer turned down, and where. It only comes back on talking heard after that.
+    // After Resync: the delay the viewer turned down, and where. It only comes back on talking heard after the press:
+    // from [freshFromMs] on (where it was pressed, or past what had been heard ahead of there by then).
     private var rejectedMs: Long? = null
     private var resyncAtMs = -1L
+    private var freshFromMs = -1L
     private val knownJumps = knownJumps.filter { abs(it) >= MIN_SHIFT_MS && abs(it) <= RANGE_MS - EDGE_MS }.take(GUESS_MAX)
     // Where the sound's format changed (an ad spliced in starts and ends with one, often): ad lengths to try.
     private val formats = TreeSet<Long>()
@@ -200,6 +202,12 @@ class OffsetTracker(
     private val openHeard = HashMap<Long, Int>()
 
     val segments: List<Segment> get() = map.toList()
+
+    /**
+     * Finding the first delay: the one a look was sure of, waiting for the next look to confirm it; else null. Auto sync
+     * puts it in use meanwhile (subtitles right seconds sooner), and if the next looks find another, that one takes over.
+     */
+    val tentativeMs: Long? get() = if (map.isEmpty()) candidate?.takeIf { it.segmentFromMs < 0 }?.delayMs else null
     /** Seconds of film where a match agreed with the map in this session (a copy), for [SyncMapping]. */
     fun confirmedSeconds(): BitSet = verified.clone() as BitSet
 
@@ -309,8 +317,10 @@ class OffsetTracker(
      *    there on is; where it seems to fit up to now, all since the last break is;
      *  - [centerMs] itself only comes back on talking heard after the press (so in a minute or two, as the subtitles
      *    stay as they are meanwhile); any other delay is taken from what was heard already, often at once.
+     * Listening ahead, the film up to [heardToMs] was heard before the press, though it's after [atMs]. Without [reject]
+     * (auto sync turned on, not Resync: nobody said the delay in use is wrong), [centerMs] is only where it looks from.
      */
-    fun relearn(atMs: Long, centerMs: Long, timeline: SpeechTimeline) {
+    fun relearn(atMs: Long, centerMs: Long, timeline: SpeechTimeline, heardToMs: Long = -1, reject: Boolean = true) {
         val lastBreak = breaks.floor(atMs) ?: 0L
         val fit = fitEnd(timeline, centerMs, lastBreak, atMs)
         val since = if (atMs - fit <= FITS_TO_NOW_MS) lastBreak else fit
@@ -335,8 +345,9 @@ class OffsetTracker(
         misses = 0
         suspectMs = since
         suspectWhy = Hint.RESYNC
-        rejectedMs = centerMs
+        rejectedMs = if (reject) centerMs else null
         resyncAtMs = atMs
+        freshFromMs = maxOf(atMs, heardToMs)
     }
 
     /**
@@ -345,9 +356,10 @@ class OffsetTracker(
      * says the delay in use is wrong there, so it only comes back on talking heard after the press; without (lining up
      * against the film's own subtitles, which can't be wrong the way a guess from the talking can), it's simply checked
      * again. Given [nowMs] (where the timeline ends, ahead of where the film plays), that's done at once and the decision
-     * returned; else at the next [step]. Null with nothing known yet (then it's [relearn]).
+     * returned; else at the next [step]. Null with nothing known yet (then it's [relearn]). Listening ahead, the film up
+     * to [heardToMs] was heard before the press, though it's after [atMs].
      */
-    fun recheck(atMs: Long, timeline: SpeechTimeline, reject: Boolean, nowMs: Long? = null): Decision? {
+    fun recheck(atMs: Long, timeline: SpeechTimeline, reject: Boolean, nowMs: Long? = null, heardToMs: Long = -1): Decision? {
         if (map.isEmpty()) return null
         val i = indexAt(atMs)
         val seg = map[i]
@@ -376,6 +388,7 @@ class OffsetTracker(
         if (reject) {
             rejectedMs = seg.delayMs
             resyncAtMs = atMs
+            freshFromMs = maxOf(atMs, heardToMs)
         } else {
             rejectedMs = null
         }
@@ -463,17 +476,19 @@ class OffsetTracker(
         sinceCheckMs = 0
         lastCheckToMs = now
         val h = SyncMatcher.heard(tl.speech, tl.heard, frame(from), frame(now) + 1) ?: return waiting(now)
-        val res = SyncMatcher.match(h, lines, learnCenterMs, learnRangeMs)
+        // By the talking, how far the best stands out is judged against shifts up to [RANGE_MS] away (see SyncMatcher.match)
+        val res = SyncMatcher.match(h, lines, learnCenterMs, learnRangeMs, if (clean) learnRangeMs else maxOf(learnRangeMs, RANGE_MS))
         fun decide(o: Outcome, note: String = "") = Decision(o, segments, res.delayMs, now, from, now, res, Double.NaN, note)
         if (!sure(res, learnCenterMs, learnRangeMs)) {
+            looselyConfirmed(tl, res, from, now)?.let { return it }
             candidate = null
             return decide(Outcome.NOT_SURE, unsureNote(res))
         }
         // The delay the viewer turned down with Resync, from talking heard before: listens afresh for it.
         val rejected = rejectedMs
-        if (rejected != null && abs(res.delayMs - rejected) < MIN_SHIFT_MS && from < resyncAtMs) {
+        if (rejected != null && abs(res.delayMs - rejected) < MIN_SHIFT_MS && from < freshFromMs) {
             candidate = null
-            suspectMs = resyncAtMs
+            suspectMs = minOf(freshFromMs, now)
             suspectWhy = Hint.RESYNC
             return decide(Outcome.NOT_SURE, "the delay Resync turned down: only talking from the press on can bring it back")
         }
@@ -492,7 +507,8 @@ class OffsetTracker(
         if (before == null || abs(before.delayMs - res.delayMs) > AGREE_MS) {
             val fits = fitStart(tl, res.delayMs, from, now)
             if (!confirmsAtOnce(tl, res.delayMs, learnCenterMs, learnRangeMs, fits, now)) {
-                candidate = Candidate(res.delayMs, -1, from, now, fits)
+                // The first delay: confirmed on a little fresh talking, as the subtitles are wrong until it is
+                candidate = Candidate(res.delayMs, -1, from, now, fits).also { if (!clean) it.waitTalkMs = LEARN_CONFIRM_TALK_MS }
                 return decide(Outcome.NOT_SURE, "sure once")
             }
             proofFrom = fits
@@ -554,9 +570,9 @@ class OffsetTracker(
         // After Resync: the delay the viewer turned down, from talking heard before the press, doesn't count.
         val rejected = rejectedMs
         if (rejected != null && abs(res.delayMs - rejected) < TUNE_MS) {
-            if (from < resyncAtMs) {
+            if (from < freshFromMs) {
                 candidate = null
-                suspectMs = resyncAtMs
+                suspectMs = minOf(freshFromMs, now)
                 suspectWhy = Hint.RESYNC
                 return decide(Outcome.NOT_SURE, cur, "the delay Resync turned down: only talking from the press on can bring it back")
             }
@@ -898,6 +914,29 @@ class OffsetTracker(
             if (f < 0) return -1
         }
         return f * 10L
+    }
+
+    /**
+     * The first delay, sure once, confirmed by the next look although that look isn't sure on its own: its best shift is
+     * still within [LOOSE_AGREE_MS] of it, and on the talking heard since the first look alone the delay stands out
+     * ([LOOSE_FRESH_Z]). Where music runs under nearly everything (a cartoon), every look's overlap stays low and two
+     * sure looks in a row took minutes; one sure look and the next one pointing the same way is proof enough. Null when
+     * it isn't confirmed this way.
+     */
+    private fun looselyConfirmed(tl: SpeechTimeline, res: SyncMatcher.Result, from: Long, now: Long): Decision? {
+        val c = candidate ?: return null
+        if (c.segmentFromMs >= 0 || abs(res.delayMs - c.delayMs) > LOOSE_AGREE_MS || res.r < LOOSE_MIN_R) return null
+        if (talkingMs(tl, c.toMs, now) < c.waitTalkMs || rejectedMs?.let { abs(c.delayMs - it) < MIN_SHIFT_MS } == true) return null
+        val h = SyncMatcher.heard(tl.speech, tl.heard, frame(c.toMs), frame(now) + 1) ?: return null
+        val z = SyncMatcher.zAt(h, lines, c.delayMs, learnCenterMs, learnRangeMs)
+        if (z < LOOSE_FRESH_Z || !fitsLatest(tl, c.delayMs, from, now)) return null
+        map.add(Segment(0, c.delayMs))
+        candidate = null
+        suspectMs = -1
+        rejectedMs = null
+        checked(tl, c.delayMs, c.fitsFromMs, now, exactly = false)
+        return Decision(Outcome.LEARNED, segments, c.delayMs, now, from, now, res, Double.NaN,
+            "sure once, the next look agreeing (z=${"%.1f".format(java.util.Locale.ROOT, z)} since)")
     }
 
     /**
@@ -1252,6 +1291,13 @@ class OffsetTracker(
         // 70% of the time on 10 s of talking and 90% on 20 s (OffsetTrackerTest prints these).
         private const val CONFIRM_TALK_MS = 10_000L
         private const val FRESH_Z = 2.0
+        // The looser confirmation of a first delay ([looselyConfirmed]): how near the next look's best must be, how far
+        // the delay must stand out on the talking since, and the least overlap that look may have.
+        private const val LOOSE_AGREE_MS = 500L
+        // Fresh talking the first delay's confirming look needs (a later change needs [CONFIRM_TALK_MS]).
+        private const val LEARN_CONFIRM_TALK_MS = 5_000L
+        private const val LOOSE_FRESH_Z = 3.0
+        private const val LOOSE_MIN_R = 0.15
         // Confirming from talking already heard takes this much of the latest talking for the second stretch.
         private const val AT_ONCE_TALK_MS = 2 * CONFIRM_TALK_MS
         private const val AT_ONCE = "sure on two stretches at once"

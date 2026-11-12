@@ -247,8 +247,14 @@ object SyncMatcher {
         return match(h, Lines(lines, subs), centerMs, rangeMs)
     }
 
-    /** Slides [subs] over [h], shifts within [centerMs] ± [rangeMs]. The work is blocks heard × shifts tried. */
-    fun match(h: Heard, subs: Lines, centerMs: Long = 0, rangeMs: Long = RANGE_MS): Result {
+    /**
+     * Slides [subs] over [h], shifts within [centerMs] ± [rangeMs]. The work is blocks heard × shifts tried. With
+     * [zRangeMs] wider than [rangeMs], how far the best stands out ([Result.z]) is measured against the shifts that far
+     * either way too (every third of those outside the range): where talking and lines line up loosely around the right
+     * shift (music under every scene), the shifts near it overlap a little too, and judged against those alone the best
+     * looked no better than chance.
+     */
+    fun match(h: Heard, subs: Lines, centerMs: Long = 0, rangeMs: Long = RANGE_MS, zRangeMs: Long = rangeMs): Result {
         val center = (centerMs / 100).toInt()
         val reach = (rangeMs / 100).toInt()
         val lags = 2 * reach + 1
@@ -257,15 +263,28 @@ object SyncMatcher {
         var best = 0
         for (k in 1 until lags) if (rs[k] > rs[best]) best = k
         var runnerUp = 0.0
-        var mean = 0.0
+        var sum = 0.0
+        var squares = 0.0
+        var count = 0
         for (k in 0 until lags) {
-            mean += rs[k]
+            sum += rs[k]
+            squares += rs[k] * rs[k]
+            count++
             if (kotlin.math.abs(k - best) > 15 && rs[k] > runnerUp) runnerUp = rs[k]
         }
-        mean /= lags
-        var sd = 0.0
-        for (k in 0 until lags) sd += (rs[k] - mean) * (rs[k] - mean)
-        sd = sqrt(sd / lags)
+        val zReach = (zRangeMs / 100).toInt()
+        if (zReach > reach) {
+            for (d in reach + 1..zReach step 3) {
+                for (lag in intArrayOf(center - d, center + d)) {
+                    val r = rAtLag(h, subs.ys, lag)
+                    sum += r
+                    squares += r * r
+                    count++
+                }
+            }
+        }
+        val mean = sum / count
+        val sd = sqrt(maxOf(0.0, squares / count - mean * mean))
         val z = if (sd > 0) (rs[best] - mean) / sd else 0.0
 
         // The same around the best block, 10 ms at a time, mark by mark.

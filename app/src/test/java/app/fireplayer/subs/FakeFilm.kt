@@ -56,10 +56,14 @@ class FakeFilm private constructor(
             /** How long lines last and the pauses between them (shortest, and how much longer at most), in ms. The
              *  defaults talk sparsely (about 6 lines a minute); [TALKY] is a talkative TV episode (about 13). */
             pace: Pace = SPARSE,
+            /** No lines in the film's first [introMs] (a theme song), loud music marked as talking now and then
+             *  ([introNoise], as [noise]) on top of the usual noise. */
+            introMs: Long = 0,
+            introNoise: Double = 0.0,
         ): FakeFilm {
             val rnd = Random(seed)
             var lines = ArrayList<SubtitleTimes.Line>()
-            var t = 5_000L
+            var t = if (introMs > 0) maxOf(0L, introMs - delayMs) else 5_000L
             while (t < minutes * 60_000L) {
                 val length = pace.lineMs + rnd.nextInt(pace.lineSpreadMs)
                 lines += SubtitleTimes.Line(t, t + length)
@@ -119,6 +123,15 @@ class FakeFilm private constructor(
             for (f in 0 until (length / 10).toInt()) {
                 if (burst == 0 && rnd.nextDouble() < noise / 30) burst = 30 + rnd.nextInt(200)
                 if (burst > 0) { talking.set(f); burst-- }
+            }
+            if (introNoise > 0) {
+                // Its own random numbers, so the rest of the film is as it would be without the intro's music.
+                val music = Random(seed * 7_919 + 13)
+                burst = 0
+                for (f in 0 until (introMs / 10).toInt()) {
+                    if (burst == 0 && music.nextDouble() < introNoise / 30) burst = 30 + music.nextInt(200)
+                    if (burst > 0) { talking.set(f); burst-- }
+                }
             }
             return FakeFilm(lines, talking, length, pieces)
         }
