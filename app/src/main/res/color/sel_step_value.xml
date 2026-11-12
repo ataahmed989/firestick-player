@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A stepper's value and arrows: light blue, a deeper blue on the white selected row. -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_focused="true" android:color="@color/badge_on_focused" />
+    <item android:color="@color/step_value" />
+</selector>

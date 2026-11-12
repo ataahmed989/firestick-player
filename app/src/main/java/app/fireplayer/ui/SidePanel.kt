@@ -94,6 +94,7 @@ class SidePanel(private val activity: Activity) {
         val y = scroll.scrollY
         list.removeAllViews()
         renderer?.invoke(this)
+        RowGroups.apply(list)
         scroll.scrollTo(0, y)
         val focusRows = focusables()
         if (focusRows.isNotEmpty()) {
@@ -133,15 +134,33 @@ class SidePanel(private val activity: Activity) {
 
     // ---- Building blocks -------------------------------------------------
 
-    fun header(text: String) {
-        val tv = TextView(activity).apply {
+    /**
+     * A section's heading: small caps with a light blue line icon before it ([icon]; by default the one for this
+     * heading's name, [headingIcon]). The rows under it form one card ([RowGroups]).
+     */
+    fun header(text: String, icon: Int? = headingIcon(text)) {
+        val line = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            // In line with the rows' labels inside their card.
+            setPadding(rows.dp(12), 0, 0, 0)
+        }
+        if (icon != null) {
+            line.addView(ImageView(activity).apply {
+                setImageResource(icon)
+                imageTintList = android.content.res.ColorStateList.valueOf(ContextCompat.getColor(activity, R.color.heading_icon))
+            }, LinearLayout.LayoutParams(rows.dp(13), rows.dp(13)).apply { marginEnd = rows.dp(7) })
+        }
+        line.addView(TextView(activity).apply {
             this.text = text.uppercase()
             typeface = ResourcesCompat.getFont(activity, R.font.figtree_700)
             letterSpacing = 0.1f
-            setTextColor(ContextCompat.getColor(activity, R.color.text_muted))
+            setTextColor(ContextCompat.getColor(activity, R.color.heading))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
-        }
-        list.addView(tv, rows.listParams(top = 9, bottom = 3))
+            isSingleLine = true
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        list.addView(line, rows.listParams(top = 12, bottom = 4))
     }
 
     /** A note under the rows; [accent] makes it blue, for something that needs doing, such as a change to save. */
@@ -176,7 +195,7 @@ class SidePanel(private val activity: Activity) {
             row.isClickable = false
             row.alpha = 0.38f
         }
-        add(row)
+        add(row, groupable = enabled)
         return row
     }
 
@@ -229,6 +248,7 @@ class SidePanel(private val activity: Activity) {
             clipChildren = false
             clipToPadding = false
         }
+        pair.setTag(R.id.group_row, true)
         pair.addView(row, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         pair.addView(arrow, LinearLayout.LayoutParams(rows.dp(36), ViewGroup.LayoutParams.MATCH_PARENT).apply {
             marginStart = rows.dp(6)
@@ -333,7 +353,7 @@ class SidePanel(private val activity: Activity) {
                 .apply { marginStart = rows.dp(12) }
         })
         row.setOnClickListener { onClick() }
-        add(row)
+        add(row, groupable = false)
         return row
     }
 
@@ -366,7 +386,7 @@ class SidePanel(private val activity: Activity) {
             alpha = 0.6f
         })
         row.setOnClickListener { onClick() }
-        add(row)
+        add(row, groupable = false)
         return row
     }
 
@@ -446,7 +466,7 @@ class SidePanel(private val activity: Activity) {
                 text = s.value
                 gravity = Gravity.CENTER
                 typeface = ResourcesCompat.getFont(activity, R.font.figtree_700)
-                setTextColor(ContextCompat.getColor(activity, R.color.text))
+                setTextColor(ContextCompat.getColor(activity, R.color.step_value))
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
             }, LinearLayout.LayoutParams(rows.dp(44), ViewGroup.LayoutParams.WRAP_CONTENT))
             pair.addView(button("›") { s.onStep(1) }, LinearLayout.LayoutParams(rows.dp(30), rows.dp(30)))
@@ -514,7 +534,8 @@ class SidePanel(private val activity: Activity) {
 
     /** A row adjusted with left / right on the D-pad, like "Delay  ‹ 0 ms ›". */
     fun stepper(label: String, value: String, onStep: (direction: Int) -> Unit): View {
-        val row = rows.build(label, "‹  $value  ›", null)
+        // The value and its arrows in blue, like the other values that can be changed right here.
+        val row = rows.build(label, "‹  $value  ›", null, valueColors = rows.stepColors)
         add(row) { keyCode, event ->
             if (keyCode != KeyEvent.KEYCODE_DPAD_LEFT && keyCode != KeyEvent.KEYCODE_DPAD_RIGHT) {
                 false
@@ -533,7 +554,9 @@ class SidePanel(private val activity: Activity) {
         list.addView(View(activity), LinearLayout.LayoutParams(1, rows.dp(dp)))
     }
 
-    private fun add(row: View, extraKeys: ((Int, KeyEvent) -> Boolean)? = null) {
+    /** Adds a row to the list; a [groupable] one joins the rows around it in one card ([RowGroups]). */
+    private fun add(row: View, groupable: Boolean = true, extraKeys: ((Int, KeyEvent) -> Boolean)? = null) {
+        if (groupable) row.setTag(R.id.group_row, true)
         row.setOnKeyListener { v, keyCode, event ->
             extraKeys?.invoke(keyCode, event) == true || Rows.verticalNav(list, v, keyCode, event) ||
                 // Left / right mean nothing on other rows; used up here so focus can't leave the window.
@@ -543,6 +566,30 @@ class SidePanel(private val activity: Activity) {
     }
 
     companion object {
+        /** The icon beside each heading, by its name; headings not listed have none. */
+        private val HEADING_ICONS = mapOf(
+            "This film" to R.drawable.ic_head_film,
+            "This episode" to R.drawable.ic_head_film,
+            "In this video" to R.drawable.ic_head_film,
+            "Remote" to R.drawable.ic_head_remote,
+            "Look" to R.drawable.ic_head_look,
+            "Skipping" to R.drawable.ic_head_skip,
+            "Defaults" to R.drawable.ic_head_lang,
+            "Playback" to R.drawable.ic_head_play,
+            "TiviMate titles" to R.drawable.ic_head_tv,
+            "Playlists" to R.drawable.ic_head_list,
+            "Subtitle font" to R.drawable.ic_head_font,
+            "Online subtitles and TMDB API" to R.drawable.ic_head_subs,
+            "Other subtitles" to R.drawable.ic_head_subs,
+            "Skip intro and credits" to R.drawable.ic_head_intro,
+            "App" to R.drawable.ic_head_app,
+            "Customs" to R.drawable.ic_head_star,
+            "Downloaded before" to R.drawable.ic_head_download,
+            "Search results" to R.drawable.ic_head_search,
+        )
+
+        fun headingIcon(name: String): Int? = HEADING_ICONS[name]
+
         /** A small text-entry window; the Fire TV keyboard opens for it. [hint] shows in the empty box. */
         fun prompt(
             activity: Activity,
