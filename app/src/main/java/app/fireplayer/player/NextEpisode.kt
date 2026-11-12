@@ -301,7 +301,7 @@ class NextEpisode(context: Context, private val headers: Map<String, String>) {
                     added = e.str("added")?.toLongOrNull() ?: 0L,
                     plot = info?.str("plot").orEmpty(),
                     image = info?.str("movie_image")?.takeIf { it.startsWith("http") },
-                    durationSecs = info?.str("duration_secs")?.toIntOrNull() ?: 0,
+                    durationSecs = info?.str("duration_secs")?.toIntOrNull()?.takeIf { it > 0 } ?: clockSecs(info?.str("duration")),
                     airDate = info?.str("releasedate") ?: info?.str("air_date").orEmpty(),
                 )
             }.sortedBy { it.number }
@@ -311,6 +311,16 @@ class NextEpisode(context: Context, private val headers: Map<String, String>) {
         val year = (about?.str("year") ?: about?.str("releaseDate") ?: about?.str("release_date"))
             ?.let { YEAR.find(it)?.value?.toIntOrNull() } ?: 0
         return Series(about?.str("name"), episodes, tmdb, year)
+    }
+
+    /** "00:22:31" or "22:31" in seconds; 0 when it isn't one. */
+    private fun clockSecs(text: String?): Int {
+        val parts = text?.trim()?.split(':')?.map { it.trim().toIntOrNull() ?: return 0 } ?: return 0
+        return when (parts.size) {
+            3 -> parts[0] * 3600 + parts[1] * 60 + parts[2]
+            2 -> parts[0] * 60 + parts[1]
+            else -> 0
+        }
     }
 
     /** A season's episodes, which come as a list, as episodes keyed "0", "1"…, or (just one) as that episode. */

@@ -1296,6 +1296,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             hideBuffering()
         }
         if (state == Player.STATE_READY) {
+            noteEpisodeLength()
             if (glassAfterSeek) {
                 glassAfterSeek = false
                 backdrop?.frameChanged()
@@ -4189,10 +4190,25 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 updateTitle()
                 entries.lastOrNull()?.let { lineUpFromGuide(it) }
                 showGuideInSheet()
+                noteEpisodeLength()
                 if (panel.isOpen && settingsOpen) panel.refresh()
                 then?.invoke()
             }
         }
+    }
+
+    /**
+     * Notes how long this episode really is, for a provider that doesn't say: a season of half-hours joined from TMDB's
+     * short episodes is told by it (see [JoinedEpisodes]). The first time it's known for the season, the guide is
+     * made again with it.
+     */
+    private fun noteEpisodeLength() {
+        val g = guide ?: return
+        val entry = currentEntry() ?: return
+        val ep = guideEpisode(entry) ?: return
+        val ms = player?.duration ?: return
+        if (ms <= 0 || ms == androidx.media3.common.C.TIME_UNSET) return
+        if (ShowGuide.noteLength(applicationContext, g.key, ep.providerSeason, (ms / 60_000L).toInt()) && g.tmdbId > 0) rebuildFromFix()
     }
 
     /** Subtitles would show through the episode cards; they step aside while the sheet is up. */
