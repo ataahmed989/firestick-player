@@ -12,7 +12,11 @@ object CrossCheck {
     enum class Verdict { AGREES, DISAGREES, UNSURE }
 
     /** What the talking said: [delayMs] is its own best, [inUseMs] the delay found from the film's subtitles. */
-    class Result(val verdict: Verdict, val delayMs: Long, val inUseMs: Long, val fromMs: Long, val toMs: Long, val note: String) {
+    class Result(
+        val verdict: Verdict, val delayMs: Long, val inUseMs: Long, val fromMs: Long, val toMs: Long, val note: String,
+        /** How far the talking's own best stands out (NaN when it wasn't matched). */
+        val z: Double = Double.NaN,
+    ) {
         override fun toString() = "${verdict.name.lowercase()}: the talking says ${SyncMatcher.formatShift(delayMs)}, " +
             "in use ${SyncMatcher.formatShift(inUseMs)} | heard ${OffsetTracker.clock(fromMs)}-${OffsetTracker.clock(toMs)} | $note"
     }
@@ -51,7 +55,7 @@ object CrossCheck {
                 zHere < DISAGREE_Z -> Verdict.DISAGREES
             else -> Verdict.UNSURE
         }
-        return Result(verdict, res.delayMs, cur, a, b, numbers)
+        return Result(verdict, res.delayMs, cur, a, b, numbers, res.z)
     }
 
     private fun talkingMs(tl: SpeechTimeline, from: Long, to: Long): Long =
