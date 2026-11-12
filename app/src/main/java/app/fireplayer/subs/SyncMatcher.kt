@@ -180,7 +180,8 @@ object SyncMatcher {
         val starts = subs.starts
         val lo = java.util.Arrays.binarySearch(starts, fromMs - centerMs - rangeMs).let { if (it < 0) -it - 1 else it }
         val hi = java.util.Arrays.binarySearch(starts, toMs - centerMs + rangeMs).let { if (it < 0) -it - 1 else it }
-        if (hi - lo < ONSET_MIN) return null
+        // Fewer than a few lines to go by, or far more than talking could start (the work is shifts × line starts).
+        if (hi - lo < ONSET_MIN || hi - lo > ONSET_MAX_STARTS) return null
         val n = (2 * rangeMs / ONSET_STEP_MS).toInt() + 1
         val scores = IntArray(n)
         for (k in 0 until n) {
@@ -220,6 +221,7 @@ object SyncMatcher {
     private const val ONSET_TOL_MS = 150L
     private const val ONSET_STEP_MS = 50L
     private const val ONSET_MIN = 12
+    private const val ONSET_MAX_STARTS = 400
     // The next best place counts only this far from the best (its own shoulder doesn't).
     private const val ONSET_APART_MS = 500L
 
@@ -255,8 +257,15 @@ object SyncMatcher {
             detrend(ys, n)
         }
 
-        /** Where each line starts (ms), in order: what [onsetMatch] lines up with where talking starts. */
-        internal val starts: LongArray by lazy { lines.map { it.startMs }.sorted().toLongArray() }
+        /**
+         * Where each line starts (ms), in order: what [onsetMatch] lines up with where talking starts. Starts closer than
+         * [ONSET_TOL_MS] to the one before are one (signs typeset line by line, karaoke): they'd only add work.
+         */
+        internal val starts: LongArray by lazy {
+            val out = ArrayList<Long>(lines.size)
+            for (s in lines.map { it.startMs }.sorted()) if (out.isEmpty() || s - out.last() > ONSET_TOL_MS) out += s
+            out.toLongArray()
+        }
 
         /** How many lines, shown [delayMs] later, are on screen at some point between film times [fromMs] and [toMs]. */
         fun onScreen(delayMs: Long, fromMs: Long, toMs: Long): Int =

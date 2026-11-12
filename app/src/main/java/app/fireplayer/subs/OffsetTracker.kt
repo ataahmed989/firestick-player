@@ -172,6 +172,10 @@ class OffsetTracker(
     // Where the last match ended, so a follow-up waits for talking after it.
     private var lastCheckToMs = -1L
     private var learnPlayedMs = 0L
+    // Finding the first delay, not sure: the best the overlap keeps coming back to, on how many looks in a row, since when.
+    private var steadyMs = 0L
+    private var steadyLooks = 0
+    private var steadyFromMs = 0L
     private var quietHintedMs = -1L
     // Matching in a segment found after a break starts no earlier than its proof did (segment start to film time).
     private val floors = HashMap<Long, Long>()
@@ -309,7 +313,21 @@ class OffsetTracker(
         if (toMs < 0) return
         val f = frame(toMs)
         val lastHeard = timeline.heard.previousSetBit(f)
-        if (lastHeard < 0 || lastHeard < f - NEAR_FRAMES) hint(toMs, Hint.SEEK)
+        if (lastHeard < 0 || lastHeard < f - NEAR_FRAMES) {
+            hint(toMs, Hint.SEEK)
+            // Still finding the first delay: a fresh try where the film is now (the minutes spent elsewhere don't count
+            // towards giving up, and the best found there isn't this stretch's).
+            if (map.isEmpty()) learnAgain()
+        }
+    }
+
+    /**
+     * Finding the first delay: tries afresh from here, as if it had only begun ([GAVE_UP] isn't the end: the viewer may
+     * be anywhere in the film, and the talking clearer later on). What was heard, and a delay sure once, are kept.
+     */
+    fun learnAgain() {
+        learnPlayedMs = 0
+        steadyLooks = 0
     }
 
     /**
@@ -526,6 +544,44 @@ class OffsetTracker(
         if (onset == null && talkingMs(tl, from, now) < minTalkMs) return waiting(now)
         if (onset == null && !sure(res, learnCenterMs, learnRangeMs)) {
             looselyConfirmed(tl, res, from, now)?.let { return it }
+            // Steady: the same best (within [STEADY_AGREE_MS]) on [STEADY_LOOKS] looks in a row over [STEADY_FILM_MS] of
+            // film, standing out a little ([STEADY_Z]) each time and fitting the latest talking: where talking matches
+            // lines only loosely all through (music and effects under it), that's as sure as it gets. Put in use like a
+            // delay sure once; kept when the overlap is sure of it, or after twice as many looks still the same.
+            val clear = res.z >= STEADY_Z && res.r >= STEADY_R && abs(res.delayMs - learnCenterMs) <= learnRangeMs - EDGE_MS
+            if (!clear) {
+                steadyLooks = 0
+            } else if (steadyLooks > 0 && abs(res.delayMs - steadyMs) <= STEADY_AGREE_MS) {
+                steadyLooks++
+            } else {
+                steadyMs = res.delayMs
+                steadyLooks = 1
+                steadyFromMs = now
+            }
+            val c = candidate
+            val agrees = c != null && clear && abs(c.delayMs - res.delayMs) <= STEADY_AGREE_MS
+            if (!agrees && clear && steadyLooks >= STEADY_LOOKS && now - steadyFromMs >= STEADY_FILM_MS && fitsLatest(tl, res.delayMs, from, now)) {
+                candidate = Candidate(res.delayMs, -1, from, now, from).also {
+                    it.byOnsets = true
+                    it.waitTalkMs = LEARN_CONFIRM_TALK_MS
+                }
+                return decide(Outcome.NOT_SURE, "sure once, the same best on $steadyLooks looks")
+            }
+            // A delay put in use (by sentence starts or steady) that this look still points to: kept once the talking
+            // since bears it out on its own (looks of the same stretch only repeat the same best), else left waiting.
+            if (agrees && c!!.byOnsets) {
+                val no = confirmFails(tl, c, res.delayMs, learnCenterMs, learnRangeMs, now)
+                    ?: run {
+                        map.add(Segment(0, c.delayMs))
+                        candidate = null
+                        suspectMs = -1
+                        rejectedMs = null
+                        checked(tl, c.delayMs, from, now, exactly = false)
+                        return Decision(Outcome.LEARNED, segments, c.delayMs, now, from, now, res, Double.NaN,
+                            "the same best, borne out by the talking since ($steadyLooks looks)")
+                    }
+                if (candidate != null) return decide(Outcome.NOT_SURE, "still the same best ($steadyLooks looks): $no")
+            }
             candidate = null
             return decide(Outcome.NOT_SURE, unsureNote(res))
         }
@@ -581,13 +637,14 @@ class OffsetTracker(
             }
             proofFrom = fits
             note = AT_ONCE
-        } else if (before.byOnsets || onset != null) {
-            // By sentence starts on one look and the overlap, sure, on another: two ways agreeing, kept at once. By sentence
-            // starts again: borne out on fresh talking.
-            if (onset != null && talkingMs(tl, before.toMs, now) < before.waitTalkMs) return decide(Outcome.NOT_SURE, "waiting for fresh talking")
-            note = if (onset != null) "by sentence starts, borne out ($onset)" else "by sentence starts, the overlap agreeing"
+        } else if (before.byOnsets && onset == null) {
+            // By sentence starts (or steady) on one look and the overlap, sure, on another: two ways agreeing, kept at once.
+            note = "by sentence starts, the overlap agreeing"
         } else {
+            // Again (by sentence starts too): the look is mostly of the same stretch as the first, the talking before a
+            // break inside it as well, so the talking since must bear it out on its own.
             confirmFails(tl, before, res.delayMs, learnCenterMs, learnRangeMs, now)?.let { return decide(Outcome.NOT_SURE, it) }
+            if (onset != null) note = "by sentence starts, borne out ($onset)"
         }
         map.add(Segment(0, res.delayMs))
         candidate = null
@@ -1371,6 +1428,12 @@ class OffsetTracker(
         const val ONSET_MIN_HEARD_MS = 30_000L
         // Each half on its own: standing out this far, within this of the whole stretch's delay.
         const val ONSET_HALF_Z = 4.0
+        // Steady best ([learnCheck]): looks in a row, film they span, how near each best, how far it stands out.
+        const val STEADY_LOOKS = 6
+        const val STEADY_FILM_MS = 60_000L
+        const val STEADY_AGREE_MS = 150L
+        const val STEADY_Z = 3.0
+        const val STEADY_R = 0.12
         const val ONSET_AGREE_MS = 200L
         const val LEARN_MAX_MS = 6 * 60_000L
         // Talking needed in a stretch before matching it is worth it (SyncMatcher wants as much to be sure).

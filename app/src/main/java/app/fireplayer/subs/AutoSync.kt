@@ -1070,8 +1070,11 @@ class AutoSync(
                 return true
             }
             if (why == "gave up") {
-                jobRef.compareAndSet(current, null)
-                main.post { notFound(current) }
+                // Not found in [OffsetTracker.LEARN_MAX_MS] of film: it goes on looking, afresh from here (the talking
+                // may be clearer further on, or the viewer skips), the delay as it is meanwhile.
+                tracker?.learnAgain()
+                main.post { stillLooking(current) }
+                return true
             } else {
                 stopped(current, text)
             }
@@ -1478,6 +1481,9 @@ class AutoSync(
                         if (mode == Mode.TRACK) {
                             toSpeech(current, "Resync pressed again", tr?.segments?.let { trimmed(it) } ?: current.segments)
                         }
+                        // Check sync: the next KEPT says it's checked (else it'd be taken as told already, and the badge
+                        // would stay on Rechecking).
+                        keptTold = null
                         val tr2 = tracker
                         if (aheadState == Ahead.ON && tr2 != null && tr2 === aheadTracker && speechAhead.steppedToMs >= 0) {
                             // Heard ahead: the talking after the press (in the film) is mostly heard already, so it's
@@ -2042,6 +2048,15 @@ class AutoSync(
         mapping = null
         mappingVersion++
         onMappingChanged?.invoke()
+    }
+
+    /** On the main thread: no first delay yet after minutes of film; still looking (the badge stays as it is). */
+    private fun stillLooking(current: Job) {
+        if (current.generation != generation || byHand) return
+        detail = if (tentativeMs != null) "In use while it's confirmed; the talking here is hard to match." else
+            "Still looking: the talking here is hard to match."
+        if (state == State.NOT_SYNCED) state = State.LISTENING
+        onChanged()
     }
 
     private fun notFound(current: Job) {
