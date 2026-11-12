@@ -9,6 +9,8 @@ import android.system.OsConstants
 import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.C
+import androidx.media3.common.Format
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.decoder.ffmpeg.SideAudioDecoder
 import app.fireplayer.data.Prefs
@@ -50,11 +52,21 @@ import kotlin.math.abs
  * With nothing found yet (or after a delay set by hand) it finds the delay afresh. [undo] puts back the delay from before
  * auto sync and leaves it off for these subtitles.
  *
- * Kept light for the Fire TV Stick: one background thread at low priority (and FFmpeg's decode thread, when the sound
- * goes out undecoded, at the same), 10 ms marks of what was heard and of talking (about 180 KB for two hours),
- * nothing listened to beyond what plays, matching at most every 15 s of film and usually every few minutes (less often
- * while nothing heard fits), and it backs off while the picture drops frames. What it costs is logged every few
- * minutes (tag AutoSync).
+ * Listening goes by the film's sound as it loads ([SpeechAhead]) where it can: the player loads up to two minutes ahead
+ * of where it plays, and those very bytes are copied as they load ([EmbeddedCues.ahead]: no second connection, nothing
+ * loaded twice), decoded and heard before they play, so the first delay is usually known seconds after the film starts
+ * loading, and a change after a break before the break is on screen (put in as the film gets there). It's the same
+ * tracker, timeline and proof as listening where the film plays, only with the evidence earlier; where the film plays
+ * is still listened to for what wasn't heard ahead (the first moments, a stretch the listener fell behind on). Not for
+ * live streams, nor for films Media3 doesn't read itself (streams in pieces): those are listened to where they play.
+ * How long the first delay took is kept for the panel ([syncedInMs]).
+ *
+ * Kept light for the Fire TV Stick: one background thread at low priority (and FFmpeg's decode threads, for the sound
+ * heard ahead and when the sound goes out undecoded, at the same), 10 ms marks of what was heard and of talking (about
+ * 180 KB for two hours), the sound heard ahead decoded at most a quarter of the time while finding the first delay and
+ * a tenth after, at most 3 MB of it waiting (let go rather than held up), matching at most every 15 s of film and
+ * usually every few minutes (less often while nothing heard fits), and it backs off while the picture drops frames.
+ * What it costs is logged every few minutes (tag AutoSync).
  */
 @OptIn(UnstableApi::class)
 class AutoSync(
@@ -73,6 +85,8 @@ class AutoSync(
     private val embedded: EmbeddedCues? = null,
     /** The address the film playing now was loaded from (its key in [embedded]); on the main thread. */
     private val filmUri: () -> String? = { null },
+    /** Whether the film playing is a film (not live): only then is its sound heard ahead. On the main thread. */
+    private val isVod: () -> Boolean = { false },
 ) {
 
     enum class State { OFF, LISTENING, SYNCED, NOT_SYNCED }
@@ -151,6 +165,25 @@ class AutoSync(
     @Volatile private var backOffs = 0
     private var worker: Thread? = null
 
+    /** Where the film is playing (ms), for the listening thread: updated every second while listening; -1 unknown. */
+    @Volatile private var playheadMs = -1L
+    private val beat = object : Runnable {
+        override fun run() {
+            if (job == null) return
+            playheadMs = position().first
+            main.postDelayed(this, BEAT_MS)
+        }
+    }
+
+    // When auto sync started on these subtitles (elapsed realtime), to time how long the first delay took.
+    private var startedAt = 0L
+    /**
+     * How long it took from auto sync starting on these subtitles to their first delay (ms), for the panel; null while
+     * not found yet, or when it wasn't found this time (kept from before, or set by hand).
+     */
+    var syncedInMs: Long? = null
+        private set
+
     /**
      * Listening for one subtitle file and film, carrying on from [segments] found before; with none, the first delay
      * is looked for within [centerMs] ± [rangeMs]. For Resync, [relearnAtMs] is where the film was.
@@ -179,6 +212,8 @@ class AutoSync(
         val priorMs: Long? = null,
         /** Languages to prefer among the film's own tracks, the downloaded subtitles' own first. */
         val preferred: List<String> = emptyList(),
+        /** The film's sound is heard as it loads ([SpeechAhead]): a film Media3 reads itself, not live. */
+        val listenAhead: Boolean = false,
     )
 
     /** Resync pressed: the stretch around [atMs] checked again; [speech]: by the talking, whatever there is. */
@@ -199,6 +234,8 @@ class AutoSync(
         stopListening()
         clearMapping()
         stopHolding()
+        startedAt = 0
+        syncedInMs = null
         file = subtitle
         key = filmKey
         undoUs = null
@@ -237,10 +274,13 @@ class AutoSync(
             OffsetTracker.followedDelayMs(byHand, true, segments, position().first)?.let { moveDelay(it * 1000) }
             setState(State.SYNCED, syncedText())
             startFollowing()
-            // Listens on from what was found, in case the timing changes somewhere new this time.
+            // Listens on from what was found, in case the timing changes somewhere new this time. The sound loading
+            // meanwhile is copied already, to be heard ahead.
+            armAhead()
             loadLines(subtitle) { start() }
             return
         }
+        startedAt = SystemClock.elapsedRealtime()
         // A new episode: the delay the show's last one started with (subtitles from the same source), straight away.
         val prior = showStart()
         if (prior != null) {
@@ -256,6 +296,7 @@ class AutoSync(
             // Nothing to go on: the first lines wait a moment for the film's own subtitles, if it has any.
             holding = true
         }
+        armAhead()
         loadLines(subtitle) { start() }
     }
 
@@ -296,6 +337,8 @@ class AutoSync(
         basis = Basis.NONE
         priorMs = null
         segments = emptyList()
+        startedAt = now
+        syncedInMs = null
         prefs.forgetSyncedDelay(savedKey())
         prefs.forgetHandDelay(savedKey())
         if (lines == null) loadLines(f) { start(relearnAtMs = at) } else start(relearnAtMs = at)
@@ -306,6 +349,8 @@ class AutoSync(
         if (file == null) return
         prefs.saveHandDelay(savedKey(), delayUs / 1000)
         stopHolding()
+        startedAt = 0
+        syncedInMs = null
         if (state == State.OFF) return
         stopListening()
         clearMapping()
@@ -326,6 +371,8 @@ class AutoSync(
             clearMapping()
             stopHolding()
             beforeResync = null
+            startedAt = 0
+            syncedInMs = null
             setState(State.OFF, null)
         }
     }
@@ -362,6 +409,8 @@ class AutoSync(
         setDelayUs(before)
         undoUs = null
         byHand = true
+        startedAt = 0
+        syncedInMs = null
         segments = emptyList()
         prefs.forgetSyncedDelay(savedKey())
         setState(State.OFF, "Off for these subtitles; the delay is back to ${SyncMatcher.formatShift(before / 1000)}.")
@@ -421,6 +470,7 @@ class AutoSync(
         onMappingChanged = null
         onHoldEnded = null
         stopListening()
+        embedded?.ahead?.release()
         main.removeCallbacksAndMessages(null)
         worker?.interrupt()
         worker = null
@@ -463,7 +513,8 @@ class AutoSync(
             Basis.NONE -> "Lined up"
         }
         val where = if (i > 0) " here, after a break" else ""
-        return "$what: ${SyncMatcher.formatShift(ms)}$where."
+        val took = syncedInMs?.takeIf { basis == Basis.TRACK || basis == Basis.SPEECH }?.let { " in ${tookText(it)}" } ?: ""
+        return "$what$took: ${SyncMatcher.formatShift(ms)}$where."
     }
 
     /** What the panel says while Resync's check is going on. */
@@ -494,7 +545,12 @@ class AutoSync(
             main.post {
                 if (gen != generation || subtitle != file) return@post
                 lines = prepared
-                if (read.size < 20) setState(State.NOT_SYNCED, "These subtitles have too few lines to line up.") else then()
+                if (read.size < 20) {
+                    if (job == null) embedded?.aheadUri = null
+                    setState(State.NOT_SYNCED, "These subtitles have too few lines to line up.")
+                } else {
+                    then()
+                }
             }
         }.apply { isDaemon = true; name = "FirePlayerSyncRead" }.start()
     }
@@ -514,6 +570,7 @@ class AutoSync(
         val trackKey = choice?.takeIf { it != SPEECH } ?: prefs.syncTrack(savedKey())
         val prior = priorMs.takeIf { known.isEmpty() && relearnAtMs == null }
         val preferred = listOfNotNull(subtitleLanguage, prefs.subtitleLanguage.ifEmpty { null }, "en").distinct()
+        val ahead = armAhead()
         job = Job(
             gen, k, l, known,
             centerMs = if (relearnAtMs != null) delayUs() / 1000 else prior ?: 0,
@@ -528,7 +585,11 @@ class AutoSync(
             dropped = droppedTracks[savedKey()],
             priorMs = prior,
             preferred = preferred,
+            listenAhead = ahead,
         )
+        main.removeCallbacks(beat)
+        playheadMs = position().first
+        main.postDelayed(beat, BEAT_MS)
         if (known.isEmpty() && prior == null) {
             setState(State.LISTENING, if (uri != null && !speechOnly) "Lining up… (looking for the film's own subtitles, listening meanwhile)" else LISTENING_TEXT)
         }
@@ -541,7 +602,21 @@ class AutoSync(
         job = null
         resyncRef.set(null)
         tap.listening = false
+        embedded?.aheadUri = null
         main.removeCallbacks(following)
+        main.removeCallbacks(beat)
+    }
+
+    /**
+     * Starts copying the film's sound as it loads, for listening ahead, if it can be: a film Media3 reads itself, not
+     * live. True when it's copied.
+     */
+    private fun armAhead(): Boolean {
+        val e = embedded ?: return false
+        val uri = filmUri()
+        if (!LISTEN_AHEAD || uri == null || !isVod()) return false
+        e.aheadUri = uri
+        return true
     }
 
     private fun ensureWorker() {
@@ -565,6 +640,12 @@ class AutoSync(
 
     /** Where the worker's time goes: looking for the film's own subtitles (listening meanwhile), on them, or listening. */
     private enum class Mode { LOOKING, TRACK, SPEECH }
+
+    /**
+     * Listening ahead ([SpeechAhead]): not at all; copying, waiting for the first of it to be heard (listening where the
+     * film plays meanwhile); or heard ahead of where the film plays, the tracker stepped along it.
+     */
+    private enum class Ahead { OFF, WAITING, ON }
 
     /**
      * Lines the subtitles up against the film's own subtitles when there are any worth it, else against the talking
@@ -618,6 +699,46 @@ class AutoSync(
         var crossNext = 0L
         var crossUrgent = false
         var lastVerdict: CrossCheck.Verdict? = null
+        // Listening ahead: the sound copied as it loads, its decoder and format (and why it's left, when it is), the
+        // state, whether it failed for this film, since when it's waited and been behind, and the tracker last stepped
+        // along it.
+        val ring = embedded?.ahead
+        val speechAhead = SpeechAhead(timeline)
+        var aheadDecoder: SideAudioDecoder? = null
+        var aheadFormat: Format? = null
+        var aheadTrack = -1
+        var aheadSkip: String? = null
+        var aheadLastUs = -1L
+        var aheadState = Ahead.OFF
+        var aheadFailed = false
+        var aheadSince = 0L
+        var behindSince = 0L
+        var aheadTracker: OffsetTracker? = null
+        var idleSince = 0L
+        // For the cost log: 10 ms marks heard where the film plays while listening ahead, the most pieces waiting.
+        var filledFrames = 0L
+        var aheadBacklog = 0
+        val aheadOut = SideAudioDecoder.Output { pcm, ch, rate, us -> speechAhead.feed(pcm, us, ch, rate, C.ENCODING_PCM_16BIT) }
+        var decodedSince = 0L
+        var droppedSince = 0L
+        var filledSince = 0L
+        cost.ahead = { wall, decoderMs ->
+            val decoded = speechAhead.decodedMs - decodedSince
+            decodedSince = speechAhead.decodedMs
+            val droppedUs = ring?.droppedUs ?: 0L
+            val dropped = droppedUs - droppedSince
+            droppedSince = droppedUs
+            val filled = filledFrames - filledSince
+            filledSince = filledFrames
+            val edge = speechAhead.edgeMs
+            val lead = if (edge >= 0 && playheadMs >= 0) edge - playheadMs else 0L
+            val backlog = aheadBacklog
+            aheadBacklog = 0
+            "listening ahead ${aheadState.name.lowercase()}: decoded ${OffsetTracker.clock(decoded)} of film " +
+                "(x${"%.1f".format(java.util.Locale.ROOT, decoded.toDouble() / maxOf(1L, wall))}), lead ${lead / 1000} s, " +
+                "ahead decoder $decoderMs ms ${"%.2f%%".format(java.util.Locale.ROOT, decoderMs * 100.0 / maxOf(1L, wall))}, " +
+                "sound let go ${dropped / 1_000_000} s (ring full), backlog max $backlog pieces, playhead filled ${filled / 100} s"
+        }
 
         fun basisNow() = if (mode == Mode.TRACK) Basis.TRACK else Basis.SPEECH
 
@@ -625,18 +746,71 @@ class AutoSync(
             decoder?.release(); decoder = null; decoderKind = null
         }
 
+        fun letAheadDecoderGo() {
+            runCatching { aheadDecoder?.release() }
+            aheadDecoder = null
+            aheadFormat = null
+            aheadTrack = -1
+            aheadSkip = null
+            aheadLastUs = -1
+        }
+
+        /** Stops copying the sound as it loads, and lets go of what was kept for it. */
+        fun aheadDisarm() {
+            embedded?.aheadUri = null
+            ring?.release()
+            letAheadDecoderGo()
+        }
+
+        /** Listening ahead for [current], if it can: waits for the first of it to be heard. */
+        fun aheadArm(current: Job) {
+            if (!current.listenAhead || aheadFailed || ring == null || current.filmUri == null || mode == Mode.TRACK) {
+                // Copying may have been started for this job on the main thread all the same (it failed here before).
+                if (aheadState != Ahead.OFF || embedded?.aheadUri != null) aheadDisarm()
+                aheadState = Ahead.OFF
+                return
+            }
+            embedded?.aheadUri = current.filmUri
+            aheadState = Ahead.WAITING
+            aheadSince = SystemClock.elapsedRealtime()
+            behindSince = 0
+        }
+
+        /** Listening ahead stops for this film ([why] for the log): where the film plays is listened to again. */
+        fun aheadOff(why: String) {
+            if (aheadState == Ahead.OFF) return
+            val wasOn = aheadState == Ahead.ON
+            Log.i(TAG, "not listening ahead ($why): listening where the film plays")
+            aheadFailed = true
+            aheadState = Ahead.OFF
+            aheadDisarm()
+            if (wasOn) {
+                // Stepped from where it plays again: the first step, behind where the tracker was, starts afresh there.
+                tap.listening = true
+                cursor = -1.0
+                stepAt = played
+                lastKind = null
+            }
+        }
+
         /** A decision of [tr]'s, on [tl]: put in, logged, and the skip times told. False: the job ended. */
         fun handle(current: Job, tr: OffsetTracker, tl: SpeechTimeline, d: OffsetTracker.Decision, cpuMs: Long): Boolean {
             val onTrack = mode == Mode.TRACK
+            val ahead = !onTrack && aheadState == Ahead.ON
             if (d.outcome != Outcome.WAIT) {
                 cost.matched(cpuMs)
-                Log.i(TAG, if (onTrack) "film's subtitles: $d" else d.toString())
+                Log.i(TAG, if (onTrack) "film's subtitles: $d" else if (ahead) "ahead (playing ${OffsetTracker.clock(playheadMs)}): $d" else d.toString())
             }
             when (d.outcome) {
                 Outcome.LEARNED, Outcome.MOVED, Outcome.TUNED -> {
                     val b = basisNow()
                     keptTold = b
-                    main.post { decided(current, d, b) }
+                    val how = when {
+                        onTrack -> "the film's own subtitles"
+                        ahead -> "the speech heard ahead (to ${OffsetTracker.clock(d.toMs)}, playing ${OffsetTracker.clock(playheadMs)})"
+                        else -> "the speech where the film plays"
+                    }
+                    main.post { decided(current, d, b, how) }
                 }
                 Outcome.KEPT -> {
                     val b = basisNow()
@@ -678,6 +852,8 @@ class AutoSync(
             keptTold = null
             cost.against = "speech"
             tap.listening = true
+            aheadTracker = null
+            aheadArm(current)
             main.post { usingSpeech(current, why) }
         }
 
@@ -696,6 +872,10 @@ class AutoSync(
             keptTold = null
             letDecoderGo()
             tap.listening = false
+            // The film's own subtitles are read as it loads already: nothing is heard ahead meanwhile.
+            if (aheadState != Ahead.OFF) aheadDisarm()
+            aheadState = Ahead.OFF
+            aheadTracker = null
             cost.against = "film's subtitles ($key)"
             main.post { usingTrack(current, key) }
         }
@@ -745,6 +925,7 @@ class AutoSync(
             if (cursor >= 0) {
                 timeline.mark(cursor.toInt(), talking)
                 played++
+                if (aheadState == Ahead.ON) filledFrames++
             }
             cursor += 1.0
         }
@@ -758,7 +939,8 @@ class AutoSync(
             if (cursor < 0 || abs(frame - cursor) > 5) {
                 // A real jump (or the start) onto film not heard yet: the timing there gets checked.
                 if (cursor < 0 || abs(frame - cursor) > JUMP_FRAMES) {
-                    if (mode != Mode.TRACK) tracker?.seeked((frame * 10).toLong(), timeline)
+                    // Heard ahead, the tracker is stepped along that: here only holes in it are filled.
+                    if (mode != Mode.TRACK && aheadState != Ahead.ON) tracker?.seeked((frame * 10).toLong(), timeline)
                     // Checking against the talking: from here on.
                     if (crossing) crossFrom = (frame * 10).toLong()
                 }
@@ -790,7 +972,7 @@ class AutoSync(
                 val kind = piece.kind ?: return true
                 // The sound changing format in the middle of the film (ads are often encoded differently): a hint.
                 val was = lastKind
-                if (mode != Mode.TRACK && was != null && was !== kind && !sameSound(was, kind) && cursor >= 0 &&
+                if (mode != Mode.TRACK && aheadState != Ahead.ON && was != null && was !== kind && !sameSound(was, kind) && cursor >= 0 &&
                     abs(piece.filmUs / 10_000.0 - cursor) <= JUMP_FRAMES
                 ) {
                     tracker?.hint(piece.filmUs / 1000, OffsetTracker.Hint.FORMAT)
@@ -830,6 +1012,105 @@ class AutoSync(
             } finally {
                 tap.recycle(piece)
             }
+        }
+
+        /**
+         * One piece of the sound copied as it loads (waiting at most [waitMs] for it), decoded and marked as talking or
+         * not, then a pause in proportion, so it takes at most a quarter of this thread's time while finding the first
+         * delay and a tenth after. False when there was none.
+         */
+        fun pumpAhead(current: Job, waitMs: Long): Boolean {
+            val r = ring ?: return false
+            var piece = r.take(waitMs) ?: return false
+            // Another film's (the one before, loaded still): nothing to do with this one.
+            while (piece.uri != current.filmUri) {
+                r.recycle(piece)
+                piece = r.take(0) ?: return false
+            }
+            aheadBacklog = maxOf(aheadBacklog, r.pending() + 1)
+            val t0 = SystemClock.elapsedRealtime()
+            try {
+                val fmt = piece.format
+                if (fmt == null || piece.count == 0) return true
+                if (fmt !== aheadFormat || piece.track != aheadTrack) {
+                    val was = aheadFormat
+                    val changed = was == null || piece.track != aheadTrack || !sameAudio(was, fmt)
+                    // The sound changing format in the middle of the film (ads are often encoded differently): a hint.
+                    if (was != null && changed && aheadState == Ahead.ON && speechAhead.edgeMs >= 0 &&
+                        abs(piece.firstUs / 1000 - speechAhead.edgeMs) <= JUMP_FRAMES * 10L
+                    ) {
+                        tracker?.hint(piece.firstUs / 1000, OffsetTracker.Hint.FORMAT)
+                        Log.i(TAG, "sound format changed at ${OffsetTracker.clock(piece.firstUs / 1000)} (ahead): a hint to check the timing")
+                    }
+                    if (changed) {
+                        runCatching { aheadDecoder?.release() }
+                        aheadDecoder = null
+                        aheadSkip = null
+                        aheadLastUs = -1
+                        val mime = fmt.sampleMimeType
+                        when {
+                            mime == MimeTypes.AUDIO_RAW -> if (fmt.pcmEncoding !in READABLE_PCM) aheadSkip = "can't read this PCM"
+                            // Blu-ray lossless: too heavy to decode on the side.
+                            mime == MimeTypes.AUDIO_TRUEHD -> aheadSkip = "too heavy"
+                            SideAudioDecoder.canDecode(mime) -> {
+                                val before = threadIds()
+                                aheadDecoder = try {
+                                    SideAudioDecoder(fmt, AHEAD_BUFFERS)
+                                } catch (e: Exception) {
+                                    aheadSkip = "no decoder: ${e.message}"
+                                    null
+                                }
+                                cost.aheadThreads = threadIds() - before
+                            }
+                            else -> aheadSkip = "no decoder for $mime"
+                        }
+                        aheadSkip?.let { Log.i(TAG, "not listening ahead to this sound ($it): ${describeAudio(fmt)}") }
+                    }
+                    aheadFormat = fmt
+                    aheadTrack = piece.track
+                }
+                if (aheadSkip != null) return true
+                val span = piece.lastUs - piece.firstUs
+                val raw = aheadDecoder == null
+                if (piece.count >= 4 && span >= 500_000 && piece.size * 1_000_000L / span > if (raw) HEAVY_PCM_BYTES_PER_S else HEAVY_BYTES_PER_S) {
+                    aheadSkip = "too heavy"
+                    Log.i(TAG, "not listening ahead to this sound (too heavy, ${piece.size * 1_000L / span} KB/s): ${describeAudio(fmt)}")
+                    return true
+                }
+                // Samples were let go just before (the listener was behind): a hole, not a jump in the film.
+                if (piece.afterDrop) speechAhead.expectGap()
+                val d = aheadDecoder
+                if (d == null) {
+                    for (i in 0 until piece.count) {
+                        val a = piece.startOf(i)
+                        speechAhead.feed(ByteBuffer.wrap(piece.bytes, a, piece.ends[i] - a), piece.timesUs[i], fmt.channelCount, fmt.sampleRate, fmt.pcmEncoding)
+                    }
+                } else {
+                    // Not following on from the last piece: the decoder starts afresh.
+                    if (aheadLastUs >= 0 && abs(piece.firstUs - aheadLastUs) > AheadAudio.GAP_US) d.flush()
+                    for (i in 0 until piece.count) {
+                        val a = piece.startOf(i)
+                        var tries = 0
+                        while (!d.queue(piece.bytes, a, piece.ends[i] - a, piece.timesUs[i])) {
+                            d.drain(aheadOut)
+                            if (++tries > 50) break
+                            Thread.sleep(1)
+                        }
+                    }
+                    d.drain(aheadOut)
+                }
+                aheadLastUs = piece.lastUs
+            } catch (e: InterruptedException) {
+                throw e
+            } catch (t: Throwable) {
+                Log.w(TAG, "Listening ahead failed", t)
+                aheadOff("decoding failed")
+            } finally {
+                r.recycle(piece)
+            }
+            val spent = SystemClock.elapsedRealtime() - t0
+            if (spent > 0) Thread.sleep(minOf(spent * if (tracker?.learning != false) AHEAD_REST_LEARNING else AHEAD_REST, 1_000L))
+            return true
         }
 
         /** Starts listening for a while to check the track against the talking ([CrossCheck]). */
@@ -880,17 +1161,28 @@ class AutoSync(
             while (!Thread.currentThread().isInterrupted) {
                 val current = job
                 if (current == null) {
-                    // Nothing to do: the decoder is let go, and the thread waits.
+                    // Nothing to do: the decoders are let go, and the thread waits. The sound copied as it loads is let
+                    // go too, unless it's copied for listening about to start (for long, it isn't).
                     letDecoderGo()
+                    letAheadDecoderGo()
+                    aheadState = Ahead.OFF
+                    val now = SystemClock.elapsedRealtime()
+                    if (idleSince == 0L) idleSince = now
+                    if (embedded?.aheadUri == null) ring?.release() else if (now - idleSince > IDLE_ARMED_MS) aheadDisarm()
                     try { Thread.sleep(500) } catch (_: InterruptedException) { break }
                     continue
                 }
+                idleSince = 0L
                 if (current.generation != gen) {
                     gen = current.generation
                     if (current.filmKey != filmKey) {
                         timeline.clear()
                         filmKey = current.filmKey
                         tracker = null
+                        // Another film: nothing of it heard ahead yet (what's waiting of the one before is passed over).
+                        speechAhead.reset()
+                        letAheadDecoderGo()
+                        aheadFailed = false
                     }
                     publishedCount = -1
                     publishedSegments = null
@@ -923,6 +1215,9 @@ class AutoSync(
                     // Resync tries at once, with what was heard already.
                     stepAt = if (relearn != null) -TRY_EVERY_FRAMES else 0
                     tap.listening = true
+                    // The new tracker is brought to what's been heard ahead (and matched there at once) once it's on.
+                    aheadTracker = null
+                    aheadArm(current)
                 }
                 val wait = backOffUntil - SystemClock.elapsedRealtime()
                 if (wait > 0) {
@@ -948,9 +1243,21 @@ class AutoSync(
                         if (mode == Mode.TRACK) {
                             toSpeech(current, "Resync pressed again", tr?.segments ?: current.segments)
                         }
-                        Log.i(TAG, "Resync at ${OffsetTracker.clock(rq.atMs)}: checking again against the speech")
-                        tracker?.recheck(rq.atMs, timeline, reject = true)
-                        stepAt = played - TRY_EVERY_FRAMES
+                        val tr2 = tracker
+                        if (aheadState == Ahead.ON && tr2 != null && tr2 === aheadTracker && speechAhead.steppedToMs >= 0) {
+                            // Heard ahead: the talking after the press (in the film) is mostly heard already, so it's
+                            // checked at once, as against the film's own subtitles.
+                            Log.i(TAG, "Resync at ${OffsetTracker.clock(rq.atMs)}: checking again against the speech heard ahead (to ${OffsetTracker.clock(speechAhead.steppedToMs)})")
+                            val d = tr2.recheck(rq.atMs, timeline, reject = true, nowMs = speechAhead.steppedToMs)
+                            if (d != null) {
+                                if (d.outcome == Outcome.KEPT) keptTold = null
+                                handle(current, tr2, timeline, d, 0)
+                            }
+                        } else {
+                            Log.i(TAG, "Resync at ${OffsetTracker.clock(rq.atMs)}: checking again against the speech")
+                            tracker?.recheck(rq.atMs, timeline, reject = true)
+                            stepAt = played - TRY_EVERY_FRAMES
+                        }
                     }
                 }
 
@@ -1067,13 +1374,103 @@ class AutoSync(
                         }
                     }
                 }
+                // Listening ahead: waiting for the first of it, then the tracker is stepped along it, and where the film
+                // plays is only listened to for holes in it.
+                if (aheadState != Ahead.OFF && mode != Mode.TRACK) {
+                    val now = SystemClock.elapsedRealtime()
+                    val playing = playheadMs
+                    fun aheadReady() = speechAhead.runFromMs >= 0 && speechAhead.edgeMs >= playing
+                    if (aheadState == Ahead.WAITING) {
+                        if (!aheadReady()) {
+                            try { pumpAhead(current, 0) } catch (_: InterruptedException) { break }
+                            if (job !== current) continue
+                        }
+                        if (aheadState == Ahead.WAITING) {
+                            if (aheadReady()) {
+                                aheadState = Ahead.ON
+                                behindSince = 0
+                                val f = aheadFormat
+                                Log.i(TAG, "listening ahead from ${OffsetTracker.clock(speechAhead.runFromMs)}" +
+                                    "${f?.let { ": " + describeAudio(it) } ?: ""}, heard to ${OffsetTracker.clock(speechAhead.edgeMs)}, playing ${OffsetTracker.clock(playing)}")
+                            } else if (now - aheadSince > if (speechAhead.runFromMs < 0) AHEAD_WAIT_MS else AHEAD_BEHIND_WAIT_MS) {
+                                // A stream in pieces, a protected film or a sound with no decoder: where it plays, then.
+                                aheadOff(if (speechAhead.runFromMs < 0) "nothing of the film's sound loaded ahead" else "it didn't catch up with the film")
+                            }
+                        }
+                    }
+                    if (aheadState == Ahead.ON) {
+                        val covered = playing >= 0 && speechAhead.covers(playing, playing + FILL_LOOK_MS)
+                        try { pumpAhead(current, if (covered) 300 else 0) } catch (_: InterruptedException) { break }
+                        if (job !== current || aheadState != Ahead.ON) continue
+                        cost.maybeLog(timeline, current.lines, tracker)
+                        val tr = tracker ?: continue
+                        var going = true
+                        if (tr !== aheadTracker) {
+                            aheadTracker = tr
+                            val cpu0 = SystemClock.currentThreadTimeMillis()
+                            val d = try {
+                                speechAhead.rebase(tr)
+                            } catch (t: Exception) {
+                                Log.e(TAG, "Tracking ahead failed", t)
+                                stopped(current, "Couldn't line up with the speech. Try Resync, or set the delay by hand.")
+                                continue
+                            }
+                            if (d != null && !handle(current, tr, timeline, d, SystemClock.currentThreadTimeMillis() - cpu0)) {
+                                speechGaveUp(current, "gave up", "")
+                                going = false
+                            }
+                        }
+                        if (going && speechAhead.due()) {
+                            val cpu0 = SystemClock.currentThreadTimeMillis()
+                            // A mistake in the tracker must not take the film down: listening stops, what was found stays.
+                            val decisions = try {
+                                speechAhead.advance(tr)
+                            } catch (t: Exception) {
+                                Log.e(TAG, "Tracking ahead failed at ${OffsetTracker.clock(speechAhead.steppedToMs)}", t)
+                                stopped(current, "Couldn't line up with the speech. Try Resync, or set the delay by hand.")
+                                continue
+                            }
+                            val cpuMs = (SystemClock.currentThreadTimeMillis() - cpu0) / maxOf(1, decisions.count { it.outcome != Outcome.WAIT })
+                            for (d in decisions) {
+                                if (job !== current || tracker !== tr) break
+                                if (!handle(current, tr, timeline, d, cpuMs)) {
+                                    // Gave up finding the first delay: the film's own subtitles, if it has any, else not synced.
+                                    speechGaveUp(current, "gave up", "")
+                                    break
+                                }
+                            }
+                        }
+                        if (job !== current || aheadState != Ahead.ON || mode == Mode.TRACK) continue
+                        // Where the film plays, only what wasn't heard ahead (the first moments, a stretch let go).
+                        val fill = playing < 0 || !speechAhead.covers(playing, playing + FILL_LOOK_MS)
+                        if (fill != tap.listening) {
+                            tap.listening = fill
+                            if (!fill) {
+                                letDecoderGo()
+                                cursor = -1.0
+                            }
+                        }
+                        if (fill) {
+                            try { hear(current, 100) } catch (_: InterruptedException) { break }
+                        }
+                        // Not keeping up with the film for long: where it plays, then.
+                        if (playing >= 0 && speechAhead.edgeMs < playing - AHEAD_BEHIND_MS) {
+                            if (behindSince == 0L) behindSince = now
+                            else if (now - behindSince > AHEAD_BEHIND_WAIT_MS) aheadOff("fell behind the film")
+                        } else {
+                            behindSince = 0L
+                        }
+                        continue
+                    }
+                }
+
                 cost.maybeLog(timeline, current.lines, tracker)
                 // Waiting here is where release() usually finds the thread: its interrupt ends listening.
                 val ok = try { hear(current, 500) } catch (_: InterruptedException) { break }
                 if (!ok) {
                     // The sound can't be heard (no decoder for it). While the film's own subtitles may yet do instead,
-                    // that can wait; else they're handed over to, or listening stops.
-                    if (mode == Mode.LOOKING) continue
+                    // or the first of it heard ahead, that can wait; else they're handed over to, or listening stops.
+                    if (mode == Mode.LOOKING || aheadState == Ahead.WAITING) continue
                     if (!speechGaveUp(current, "can't hear the sound", CANT_HEAR)) continue
                     continue
                 }
@@ -1099,21 +1496,25 @@ class AutoSync(
             }
         } finally {
             runCatching { decoder?.release() }
+            runCatching { aheadDecoder?.release() }
         }
     }
 
     /**
      * What listening costs, logged every few minutes, to check it on the TV: processor time of this thread, of FFmpeg's
-     * decode thread when the sound goes out undecoded (it runs on its own thread), and of the whole player for scale;
-     * matching; sound pieces dropped; memory.
+     * decode threads when the sound goes out undecoded and for the sound heard ahead (each runs on its own thread), and
+     * of the whole player for scale; matching; sound pieces dropped; memory; and listening ahead ([ahead]).
      */
     private inner class Cost {
         private var since = SystemClock.elapsedRealtime()
         private var cpuSince = SystemClock.currentThreadTimeMillis()
         private var processSince = Process.getElapsedCpuTime()
-        // The side decoder's threads (ids in this process), and their processor time at the last line.
+        // The side decoders' threads (ids in this process), and their processor time at the last line.
         var decoderThreads: Set<Int> = emptySet()
+        var aheadThreads: Set<Int> = emptySet()
         private val decoderSince = HashMap<Int, Long>()
+        /** Listening ahead, for the line: given how long since the last (ms) and its decoder's processor time. */
+        var ahead: ((wallMs: Long, decoderMs: Long) -> String)? = null
         private var droppedSince = tap.dropped
         private var backOffsSince = backOffs
         private var matches = 0
@@ -1134,14 +1535,19 @@ class AutoSync(
             val cpu = SystemClock.currentThreadTimeMillis() - cpuSince
             val process = Process.getElapsedCpuTime() - processSince
             // Threads gone since (the decoder let go) count nothing more, nor any other thread that started meanwhile.
-            var decoderMs = 0L
-            for (tid in decoderThreads) {
-                if (threadName(tid)?.startsWith(DECODE_THREAD) != true) continue
-                val now = threadCpuMs(tid) ?: continue
-                decoderMs += now - (decoderSince[tid] ?: 0L)
-                decoderSince[tid] = now
+            fun threadsMs(threads: Set<Int>): Long {
+                var ms = 0L
+                for (tid in threads) {
+                    if (threadName(tid)?.startsWith(DECODE_THREAD) != true) continue
+                    val now = threadCpuMs(tid) ?: continue
+                    ms += now - (decoderSince[tid] ?: 0L)
+                    decoderSince[tid] = now
+                }
+                return ms
             }
-            decoderSince.keys.retainAll(decoderThreads)
+            val decoderMs = threadsMs(decoderThreads)
+            val aheadMs = threadsMs(aheadThreads - decoderThreads)
+            decoderSince.keys.retainAll(decoderThreads + aheadThreads)
             val kb = (timeline.speech.size() + timeline.heard.size()) / 8 / 1024 + lines.frames.size() / 8 / 1024 + lines.ys.size * 8 / 1024
             fun share(ms: Long) = "%.2f%%".format(java.util.Locale.ROOT, ms * 100.0 / wall)
             Log.i(
@@ -1150,7 +1556,8 @@ class AutoSync(
                     "side decoder $decoderMs ms ${share(decoderMs)}, whole player $process ms ${share(process)}; " +
                     "matching $matches × ${if (matches > 0) matchMs / matches else 0} ms (worst $worstMs ms), " +
                     "sound pieces dropped ${tap.dropped - droppedSince}, frame-drop back-offs ${backOffs - backOffsSince}, " +
-                    "memory ~$kb KB, segments ${tracker?.segments?.size ?: 0}, lining up against $against",
+                    "memory ~$kb KB, segments ${tracker?.segments?.size ?: 0}, lining up against $against" +
+                    (ahead?.let { "; " + it(wall, aheadMs) } ?: ""),
             )
             since = SystemClock.elapsedRealtime()
             cpuSince = SystemClock.currentThreadTimeMillis()
@@ -1242,10 +1649,16 @@ class AutoSync(
      * On the main thread: a delay found (the first, one after a break, or a fine-tuning), put in and kept; [b]: what it
      * was found against.
      */
-    private fun decided(current: Job, d: OffsetTracker.Decision, b: Basis) {
+    private fun decided(current: Job, d: OffsetTracker.Decision, b: Basis, how: String) {
         if (current.generation != generation || byHand || d.segments.isEmpty()) return
         basis = b
         checkingAt = -1
+        // How long the first delay took, for the panel (and the log, to check it on the TV).
+        if (d.outcome == Outcome.LEARNED && syncedInMs == null && startedAt > 0) {
+            val took = SystemClock.elapsedRealtime() - startedAt
+            syncedInMs = took
+            Log.i(TAG, "first delay in ${"%.1f".format(java.util.Locale.ROOT, took / 1000.0)} s since auto sync started for these subtitles, by $how")
+        }
         segments = d.segments
         prefs.saveSyncedSegments(savedKey(), OffsetTracker.encode(segments))
         // Also the one delay older versions read.
@@ -1361,6 +1774,44 @@ class AutoSync(
         private const val MIN_MOVE_US = 150_000L
 
         private const val CANT_HEAR = "Can't listen to this film's sound. Set the delay by hand."
+
+        // Listening ahead ([SpeechAhead]): on for films Media3 reads itself (not live).
+        private const val LISTEN_AHEAD = true
+        // Where the film is, for the listening thread, this often.
+        private const val BEAT_MS = 1_000L
+        // Nothing of the film's sound heard ahead this long after starting (a stream in pieces, a protected film, a
+        // sound with no decoder), or not caught up with where it plays: listened to where it plays instead.
+        private const val AHEAD_WAIT_MS = 8_000L
+        // Heard ahead only up to this far behind where the film plays, for this long: listened to where it plays instead.
+        private const val AHEAD_BEHIND_MS = 5_000L
+        private const val AHEAD_BEHIND_WAIT_MS = 20_000L
+        // Where the film plays is listened to while this much from there isn't heard ahead.
+        private const val FILL_LOOK_MS = 5_000L
+        // Heavier sound than this (a second of film, compressed or not) isn't decoded on the side: DTS-HD MA, 7.1 PCM.
+        private const val HEAVY_BYTES_PER_S = 256 * 1024L
+        private const val HEAVY_PCM_BYTES_PER_S = 640 * 1024L
+        // The side decoder for the sound heard ahead takes this many samples at a time.
+        private const val AHEAD_BUFFERS = 16
+        // After each piece heard ahead, a pause this many times as long as it took: at most a quarter of the time while
+        // finding the first delay, a tenth after (about 10 times as fast as the film plays, then about twice).
+        private const val AHEAD_REST_LEARNING = 3L
+        private const val AHEAD_REST = 9L
+        // Copying the sound for listening about to start, but none has for this long: let go.
+        private const val IDLE_ARMED_MS = 10_000L
+        private val READABLE_PCM = setOf(C.ENCODING_PCM_16BIT, C.ENCODING_PCM_24BIT, C.ENCODING_PCM_32BIT, C.ENCODING_PCM_FLOAT)
+
+        /** How long syncing took, for the panel: "14 s", or "2 min" from 100 s on. */
+        fun tookText(ms: Long): String {
+            val s = Math.round(ms / 1000.0).coerceAtLeast(1L)
+            return if (s < 100) "$s s" else "${Math.round(ms / 60_000.0)} min"
+        }
+
+        /** The same sound as before: a new format object for it says nothing. */
+        private fun sameAudio(a: Format, b: Format) =
+            a.sampleMimeType == b.sampleMimeType && a.channelCount == b.channelCount && a.sampleRate == b.sampleRate && a.pcmEncoding == b.pcmEncoding
+
+        /** For the log: "audio/mp4a-latm 2 ch 48000 Hz". */
+        private fun describeAudio(f: Format) = "${f.sampleMimeType} ${f.channelCount} ch ${f.sampleRate} Hz"
         // Clock ticks per second in /proc times.
         private val TICKS = runCatching { Os.sysconf(OsConstants._SC_CLK_TCK) }.getOrDefault(100L).coerceAtLeast(1L)
 

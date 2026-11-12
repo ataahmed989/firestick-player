@@ -128,6 +128,17 @@ class SyncFlowTest {
     }
 
     @Test
+    fun howLongSyncingTookReads() {
+        // The Subtitle delay window's badge: "Synced in 14 s", or in minutes from 100 s on.
+        assertEquals("1 s", AutoSync.tookText(400))
+        assertEquals("14 s", AutoSync.tookText(14_200))
+        assertEquals("99 s", AutoSync.tookText(99_400))
+        assertEquals("2 min", AutoSync.tookText(100_000))
+        assertEquals("2 min", AutoSync.tookText(125_000))
+        assertEquals("4 min", AutoSync.tookText(215_000))
+    }
+
+    @Test
     fun subtitleSources() {
         assertEquals("720p hdtv x264 avs", AutoSync.sourceOf("Legion.S01E04.720p.HDTV.x264-AVS"))
         assertEquals(AutoSync.sourceOf("Legion.S01E04.720p.HDTV.x264-AVS"), AutoSync.sourceOf("Legion.S01E05.Chapter.5.720p.HDTV.x264-AVS.srt"))

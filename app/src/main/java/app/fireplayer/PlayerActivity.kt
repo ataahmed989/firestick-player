@@ -548,6 +548,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             },
             embedded = embeddedCues,
             filmUri = { player?.currentMediaItem?.localConfiguration?.uri?.toString() },
+            // Only a film's sound is heard ahead as it loads, not a live stream's.
+            isVod = { player?.let { !it.isCurrentMediaItemLive && it.duration != C.TIME_UNSET } ?: false },
         )
         autoSync.onMappingChanged = { syncMappingChanged() }
         // A line held back for auto sync is shown once it's lined up (or has waited long enough).
@@ -1424,6 +1426,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         recallAudio()
         if (reapplyWishes) reapplyChoices()
+        // The sound track playing is the one auto sync hears ahead, as it loads.
+        embeddedCues.playingAudioId = selectedFormat(C.TRACK_TYPE_AUDIO)?.id
         followSubtitle()
         refreshLabels()
         updateChips()
@@ -3825,8 +3829,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     /**
-     * Auto sync in the Subtitle delay window: its state as a badge, like the ones in Settings ("Synced" in blue,
-     * "Listening" or "Off" in gray), a line on what it found, and Resync and Undo. Pressing the badge's row turns it
+     * Auto sync in the Subtitle delay window: its state as a badge, like the ones in Settings ("Synced" in blue, with how
+     * long it took when found this time, "Listening" or "Off" in gray), and Resync and Undo. Pressing the badge's row turns it
      * on or off for these subtitles.
      */
     private fun renderAutoSync(panel: SidePanel) = with(panel) {
@@ -3835,7 +3839,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             !prefs.autoSync -> "Off" to Rows.Badge.INACTIVE
             !downloaded -> "Off" to Rows.Badge.INACTIVE
             else -> when (autoSync.state) {
-                AutoSync.State.SYNCED -> "Synced" to Rows.Badge.ACTIVE
+                // How long lining up took, when it was found this time ("Synced in 14 s").
+                AutoSync.State.SYNCED -> (autoSync.syncedInMs?.let { "Synced in ${AutoSync.tookText(it)}" } ?: "Synced") to Rows.Badge.ACTIVE
                 AutoSync.State.LISTENING -> "Listening" to Rows.Badge.BUSY
                 AutoSync.State.NOT_SYNCED -> "Not synced" to Rows.Badge.INACTIVE
                 AutoSync.State.OFF -> "Off" to Rows.Badge.INACTIVE

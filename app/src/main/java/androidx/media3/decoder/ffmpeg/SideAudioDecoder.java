@@ -9,8 +9,8 @@ import java.nio.ByteBuffer;
 
 /**
  * FFmpeg's audio decoder, used on the side by FirePlayer's subtitle auto sync to hear the dialogue in sound that goes
- * to the TV undecoded (surround passthrough). Media3 keeps the decoder to its own package, so this small door sits in
- * that package. Output is 16-bit samples.
+ * to the TV undecoded (surround passthrough), and in the film's sound as it loads, ahead of where it plays. Media3
+ * keeps the decoder to its own package, so this small door sits in that package. Output is 16-bit samples.
  */
 @UnstableApi
 public final class SideAudioDecoder {
@@ -28,15 +28,25 @@ public final class SideAudioDecoder {
   }
 
   public SideAudioDecoder(Format format) throws FfmpegDecoderException {
-    decoder = new FfmpegAudioDecoder(format, 4, 4, 8192, /* outputFloat= */ false);
+    this(format, 4);
+  }
+
+  /** With [buffers] pieces in and out at a time (more lets a listener hand over many small pieces in one go). */
+  public SideAudioDecoder(Format format, int buffers) throws FfmpegDecoderException {
+    decoder = new FfmpegAudioDecoder(format, buffers, buffers, 8192, /* outputFloat= */ false);
   }
 
   /** Hands one compressed piece over; false when the decoder is full (take its output first). */
   public boolean queue(byte[] data, int size, long timeUs) throws FfmpegDecoderException {
+    return queue(data, 0, size, timeUs);
+  }
+
+  /** As {@link #queue(byte[], int, long)}, for [size] bytes of [data] from [offset]. */
+  public boolean queue(byte[] data, int offset, int size, long timeUs) throws FfmpegDecoderException {
     DecoderInputBuffer input = decoder.dequeueInputBuffer();
     if (input == null) return false;
     input.ensureSpaceForWrite(size);
-    input.data.put(data, 0, size);
+    input.data.put(data, offset, size);
     input.timeUs = timeUs;
     input.flip();
     decoder.queueInputBuffer(input);
