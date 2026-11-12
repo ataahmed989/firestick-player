@@ -1018,8 +1018,8 @@ class AutoSync(
 
         /**
          * One piece of the sound copied as it loads (waiting at most [waitMs] for it), decoded and marked as talking or
-         * not, then a pause in proportion, so it takes at most a quarter of this thread's time while finding the first
-         * delay and a tenth after. False when there was none.
+         * not, then a pause in proportion after the first delay is found, so it takes at most a tenth of this thread's
+         * time then. False when there was none.
          */
         fun pumpAhead(current: Job, waitMs: Long): Boolean {
             val r = ring ?: return false
@@ -1063,6 +1063,11 @@ class AutoSync(
                                     null
                                 }
                                 cost.aheadThreads = threadIds() - before
+                                // FFmpeg's decode thread starts at the app's usual priority: in the background, like this
+                                // one, so heard ahead at full speed it never comes before the picture or the sound.
+                                for (tid in cost.aheadThreads) if (threadName(tid) == DECODE_THREAD) {
+                                    runCatching { Process.setThreadPriority(tid, Process.THREAD_PRIORITY_BACKGROUND) }
+                                }
                             }
                             else -> aheadSkip = "no decoder for $mime"
                         }
@@ -1802,9 +1807,11 @@ class AutoSync(
         private const val HEAVY_PCM_BYTES_PER_S = 640 * 1024L
         // The side decoder for the sound heard ahead takes this many samples at a time.
         private const val AHEAD_BUFFERS = 16
-        // After each piece heard ahead, a pause this many times as long as it took: at most a quarter of the time while
-        // finding the first delay, a tenth after (about 10 times as fast as the film plays, then about twice).
-        private const val AHEAD_REST_LEARNING = 3L
+        // After each piece heard ahead, a pause this many times as long as it took: none while finding the first delay
+        // (what loaded is heard as fast as it decodes, in the background, and dropped frames still make it wait), a tenth
+        // after (about twice as fast as the film plays). A quarter at first heard only about 2.3 times as fast (Fire TV
+        // Stick 4K Plus): a minute of film before the first delay.
+        private const val AHEAD_REST_LEARNING = 0L
         private const val AHEAD_REST = 9L
         // Copying the sound for listening about to start, but none has for this long: let go.
         private const val IDLE_ARMED_MS = 10_000L
