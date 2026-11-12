@@ -679,6 +679,51 @@ class OffsetTrackerTest {
     }
 
     @Test
+    fun aDelayFromBeforeABreakIsntLearnedAfterIt() {
+        // Listening from a minute before a 2.3 s bumper: a delay sure once on the talking before it (by the overlap, by
+        // sentence starts or steady) is only kept once the talking since bears it out, so the film past the bumper never
+        // ends up with the delay from before it saved (the review of sentence starts: 8 in 40 did).
+        var wrong = 0
+        val story = StringBuilder()
+        for (seed in 401L..420L) for (before in listOf(60_000L, 75_000L)) {
+            val film = FakeFilm.make(seed = seed, minutes = 20, delayMs = 6_700, pace = FakeFilm.TALKY, breaks = listOf(Break(10 * min, adMs = 2_300)))
+            val ad = film.ads.single()
+            val start = ad.fromMs - before
+            val p = Playback(film, OffsetTracker(film.subs), formatHints = false, startMs = start)
+            p.seek(start)
+            p.play(start + 8 * min)
+            val learned = p.decisions.firstOrNull { it.outcome == Outcome.LEARNED } ?: continue
+            if (learned.toMs > ad.toMs + 30_000 && !near(9_000, learned.delayMs, 400)) {
+                wrong++
+                story.append("seed $seed, ${before / 1000} s before: $learned\n")
+            }
+        }
+        assertEquals(story.toString(), 0, wrong)
+    }
+
+    @Test
+    fun aSkipWhileFindingTheFirstDelayIsAFreshTry() {
+        // Subtitles that never match: after LEARN_MAX_MS of film it gives up once (auto sync then tries afresh rather than
+        // stopping), and a skip far away is a fresh try too, not counted towards giving up.
+        val film = FakeFilm.make(seed = 90, minutes = 40, delayMs = 0)
+        val other = FakeFilm.make(seed = 91, minutes = 40, delayMs = 0)
+        val tracker = OffsetTracker(other.subs)
+        val p = Playback(film, tracker)
+        p.play(5 * min)
+        assertTrue(p.story(), p.decisions.none { it.outcome == Outcome.GAVE_UP })
+        p.seek(20 * min)
+        p.play(25 * min)
+        assertTrue("a skip starts the count again\n${p.story()}", p.decisions.none { it.outcome == Outcome.GAVE_UP })
+        p.play(28 * min)
+        val gaveUp = p.decisions.indexOfFirst { it.outcome == Outcome.GAVE_UP }
+        assertTrue("gives up after six minutes of trying\n${p.story()}", gaveUp >= 0)
+        tracker.learnAgain()
+        val after = p.decisions.size
+        p.play(29 * min)
+        assertTrue("tries afresh after learnAgain\n${p.story()}", p.decisions.drop(after).none { it.outcome == Outcome.GAVE_UP })
+    }
+
+    @Test
     fun resyncWithNothingHeardListensAfresh() {
         val film = FakeFilm.make(seed = 81, minutes = 30, delayMs = 3_000)
         val tracker = OffsetTracker(film.subs, listOf(Segment(0, 9_000)))
