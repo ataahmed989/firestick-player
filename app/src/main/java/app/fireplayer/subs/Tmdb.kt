@@ -327,6 +327,40 @@ class Tmdb(private val key: () -> String, private val memory: Memory) {
         return season == last.optInt("season_number") && episode == last.optInt("episode_count")
     }
 
+    /** One of a show's episode groups (another order of its episodes: aired, DVD, "double episodes"…). */
+    class EpisodeGroup(val id: String, val name: String, val description: String, val type: Int, val count: Int)
+
+    /** A show's episode groups; empty when it has none. Blocks. */
+    fun episodeGroups(showId: Int): List<EpisodeGroup> {
+        val list = try {
+            JSONObject(request("tv/$showId/episode_groups", emptyList())).optJSONArray("results")
+        } catch (e: HttpError) {
+            if (e.code == 404) return emptyList()
+            throw e
+        } ?: return emptyList()
+        return (0 until list.length()).mapNotNull { list.optJSONObject(it) }.map { g ->
+            EpisodeGroup(g.optString("id"), g.optString("name"), g.optString("description"), g.optInt("type"), g.optInt("episode_count"))
+        }.filter { it.id.isNotEmpty() }
+    }
+
+    /**
+     * The parts of an episode group in order ("Season 1", "Season 2"…), each its episodes in the group's order, as
+     * TMDB's own season and episode numbers. Empty when TMDB has no such group. Blocks.
+     */
+    fun episodeGroup(groupId: String): List<List<Pair<Int, Int>>> {
+        val groups = try {
+            JSONObject(request("tv/episode_group/$groupId", emptyList())).optJSONArray("groups")
+        } catch (e: HttpError) {
+            if (e.code == 404) return emptyList()
+            throw e
+        } ?: return emptyList()
+        return (0 until groups.length()).mapNotNull { groups.optJSONObject(it) }.sortedBy { it.optInt("order") }.map { g ->
+            val eps = g.optJSONArray("episodes") ?: JSONArray()
+            (0 until eps.length()).mapNotNull { eps.optJSONObject(it) }.sortedBy { it.optInt("order") }
+                .map { it.optInt("season_number") to it.optInt("episode_number") }
+        }
+    }
+
     /** The numbers of a show's seasons, specials (season 0) left out. Blocks. */
     fun seasonNumbers(showId: Int): List<Int> {
         val seasons = JSONObject(request("tv/$showId", listOf("language" to "en-US"))).optJSONArray("seasons") ?: return emptyList()
