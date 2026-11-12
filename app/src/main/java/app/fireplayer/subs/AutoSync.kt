@@ -792,6 +792,11 @@ class AutoSync(
         var keptTold: Basis? = null
         // The sure-once delay last told to the main thread to put in use ([tentative]).
         var toldTentative: Long? = null
+        // A skip onto film not heard yet, with delays known: the tracker's count of those last seen (and which tracker),
+        // and when the latest one's check began (until a look keeps or moves the delay), or 0.
+        var jumpTracker: OffsetTracker? = null
+        var jumpsSeen = 0
+        var jumpSince = 0L
         // Checking the film's own subtitles against the talking ([CrossCheck]): listening now, from where (film time,
         // once heard), since when, when next, whether after Resync, and the last verdict.
         var crossing = false
@@ -919,6 +924,27 @@ class AutoSync(
         fun handle(current: Job, tr: OffsetTracker, tl: SpeechTimeline, d: OffsetTracker.Decision, cpuMs: Long): Boolean {
             val onTrack = mode == Mode.TRACK
             val ahead = !onTrack && aheadState == Ahead.ON
+            // Skipped onto film not heard yet: checked there, the badge saying so until a look keeps the delay (told even
+            // if told before) or moves it, or for a while at most.
+            if (tr !== jumpTracker) {
+                jumpTracker = tr
+                jumpsSeen = tr.jumpChecks
+                jumpSince = 0L
+            } else if (tr.jumpChecks != jumpsSeen) {
+                jumpsSeen = tr.jumpChecks
+                jumpSince = SystemClock.elapsedRealtime()
+                main.post { jumpChecking(current, true) }
+            }
+            if (jumpSince > 0) {
+                if (d.toMs > tr.jumpedToMs && (d.outcome == Outcome.KEPT || d.outcome == Outcome.MOVED)) {
+                    jumpSince = 0L
+                    // Told even if told before: that ends the check on the panel.
+                    if (d.outcome == Outcome.KEPT) keptTold = null
+                } else if (SystemClock.elapsedRealtime() - jumpSince > JUMP_CHECK_SHOW_MS) {
+                    jumpSince = 0L
+                    main.post { jumpChecking(current, false) }
+                }
+            }
             if (d.outcome != Outcome.WAIT) {
                 cost.matched(cpuMs)
                 Log.i(TAG, if (onTrack) "film's subtitles: $d${if (trimMs != 0L) " | fine-tuned by the talking ${SyncMatcher.formatShift(trimMs)}" else ""}"
@@ -1928,6 +1954,27 @@ class AutoSync(
         checkingAt = -1
     }
 
+    // Where the panel's "Rechecking" is for a skip ([jumpChecking]), not Check sync, or -1.
+    private var jumpCheckAt = -1L
+
+    /**
+     * On the main thread: playing skipped onto film not heard yet, and the timing there is being checked ([on]), or that
+     * check took too long to say (the badge goes back to how it was). Check sync's own check isn't taken over.
+     */
+    private fun jumpChecking(current: Job, on: Boolean) {
+        if (current.generation != generation || byHand || state != State.SYNCED) return
+        if (on) {
+            if (checkingAt >= 0 && checkingAt != jumpCheckAt) return
+            checkingAt = position().first.coerceAtLeast(0L)
+            jumpCheckAt = checkingAt
+        } else {
+            if (checkingAt < 0 || checkingAt != jumpCheckAt) return
+            checkingAt = -1
+            detail = syncedText()
+        }
+        onChanged()
+    }
+
     /** On the main thread: a match found the delay in use right ([b]: against what). */
     private fun kept(current: Job, b: Basis) {
         if (current.generation != generation || byHand || state != State.SYNCED) return
@@ -2009,7 +2056,8 @@ class AutoSync(
             // In use already since one look was sure of it: right from then.
             val inUse = t != null && tentativeAt > 0 && abs(d.segments[0].delayMs - t) <= TENTATIVE_AGREE_MS
             val took = (if (inUse) tentativeAt else now) - startedAt
-            syncedInMs = took
+            // The badge's "Synced in": till it was confirmed ("Matched in" said when it was put in use).
+            syncedInMs = now - startedAt
             Log.i(TAG, "first delay in ${"%.1f".format(java.util.Locale.ROOT, took / 1000.0)} s since auto sync started for these subtitles, by $how" +
                 if (inUse) " (in use since, confirmed ${"%.1f".format(java.util.Locale.ROOT, (now - startedAt) / 1000.0)} s)" else "")
         }
@@ -2182,6 +2230,8 @@ class AutoSync(
         private const val IDLE_RELEASE_MS = 1_500L
         // A first delay confirmed within this of the one put in use when sure once: right since then.
         private const val TENTATIVE_AGREE_MS = 500L
+        // After a skip, "Rechecking" stays up this long at most while no look keeps or moves the delay.
+        private const val JUMP_CHECK_SHOW_MS = 6 * 60_000L
         private val READABLE_PCM = setOf(C.ENCODING_PCM_16BIT, C.ENCODING_PCM_24BIT, C.ENCODING_PCM_32BIT, C.ENCODING_PCM_FLOAT)
 
         /** How long syncing took, for the panel: "14 s", or "2 min" from 100 s on. */
