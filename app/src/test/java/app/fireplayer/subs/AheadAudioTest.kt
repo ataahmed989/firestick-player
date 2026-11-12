@@ -96,14 +96,14 @@ class AheadAudioTest {
     @Test
     fun withTheListenerBehindSamplesAreLetGoNeverWaitedFor() {
         val ring = AheadAudio(staleMs = 60_000)
-        // Nobody takes anything: 48 pieces of 2 s each fill, then everything after is let go, at once.
+        // Nobody takes anything: 64 pieces of 2 s each fill, then everything after is let go, at once.
         val started = System.nanoTime()
         val total = 20_000
         for (k in 0 until total) ring.add(k, k * 20_000L)
         val tookMs = (System.nanoTime() - started) / 1_000_000
         assertTrue("took $tookMs ms", tookMs < 2_000)
         assertEquals(AheadAudio.PIECES, ring.pending())
-        // 48 pieces of 2 s kept; every sample after them let go, and how much film that was.
+        // 64 pieces of 2 s kept; every sample after them let go, and how much film that was.
         val kept = AheadAudio.PIECES * 100
         assertEquals((total - kept).toLong(), ring.droppedSamples)
         assertEquals((total - kept) * 20_000L, ring.droppedUs)
@@ -122,10 +122,35 @@ class AheadAudioTest {
     }
 
     @Test
+    fun withNobodyListeningYetTheNewestIsKept() {
+        val ring = AheadAudio(staleMs = 60_000)
+        ring.keepNewest = true
+        // Auto sync off for these subtitles, ready to be turned on: 400 s of film load and nobody takes any of it.
+        val total = 20_000
+        for (k in 0 until total) ring.add(k, k * 20_000L)
+        // Nothing is let go as a gap: the oldest pieces made room. The newest 2 s is still being filled, and the pieces
+        // before it are the film just before: up to where it loaded, in order, with no holes.
+        assertEquals(0L, ring.droppedSamples)
+        assertEquals(AheadAudio.PIECES - 1, ring.pending())
+        val pieces = generateSequence { ring.take(0) }.toList()
+        assertEquals(AheadAudio.PIECES - 1, pieces.size)
+        val firstSample = total - AheadAudio.PIECES * 100
+        assertEquals(firstSample * 20_000L, pieces.first().firstUs)
+        pieces.zipWithNext { a, b -> assertEquals(a.lastUs + 20_000L, b.firstUs) }
+        assertArrayEquals(bytes(firstSample), sampleOf(pieces.first(), 0))
+        assertTrue(pieces.none { it.afterDrop })
+        pieces.forEach { ring.recycle(it) }
+        // Listening starts: from then on it's taken as it comes, and when it's behind, new samples are let go again.
+        ring.keepNewest = false
+        for (k in total until total + 20_000) ring.add(k, k * 20_000L)
+        assertTrue(ring.droppedSamples > 0)
+    }
+
+    @Test
     fun aSkipWhileSamplesAreLetGoIsASkipNotAGap() {
         val ring = AheadAudio(staleMs = 60_000)
         // Nobody takes anything: the pieces fill, and the rest is let go.
-        for (k in 0 until 6_000) ring.add(k, k * 20_000L)
+        for (k in 0 until 8_000) ring.add(k, k * 20_000L)
         assertTrue(ring.droppedSamples > 0)
         // The listener takes a few (pieces free again), then loading starts 12 minutes on (Resume, or a seek past
         // what's loaded): what's waiting is of the film left behind, and the next piece follows a skip, not samples let go.

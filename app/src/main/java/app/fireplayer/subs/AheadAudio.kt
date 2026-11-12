@@ -12,10 +12,11 @@ import java.util.concurrent.TimeUnit
  * Filled on the loading thread by [EmbeddedCues] (only while auto sync listens ahead, and only the sound track
  * playing): each compressed sample as the file has it, with its time in the film, a few seconds of film to a [Piece].
  * Taken on auto sync's thread. Nothing is read twice and nothing extra is loaded: these are the bytes the player
- * loaded anyway, copied once. Bounded: at most [PIECES] pieces of [PIECE_BYTES] (3 MB), made only once something is
+ * loaded anyway, copied once. Bounded: at most [PIECES] pieces of [PIECE_BYTES] (4 MB), made only once something is
  * copied and let go with [release]. When the listener is behind and every piece is taken, samples are let go rather
  * than held: the loading thread never waits here, and a gap only means a little less was heard ahead (it's heard
- * where the film plays instead).
+ * where the film plays instead). With nobody listening yet ([keepNewest]), the oldest piece waiting goes instead, so
+ * what's kept is the film just loaded: up to where it plays, ready the moment listening starts.
  */
 @OptIn(UnstableApi::class)
 class AheadAudio(
@@ -91,6 +92,12 @@ class AheadAudio(
     @Volatile var droppedUs = 0L
         private set
 
+    /**
+     * Nobody listens yet, but may soon (auto sync off for these subtitles, ready to be turned on): with every piece
+     * taken, the oldest waiting is let go for the newest sample, rather than the sample.
+     */
+    @Volatile var keepNewest = false
+
     /** Pieces waiting to be listened to. */
     fun pending(): Int = ready.size
 
@@ -125,6 +132,10 @@ class AheadAudio(
         }
         if (p == null) {
             p = filling ?: free.poll() ?: if (allocated < PIECES) { allocated++; Piece(epoch) } else null
+            if (p == null && keepNewest) {
+                ready.poll()?.let { recycleLocked(it) }
+                p = free.poll()
+            }
             if (p == null) {
                 droppedSamples++
                 if (prevUs >= 0 && timeUs > prevUs && timeUs - prevUs <= GAP_US) droppedUs += timeUs - prevUs
@@ -185,8 +196,9 @@ class AheadAudio(
     }
 
     companion object {
-        // 48 pieces of 64 KB: at most 3 MB; AAC stereo fills a piece with 2 s of film, about 40 KB.
-        const val PIECES = 48
+        // 64 pieces of 64 KB: at most 4 MB; AAC stereo fills a piece with 2 s of film, about 40 KB, so the two minutes
+        // the player loads ahead fit.
+        const val PIECES = 64
         const val PIECE_BYTES = 65_536
         const val MAX_SAMPLES = 512
         // A piece holds at most this much film, so the listener gets it soon; a gap longer than this starts another.

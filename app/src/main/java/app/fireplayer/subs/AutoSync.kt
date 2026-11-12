@@ -164,6 +164,8 @@ class AutoSync(
     @Volatile private var backOffUntil = 0L
     @Volatile private var backOffs = 0
     private var worker: Thread? = null
+    // Off for these subtitles, but the sound loading is copied all the same, for when it's turned on ([standbyAhead]).
+    @Volatile private var aheadStandby = false
 
     /** Where the film is playing (ms), for the listening thread: updated every second while listening; -1 unknown. */
     @Volatile private var playheadMs = -1L
@@ -232,6 +234,7 @@ class AutoSync(
     fun follow(subtitle: File?, filmKey: String?, release: String? = null, language: String? = null) {
         if (subtitle == file && filmKey == key) return
         stopListening()
+        endStandby()
         clearMapping()
         stopHolding()
         startedAt = 0
@@ -261,6 +264,7 @@ class AutoSync(
             moveDelay(hand * 1000)
             setState(State.OFF, "Your delay from last time: ${SyncMatcher.formatShift(hand)}.")
             loadLines(subtitle) {}
+            standbyAhead()
             return
         }
         if (!prefs.autoSync) {
@@ -360,6 +364,7 @@ class AutoSync(
         segments = emptyList()
         prefs.forgetSyncedDelay(savedKey())
         setState(State.OFF, "Off for these subtitles, as the delay was set by hand.")
+        standbyAhead()
     }
 
     /** Auto sync turned on or off in Settings, or for this subtitle from the Subtitle delay window. */
@@ -374,6 +379,8 @@ class AutoSync(
             startedAt = 0
             syncedInMs = null
             setState(State.OFF, null)
+            // Off for these subtitles only (from the Subtitle delay window): ready for it to be turned on again.
+            if (prefs.autoSync) standbyAhead() else endStandby()
         }
     }
 
@@ -414,6 +421,7 @@ class AutoSync(
         segments = emptyList()
         prefs.forgetSyncedDelay(savedKey())
         setState(State.OFF, "Off for these subtitles; the delay is back to ${SyncMatcher.formatShift(before / 1000)}.")
+        standbyAhead()
     }
 
     /**
@@ -470,6 +478,8 @@ class AutoSync(
         onMappingChanged = null
         onHoldEnded = null
         stopListening()
+        aheadStandby = false
+        embedded?.ahead?.keepNewest = false
         embedded?.ahead?.release()
         main.removeCallbacksAndMessages(null)
         worker?.interrupt()
@@ -546,6 +556,7 @@ class AutoSync(
                 if (gen != generation || subtitle != file) return@post
                 lines = prepared
                 if (read.size < 20) {
+                    endStandby()
                     if (job == null) embedded?.aheadUri = null
                     setState(State.NOT_SYNCED, "These subtitles have too few lines to line up.")
                 } else {
@@ -615,8 +626,33 @@ class AutoSync(
         val e = embedded ?: return false
         val uri = filmUri()
         if (!LISTEN_AHEAD || uri == null || !isVod()) return false
+        // Listening (or about to): what's copied is taken as it comes, nothing waiting is let go for newer.
+        aheadStandby = false
+        e.ahead.keepNewest = false
         e.aheadUri = uri
         return true
+    }
+
+    /**
+     * Not listening to these subtitles (the delay set by hand, or auto sync turned off for them), but it may be turned
+     * on: the sound loading is copied all the same, not decoded, the newest kept (about the two minutes loaded ahead,
+     * at most 4 MB). Turned on (or Resync), that's heard at once, rather than only what loads from then on as the film
+     * plays: seconds, not a minute or more. Not while auto sync is off in Settings.
+     */
+    private fun standbyAhead() {
+        if (file == null || !prefs.autoSync || !armAhead()) return
+        embedded?.ahead?.keepNewest = true
+        aheadStandby = true
+    }
+
+    /** Copying for [standbyAhead] stops: what was kept is let go (by the listening thread when it's there). */
+    private fun endStandby() {
+        if (!aheadStandby) return
+        aheadStandby = false
+        val e = embedded ?: return
+        e.ahead.keepNewest = false
+        if (job == null) e.aheadUri = null
+        if (worker?.isAlive != true) e.ahead.release()
     }
 
     private fun ensureWorker() {
@@ -1055,18 +1091,13 @@ class AutoSync(
                             // Blu-ray lossless: too heavy to decode on the side.
                             mime == MimeTypes.AUDIO_TRUEHD -> aheadSkip = "too heavy"
                             SideAudioDecoder.canDecode(mime) -> {
-                                val before = threadIds()
+                                // Decoded on this (background) thread with [SideAudioDecoder.decodeNow]: one piece in
+                                // and out, and FFmpeg's own thread stays idle.
                                 aheadDecoder = try {
-                                    SideAudioDecoder(fmt, AHEAD_BUFFERS)
+                                    SideAudioDecoder(fmt, 1)
                                 } catch (e: Exception) {
                                     aheadSkip = "no decoder: ${e.message}"
                                     null
-                                }
-                                cost.aheadThreads = threadIds() - before
-                                // FFmpeg's decode thread starts at the app's usual priority: in the background, like this
-                                // one, so heard ahead at full speed it never comes before the picture or the sound.
-                                for (tid in cost.aheadThreads) if (threadName(tid) == DECODE_THREAD) {
-                                    runCatching { Process.setThreadPriority(tid, Process.THREAD_PRIORITY_BACKGROUND) }
                                 }
                             }
                             else -> aheadSkip = "no decoder for $mime"
@@ -1095,16 +1126,14 @@ class AutoSync(
                 } else {
                     // Not following on from the last piece: the decoder starts afresh.
                     if (aheadLastUs >= 0 && abs(piece.firstUs - aheadLastUs) > AheadAudio.GAP_US) d.flush()
+                    // Decoded here, sample by sample: handing them to FFmpeg's thread and waiting on it (sleeps that a
+                    // background thread's timer stretches) heard only about 8 times as fast as the film plays.
+                    val cpu0 = SystemClock.currentThreadTimeMillis()
                     for (i in 0 until piece.count) {
                         val a = piece.startOf(i)
-                        var tries = 0
-                        while (!d.queue(piece.bytes, a, piece.ends[i] - a, piece.timesUs[i])) {
-                            d.drain(aheadOut)
-                            if (++tries > 50) break
-                            Thread.sleep(1)
-                        }
+                        d.decodeNow(piece.bytes, a, piece.ends[i] - a, piece.timesUs[i], aheadOut)
                     }
-                    d.drain(aheadOut)
+                    cost.aheadDecodeMs += SystemClock.currentThreadTimeMillis() - cpu0
                 }
                 aheadLastUs = piece.lastUs
             } catch (e: InterruptedException) {
@@ -1176,7 +1205,14 @@ class AutoSync(
                     aheadState = Ahead.OFF
                     val now = SystemClock.elapsedRealtime()
                     if (idleSince == 0L) idleSince = now
-                    if (embedded?.aheadUri == null) ring?.release() else if (now - idleSince > IDLE_ARMED_MS) aheadDisarm()
+                    // Kept while standing by for auto sync to be turned on for these subtitles ([standbyAhead]).
+                    if (aheadStandby) {
+                        // Nothing.
+                    } else if (embedded?.aheadUri == null) {
+                        ring?.release()
+                    } else if (now - idleSince > IDLE_ARMED_MS) {
+                        aheadDisarm()
+                    }
                     try { Thread.sleep(500) } catch (_: InterruptedException) { break }
                     continue
                 }
@@ -1526,7 +1562,8 @@ class AutoSync(
         private var processSince = Process.getElapsedCpuTime()
         // The side decoders' threads (ids in this process), and their processor time at the last line.
         var decoderThreads: Set<Int> = emptySet()
-        var aheadThreads: Set<Int> = emptySet()
+        /** Processor time spent decoding the sound heard ahead, on the listening thread (ms), since the last line. */
+        var aheadDecodeMs = 0L
         private val decoderSince = HashMap<Int, Long>()
         /** Listening ahead, for the line: given how long since the last (ms) and its decoder's processor time. */
         var ahead: ((wallMs: Long, decoderMs: Long) -> String)? = null
@@ -1561,8 +1598,9 @@ class AutoSync(
                 return ms
             }
             val decoderMs = threadsMs(decoderThreads)
-            val aheadMs = threadsMs(aheadThreads - decoderThreads)
-            decoderSince.keys.retainAll(decoderThreads + aheadThreads)
+            val aheadMs = aheadDecodeMs
+            aheadDecodeMs = 0
+            decoderSince.keys.retainAll(decoderThreads)
             val kb = (timeline.speech.size() + timeline.heard.size()) / 8 / 1024 + lines.frames.size() / 8 / 1024 + lines.ys.size * 8 / 1024
             fun share(ms: Long) = "%.2f%%".format(java.util.Locale.ROOT, ms * 100.0 / wall)
             Log.i(
@@ -1805,12 +1843,10 @@ class AutoSync(
         // Heavier sound than this (a second of film, compressed or not) isn't decoded on the side: DTS-HD MA, 7.1 PCM.
         private const val HEAVY_BYTES_PER_S = 256 * 1024L
         private const val HEAVY_PCM_BYTES_PER_S = 640 * 1024L
-        // The side decoder for the sound heard ahead takes this many samples at a time.
-        private const val AHEAD_BUFFERS = 16
         // After each piece heard ahead, a pause this many times as long as it took: none while finding the first delay
-        // (what loaded is heard as fast as it decodes, in the background, and dropped frames still make it wait), a tenth
-        // after (about twice as fast as the film plays). A quarter at first heard only about 2.3 times as fast (Fire TV
-        // Stick 4K Plus): a minute of film before the first delay.
+        // (what loaded is heard as fast as it decodes, on this background thread, and dropped frames still make it wait),
+        // a tenth after (about twice as fast as the film plays). A quarter at first heard only about 2.3 times as fast
+        // (Fire TV Stick 4K Plus): a minute of film before the first delay.
         private const val AHEAD_REST_LEARNING = 0L
         private const val AHEAD_REST = 9L
         // Copying the sound for listening about to start, but none has for this long: let go.
