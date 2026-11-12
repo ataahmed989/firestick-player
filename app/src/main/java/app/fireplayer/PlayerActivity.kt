@@ -3830,8 +3830,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     /**
      * Auto sync in the Subtitle delay window: its state as a badge, like the ones in Settings ("Synced" in blue, with how
-     * long it took when found this time, "Listening" or "Off" in gray), and Resync and Undo. Pressing the badge's row turns it
-     * on or off for these subtitles.
+     * long it took when found this time, "Processing" or "Off" in gray), and Resync and Undo last sync. Pressing the badge's
+     * row turns it on or off for these subtitles: off, nothing moves the delay any more and it stays as it is.
      */
     private fun renderAutoSync(panel: SidePanel) = with(panel) {
         val downloaded = autoSync.file != null
@@ -3841,7 +3841,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             else -> when (autoSync.state) {
                 // How long lining up took, when it was found this time ("Synced in 14 s").
                 AutoSync.State.SYNCED -> (autoSync.syncedInMs?.let { "Synced in ${AutoSync.tookText(it)}" } ?: "Synced") to Rows.Badge.ACTIVE
-                AutoSync.State.LISTENING -> "Listening" to Rows.Badge.BUSY
+                AutoSync.State.LISTENING -> "Processing" to Rows.Badge.BUSY
                 AutoSync.State.NOT_SYNCED -> "Not synced" to Rows.Badge.INACTIVE
                 AutoSync.State.OFF -> "Off" to Rows.Badge.INACTIVE
             }
@@ -3858,14 +3858,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         if (downloaded && prefs.autoSync) {
             row("Resync") { autoSync.resync(); refresh() }.asSubRow()
-            if (autoSync.undoUs != null) row("Undo auto sync") { autoSync.undo(); refresh() }.asSubRow()
+            if (autoSync.undoUs != null) row("Undo last sync") { autoSync.undo(); refresh() }.asSubRow()
             syncWithRow(panel)
         }
     }
 
     /**
      * "Sync with": what auto sync lines up against, when the film has subtitles of its own. Auto (the best of them,
-     * named), each of them with how well it matches the downloaded subtitles, or the speech only. Kept for the show.
+     * named), each of them with how well it matches the downloaded subtitles, or the audio only (the talking, as for a
+     * film without subtitles of its own). Kept for the show.
      */
     private fun syncWithRow(panel: SidePanel) = with(panel) {
         val tracks = autoSync.tracks
@@ -3875,11 +3876,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val auto = when {
             // Just the track: the row's value has room for little more, and the list says how well each matches.
             inUse != null -> "Auto (${inUse.info.name()})"
-            tracks.isNotEmpty() && autoSync.trackInUse == null && autoSync.state != AutoSync.State.LISTENING -> "Auto (speech)"
+            tracks.isNotEmpty() && autoSync.trackInUse == null && autoSync.state != AutoSync.State.LISTENING -> "Auto (audio)"
             else -> "Auto"
         }
         val keys = listOf<String?>(null) + tracks.map { it.info.key } + AutoSync.SPEECH
-        val options = listOf(auto) + tracks.map { "${it.info.name()}, ${it.strength.label}" } + "Speech only"
+        val options = listOf(auto) + tracks.map { "${it.info.name()}, ${it.strength.label}" } + "Audio only"
         // A track chosen before that this film doesn't have: shown as Auto.
         val selected = keys.indexOf(chosen).let { if (it < 0) 0 else it }
         choice("Sync with", options, selected) { i -> autoSync.chooseSyncWith(keys[i]); refreshLabels() }.asSubRow()
