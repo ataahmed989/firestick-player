@@ -36,10 +36,19 @@ class SidePanel(private val activity: Activity) {
     var session = 0
         private set
 
+    /** The row last selected, by what it says: the one to come back to after a small window over this one. */
+    private var lastKey: Pair<String, Int>? = null
+
     init {
         // About a third of the screen, as in the design.
         val width = (activity.resources.displayMetrics.widthPixels * 0.31f).toInt()
         root.layoutParams = root.layoutParams.apply { this.width = width }
+        root.viewTreeObserver.addOnGlobalFocusChangeListener { _, now ->
+            if (now == null || !isOpen) return@addOnGlobalFocusChangeListener
+            val rows = focusables()
+            val i = rows.indexOf(now)
+            if (i >= 0) lastKey = rowKey(rows, i)
+        }
     }
 
     fun open(titleText: String, onClose: (() -> Unit)? = null, render: SidePanel.() -> Unit) {
@@ -84,13 +93,17 @@ class SidePanel(private val activity: Activity) {
         if (!isOpen) return
         val rows = focusables()
         val index = rows.indexOfFirst { it.hasFocus() }
-        rebuild(if (index >= 0) index else 0, if (index >= 0) rowKey(rows, index) else null)
+        // A small window (a list of choices) has the selection: the row that opened it is kept by what it says.
+        val key = if (index >= 0) rowKey(rows, index) else if (FireDialog.isShowing(activity)) lastKey else null
+        rebuild(if (index >= 0) index else 0, key)
     }
 
     private fun rebuild(focusIndex: Int, key: Pair<String, Int>? = null) {
+        // A small window open over this one keeps the selection; the row is only noted, to come back to when it closes.
+        val behind = FireDialog.isShowing(activity)
         // Park focus on the window itself while its rows are replaced, so it can't wander off.
-        root.isFocusable = true
-        root.requestFocus()
+        root.isFocusable = !behind
+        if (!behind) root.requestFocus()
         val y = scroll.scrollY
         list.removeAllViews()
         renderer?.invoke(this)
@@ -100,6 +113,11 @@ class SidePanel(private val activity: Activity) {
         if (focusRows.isNotEmpty()) {
             val same = key?.let { k -> focusRows.indices.firstOrNull { rowKey(focusRows, it) == k } }
             val row = focusRows[(same ?: focusIndex).coerceIn(0, focusRows.size - 1)]
+            if (behind) {
+                FireDialog.returnFocusTo(activity, row)
+                root.isFocusable = false
+                return
+            }
             row.requestFocus()
             // The new row is already the selected one: show it white at once instead of fading in from dark.
             row.jumpDrawablesToCurrentState()
@@ -518,12 +536,15 @@ class SidePanel(private val activity: Activity) {
         list.addView(view, rows.listParams(top, bottom))
     }
 
-    /** A setting with several values: shows the current one and opens a small picker window. */
-    fun choice(label: String, options: List<String>, selected: Int, onPick: (Int) -> Unit): View {
+    /**
+     * A setting with several values: shows the current one and opens a small picker window. [alsoChecked] is ticked
+     * there too: what the current value stands for (Auto's own pick).
+     */
+    fun choice(label: String, options: List<String>, selected: Int, alsoChecked: Int? = null, onPick: (Int) -> Unit): View {
         // Always the value in words, even "Off" (no subtitle language): this row opens a picker, it isn't a switch.
         val row = rows.build(label, options.getOrNull(selected) ?: "", null, asSwitch = false)
         row.setOnClickListener {
-            FireDialog.choose(activity, label, options, selected, besidePanel = true) { index ->
+            FireDialog.choose(activity, label, options, selected, besidePanel = true, alsoChecked = alsoChecked) { index ->
                 if (index != selected) onPick(index)
                 refresh()
             }

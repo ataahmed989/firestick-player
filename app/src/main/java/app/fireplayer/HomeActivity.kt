@@ -92,6 +92,8 @@ class HomeActivity : AppCompatActivity() {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        // A small window (a list of choices, a question) open over the screen takes the keys first.
+        if (FireDialog.dispatch(this, event)) return true
         // The menu button (three lines) opens Settings, or Subtitle style as chosen in Settings, as in the player;
         // pressed again, it closes the window.
         if (event.keyCode == KeyEvent.KEYCODE_MENU && ::settingsRow.isInitialized) {

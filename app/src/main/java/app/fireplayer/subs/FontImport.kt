@@ -1,15 +1,11 @@
 package app.fireplayer.subs
 
 import android.app.Activity
-import android.app.Dialog
-import android.graphics.Color
 import android.graphics.Typeface
-import android.graphics.drawable.ColorDrawable
 import android.os.Handler
 import android.os.Looper
 import android.util.TypedValue
 import android.view.Gravity
-import android.view.Window
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -42,7 +38,8 @@ class FontImport(private val activity: Activity, private val prefs: Prefs, priva
     fun show() {
         if (activity.isFinishing || activity.isDestroyed) return
         val rows = Rows(activity)
-        val dialog = Dialog(activity).apply { requestWindowFeature(Window.FEATURE_NO_TITLE) }
+        // Set once the window is shown; Done closes it.
+        var dialog: FireDialog.Popup? = null
         val text = ContextCompat.getColor(activity, R.color.text)
         val muted = ContextCompat.getColor(activity, R.color.text_muted)
         val accent = ContextCompat.getColor(activity, R.color.accent)
@@ -91,22 +88,15 @@ class FontImport(private val activity: Activity, private val prefs: Prefs, priva
             gravity = Gravity.CENTER
             setBackgroundResource(R.drawable.bg_pill)
             addView(rows.text("Done"))
-            setOnClickListener { dialog.dismiss() }
+            setOnClickListener { dialog?.dismiss() }
         }
         box.addView(done, LinearLayout.LayoutParams(rows.dp(140), LinearLayout.LayoutParams.WRAP_CONTENT).apply {
             gravity = Gravity.CENTER_HORIZONTAL
         })
 
-        dialog.setContentView(box)
-        dialog.window?.apply {
-            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-            setDimAmount(0.25f)
-            attributes = attributes.apply { width = rows.dp(if (address != null) 560 else 420) }
-        }
-        dialog.setOnDismissListener { stop() }
         // Opened from Settings: the menu button closes it and the settings window.
-        dialog.setOnKeyListener { _, keyCode, event -> FireDialog.passMenuOn(activity, dialog, keyCode, event) }
-        dialog.show()
+        dialog = FireDialog.custom(activity, box, rows.dp(if (address != null) 560 else 420), menuPassesOn = true)
+            ?.also { it.onDismiss = { stop() } }
         done.requestFocus()
 
         if (address != null) start { message, ok ->
