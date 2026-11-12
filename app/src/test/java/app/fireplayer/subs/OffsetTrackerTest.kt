@@ -608,6 +608,48 @@ class OffsetTrackerTest {
     }
 
     @Test
+    fun aDelaySureOnceIsTheOneLearnedNearlyAlways() {
+        // Auto sync puts in use what one look was sure of, while the next looks confirm it: it must nearly always be
+        // the delay then learned, so the subtitles are right seconds sooner and seldom moved twice.
+        var tentatives = 0
+        var wrong = 0
+        val story = StringBuilder()
+        for (seed in 1L..24L) {
+            val delay = (seed % 7 - 3) * 1_700L
+            val film = FakeFilm.make(seed = 300 + seed, minutes = 20, delayMs = delay)
+            val p = Playback(film, OffsetTracker(film.subs))
+            val seen = LinkedHashSet<Long>()
+            while (p.posMs < 12 * min && p.tracker.segments.isEmpty()) {
+                p.play(p.posMs + OffsetTracker.STEP_MS)
+                p.tracker.tentativeMs?.let { seen += it }
+            }
+            assertNull("no tentative once learned", p.tracker.tentativeMs)
+            tentatives += seen.size
+            val bad = seen.filter { !near(delay, it, 400) }
+            wrong += bad.size
+            if (bad.isNotEmpty()) story.append("seed $seed (delay $delay): put in use ${bad.joinToString()}\n")
+        }
+        println("delays sure once: $tentatives, not the right one: $wrong\n$story")
+        assertTrue("$tentatives sure once, $wrong wrong\n$story", tentatives >= 12 && wrong * 10 <= tentatives)
+    }
+
+    @Test
+    fun turnedOnTheDelayInUseIsNotTurnedDown() {
+        // Auto sync turned on with a delay set by hand, the film around heard already (kept ready, heard ahead): the
+        // first look may take the delay in use at once. Resync instead turns it down until fresh talking brings it back.
+        val film = FakeFilm.make(seed = 82, minutes = 30, delayMs = 3_000)
+        val heard = Playback(film, OffsetTracker(SyncMatcher.Lines(emptyList())))
+        heard.play(6 * min)
+        for (reject in listOf(false, true)) {
+            val tracker = OffsetTracker(film.subs)
+            tracker.relearn(6 * min, centerMs = 3_000, heard.timeline, heardToMs = 6 * min, reject = reject)
+            val d = tracker.step(heard.timeline, 6 * min, OffsetTracker.STEP_MS)
+            val atOnce = (d.outcome == Outcome.LEARNED && near(3_000, d.delayMs, 400)) || near(3_000, tracker.tentativeMs, 400)
+            assertEquals("reject=$reject: $d", !reject, atOnce)
+        }
+    }
+
+    @Test
     fun resyncWithNothingHeardListensAfresh() {
         val film = FakeFilm.make(seed = 81, minutes = 30, delayMs = 3_000)
         val tracker = OffsetTracker(film.subs, listOf(Segment(0, 9_000)))

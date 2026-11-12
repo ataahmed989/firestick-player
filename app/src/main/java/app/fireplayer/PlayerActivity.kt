@@ -3851,7 +3851,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             when {
                 !prefs.autoSync -> { prefs.autoSync = true; autoSync.setOn(true); followSubtitle() }
                 !downloaded -> {}
-                autoSync.state == AutoSync.State.OFF || autoSync.state == AutoSync.State.NOT_SYNCED -> autoSync.resync()
+                autoSync.state == AutoSync.State.OFF || autoSync.state == AutoSync.State.NOT_SYNCED -> autoSync.turnOn()
                 else -> autoSync.setOn(false)
             }
             refresh()

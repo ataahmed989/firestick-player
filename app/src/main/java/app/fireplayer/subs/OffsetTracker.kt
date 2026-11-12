@@ -202,6 +202,12 @@ class OffsetTracker(
     private val openHeard = HashMap<Long, Int>()
 
     val segments: List<Segment> get() = map.toList()
+
+    /**
+     * Finding the first delay: the one a look was sure of, waiting for the next look to confirm it; else null. Auto sync
+     * puts it in use meanwhile (subtitles right seconds sooner), and if the next looks find another, that one takes over.
+     */
+    val tentativeMs: Long? get() = if (map.isEmpty()) candidate?.takeIf { it.segmentFromMs < 0 }?.delayMs else null
     /** Seconds of film where a match agreed with the map in this session (a copy), for [SyncMapping]. */
     fun confirmedSeconds(): BitSet = verified.clone() as BitSet
 
@@ -311,9 +317,10 @@ class OffsetTracker(
      *    there on is; where it seems to fit up to now, all since the last break is;
      *  - [centerMs] itself only comes back on talking heard after the press (so in a minute or two, as the subtitles
      *    stay as they are meanwhile); any other delay is taken from what was heard already, often at once.
-     * Listening ahead, the film up to [heardToMs] was heard before the press, though it's after [atMs].
+     * Listening ahead, the film up to [heardToMs] was heard before the press, though it's after [atMs]. Without [reject]
+     * (auto sync turned on, not Resync: nobody said the delay in use is wrong), [centerMs] is only where it looks from.
      */
-    fun relearn(atMs: Long, centerMs: Long, timeline: SpeechTimeline, heardToMs: Long = -1) {
+    fun relearn(atMs: Long, centerMs: Long, timeline: SpeechTimeline, heardToMs: Long = -1, reject: Boolean = true) {
         val lastBreak = breaks.floor(atMs) ?: 0L
         val fit = fitEnd(timeline, centerMs, lastBreak, atMs)
         val since = if (atMs - fit <= FITS_TO_NOW_MS) lastBreak else fit
@@ -338,7 +345,7 @@ class OffsetTracker(
         misses = 0
         suspectMs = since
         suspectWhy = Hint.RESYNC
-        rejectedMs = centerMs
+        rejectedMs = if (reject) centerMs else null
         resyncAtMs = atMs
         freshFromMs = maxOf(atMs, heardToMs)
     }

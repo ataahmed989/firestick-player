@@ -166,6 +166,9 @@ class AutoSync(
     private var worker: Thread? = null
     // Off for these subtitles, but the sound loading is copied all the same, for when it's turned on ([standbyAhead]).
     @Volatile private var aheadStandby = false
+    // Standing by, but turned on it lines up against the film's own subtitles first if it has any (nothing is heard
+    // ahead then): once they're found, standing by stops.
+    @Volatile private var standbyMayTrack = false
 
     /** Where the film is playing (ms), for the listening thread: updated every second while listening; -1 unknown. */
     @Volatile private var playheadMs = -1L
@@ -184,6 +187,10 @@ class AutoSync(
      * not found yet, or when it wasn't found this time (kept from before, or set by hand).
      */
     var syncedInMs: Long? = null
+        private set
+    // Finding the first delay: the one sure once, put in use while it's confirmed ([tentative]), and since when.
+    private var tentativeMs: Long? = null
+    private var tentativeAt = 0L
         private set
 
     /**
@@ -216,6 +223,8 @@ class AutoSync(
         val preferred: List<String> = emptyList(),
         /** The film's sound is heard as it loads ([SpeechAhead]): a film Media3 reads itself, not live. */
         val listenAhead: Boolean = false,
+        /** With [relearnAtMs]: Resync, so the delay in use was turned down; else auto sync was turned on ([turnOn]). */
+        val rejectInUse: Boolean = true,
     )
 
     /** Resync pressed: the stretch around [atMs] checked again; [speech]: by the talking, whatever there is. */
@@ -234,11 +243,14 @@ class AutoSync(
     fun follow(subtitle: File?, filmKey: String?, release: String? = null, language: String? = null) {
         if (subtitle == file && filmKey == key) return
         stopListening()
-        endStandby()
+        // Other subtitles for the same film: what's kept stays (taken over below); another film's isn't wanted.
+        if (filmKey == null || filmKey != key) endStandby()
         clearMapping()
         stopHolding()
         startedAt = 0
         syncedInMs = null
+        tentativeMs = null
+        tentativeAt = 0L
         file = subtitle
         key = filmKey
         undoUs = null
@@ -254,6 +266,7 @@ class AutoSync(
         subtitleSource = release?.let { sourceOf(it) }
         subtitleLanguage = language
         if (subtitle == null || filmKey == null) {
+            endStandby()
             setState(State.OFF, null)
             return
         }
@@ -268,6 +281,7 @@ class AutoSync(
             return
         }
         if (!prefs.autoSync) {
+            endStandby()
             setState(State.OFF, null)
             return
         }
@@ -309,12 +323,21 @@ class AutoSync(
      * checked again (see the class notes) and the rest kept; with none (or after a delay set by hand), it's found
      * afresh around where the film is. Meanwhile the delay stays as it is.
      */
-    fun resync() {
+    fun resync() = resync(asked = true)
+
+    /**
+     * Auto sync turned on for these subtitles (from the Subtitle delay window, or in Settings): found afresh around where
+     * the film is, as after Resync, but the delay in use isn't turned down (only nobody had it checked): heard to agree,
+     * it's kept at once.
+     */
+    fun turnOn() = resync(asked = false)
+
+    private fun resync(asked: Boolean) {
         val f = file ?: return
         val now = SystemClock.elapsedRealtime()
         // Pressed again soon after: the source used the first time didn't put it right, so the talking decides.
-        val again = now - lastResyncAt < RESYNC_AGAIN_MS
-        lastResyncAt = now
+        val again = asked && now - lastResyncAt < RESYNC_AGAIN_MS
+        if (asked) lastResyncAt = now
         if (again) speechFirstKey = savedKey()
         val at = position().first
         if (!byHand && segments.isNotEmpty() && state == State.SYNCED && prefs.autoSync) {
@@ -343,9 +366,11 @@ class AutoSync(
         segments = emptyList()
         startedAt = now
         syncedInMs = null
+        tentativeMs = null
+        tentativeAt = 0L
         prefs.forgetSyncedDelay(savedKey())
         prefs.forgetHandDelay(savedKey())
-        if (lines == null) loadLines(f) { start(relearnAtMs = at) } else start(relearnAtMs = at)
+        if (lines == null) loadLines(f) { start(relearnAtMs = at, rejectInUse = asked) } else start(relearnAtMs = at, rejectInUse = asked)
     }
 
     /** The delay was changed by hand: auto sync stays out of it for this subtitle, and the delay is kept for it. */
@@ -355,6 +380,8 @@ class AutoSync(
         stopHolding()
         startedAt = 0
         syncedInMs = null
+        tentativeMs = null
+        tentativeAt = 0L
         if (state == State.OFF) return
         stopListening()
         clearMapping()
@@ -370,7 +397,7 @@ class AutoSync(
     /** Auto sync turned on or off in Settings, or for this subtitle from the Subtitle delay window. */
     fun setOn(on: Boolean) {
         if (on) {
-            if (file != null && state == State.OFF) resync()
+            if (file != null && state == State.OFF) turnOn()
         } else {
             stopListening()
             clearMapping()
@@ -378,6 +405,8 @@ class AutoSync(
             beforeResync = null
             startedAt = 0
             syncedInMs = null
+            tentativeMs = null
+            tentativeAt = 0L
             setState(State.OFF, null)
             // Off for these subtitles only (from the Subtitle delay window): ready for it to be turned on again.
             if (prefs.autoSync) standbyAhead() else endStandby()
@@ -418,6 +447,8 @@ class AutoSync(
         byHand = true
         startedAt = 0
         syncedInMs = null
+        tentativeMs = null
+        tentativeAt = 0L
         segments = emptyList()
         prefs.forgetSyncedDelay(savedKey())
         setState(State.OFF, "Off for these subtitles; the delay is back to ${SyncMatcher.formatShift(before / 1000)}.")
@@ -567,7 +598,7 @@ class AutoSync(
     }
 
     /** Listens from what's known ([segments]), or for Resync afresh around [relearnAtMs]. */
-    private fun start(relearnAtMs: Long? = null) {
+    private fun start(relearnAtMs: Long? = null, rejectInUse: Boolean = true) {
         val l = lines ?: return
         val k = key ?: return
         if (l.lines.size < 20 || byHand) return
@@ -597,7 +628,9 @@ class AutoSync(
             priorMs = prior,
             preferred = preferred,
             listenAhead = ahead,
+            rejectInUse = rejectInUse,
         )
+        aheadStandby = false
         main.removeCallbacks(beat)
         playheadMs = position().first
         main.postDelayed(beat, BEAT_MS)
@@ -626,8 +659,8 @@ class AutoSync(
         val e = embedded ?: return false
         val uri = filmUri()
         if (!LISTEN_AHEAD || uri == null || !isVod()) return false
-        // Listening (or about to): what's copied is taken as it comes, nothing waiting is let go for newer.
-        aheadStandby = false
+        // Listening (or about to): what's copied is taken as it comes, nothing waiting is let go for newer. Standing
+        // by ends once the job is out ([start]), so the listening thread never sees neither.
         e.ahead.keepNewest = false
         e.aheadUri = uri
         return true
@@ -640,15 +673,29 @@ class AutoSync(
      * plays: seconds, not a minute or more. Not while auto sync is off in Settings.
      */
     private fun standbyAhead() {
-        if (file == null || !prefs.autoSync || !armAhead()) return
+        val l = lines
+        val mayTrack = embedded != null && syncWith() != SPEECH && speechFirstKey != savedKey()
+        // Too few lines to line up, or the film's own subtitles to line up against (nothing heard ahead): not wanted.
+        if (file == null || !prefs.autoSync || (l != null && l.lines.size < 20) || (mayTrack && hasOwnSubtitles(filmUri())) || !armAhead()) {
+            endStandby()
+            return
+        }
         embedded?.ahead?.keepNewest = true
+        standbyMayTrack = mayTrack
         aheadStandby = true
+        // Its idle look lets go of this if the film's own subtitles turn up meanwhile.
+        if (mayTrack) ensureWorker()
     }
+
+    /** Whether the film [uri] has subtitles of its own enough to line up against (as the listening thread judges). */
+    private fun hasOwnSubtitles(uri: String?): Boolean =
+        (embedded?.source(uri)?.candidates()?.maxOfOrNull { it.count } ?: 0) >= REFERENCE_MIN_CUES
 
     /** Copying for [standbyAhead] stops: what was kept is let go (by the listening thread when it's there). */
     private fun endStandby() {
         if (!aheadStandby) return
         aheadStandby = false
+        standbyMayTrack = false
         val e = embedded ?: return
         e.ahead.keepNewest = false
         if (job == null) e.aheadUri = null
@@ -727,6 +774,8 @@ class AutoSync(
         var dropped: String? = null
         // What a decision of the delay in use being right was last told for (once per source).
         var keptTold: Basis? = null
+        // The sure-once delay last told to the main thread to put in use ([tentative]).
+        var toldTentative: Long? = null
         // Checking the film's own subtitles against the talking ([CrossCheck]): listening now, from where (film time,
         // once heard), since when, when next, whether after Resync, and the last verdict.
         var crossing = false
@@ -795,9 +844,11 @@ class AutoSync(
 
         /** Stops copying the sound as it loads, and lets go of what was kept for it. */
         fun aheadDisarm() {
+            letAheadDecoderGo()
+            // Armed on the main thread for [standbyAhead] after the job this thread was on stopped: not this one's to stop.
+            if (aheadStandby && job == null) return
             embedded?.aheadUri = null
             ring?.release()
-            letAheadDecoderGo()
         }
 
         /** Listening ahead for [current], if it can: waits for the first of it to be heard. */
@@ -860,6 +911,16 @@ class AutoSync(
                 Outcome.GAVE_UP -> return false
                 else -> {}
             }
+            // Finding the first delay: what one look was sure of is put in use at once, while the next looks confirm it
+            // (or find another, which takes over), rather than the subtitles waiting on the confirmation.
+            if (d.outcome == Outcome.NOT_SURE) {
+                val t = tr.tentativeMs
+                if (t != null && t != toldTentative) {
+                    toldTentative = t
+                    val how = if (onTrack) "the film's own subtitles" else if (ahead) "the speech heard ahead" else "the speech where the film plays"
+                    main.post { tentative(current, t, how) }
+                }
+            }
             // What's confirmed grew or the offsets changed: the main thread gets a fresh snapshot for the skip times,
             // after decided() (a first delay learnt has made it SYNCED by then).
             val segs = tr.segments
@@ -888,6 +949,7 @@ class AutoSync(
             stepAt = 0
             lastKind = null
             keptTold = null
+            toldTentative = null
             cost.against = "speech"
             tap.listening = true
             aheadTracker = null
@@ -908,6 +970,7 @@ class AutoSync(
             crossing = false
             crossNext = SystemClock.elapsedRealtime() + CROSS_FIRST_MS
             keptTold = null
+            toldTentative = null
             letDecoderGo()
             tap.listening = false
             // The film's own subtitles are read as it loads already: nothing is heard ahead meanwhile.
@@ -1205,9 +1268,21 @@ class AutoSync(
                     aheadState = Ahead.OFF
                     val now = SystemClock.elapsedRealtime()
                     if (idleSince == 0L) idleSince = now
-                    // Kept while standing by for auto sync to be turned on for these subtitles ([standbyAhead]).
+                    // Kept while standing by for auto sync to be turned on for these subtitles ([standbyAhead]), unless
+                    // the film's own subtitles turned up (turned on, it lines up against those first, nothing heard ahead).
                     if (aheadStandby) {
-                        // Nothing.
+                        val uri = embedded?.aheadUri
+                        if (standbyMayTrack && uri != null && hasOwnSubtitles(uri)) {
+                            aheadStandby = false
+                            standbyMayTrack = false
+                            embedded.ahead.keepNewest = false
+                            if (job == null) {
+                                embedded.aheadUri = null
+                                ring?.release()
+                            }
+                        }
+                    } else if (job != null) {
+                        // A job just came out (its listening takes the copying over).
                     } else if (embedded?.aheadUri == null) {
                         ring?.release()
                     } else if (now - idleSince > IDLE_ARMED_MS) {
@@ -1241,6 +1316,7 @@ class AutoSync(
                     speechFailed = false
                     dropped = current.dropped
                     keptTold = null
+                    toldTentative = null
                     crossing = false
                     lastVerdict = null
                     lookAt = 0L
@@ -1258,7 +1334,7 @@ class AutoSync(
                     // after where it was pressed, so the delay turned down doesn't come back on that.
                     val heardTo = if ((aheadState == Ahead.ON || aheadWasOn) && speechAhead.runFromMs >= 0) speechAhead.edgeMs else -1L
                     aheadWasOn = false
-                    relearn?.let { t.relearn(it, current.centerMs, timeline, heardTo) }
+                    relearn?.let { t.relearn(it, current.centerMs, timeline, heardTo, reject = current.rejectInUse) }
                     tracker = t
                     // Resync tries at once, with what was heard already.
                     stepAt = if (relearn != null) -TRY_EVERY_FRAMES else 0
@@ -1699,6 +1775,32 @@ class AutoSync(
     }
 
     /**
+     * On the main thread, finding the first delay: one look was sure of [ms] ([how]: against what). It's put in use now,
+     * not saved, while the next looks confirm it (then it's kept as found) or find another, which takes over the same
+     * way. Undo puts back the delay from before.
+     */
+    private fun tentative(current: Job, ms: Long, how: String) {
+        if (current.generation != generation || byHand || segments.isNotEmpty() || state == State.SYNCED) return
+        val now = SystemClock.elapsedRealtime()
+        val was = tentativeMs
+        if (was == null || abs(ms - was) > TENTATIVE_AGREE_MS) {
+            tentativeAt = now
+            if (startedAt > 0) {
+                Log.i(TAG, "in use after ${"%.1f".format(java.util.Locale.ROOT, (now - startedAt) / 1000.0)} s, confirming: " +
+                    "${SyncMatcher.formatShift(ms)}, sure once by $how")
+            }
+        }
+        tentativeMs = ms
+        val nowUs = delayUs()
+        if (abs(ms * 1000 - nowUs) >= MIN_MOVE_US) {
+            if (undoUs == null) undoUs = nowUs
+            moveDelay(ms * 1000)
+        }
+        stopHolding()
+        setState(State.LISTENING, "Lined up: ${SyncMatcher.formatShift(ms)}, confirming on the talking…")
+    }
+
+    /**
      * On the main thread: a delay found (the first, one after a break, or a fine-tuning), put in and kept; [b]: what it
      * was found against.
      */
@@ -1708,10 +1810,17 @@ class AutoSync(
         checkingAt = -1
         // How long the first delay took, for the panel (and the log, to check it on the TV).
         if (d.outcome == Outcome.LEARNED && syncedInMs == null && startedAt > 0) {
-            val took = SystemClock.elapsedRealtime() - startedAt
+            val now = SystemClock.elapsedRealtime()
+            val t = tentativeMs
+            // In use already since one look was sure of it: right from then.
+            val inUse = t != null && tentativeAt > 0 && abs(d.segments[0].delayMs - t) <= TENTATIVE_AGREE_MS
+            val took = (if (inUse) tentativeAt else now) - startedAt
             syncedInMs = took
-            Log.i(TAG, "first delay in ${"%.1f".format(java.util.Locale.ROOT, took / 1000.0)} s since auto sync started for these subtitles, by $how")
+            Log.i(TAG, "first delay in ${"%.1f".format(java.util.Locale.ROOT, took / 1000.0)} s since auto sync started for these subtitles, by $how" +
+                if (inUse) " (in use since, confirmed ${"%.1f".format(java.util.Locale.ROOT, (now - startedAt) / 1000.0)} s)" else "")
         }
+        tentativeMs = null
+        tentativeAt = 0L
         segments = d.segments
         prefs.saveSyncedSegments(savedKey(), OffsetTracker.encode(segments))
         // Also the one delay older versions read.
@@ -1751,6 +1860,11 @@ class AutoSync(
         if (current.generation != generation) return
         tap.listening = false
         stopHolding()
+        // One look was sure of a delay, never confirmed: that stays, unconfirmed.
+        tentativeMs?.let {
+            setState(State.NOT_SYNCED, "Couldn't confirm ${SyncMatcher.formatShift(it)} here; it stays. Try Resync, or set it by hand.")
+            return
+        }
         // Started from the last episode's delay: that stays, unconfirmed.
         if (basis == Basis.PRIOR) {
             setState(State.NOT_SYNCED, "Couldn't check the last episode's delay here (${SyncMatcher.formatShift(delayUs() / 1000)}). Try Resync, or set it by hand.")
@@ -1851,6 +1965,8 @@ class AutoSync(
         private const val AHEAD_REST = 9L
         // Copying the sound for listening about to start, but none has for this long: let go.
         private const val IDLE_ARMED_MS = 10_000L
+        // A first delay confirmed within this of the one put in use when sure once: right since then.
+        private const val TENTATIVE_AGREE_MS = 500L
         private val READABLE_PCM = setOf(C.ENCODING_PCM_16BIT, C.ENCODING_PCM_24BIT, C.ENCODING_PCM_32BIT, C.ENCODING_PCM_FLOAT)
 
         /** How long syncing took, for the panel: "14 s", or "2 min" from 100 s on. */
