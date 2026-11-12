@@ -8,6 +8,7 @@ import app.fireplayer.subs.OffsetTracker.Outcome
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.nio.ByteBuffer
@@ -241,6 +242,55 @@ class SpeechAheadTest {
         }
         println("another film's subtitles: learnt something in $learnedAhead of $runs heard ahead, $learnedPlayhead where it plays")
         assertTrue("$learnedAhead of $runs, where it plays $learnedPlayhead", learnedAhead <= maxOf(1, learnedPlayhead))
+    }
+
+    @Test
+    fun aSkipPastAShortBumperIsRightWithinSeconds() {
+        // Delays known, then a skip over a bumper that puts the subtitles 1.5 s out. Listening ahead tells the tracker of
+        // the jump (the landing's own first marks don't hide it), a quick look near the delay in use puts the new one
+        // in use within seconds, and the film heard since confirms it into the map. Film before the jump keeps its own.
+        val waits = ArrayList<Long>()
+        for (seed in seeds) {
+            val film = FakeFilm.make(seed, minutes = 40, delayMs = 1_400, pace = FakeFilm.TALKY, breaks = listOf(Break(12 * min, adMs = 1_500)))
+            val tracker = OffsetTracker(film.subs, listOf(OffsetTracker.Segment(0, 1_400)))
+            val run = AheadLoading(film, tracker, startMs = 2 * min)
+            run.playTo(4 * min)
+            val jumps = tracker.jumpChecks
+            run.seek(20 * min)
+            val at = run.wallMs
+            fun inUse() = tracker.provisional?.delayMs ?: tracker.delayAt(21 * min)
+            run.runUntil(at + 60_000) { near(2_900, inUse()) }
+            assertEquals("seed $seed: the jump is told\n${run.story()}", jumps + 1, tracker.jumpChecks)
+            assertTrue("seed $seed: in use ${inUse()}\n${run.story()}", near(2_900, inUse()))
+            waits += run.wallMs - at
+            run.runUntil(at + 3 * min) { tracker.provisional == null && near(2_900, tracker.delayAt(21 * min)) }
+            assertNull("seed $seed: confirmed or dropped\n${run.story()}", tracker.provisional)
+            assertTrue("seed $seed: in the map ${tracker.segments}\n${run.story()}", near(2_900, tracker.delayAt(21 * min)))
+            assertTrue("seed $seed: before the jump ${tracker.segments}\n${run.story()}", near(1_400, tracker.delayAt(5 * min)))
+        }
+        waits.sort()
+        assertTrue("right delay in use, wall after the skip: $waits", waits[waits.size / 2] <= 15_000)
+    }
+
+    @Test
+    fun aSkipWithNothingChangedIsKeptWithinSeconds() {
+        val waits = ArrayList<Long>()
+        for (seed in seeds) {
+            val film = FakeFilm.make(seed, minutes = 40, delayMs = 1_400, pace = FakeFilm.TALKY)
+            val tracker = OffsetTracker(film.subs, listOf(OffsetTracker.Segment(0, 1_400)))
+            val run = AheadLoading(film, tracker, startMs = 2 * min)
+            run.playTo(4 * min)
+            run.seek(20 * min)
+            val at = run.wallMs
+            val before = run.decisions.size
+            run.runUntil(at + 2 * min) { run.decisions.drop(before).any { it.third.outcome == Outcome.KEPT } }
+            assertTrue("seed $seed: kept\n${run.story()}", run.decisions.drop(before).any { it.third.outcome == Outcome.KEPT })
+            assertNull("seed $seed: nothing else put in use\n${run.story()}", tracker.provisional)
+            assertTrue("seed $seed: ${tracker.segments}", tracker.segments.size == 1 && near(1_400, tracker.delayAt(21 * min)))
+            waits += run.wallMs - at
+        }
+        waits.sort()
+        assertTrue("kept, wall after the skip: $waits", waits[waits.size / 2] <= 15_000)
     }
 
     @Test

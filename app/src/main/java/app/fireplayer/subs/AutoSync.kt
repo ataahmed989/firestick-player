@@ -172,7 +172,10 @@ class AutoSync(
     private val beat = object : Runnable {
         override fun run() {
             if (job == null) return
-            playheadMs = position().first
+            val at = position().first
+            // Playing jumped (a skip or a rewind): how long the delay takes is counted from here.
+            if (playheadMs >= 0 && abs(at - playheadMs) > JUMP_BEAT_MS) jumpAt = SystemClock.elapsedRealtime()
+            playheadMs = at
             main.postDelayed(this, BEAT_MS)
         }
     }
@@ -191,9 +194,44 @@ class AutoSync(
     // Resync pressed with nothing kept (found afresh): checking again until it's found ([rechecking]).
     private var resyncRelearn = false
 
+    // After a jump with delays known: the delay a quick look found, in use from where the jump landed until the film
+    // since confirms or drops it ([provisional]); never saved. When it was put in, and whether Undo was set for it.
+    private var provisional: OffsetTracker.Segment? = null
+    private var provisionalAt = 0L
+    private var provisionalSetUndo = false
+    // When playing last jumped (elapsed realtime, 0: not since these subtitles came on): the badge counts from it.
+    private var jumpAt = 0L
+    // The checks as the film plays: when the last one bore the delay out, or put it right (elapsed realtime, 0: none).
+    private var checkedAt = 0L
+    private var checkedMoved = false
+
+    /** How far the look in hand is towards its next decision, 0..100 (0: nothing to show), for the badge. */
+    var progress = 0
+        private set
+
     /** A delay one look was sure of is in use, being confirmed: how long that took (the badge's "Matched in"), or null. */
     val matchedInMs: Long?
-        get() = if (state == State.LISTENING && tentativeMs != null && tentativeAt > 0 && startedAt > 0) tentativeAt - startedAt else null
+        get() = when {
+            state == State.LISTENING && tentativeMs != null && tentativeAt > 0 && startedAt > 0 -> tentativeAt - startedAt
+            // After a jump: from the jump (or, the film just opened, from when auto sync started on it).
+            state == State.SYNCED && provisional != null && provisionalAt > 0 && since() > 0 -> (provisionalAt - since()).coerceAtLeast(0L)
+            else -> null
+        }
+
+    /**
+     * What the checks made as the film plays last said, for the panel: "In sync · 2 min ago", "Adjusted · just now";
+     * null before the first one.
+     */
+    val checkedText: String?
+        get() {
+            if (checkedAt <= 0 || state != State.SYNCED || byHand) return null
+            val min = (SystemClock.elapsedRealtime() - checkedAt) / 60_000
+            val ago = if (min < 1) "just now" else "$min min ago"
+            return "${if (checkedMoved) "Adjusted" else "In sync"} · $ago"
+        }
+
+    // What "in N s" counts from: the last jump, else auto sync starting on these subtitles.
+    private fun since(): Long = maxOf(jumpAt, startedAt)
 
     /** Resync was pressed and it's still checking (the badge's "Rechecking"). */
     val rechecking: Boolean
@@ -542,7 +580,7 @@ class AutoSync(
     /** While the delay changes along the film, it's kept to the one for where the film is (after a jump, too). */
     private val following = object : Runnable {
         override fun run() {
-            if (state != State.SYNCED || byHand || segments.size < 2) return
+            if (state != State.SYNCED || byHand || (segments.size < 2 && provisional == null)) return
             applyHere()
             main.postDelayed(this, FOLLOW_EVERY_MS)
         }
@@ -550,12 +588,12 @@ class AutoSync(
 
     private fun startFollowing() {
         main.removeCallbacks(following)
-        if (segments.size > 1) main.post(following)
+        if (segments.size > 1 || provisional != null) main.post(following)
     }
 
     /** Puts in the delay found for where the film is now, unless it's in already (to within what anyone sees). */
     private fun applyHere() {
-        val ms = OffsetTracker.followedDelayMs(byHand, state == State.SYNCED, segments, position().first) ?: return
+        val ms = OffsetTracker.followedDelayMs(byHand, state == State.SYNCED, segments, position().first, provisional) ?: return
         if (abs(ms * 1000 - delayUs()) < MIN_MOVE_US) return
         moveDelay(ms * 1000)
         if (checkingAt < 0) detail = syncedText()
@@ -672,6 +710,11 @@ class AutoSync(
         embedded?.aheadUri = null
         main.removeCallbacks(following)
         main.removeCallbacks(beat)
+        // Nothing listens: a delay only quickly found isn't held on to, nor a look's progress.
+        provisional = null
+        provisionalAt = 0L
+        provisionalSetUndo = false
+        progress = 0
     }
 
     /**
@@ -797,6 +840,9 @@ class AutoSync(
         var jumpTracker: OffsetTracker? = null
         var jumpsSeen = 0
         var jumpSince = 0L
+        // The delay quickly found after a jump, and the look's progress, as last told to the main thread.
+        var toldProvisional: OffsetTracker.Segment? = null
+        var toldProgress = 0
         // Checking the film's own subtitles against the talking ([CrossCheck]): listening now, from where (film time,
         // once heard), since when, when next, whether after Resync, and the last verdict.
         var crossing = false
@@ -930,6 +976,11 @@ class AutoSync(
                 jumpTracker = tr
                 jumpsSeen = tr.jumpChecks
                 jumpSince = 0L
+                // Another tracker: what the last one had quickly found isn't its.
+                if (toldProvisional != null) {
+                    toldProvisional = null
+                    main.post { provisional(current, null, "") }
+                }
             } else if (tr.jumpChecks != jumpsSeen) {
                 jumpsSeen = tr.jumpChecks
                 jumpSince = SystemClock.elapsedRealtime()
@@ -971,6 +1022,8 @@ class AutoSync(
                         keptTold = b
                         main.post { kept(current, b) }
                     }
+                    // Every check that bears the delay out is counted, for the panel's "In sync".
+                    main.post { checked(current, moved = false) }
                 }
                 Outcome.GAVE_UP -> return false
                 else -> {}
@@ -985,6 +1038,19 @@ class AutoSync(
                     val inUse = t + if (onTrack) trimMs else 0L
                     main.post { tentative(current, inUse, how) }
                 }
+            }
+            // After a jump: the delay a quick look found is in use at once, from where the jump landed, until the film
+            // heard since confirms it (it's in the map then) or drops it.
+            val pv = tr.provisional
+            if (pv != toldProvisional) {
+                toldProvisional = pv
+                val how = if (ahead) "the speech heard ahead" else "the speech where the film plays"
+                main.post { provisional(current, pv, how) }
+            }
+            val pr = tr.progress
+            if (pr != toldProgress && (abs(pr - toldProgress) >= PROGRESS_STEP || pr == 0 || toldProgress == 0)) {
+                toldProgress = pr
+                main.post { progressed(current, pr) }
             }
             // What's confirmed grew or the offsets changed: the main thread gets a fresh snapshot for the skip times,
             // after decided() (a first delay learnt has made it SYNCED by then).
@@ -1293,7 +1359,7 @@ class AutoSync(
                 r.recycle(piece)
             }
             val spent = SystemClock.elapsedRealtime() - t0
-            if (spent > 0) Thread.sleep(minOf(spent * if (aheadFast || tracker?.learning != false) AHEAD_REST_LEARNING else AHEAD_REST, 1_000L))
+            if (spent > 0) Thread.sleep(minOf(spent * if (aheadFast || tracker?.let { it.learning || it.settling } != false) AHEAD_REST_LEARNING else AHEAD_REST, 1_000L))
             return true
         }
 
@@ -1905,6 +1971,11 @@ class AutoSync(
             if (current.generation != generation) return@post
             tap.listening = false
             stopHolding()
+            if (provisional != null) {
+                provisional = null
+                applyHere()
+            }
+            progress = 0
             if (segments.isEmpty()) setState(State.NOT_SYNCED, text)
         }
     }
@@ -1975,12 +2046,63 @@ class AutoSync(
         onChanged()
     }
 
+    /**
+     * On the main thread, after a jump with delays known: [seg], found by a quick look, is in use from where the jump
+     * landed (not saved, not in [segments]) while the film since confirms it; null: dropped, or confirmed and in
+     * [segments] by now ([decided] ran first). Rewinding before the landing shows the delay from before again.
+     */
+    private fun provisional(current: Job, seg: OffsetTracker.Segment?, how: String) {
+        if (current.generation != generation) return
+        if (seg == null) {
+            if (provisional == null) return
+            provisional = null
+            provisionalAt = 0L
+            // Dropped, and Undo was only for it: nothing to undo.
+            if (provisionalSetUndo) undoUs = null
+            provisionalSetUndo = false
+            if (!byHand && state == State.SYNCED) applyHere()
+            onChanged()
+            return
+        }
+        if (byHand || state != State.SYNCED || segments.isEmpty()) return
+        val was = provisional
+        if (was == null || abs(seg.delayMs - was.delayMs) > TENTATIVE_AGREE_MS) {
+            provisionalAt = SystemClock.elapsedRealtime()
+            Log.i(TAG, "after a jump: in use after ${"%.1f".format(java.util.Locale.ROOT, (provisionalAt - since()) / 1000.0)} s, " +
+                "confirming: ${SyncMatcher.formatShift(seg.delayMs)} from ${OffsetTracker.clock(seg.fromMs)}, by $how")
+        }
+        provisional = seg
+        if (undoUs == null) {
+            undoUs = delayUs()
+            provisionalSetUndo = true
+        }
+        applyHere()
+        startFollowing()
+        onChanged()
+    }
+
+    /** On the main thread: how far the look in hand is towards its next decision (the badge's percent). */
+    private fun progressed(current: Job, percent: Int) {
+        if (current.generation != generation || progress == percent) return
+        progress = percent
+        onChanged()
+    }
+
+    /** On the main thread: a check as the film plays bore the delay out, or put it right ([moved]). */
+    private fun checked(current: Job, moved: Boolean) {
+        if (current.generation != generation || byHand) return
+        checkedAt = SystemClock.elapsedRealtime()
+        checkedMoved = moved
+    }
+
     /** On the main thread: a match found the delay in use right ([b]: against what). */
     private fun kept(current: Job, b: Basis) {
         if (current.generation != generation || byHand || state != State.SYNCED) return
         basis = b
         stopHolding()
         val again = checkingAt >= 0
+        // After a jump: how long it took from there (the badge's "Synced in").
+        if (again && checkingAt == jumpCheckAt && since() > 0) syncedInMs = SystemClock.elapsedRealtime() - since()
         checkingAt = -1
         detail = if (again) "Checked again. ${syncedText()}" else syncedText()
         onChanged()
@@ -2048,6 +2170,16 @@ class AutoSync(
     private fun decided(current: Job, d: OffsetTracker.Decision, b: Basis, how: String) {
         if (current.generation != generation || byHand || d.segments.isEmpty()) return
         basis = b
+        // After a jump (its check on, or its quick delay in use): how long it took from there; that delay is kept now,
+        // so Undo set for it stays.
+        if (d.outcome != Outcome.LEARNED && since() > 0 && (provisional != null || checkingAt >= 0 && checkingAt == jumpCheckAt)) {
+            syncedInMs = SystemClock.elapsedRealtime() - since()
+        }
+        provisionalSetUndo = false
+        if (d.outcome != Outcome.LEARNED) {
+            checkedAt = SystemClock.elapsedRealtime()
+            checkedMoved = true
+        }
         checkingAt = -1
         // How long the first delay took, for the panel (and the log, to check it on the TV).
         if (d.outcome == Outcome.LEARNED && syncedInMs == null && startedAt > 0) {
@@ -2207,6 +2339,10 @@ class AutoSync(
         private const val LISTEN_AHEAD = true
         // Where the film is, for the listening thread, this often.
         private const val BEAT_MS = 1_000L
+        // The playhead further than this from where it was a beat ago: playing jumped.
+        private const val JUMP_BEAT_MS = 10_000L
+        // The badge's percent is told again when it has moved this much.
+        private const val PROGRESS_STEP = 5
         // Nothing of the film's sound heard ahead this long after starting (a stream in pieces, a protected film, a
         // sound with no decoder), or not caught up with where it plays: listened to where it plays instead.
         private const val AHEAD_WAIT_MS = 8_000L
