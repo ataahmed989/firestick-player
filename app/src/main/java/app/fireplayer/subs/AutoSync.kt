@@ -876,6 +876,8 @@ class AutoSync(
                 return
             }
             embedded?.aheadUri = current.filmUri
+            // Listened to from now: what's copied is taken as it comes (what was kept meanwhile first).
+            ring.keepNewest = false
             aheadState = Ahead.WAITING
             aheadSince = SystemClock.elapsedRealtime()
             behindSince = 0
@@ -1271,13 +1273,17 @@ class AutoSync(
         }
 
         /**
-         * The check against the talking heard ahead is done: nothing more is heard ahead, and the usual checks as the film
-         * plays go on, the next in [nextInMs].
+         * The check against the talking heard ahead is done: nothing more is decoded, and the usual checks as the film plays
+         * go on, the next in [nextInMs]. The sound loading is still copied, the newest kept (as standing by), so Audio only,
+         * Resync or a track let go hears the two minutes loaded at once rather than only what loads from then on.
          */
         fun endCrossAhead(nextInMs: Long = CROSS_EVERY_MS) {
             crossAhead = false
             aheadFast = false
-            if (aheadState != Ahead.OFF) aheadDisarm()
+            if (aheadState != Ahead.OFF) {
+                letAheadDecoderGo()
+                ring?.keepNewest = true
+            }
             aheadState = Ahead.OFF
             crossNext = SystemClock.elapsedRealtime() + nextInMs
         }
@@ -1367,7 +1373,8 @@ class AutoSync(
                         // Nothing.
                     } else if (job != null) {
                         // A job just came out (its listening takes the copying over).
-                    } else if (embedded?.aheadUri == null) {
+                    } else if (embedded?.aheadUri == null && now - idleSince > IDLE_RELEASE_MS) {
+                        // Not copied any more (for a moment, it's only one job giving way to the next).
                         ring?.release()
                     } else if (now - idleSince > IDLE_ARMED_MS) {
                         aheadDisarm()
@@ -1564,6 +1571,8 @@ class AutoSync(
                                 // The sound loading can't be heard (too heavy, no decoder, protected so nothing is copied), or
                                 // nothing came of it for long: checked as the film plays instead, from now.
                                 Log.i(TAG, "not checking against the speech heard ahead (${aheadSkip ?: "too long"}): as the film plays")
+                                // A sound that can't be heard ahead isn't worth keeping either.
+                                if (aheadSkip != null) aheadDisarm()
                                 endCrossAhead(0)
                             } else {
                                 aheadFast = true
@@ -2137,6 +2146,8 @@ class AutoSync(
         private const val AHEAD_REST = 9L
         // Copying the sound for listening about to start, but none has for this long: let go.
         private const val IDLE_ARMED_MS = 10_000L
+        // Copying stopped this long with nothing listening: what was kept is let go.
+        private const val IDLE_RELEASE_MS = 1_500L
         // A first delay confirmed within this of the one put in use when sure once: right since then.
         private const val TENTATIVE_AGREE_MS = 500L
         private val READABLE_PCM = setOf(C.ENCODING_PCM_16BIT, C.ENCODING_PCM_24BIT, C.ENCODING_PCM_32BIT, C.ENCODING_PCM_FLOAT)
