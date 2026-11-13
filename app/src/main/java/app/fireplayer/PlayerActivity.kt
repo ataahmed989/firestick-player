@@ -3589,6 +3589,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 return true
             }
         }
+        // The main row wraps round the same way: left from play goes to Audio, right from Audio back to play.
+        if (!moreShown && event.repeatCount == 0 && btnAudio.visibility == View.VISIBLE) {
+            if (code == KeyEvent.KEYCODE_DPAD_LEFT && btnPlay.hasFocus()) { btnAudio.requestFocus(); return true }
+            if (code == KeyEvent.KEYCODE_DPAD_RIGHT && btnAudio.hasFocus()) { btnPlay.requestFocus(); return true }
+        }
         when (code) {
             KeyEvent.KEYCODE_BACK -> {
                 consumeBackUp = true
