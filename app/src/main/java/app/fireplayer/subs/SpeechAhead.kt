@@ -39,12 +39,21 @@ class SpeechAhead(val timeline: SpeechTimeline) {
     /** How much film has been listened to ahead, for the log (ms). */
     var decodedMs = 0L
         private set
+    /** How much film loaded again was heard before and so not decoded again ([skipIfHeard]), for the log (ms). */
+    var skippedMs = 0L
+        private set
 
     /** How far ahead the film has been heard (film ms): the end of what's marked; -1 before anything. */
     val edgeMs: Long get() = if (runFromMs < 0) -1 else frame * 10L
 
     /** Where the sound fed so far ends (film µs), or -1. */
-    val nextUs: Long get() = if (anchorUs < 0 || rate <= 0) -1 else anchorUs + fedFrames * 1_000_000 / rate
+    val nextUs: Long get() = when {
+        anchorUs < 0 -> -1
+        // Nothing fed since it was anchored (film taken as heard up to there, [skipIfHeard]): there.
+        fedFrames == 0L -> anchorUs
+        rate <= 0 -> -1
+        else -> anchorUs + fedFrames * 1_000_000 / rate
+    }
 
     /** How far the tracker has been stepped (film ms), or -1. */
     val steppedToMs: Long get() = steppedTo
@@ -117,6 +126,45 @@ class SpeechAhead(val timeline: SpeechTimeline) {
         detector.push(out, side, n) { talking -> timeline.mark(frame++, talking) }
     }
 
+    /**
+     * Sound loaded for [fromUs]..[toUs] of the film (one piece of it, in order): when that film was heard before (a
+     * rewind onto it, the player loading it again), it needn't be decoded again, and true is returned with it taken as
+     * heard: the stretch goes on through it, or a new one begins there, exactly as if it had been fed ([feed]), so the
+     * tracker is stepped along it all the same. Only when what follows it for [WARM_MS] was heard as well: the last of
+     * the film heard before is decoded again, so the detector has its bearings by the first that wasn't.
+     */
+    fun skipIfHeard(fromUs: Long, toUs: Long): Boolean {
+        if (fromUs < 0 || toUs <= fromUs) return false
+        val fromMs = fromUs / 1000
+        val toMs = toUs / 1000
+        if (!covers(fromMs, toMs) || !covers(toMs, toMs + WARM_MS)) return false
+        val expected = nextUs
+        val off = if (expected < 0) 0L else fromUs - expected
+        // As in [feed]: going back, or a long way ahead, is a jump (loading started somewhere else): a new stretch.
+        if (expected < 0 || off <= -BACK_US || (off >= JUMP_US && !gapAllowed)) {
+            runFromMs = fromMs
+            runs++
+        }
+        gapAllowed = false
+        // Whatever is decoded next is counted on from where this ends, the detector and the sampler starting afresh.
+        detector.reset()
+        sampler = null
+        anchorUs = toUs
+        fedFrames = 0
+        frame = (toUs / 10_000).toInt()
+        skippedMs += toMs - fromMs
+        return true
+    }
+
+    /**
+     * Whether listening ahead is behind the film: heard only up to more than [BEHIND_MS] before where it plays
+     * ([playingMs]), though the film there has loaded ([loadedToMs]: how far the stretch being loaded has got). Right
+     * after a skip what's heard still ends where the film was, until the new position loads: that's the loading taking
+     * its time, not the listening behind.
+     */
+    fun behind(playingMs: Long, loadedToMs: Long): Boolean =
+        playingMs >= 0 && edgeMs < playingMs - BEHIND_MS && loadedToMs >= playingMs - BEHIND_MS
+
     /** For tests: a stretch heard from [ms] on (marked with [mark]), as a jump there would begin. */
     internal fun startRun(ms: Long) {
         runFromMs = ms
@@ -131,6 +179,9 @@ class SpeechAhead(val timeline: SpeechTimeline) {
     internal fun mark(f: Int, talking: Boolean) {
         timeline.mark(f, talking)
         if (f + 1 > frame) frame = f + 1
+        // Where the sound heard so far ends, as [feed] keeps it.
+        anchorUs = frame * 10_000L
+        fedFrames = 0
     }
 
     /** Whether there's enough heard since the last step for another (or a new stretch to begin on). */
@@ -205,5 +256,9 @@ class SpeechAhead(val timeline: SpeechTimeline) {
         // back this far, too.
         const val JUMP_US = 10_000_000L
         private const val BACK_US = 1_000_000L
+        // Film heard before is only passed over when this much after it was heard too ([skipIfHeard]).
+        const val WARM_MS = 10_000L
+        // Heard ahead only up to this far behind where the film plays: behind ([behind]).
+        const val BEHIND_MS = 5_000L
     }
 }

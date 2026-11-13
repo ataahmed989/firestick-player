@@ -218,6 +218,24 @@ class OffsetTracker(
     val segments: List<Segment> get() = map.toList()
 
     /**
+     * After a jump onto film not heard yet: the delay a quick look ([quick]) found from where it landed on, in use until
+     * the film heard since confirms it (then it's in the map) or drops it. Never in the map, so never saved: auto sync
+     * shows it meanwhile. Null otherwise.
+     */
+    var provisional: Segment? = null
+        private set
+    /** A jump onto film not heard yet is being settled by quick looks: listening ahead needn't rest meanwhile. */
+    val settling: Boolean get() = quickFromMs >= 0
+    /** How far the look in hand is towards its next decision, 0..100 (for the panel); 0 when there's none. */
+    var progress = 0
+        private set
+    // Where the jump being settled landed, or -1; and where the heard film ended when [provisional] was put in.
+    private var quickFromMs = -1L
+    private var quickAtMs = -1L
+    // Finding the first delay: the sentence starts' last look, for [progress].
+    private var lastOnset: SyncMatcher.OnsetResult? = null
+
+    /**
      * Finding the first delay: the one a look was sure of, waiting for the next look to confirm it; else null. Auto sync
      * puts it in use meanwhile (subtitles right seconds sooner), and if the next looks find another, that one takes over.
      */
@@ -281,12 +299,189 @@ class OffsetTracker(
         priorTried?.let { if (it.toMs > nowMs) priorTried = null }
         if (map.isEmpty()) {
             learnPlayedMs += playedMs
-            priorStep(timeline, nowMs)?.let { return it }
+            priorStep(timeline, nowMs)?.let {
+                learnProgress(timeline, nowMs)
+                return it
+            }
             // On the film's own subtitles a match costs little and is sure on a few lines: looked at every step.
-            return if (full || clean) learnStep(timeline, nowMs) else waiting(nowMs)
+            val d = if (full || clean) learnStep(timeline, nowMs) else waiting(nowMs)
+            learnProgress(timeline, nowMs)
+            return d
         }
         refine(timeline, nowMs)?.let { return it }
-        return followStep(timeline, nowMs, full)
+        quick(timeline, nowMs)?.let { return it }
+        val d = followStep(timeline, nowMs, full)
+        // The usual looks settled it first (or since): they decide, in the map.
+        if ((d.outcome == Outcome.KEPT || d.outcome == Outcome.MOVED || d.outcome == Outcome.TUNED) &&
+            d.fromMs >= maxOf(quickFromMs, provisional?.fromMs ?: -1L)
+        ) {
+            endQuick()
+        }
+        return d
+    }
+
+    // ---- After a jump onto film not heard: a quick look near the delay in use -----
+
+    /**
+     * A jump (or the film opened) with delays known lands on film not heard: usually the delay is the same there, or a
+     * second or two off (a bumper cut in or out of the film skipped). The usual looks search three minutes either way
+     * and want thirty seconds of talking twice, minutes of film; meanwhile the subtitles may be off. So, every step,
+     * sentence starts ([SyncMatcher.onsetMatch]) on the film heard since the landing, only [QUICK_RANGE_MS] either side
+     * of the delay in use: with so few shifts tried, a best that stands out means far more, on far less film.
+     *  - The delay in use is the best: kept, and that's said (KEPT).
+     *  - Another stands out clearly, and the one in use doesn't: [provisional], in use at once. The film heard after
+     *    that look then bears it out on its own (it goes in the map: MOVED), or bears out the delay from before
+     *    (dropped), or shows another (it takes over).
+     *  - Neither: the next step looks again, for [QUICK_MAX_MS] of film; the usual looks carry on all along and decide
+     *    in the end, also for changes further off than this reaches (an ad break).
+     * Measured on recorded films (Legion, Phineas and Ferb): with 45–60 s of film heard, kept 95–98% of the time where
+     * nothing changed, the right delay 67–91% where it had, under 1.5% wrong.
+     */
+    private fun quick(tl: SpeechTimeline, now: Long): Decision? {
+        val from = quickFromMs
+        if (from < 0) return null
+        if (now <= from) {
+            // Heard again before the landing (a rewind onto film heard before): nothing in hand there.
+            progress = 0
+            return null
+        }
+        val i = indexAt(from)
+        // Heard on into a stretch with a delay of its own: the looks were of the one the jump landed in.
+        if (now > (map.getOrNull(i + 1)?.fromMs ?: Long.MAX_VALUE)) {
+            // One in use stays in use up to there (the usual looks decide); nothing more is looked at.
+            if (provisional == null) endQuick() else {
+                quickFromMs = -1
+                progress = 0
+            }
+            return null
+        }
+        val cur = map[i].delayMs
+        val p = provisional
+        if (p == null) {
+            if (now - from > QUICK_MAX_MS) {
+                endQuick()
+                return null
+            }
+            val o = SyncMatcher.onsetMatch(tl, lines, from, now, cur, QUICK_RANGE_MS, QUICK_MIN_ONSETS)
+            progress = if (o == null) (QUICK_HALF * (now - from) / QUICK_TYPICAL_MS).toInt().coerceAtMost(QUICK_HALF)
+                else maxOf(QUICK_HALF, percent(minOf(o.hits / QUICK_SWITCH_HITS.toDouble(), o.z / QUICK_SWITCH_Z)))
+            if (o == null) return null
+            val d = o.delayMs - QUICK_LATE_MS
+            if (quickKeeps(o, cur)) {
+                endQuick()
+                return Decision(Outcome.KEPT, segments, cur, now, from, now, null, Double.NaN, "quick look after a jump: the delay in use fits ($o)")
+            }
+            if (quickSwitches(o, cur)) {
+                provisional = Segment(from, d)
+                quickAtMs = now
+                progress = 0
+                return Decision(Outcome.NOT_SURE, segments, d, now, from, now, null, Double.NaN,
+                    "quick look after a jump: ${SyncMatcher.formatShift(d - cur)} in use, to be confirmed ($o)")
+            }
+            // Neither, with a fair stretch heard: further off than that reaches (an ad break cut in or out of the film
+            // jumped over). The same sentence starts over [NEAR_MS], standing out as a first delay's must.
+            if (now - from >= QUICK_WIDE_AFTER_MS) {
+                val w = SyncMatcher.onsetMatch(tl, lines, from, now, cur, NEAR_MS) ?: return null
+                val far = w.delayMs - QUICK_LATE_MS
+                if (abs(far - cur) > QUICK_RANGE_MS - QUICK_EDGE_MS && abs(far - cur) <= NEAR_MS - EDGE_MS &&
+                    w.z >= ONSET_Z && w.hits >= ONSET_MIN_HITS && w.runnerUp <= w.hits * ONSET_RUNNER_UP
+                ) {
+                    provisional = Segment(from, far)
+                    quickAtMs = now
+                    progress = 0
+                    return Decision(Outcome.NOT_SURE, segments, far, now, from, now, null, Double.NaN,
+                        "quick look after a jump, further off: ${SyncMatcher.formatShift(far - cur)} in use, to be confirmed ($w)")
+                }
+            }
+            return null
+        }
+        // In use: the film heard since that look, on its own.
+        if (now - quickAtMs > QUICK_MAX_MS) {
+            // Not borne out either way in all this film: it stays in use, and the usual looks decide.
+            quickFromMs = -1
+            progress = 0
+            return null
+        }
+        progress = percent((now - quickAtMs) / QUICK_TYPICAL_MS.toDouble())
+        if (now - quickAtMs < QUICK_CONFIRM_MS) return null
+        val a = SyncMatcher.onsetMatch(tl, lines, quickAtMs, now, p.delayMs, QUICK_RANGE_MS, QUICK_MIN_ONSETS) ?: return null
+        if (quickKeeps(a, p.delayMs)) {
+            val seg = map[i]
+            endQuick()
+            if (map.size >= MAX_SEGMENTS) return null
+            // From the landing on, as it has been in use: the change itself lies in the film jumped over, and is placed
+            // there if that's ever heard ([noteOpen], [refine]).
+            val at = maxOf(p.fromMs, seg.fromMs)
+            if (!put(tl, i, at, p.delayMs, p.fromMs, now, verified)) return null
+            candidate = null
+            tried = null
+            suspectMs = -1
+            rejectedMs = null
+            noteBreak(at)
+            noteOpen(tl, at, seg.fromMs)
+            joinNeighbours()
+            return Decision(Outcome.MOVED, segments, delayAt(at) ?: p.delayMs, at, p.fromMs, now, null, Double.NaN,
+                "quick look after a jump, borne out by the film since ($a)")
+        }
+        // The delay from before instead: as clear as what put the other in.
+        val b = SyncMatcher.onsetMatch(tl, lines, quickAtMs, now, cur, QUICK_RANGE_MS, QUICK_MIN_ONSETS)
+        if (b != null && quickKeeps(b, cur) && b.hits >= QUICK_SWITCH_HITS && b.z >= QUICK_SWITCH_Z) {
+            endQuick()
+            return Decision(Outcome.KEPT, segments, cur, now, from, now, null, Double.NaN,
+                "quick look after a jump: the film since fits the delay from before ($b)")
+        }
+        // Another delay on all the film since the landing, well away from the one in use: it takes over.
+        val all = SyncMatcher.onsetMatch(tl, lines, from, now, cur, QUICK_RANGE_MS, QUICK_MIN_ONSETS) ?: return null
+        val d = all.delayMs - QUICK_LATE_MS
+        if (quickSwitches(all, cur) && abs(d - p.delayMs) > QUICK_REPLACE_MS) {
+            provisional = Segment(from, d)
+            quickAtMs = now
+            progress = 0
+            return Decision(Outcome.NOT_SURE, segments, d, now, from, now, null, Double.NaN,
+                "quick look after a jump: ${SyncMatcher.formatShift(d - cur)} in use instead, to be confirmed ($all)")
+        }
+        return null
+    }
+
+    /**
+     * The quick look's best is at [delay] itself (the look's centre: as many line starts met there, sentence starts
+     * being heard a moment late, as anywhere), clear of the rest.
+     */
+    private fun quickKeeps(o: SyncMatcher.OnsetResult, delay: Long): Boolean =
+        o.atCentre >= o.hits && o.hits >= QUICK_KEEP_HITS && o.z >= QUICK_KEEP_Z &&
+            o.runnerUp <= minOf(o.hits - QUICK_KEEP_GAP.toDouble(), o.hits * QUICK_KEEP_RUNNER_UP)
+
+    /** The quick look's best is another delay than [delay], well inside its reach, far clearer than [delay] itself. */
+    private fun quickSwitches(o: SyncMatcher.OnsetResult, delay: Long): Boolean {
+        val shift = abs(o.delayMs - QUICK_LATE_MS - delay)
+        return shift >= MIN_SHIFT_MS && shift <= QUICK_RANGE_MS - QUICK_EDGE_MS && o.hits >= QUICK_SWITCH_HITS &&
+            o.z >= QUICK_SWITCH_Z && o.runnerUp <= o.hits * QUICK_SWITCH_RUNNER_UP && o.hits - o.atCentre >= QUICK_SWITCH_GAP
+    }
+
+    private fun endQuick() {
+        quickFromMs = -1
+        quickAtMs = -1
+        provisional = null
+        progress = 0
+    }
+
+    private fun percent(share: Double): Int = (share * 100).toInt().coerceIn(0, PROGRESS_MAX)
+
+    /** Finding the first delay: how far the talking heard is towards a look that can be sure, or towards confirming one. */
+    private fun learnProgress(tl: SpeechTimeline, now: Long) {
+        if (map.isNotEmpty()) {
+            progress = 0
+            return
+        }
+        val c = candidate
+        progress = if (c != null) {
+            percent(talkingMs(tl, c.toMs, now) / c.waitTalkMs.toDouble())
+        } else {
+            val from = maxOf(0L, suspectMs, now - LEARN_WINDOW_MS)
+            val byStarts = lastOnset?.let { minOf(it.hits / ONSET_MIN_HITS.toDouble(), it.z / ONSET_Z) } ?: 0.0
+            // Talking heard alone only goes so far: the rest is how far the sentence starts stand out.
+            percent(maxOf(minOf(talkingMs(tl, from, now) / minTalkMs.toDouble(), 1.0) * QUICK_HALF / 100.0, byStarts))
+        }
     }
 
     /** Something outside the talking suggests the timing may change at [atMs] (a format change, say). */
@@ -320,7 +515,12 @@ class OffsetTracker(
     fun seeked(toMs: Long, timeline: SpeechTimeline) {
         if (toMs < 0) return
         val f = frame(toMs)
-        val lastHeard = timeline.heard.previousSetBit(f)
+        // A quick look's film ends where the heard film does: landing past film never heard after it (on film heard
+        // some other time), its delay isn't that film's, in use or not.
+        val q = maxOf(quickFromMs, provisional?.fromMs ?: -1L)
+        if (q >= 0 && toMs > q && longestUnheard(timeline, frame(q), f) * 10L >= GAP_MS) endQuick()
+        // The film before the landing: listening ahead has marked the landing's own first moments by now.
+        val lastHeard = timeline.heard.previousSetBit(f - 1)
         if (lastHeard < 0 || lastHeard < f - NEAR_FRAMES) {
             hint(toMs, Hint.SEEK)
             // Still finding the first delay: a fresh try where the film is now (the minutes spent elsewhere don't count
@@ -328,6 +528,12 @@ class OffsetTracker(
             if (map.isEmpty()) learnAgain() else {
                 jumpChecks++
                 jumpedToMs = toMs
+                // Fitting the delay exactly never goes by talking from both sides of a jump.
+                polishFromMs = -1
+                // Settled quickly, near the delay in use ([quick]); one from a landing before this isn't this film's.
+                endQuick()
+                // (Not on the film's own subtitles: every step looks there, sure on a few lines.)
+                if (!clean) quickFromMs = toMs
             }
         }
     }
@@ -339,6 +545,7 @@ class OffsetTracker(
     fun learnAgain() {
         learnPlayedMs = 0
         steadyLooks = 0
+        lastOnset = null
     }
 
     /**
@@ -361,6 +568,7 @@ class OffsetTracker(
         floors.clear()
         candidate = null
         tried = null
+        endQuick()
         guessFloorMs = -1
         polishFromMs = -1
         priorTried = null
@@ -406,6 +614,9 @@ class OffsetTracker(
         }
         candidate = null
         tried = null
+        // Check sync pressed again (the delay in use turned down): one only quickly found goes too. Checked as it is,
+        // it stays in use while the usual looks say.
+        if (reject) endQuick()
         guessFloorMs = -1
         polishFromMs = -1
         lastCheckToMs = -1
@@ -535,6 +746,7 @@ class OffsetTracker(
         var onset: SyncMatcher.OnsetResult? = null
         if (!clean && !sure(res, learnCenterMs, learnRangeMs)) {
             val om = SyncMatcher.onsetMatch(tl, lines, from, now, learnCenterMs, zRange)
+            lastOnset = om
             if (om != null && om.z >= ONSET_Z && om.hits >= ONSET_MIN_HITS && om.runnerUp <= om.hits * ONSET_RUNNER_UP &&
                 abs(om.delayMs - learnCenterMs) <= learnRangeMs - EDGE_MS
             ) {
@@ -1436,6 +1648,34 @@ class OffsetTracker(
         private const val ONSET_REFINE_R = 0.15
         // Talking is marked a moment after it starts: sentence starts come out about this much later than the lines'.
         const val ONSET_LATE_MS = 100L
+        // The quick look after a jump ([quick]): sentence starts within this of the delay in use, on at least this many
+        // heard; measured there, the best sits 150–200 ms after the delay itself.
+        const val QUICK_RANGE_MS = 4_000L
+        private const val QUICK_MIN_ONSETS = 5
+        private const val QUICK_LATE_MS = 150L
+        private const val QUICK_EDGE_MS = 300L
+        // Kept: the delay in use is itself the best, on a few line starts, clear of the rest.
+        private const val QUICK_KEEP_HITS = 4
+        private const val QUICK_KEEP_Z = 3.0
+        private const val QUICK_KEEP_RUNNER_UP = 0.67
+        private const val QUICK_KEEP_GAP = 2
+        // Another delay in use at once: clearer still, and the delay in use itself well behind it.
+        private const val QUICK_SWITCH_HITS = 5
+        private const val QUICK_SWITCH_Z = 4.0
+        private const val QUICK_SWITCH_RUNNER_UP = 0.67
+        private const val QUICK_SWITCH_GAP = 4
+        // Borne out by the film heard after it was put in, from this much of it on; another takes over only this far off.
+        // With this much film heard and nothing said: the wider look, for a change beyond the quick reach.
+        private const val QUICK_WIDE_AFTER_MS = 45_000L
+        private const val QUICK_CONFIRM_MS = 15_000L
+        private const val QUICK_REPLACE_MS = 500L
+        // Quick looks go on for this much film after the landing (or after a delay was put in); most say within the
+        // typical time (for the panel's percent, with the first half going to hearing enough to look at all).
+        private const val QUICK_MAX_MS = 120_000L
+        private const val QUICK_TYPICAL_MS = 45_000L
+        private const val QUICK_HALF = 40
+        // The percent shown stops short of 100 until the decision itself.
+        private const val PROGRESS_MAX = 95
         const val ONSET_MIN_HEARD_MS = 30_000L
         // Each half on its own: standing out this far, within this of the whole stretch's delay.
         const val ONSET_HALF_Z = 4.0
@@ -1616,8 +1856,17 @@ class OffsetTracker(
          * The delay auto sync puts in at film time [positionMs], or null to leave the delay alone: a delay set by hand
          * wins over everything found (and is one delay for the whole film), and nothing is put in unless synced.
          */
-        fun followedDelayMs(byHand: Boolean, synced: Boolean, segments: List<Segment>, positionMs: Long): Long? =
-            if (byHand || !synced) null else delayAt(segments, positionMs)
+        fun followedDelayMs(
+            byHand: Boolean, synced: Boolean, segments: List<Segment>, positionMs: Long, provisional: Segment? = null,
+        ): Long? {
+            if (byHand || !synced) return null
+            // Quickly found after a jump, not confirmed yet: from where the jump landed to the next delay found since.
+            if (provisional != null && positionMs >= provisional.fromMs) {
+                val next = segments.firstOrNull { it.fromMs > provisional.fromMs }?.fromMs ?: Long.MAX_VALUE
+                if (positionMs < next) return provisional.delayMs
+            }
+            return delayAt(segments, positionMs)
+        }
 
         /** In order, one per start, the first from the film's start. */
         private fun tidy(list: List<Segment>): List<Segment> {

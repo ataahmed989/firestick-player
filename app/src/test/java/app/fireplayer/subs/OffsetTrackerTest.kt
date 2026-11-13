@@ -746,6 +746,19 @@ class OffsetTrackerTest {
     }
 
     @Test
+    fun aDelayQuicklyFoundAfterAJumpIsUsedFromWhereItLanded() {
+        val map = listOf(Segment(0, 1_000), Segment(30 * min, 4_000))
+        val quick = Segment(10 * min, 2_500)
+        fun at(ms: Long) = OffsetTracker.followedDelayMs(byHand = false, synced = true, segments = map, positionMs = ms, provisional = quick)
+        assertEquals("before the landing: the delay from before", 1_000L, at(9 * min))
+        assertEquals("from the landing on", 2_500L, at(10 * min))
+        assertEquals(2_500L, at(29 * min))
+        assertEquals("a stretch found since keeps its own", 4_000L, at(31 * min))
+        assertNull(OffsetTracker.followedDelayMs(byHand = true, synced = true, segments = map, positionMs = 11 * min, provisional = quick))
+        assertEquals(1_000L, OffsetTracker.followedDelayMs(false, true, map, 11 * min))
+    }
+
+    @Test
     fun resyncWithNothingHeardListensAfresh() {
         val film = FakeFilm.make(seed = 81, minutes = 30, delayMs = 3_000)
         val tracker = OffsetTracker(film.subs, listOf(Segment(0, 9_000)))

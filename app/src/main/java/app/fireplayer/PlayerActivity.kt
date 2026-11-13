@@ -678,6 +678,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // Before the player goes, so no copy is taken of a film being taken down.
         backdrop?.stop()
         releasePlayer()
+        // Nothing for auto sync to listen to till the player is back (onStart builds it; its tracks start it again).
+        if (::autoSync.isInitialized) autoSync.playerGone()
         pausedForSwitch = false
         pausedForFreeze = false
         freezeWatch.reset()
@@ -3846,17 +3848,25 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val (badge, style) = when {
             !prefs.autoSync -> "Off" to Rows.Badge.INACTIVE
             !downloaded -> "Off" to Rows.Badge.INACTIVE
-            else -> when (autoSync.state) {
-                // How long lining up took, when it was found this time ("Synced in 14 s").
-                AutoSync.State.SYNCED -> if (autoSync.rechecking) "Rechecking" to Rows.Badge.LIGHT
-                    else (autoSync.syncedInMs?.let { "Synced in ${AutoSync.tookText(it)}" } ?: "Synced") to Rows.Badge.ACTIVE
-                AutoSync.State.LISTENING -> when {
-                    autoSync.rechecking -> "Rechecking" to Rows.Badge.LIGHT
-                    // In use already, being confirmed.
-                    else -> autoSync.matchedInMs?.let { "Matched in ${AutoSync.tookText(it)}" to Rows.Badge.LIGHT } ?: ("Processing" to Rows.Badge.BUSY)
+            else -> {
+                // How far the look in hand is towards its next step ("Processing 40%"), while there is one.
+                val percent = autoSync.progress.takeIf { it > 0 }?.let { " $it%" }.orEmpty()
+                // In use already, being confirmed (the first delay, or the one found after a skip).
+                val matched = autoSync.matchedInMs?.let { "Matched in ${AutoSync.tookText(it)}$percent" to Rows.Badge.LIGHT }
+                when (autoSync.state) {
+                    // How long lining up took, when it was found this time ("Synced in 14 s").
+                    AutoSync.State.SYNCED -> when {
+                        matched != null -> matched
+                        autoSync.rechecking -> "Rechecking$percent" to Rows.Badge.LIGHT
+                        else -> (autoSync.syncedInMs?.let { "Synced in ${AutoSync.tookText(it)}" } ?: "Synced") to Rows.Badge.ACTIVE
+                    }
+                    AutoSync.State.LISTENING -> when {
+                        autoSync.rechecking -> "Rechecking$percent" to Rows.Badge.LIGHT
+                        else -> matched ?: ("Processing$percent" to Rows.Badge.BUSY)
+                    }
+                    AutoSync.State.NOT_SYNCED -> "Not synced" to Rows.Badge.INACTIVE
+                    AutoSync.State.OFF -> "Off" to Rows.Badge.INACTIVE
                 }
-                AutoSync.State.NOT_SYNCED -> "Not synced" to Rows.Badge.INACTIVE
-                AutoSync.State.OFF -> "Off" to Rows.Badge.INACTIVE
             }
         }
         spacer(6)
@@ -3871,7 +3881,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             refresh()
         }
         if (downloaded && prefs.autoSync) {
-            row("Check sync") { autoSync.resync(); refresh() }.asSubRow()
+            // Its value: what the checks made as the film plays last said ("In sync · 2 min ago").
+            row("Check sync", autoSync.checkedText) { autoSync.resync(); refresh() }.asSubRow()
             if (autoSync.undoUs != null) row("Undo last sync") { autoSync.undo(); refresh() }.asSubRow()
             syncWithRow(panel)
         }

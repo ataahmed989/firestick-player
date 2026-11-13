@@ -140,7 +140,11 @@ object SyncMatcher {
     private const val MIN_R = 0.15
 
     /** [onsetMatch]'s best: the delay, how far it stands out ([z]), how many line starts met a sentence start there. */
-    class OnsetResult(val delayMs: Long, val z: Double, val hits: Int, val runnerUp: Int, val onsets: Int) {
+    class OnsetResult(
+        val delayMs: Long, val z: Double, val hits: Int, val runnerUp: Int, val onsets: Int,
+        /** The most line starts met at the centre itself (up to [ONSET_CENTRE_MS] after it: sentence starts are heard late). */
+        val atCentre: Int = 0,
+    ) {
         override fun toString() = "delay=${delayMs}ms z=${"%.1f".format(java.util.Locale.ROOT, z)} hits=$hits next=$runnerUp onsets=$onsets"
     }
 
@@ -151,9 +155,12 @@ object SyncMatcher {
      * lines; one person talking on with lines back to back has few, but still a breath before each sentence. On a
      * monologue (Legion, Fire TV Stick 4K Max) the right delay stood out after 60 s of film (z 6.8) where the overlap
      * needed about 285 s. About 0.1–0.2 s late (talking is heard a moment after it starts): [match] near it puts it
-     * right. Null with too few sentence starts heard.
+     * right. Null with too few sentence starts heard ([minOnsets]: fewer will do when only a few seconds of shift are
+     * tried, as after a jump with the delay known).
      */
-    fun onsetMatch(tl: SpeechTimeline, subs: Lines, fromMs: Long, toMs: Long, centerMs: Long, rangeMs: Long): OnsetResult? {
+    fun onsetMatch(
+        tl: SpeechTimeline, subs: Lines, fromMs: Long, toMs: Long, centerMs: Long, rangeMs: Long, minOnsets: Int = ONSET_MIN,
+    ): OnsetResult? {
         val f0 = (maxOf(fromMs, 0L) / 10).toInt()
         val f1 = (toMs / 10).toInt()
         if (f1 <= f0) return null
@@ -176,12 +183,12 @@ object SyncMatcher {
             }
             f++
         }
-        if (onsets < ONSET_MIN) return null
+        if (onsets < minOnsets) return null
         val starts = subs.starts
         val lo = java.util.Arrays.binarySearch(starts, fromMs - centerMs - rangeMs).let { if (it < 0) -it - 1 else it }
         val hi = java.util.Arrays.binarySearch(starts, toMs - centerMs + rangeMs).let { if (it < 0) -it - 1 else it }
         // Fewer than a few lines to go by, or far more than talking could start (the work is shifts × line starts).
-        if (hi - lo < ONSET_MIN || hi - lo > ONSET_MAX_STARTS) return null
+        if (hi - lo < minOnsets || hi - lo > ONSET_MAX_STARTS) return null
         val n = (2 * rangeMs / ONSET_STEP_MS).toInt() + 1
         val scores = IntArray(n)
         for (k in 0 until n) {
@@ -204,7 +211,10 @@ object SyncMatcher {
         val apart = (ONSET_APART_MS / ONSET_STEP_MS).toInt()
         var runnerUp = 0
         for (k in 0 until n) if (kotlin.math.abs(k - best) > apart && scores[k] > runnerUp) runnerUp = scores[k]
-        return OnsetResult(centerMs - rangeMs + best * ONSET_STEP_MS, (scores[best] - mean) / sd, scores[best], runnerUp, onsets)
+        val mid = (rangeMs / ONSET_STEP_MS).toInt()
+        var atCentre = 0
+        for (k in mid..minOf(n - 1, mid + (ONSET_CENTRE_MS / ONSET_STEP_MS).toInt())) atCentre = maxOf(atCentre, scores[k])
+        return OnsetResult(centerMs - rangeMs + best * ONSET_STEP_MS, (scores[best] - mean) / sd, scores[best], runnerUp, onsets, atCentre)
     }
 
     // Talking for most of the next 80 ms: a sentence starting, not a click.
@@ -224,6 +234,8 @@ object SyncMatcher {
     private const val ONSET_MAX_STARTS = 400
     // The next best place counts only this far from the best (its own shoulder doesn't).
     private const val ONSET_APART_MS = 500L
+    // Sentence starts are heard up to this long after the line starts: the centre's own score is the best in it.
+    private const val ONSET_CENTRE_MS = 250L
 
     class Result(
         /** How much later (positive) or earlier the subtitles should show, in ms: the subtitle delay. */

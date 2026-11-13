@@ -31,8 +31,10 @@ class SpeechTap {
         set(value) {
             field = value
             if (!value) {
-                // Waiting pieces go back to be used again.
-                generateSequence { ready.poll() }.forEach { recycle(it) }
+                // Nobody listens: the pieces are let go, waiting or spare, so nothing is held for the rest of the film.
+                // One still being read comes back through [recycle] and is the first used again.
+                ready.clear()
+                free.clear()
             }
         }
 
@@ -56,8 +58,11 @@ class SpeechTap {
         if (!listening) return
         val size = buffer.remaining()
         if (size <= 0 || size > PIECE_BYTES) return
-        // Only the playback thread writes the count, so ++ on it is safe.
-        val piece = free.poll() ?: if (allocated < PIECES) { allocated++; Piece(ByteArray(PIECE_BYTES), 0, 0, null) } else { dropped++; return }
+        if (ready.size >= PIECES) { dropped++; return }
+        // A spare piece, or a new one as big as the sound needs: only made with none spare and room to wait in, so
+        // there are never more than can wait (and the one being read). One too small for this sound is replaced.
+        var piece = free.poll()
+        if (piece == null || piece.bytes.size < size) piece = Piece(ByteArray(maxOf(size, MIN_PIECE_BYTES)), 0, 0, null)
         buffer.duplicate().get(piece.bytes, 0, size)
         piece.size = size
         piece.filmUs = filmUs
@@ -65,12 +70,12 @@ class SpeechTap {
         if (!ready.offer(piece)) { recycle(piece); dropped++ }
     }
 
-    private var allocated = 0
-
     companion object {
-        // 48 pieces of up to 64 KB: at most 3 MB, and only once listening has started.
-        private const val PIECES = 48
+        // At most 48 pieces waiting, each as big as the sound handed over at a time (8 KB or more, 64 KB at most):
+        // usually a few hundred KB, 3 MB at the very most, only while listening, and given back when it stops.
+        internal const val PIECES = 48
         private const val PIECE_BYTES = 65_536
+        internal const val MIN_PIECE_BYTES = 8 * 1024
 
         /** What auto sync can make sense of: plain 16-bit or float samples, or compressed sound FFmpeg decodes. */
         fun kindOf(format: Format): Kind? {
