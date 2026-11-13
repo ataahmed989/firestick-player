@@ -2460,7 +2460,7 @@ class AutoSync(
         // Checking the film's own subtitles against the talking: the first a while after lining up, then this often;
         // each until this much talking is heard (or this much film, or this long), and after Resync if unsure, again soon.
         private const val CROSS_FIRST_MS = 60_000L
-        private const val CROSS_EVERY_MS = 15 * 60_000L
+        private const val CROSS_EVERY_MS = 5 * 60_000L
         private const val CROSS_RETRY_MS = 2 * 60_000L
         private const val CROSS_TALK_MS = 40_000L
         private const val CROSS_MAX_FILM_MS = 4 * 60_000L

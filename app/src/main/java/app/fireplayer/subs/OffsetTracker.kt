@@ -675,7 +675,14 @@ class OffsetTracker(
         } else {
             rejectedMs = null
         }
+        // Checked as it is (not turned down): the quick look first, as after a jump, on what's heard from where the film
+        // is: the delay in use kept, or another put in use at once and then confirmed. The usual looks follow either way.
+        if (!reject && !clean && provisional == null) {
+            quickFromMs = maxOf(atMs, seg.fromMs, (nowMs ?: atMs) - (QUICK_MAX_MS - 3 * STEP_MS))
+            quickAtMs = -1
+        }
         val now = nowMs ?: return null
+        if (!reject && !clean) quick(timeline, now)?.let { return it }
         val hi = minOf(now, end)
         val from = maxOf(since, hi - WINDOW_MS)
         if (hi <= from || talkingMs(timeline, from, hi) < minTalkMs) {
@@ -1680,7 +1687,7 @@ class OffsetTracker(
         /** Matching that costs (searching every shift) is looked at no more often than this. */
         const val FULL_STEP_MS = 15_000L
         /** Without a hint, a check every this much film. */
-        const val PERIOD_MS = 3 * 60_000L
+        const val PERIOD_MS = 60_000L
         /** The most film one check matches: its cost is this × the shifts tried. */
         const val WINDOW_MS = 4 * 60_000L
         /** While learning the first delay: the most film matched, and how long to try. */
