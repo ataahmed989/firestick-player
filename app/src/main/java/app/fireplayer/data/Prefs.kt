@@ -163,12 +163,16 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("auto_sync", true)
         set(v) = sp.edit().putBoolean("auto_sync", v).apply()
 
-    // The subtitle delay auto sync found (ms), keyed by the subtitle file's name and the film.
+    // The one subtitle delay for the whole film (ms) that older versions kept, keyed by the subtitle file's name and the
+    // film: still read when that's all there is; nothing writes it any more (see [saveSyncedSegments]).
     fun syncedDelayMs(key: String): Long? = if (sp.contains("sync|$key")) sp.getLong("sync|$key", 0L) else null
 
-    fun saveSyncedDelay(key: String, ms: Long) = sp.edit().putLong("sync|$key", ms).apply()
-
-    fun forgetSyncedDelay(key: String) = sp.edit().remove("sync|$key").remove("sync|$key|at").remove("sync|$key|track").apply()
+    /**
+     * Everything auto sync found for a subtitle and film goes: the delays, the track it picked, the talking's
+     * fine-tuning of that track, and the track the talking turned down.
+     */
+    fun forgetSyncedDelay(key: String) = sp.edit().remove("sync|$key").remove("sync|$key|at").remove("sync|$key|track")
+        .remove("sync|$key|trim").remove("sync|$key|drop").apply()
 
     // ...and by film position once the timing changed along the film (an ad break): see OffsetTracker.encode.
     fun syncedSegments(key: String): String? = sp.getString("sync|$key|at", null)
@@ -182,7 +186,8 @@ class Prefs(context: Context) {
 
     fun saveShowJumps(show: String, jumps: List<Long>) = sp.edit().putString("syncjumps|$show", jumps.joinToString(",")).apply()
 
-    fun saveSyncedSegments(key: String, text: String) = sp.edit().putString("sync|$key|at", text).apply()
+    /** The delays auto sync found, by film position; an older version's one delay for the pair is replaced by them. */
+    fun saveSyncedSegments(key: String, text: String) = sp.edit().putString("sync|$key|at", text).remove("sync|$key").apply()
 
     /**
      * The delay a show's last episode started with (ms), for subtitles from the same source ([source]: the release they
@@ -220,6 +225,18 @@ class Prefs(context: Context) {
 
     fun saveSyncTrim(key: String, track: String, ms: Long) = sp.edit().putString("sync|$key|trim", "$track:$ms").apply()
 
+    /**
+     * The film's own subtitle track the talking disagreed with for a subtitle and film (it's timed for another cut):
+     * not lined up against the next time either, till the viewer picks it or starts afresh.
+     */
+    fun droppedSyncTrack(key: String): String? = sp.getString("sync|$key|drop", null)
+
+    /** [track] is turned down for a subtitle and film: no longer the one picked, and its fine-tuning goes with it. */
+    fun dropSyncTrack(key: String, track: String) =
+        sp.edit().remove("sync|$key|track").remove("sync|$key|trim").putString("sync|$key|drop", track).apply()
+
+    fun forgetDroppedSyncTrack(key: String) = sp.edit().remove("sync|$key|drop").apply()
+
     /** A delay set by hand for a downloaded subtitle on one video, used again when it's chosen another time. */
     fun handDelayMs(key: String): Long? = if (sp.contains("subdelay|$key")) sp.getLong("subdelay|$key", 0L) else null
 
@@ -227,9 +244,13 @@ class Prefs(context: Context) {
 
     fun forgetHandDelay(key: String) = sp.edit().remove("subdelay|$key").apply()
 
-    /** A downloaded subtitle file was let go: what was found or set for its timing goes with it. */
-    fun forgetSubtitleTimes(fileName: String) {
-        val gone = sp.all.keys.filter { it.startsWith("sync|$fileName|") || it.startsWith("subdelay|$fileName|") }
+    /**
+     * Downloaded subtitle files were let go: what was found or set for the timing of every one no longer kept goes
+     * with them, in one sweep ([files]: the names still kept), and a "Sync with" choice made for a single film that has
+     * none left ([videos]: the films that still have some). A show's choice, jumps and starting delays stay.
+     */
+    fun keepSubtitleTimes(files: Set<String>, videos: Set<String>) {
+        val gone = staleSubtitleTimes(sp.all.keys, files, videos)
         if (gone.isNotEmpty()) sp.edit().apply { gone.forEach { remove(it) } }.apply()
     }
 
@@ -238,7 +259,22 @@ class Prefs(context: Context) {
         get() = sp.getString("custom_font", "") ?: ""
         set(v) = sp.edit().putString("custom_font", v).apply()
 
-    private companion object {
-        const val PLAYER_MATCHES_GONE = 100
+    companion object {
+        private const val PLAYER_MATCHES_GONE = 100
+
+        /**
+         * Of the settings' [keys], those kept for a downloaded subtitle file not in [files] ("sync|<file>|…" and
+         * "subdelay|<file>|…": a file's name never has a | in it), and the "Sync with" choices of single films not in
+         * [videos] ("syncwith|film:<video>"). Nothing else: not a show's ("syncjumps|", "syncstart|", "syncwith|tmdb:").
+         */
+        internal fun staleSubtitleTimes(keys: Collection<String>, files: Set<String>, videos: Set<String>): List<String> =
+            keys.filter { k ->
+                when {
+                    k.startsWith("sync|") -> k.substring(5).substringBefore('|') !in files
+                    k.startsWith("subdelay|") -> k.substring(9).substringBefore('|') !in files
+                    k.startsWith("syncwith|film:") -> k.substring(14) !in videos
+                    else -> false
+                }
+            }
     }
 }

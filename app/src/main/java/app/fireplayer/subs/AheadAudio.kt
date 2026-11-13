@@ -49,6 +49,8 @@ class AheadAudio(
         fun startOf(i: Int): Int = if (i == 0) 0 else ends[i - 1]
         val firstUs: Long get() = timesUs[0]
         val lastUs: Long get() = timesUs[count - 1]
+        /** About where its sound ends (the last sample taken to be as long as the others); [lastUs] with one sample. */
+        val endUs: Long get() = if (count > 1) lastUs + (lastUs - firstUs) / (count - 1) else lastUs
 
         internal fun begin(uri: String, track: Int, format: Format, afterDrop: Boolean) {
             this.uri = uri

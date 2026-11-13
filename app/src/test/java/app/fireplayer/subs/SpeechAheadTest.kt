@@ -48,6 +48,8 @@ class SpeechAheadTest {
         startMs: Long = 0,
         val timeline: SpeechTimeline = SpeechTimeline(),
         val ahead: SpeechAhead = SpeechAhead(timeline),
+        /** As the worker does: film loaded again that was heard before isn't heard again ([SpeechAhead.skipIfHeard]). */
+        private val passOver: Boolean = false,
     ) {
         var wallMs = 0L
             private set
@@ -63,6 +65,11 @@ class SpeechAheadTest {
             private set
         var inUseMs = 0L
             private set
+        /** Film heard (marked) in all, and film passed over as heard before, ms. */
+        var markedMs = 0L
+            private set
+        var passedMs = 0L
+            private set
 
         init {
             ahead.startRun(startMs)
@@ -77,7 +84,12 @@ class SpeechAheadTest {
                 if (ad.fromMs in heardMs until to) tracker.hint(ad.fromMs, OffsetTracker.Hint.FORMAT)
                 if (ad.toMs in heardMs until to) tracker.hint(ad.toMs, OffsetTracker.Hint.FORMAT)
             }
-            for (f in (heardMs / 10).toInt() until (to / 10).toInt()) ahead.mark(f, film.talking.get(f))
+            if (passOver && ahead.skipIfHeard(heardMs * 1_000, to * 1_000)) {
+                passedMs += to - heardMs
+            } else {
+                for (f in (heardMs / 10).toInt() until (to / 10).toInt()) ahead.mark(f, film.talking.get(f))
+                markedMs += to - heardMs
+            }
             heardMs = to
             for (d in ahead.advance(tracker)) decisions += Triple(wallMs, playMs, d)
             if (inUseWallMs < 0) (tracker.tentativeMs ?: tracker.segments.firstOrNull()?.delayMs)?.let { inUseWallMs = wallMs; inUseMs = it }
@@ -403,6 +415,123 @@ class SpeechAheadTest {
         assertEquals(8 * min, ahead.runFromMs)
         assertTrue("${ahead.steppedToMs}", ahead.steppedToMs in 8 * min..8 * min + 6_000)
         assertTrue(decisions.joinToString("\n"), decisions.none { it.outcome == Outcome.GAVE_UP })
+    }
+
+    @Test
+    fun aRewindOntoFilmHeardIsNotHeardAgainAndTheTrackerIsSteppedTheSame() {
+        // Ten minutes played (twelve heard), then back to 4:00: the player loads the film from there again. Heard again
+        // or passed over as heard before, the tracker is stepped along it the same and ends with the same delays; only
+        // the last of the film heard before is heard again (so the detector has its bearings where the new film starts).
+        for (seed in 1L..4L) {
+            val film = bumpers(seed)
+            fun run(passOver: Boolean): AheadLoading {
+                val r = AheadLoading(film, OffsetTracker(film.subs), passOver = passOver)
+                r.playTo(10 * min)
+                r.seek(4 * min)
+                r.playTo(16 * min)
+                return r
+            }
+            val again = run(false)
+            val passed = run(true)
+            assertEquals("seed $seed", again.ahead.runs, passed.ahead.runs)
+            assertEquals("seed $seed", again.ahead.runFromMs, passed.ahead.runFromMs)
+            assertEquals("seed $seed", again.ahead.edgeMs, passed.ahead.edgeMs)
+            assertEquals("seed $seed", again.ahead.steppedToMs, passed.ahead.steppedToMs)
+            assertEquals("seed $seed", again.timeline.speech, passed.timeline.speech)
+            assertEquals("seed $seed", again.timeline.heard, passed.timeline.heard)
+            assertEquals("seed $seed\n${again.story()}\nand\n${passed.story()}", again.tracker.segments, passed.tracker.segments)
+            assertEquals("seed $seed", again.decisions.map { it.third.outcome to it.third.toMs }, passed.decisions.map { it.third.outcome to it.third.toMs })
+            assertEquals("seed $seed", 0L, again.passedMs)
+            // From 4:00 to about 12:00 was heard before: all of it passed over but the last ten seconds or so.
+            assertTrue("seed $seed: passed over ${passed.passedMs / 1000} s", passed.passedMs in 7 * min + 30_000..8 * min)
+            assertEquals("seed $seed", again.markedMs, passed.markedMs + passed.passedMs)
+            assertEquals("seed $seed", passed.passedMs, passed.ahead.skippedMs)
+        }
+    }
+
+    @Test
+    fun filmHeardBeforeIsPassedOverPieceByPiece() {
+        // Talking two seconds in every four, for half a minute.
+        fun voice(seconds: Double, fromS: Double = 0.0) = pcm(seconds, 2) { t, _ -> if ((t + fromS) % 4 < 2) 0.2 * sin(2 * PI * 900 * (t + fromS)) else 0.0 }
+        val ahead = SpeechAhead(SpeechTimeline())
+        feed(ahead, voice(30.0), 2)
+        assertEquals(1, ahead.runs)
+        val speech = ahead.timeline.speech.clone() as java.util.BitSet
+        val decoded = ahead.decodedMs
+        // Film not heard is never passed over, and nothing changes for asking.
+        assertFalse(ahead.skipIfHeard(40_000_000, 42_000_000))
+        assertFalse(ahead.skipIfHeard(-1, 2_000_000))
+        assertEquals(1, ahead.runs)
+        assertTrue("${ahead.edgeMs}", ahead.edgeMs in 29_700L..30_000L)
+        // Back to 0:04, loading from there again in pieces of two seconds: a new stretch from the landing, going on
+        // through what's passed over. The last ten seconds heard before aren't passed over.
+        var us = 4_000_000L
+        var passed = 0
+        while (ahead.skipIfHeard(us, us + 2_000_000)) {
+            us += 2_000_000
+            passed++
+            assertEquals(2, ahead.runs)
+            assertEquals(4_000L, ahead.runFromMs)
+            assertEquals(us / 1000, ahead.edgeMs)
+            assertEquals(us, ahead.nextUs)
+        }
+        assertEquals(8, passed)
+        assertEquals(20_000_000L, us)
+        assertTrue(ahead.due())
+        assertEquals(16_000L, ahead.skippedMs)
+        assertEquals(decoded, ahead.decodedMs)
+        assertEquals(speech, ahead.timeline.speech)
+        // What follows is decoded: the same stretch going on, into film not heard before.
+        feed(ahead, voice(20.0, fromS = 20.0), 2, startUs = 20_000_000)
+        assertEquals(2, ahead.runs)
+        assertEquals(4_000L, ahead.runFromMs)
+        assertTrue("${ahead.edgeMs}", ahead.edgeMs in 39_700L..40_000L)
+        assertTrue("${ahead.decodedMs - decoded}", ahead.decodedMs - decoded in 19_000L..20_000L)
+        assertTrue(ahead.covers(0, 39_700))
+        // Heard as before where it was heard again, and the talking after it is there.
+        assertEquals(speech.get(400, 2_000), ahead.timeline.speech.get(400, 2_000))
+        for (s in listOf(32, 36)) assertTrue("talking at $s s: ${talkShare(ahead.timeline, s * 1000L + 50, s * 1000L + 1_950)}",
+            talkShare(ahead.timeline, s * 1000L + 50, s * 1000L + 1_950) >= 0.9)
+        // A skip on to film heard before (0:10, more than ten seconds back from where the sound ends): another stretch.
+        assertTrue(ahead.skipIfHeard(10_000_000, 12_000_000))
+        assertEquals(3, ahead.runs)
+        assertEquals(10_000L, ahead.runFromMs)
+        // After samples were let go (the listener behind), film heard before a long way on is still the same stretch.
+        ahead.expectGap()
+        assertTrue(ahead.skipIfHeard(24_000_000, 26_000_000))
+        assertEquals(3, ahead.runs)
+        // With nothing heard yet in this sitting of it (the marks kept from before): a stretch begins.
+        val later = SpeechAhead(ahead.timeline)
+        assertTrue(later.skipIfHeard(6_000_000, 8_000_000))
+        assertEquals(1, later.runs)
+        assertEquals(6_000L, later.runFromMs)
+        assertEquals(8_000L, later.edgeMs)
+    }
+
+    @Test
+    fun behindOnlyOnceTheFilmWhereItPlaysHasLoaded() {
+        val ahead = SpeechAhead(SpeechTimeline())
+        // Nothing heard, nothing known of where it plays: not behind.
+        assertFalse(ahead.behind(-1, Long.MAX_VALUE))
+        ahead.startRun(0)
+        for (f in 0 until 10_000) ahead.mark(f, false)
+        assertEquals(100_000L, ahead.edgeMs)
+        // Heard to 1:40. Playing at 1:30, or up to five seconds past what's heard: keeping up.
+        assertFalse(ahead.behind(90_000, 220_000))
+        assertFalse(ahead.behind(105_000, 220_000))
+        // Playing at 1:50 with the film there loaded: behind.
+        assertTrue(ahead.behind(110_000, 220_000))
+        // A skip to 5:00: what's heard ends where the film was, but nothing at 5:00 has loaded yet (loading had got to
+        // 3:40): that's the new position loading, however long it takes, not the listening behind.
+        assertFalse(ahead.behind(300_000, 220_000))
+        assertFalse(ahead.behind(300_000, -1))
+        // Loading has started there, a keyframe before: not yet; then it has, and nothing of it is heard: behind.
+        assertFalse(ahead.behind(300_000, 292_000))
+        assertTrue(ahead.behind(300_000, 296_000))
+        // The first of it heard: keeping up again.
+        ahead.startRun(296_000)
+        for (f in 29_600 until 29_900) ahead.mark(f, false)
+        assertFalse(ahead.behind(300_000, 320_000))
     }
 
     @Test

@@ -678,6 +678,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // Before the player goes, so no copy is taken of a film being taken down.
         backdrop?.stop()
         releasePlayer()
+        // Nothing for auto sync to listen to till the player is back (onStart builds it; its tracks start it again).
+        if (::autoSync.isInitialized) autoSync.playerGone()
         pausedForSwitch = false
         pausedForFreeze = false
         freezeWatch.reset()
