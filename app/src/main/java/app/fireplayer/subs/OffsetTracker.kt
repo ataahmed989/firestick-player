@@ -299,7 +299,10 @@ class OffsetTracker(
         priorTried?.let { if (it.toMs > nowMs) priorTried = null }
         if (map.isEmpty()) {
             learnPlayedMs += playedMs
-            priorStep(timeline, nowMs)?.let { return it }
+            priorStep(timeline, nowMs)?.let {
+                learnProgress(timeline, nowMs)
+                return it
+            }
             // On the film's own subtitles a match costs little and is sure on a few lines: looked at every step.
             val d = if (full || clean) learnStep(timeline, nowMs) else waiting(nowMs)
             learnProgress(timeline, nowMs)
@@ -310,7 +313,7 @@ class OffsetTracker(
         val d = followStep(timeline, nowMs, full)
         // The usual looks settled it first (or since): they decide, in the map.
         if ((d.outcome == Outcome.KEPT || d.outcome == Outcome.MOVED || d.outcome == Outcome.TUNED) &&
-            d.toMs > maxOf(quickFromMs, provisional?.fromMs ?: -1L)
+            d.fromMs >= maxOf(quickFromMs, provisional?.fromMs ?: -1L)
         ) {
             endQuick()
         }
@@ -336,11 +339,20 @@ class OffsetTracker(
      */
     private fun quick(tl: SpeechTimeline, now: Long): Decision? {
         val from = quickFromMs
-        if (from < 0 || now <= from) return null
+        if (from < 0) return null
+        if (now <= from) {
+            // Heard again before the landing (a rewind onto film heard before): nothing in hand there.
+            progress = 0
+            return null
+        }
         val i = indexAt(from)
         // Heard on into a stretch with a delay of its own: the looks were of the one the jump landed in.
         if (now > (map.getOrNull(i + 1)?.fromMs ?: Long.MAX_VALUE)) {
-            endQuick()
+            // One in use stays in use up to there (the usual looks decide); nothing more is looked at.
+            if (provisional == null) endQuick() else {
+                quickFromMs = -1
+                progress = 0
+            }
             return null
         }
         val cur = map[i].delayMs
@@ -467,7 +479,8 @@ class OffsetTracker(
         } else {
             val from = maxOf(0L, suspectMs, now - LEARN_WINDOW_MS)
             val byStarts = lastOnset?.let { minOf(it.hits / ONSET_MIN_HITS.toDouble(), it.z / ONSET_Z) } ?: 0.0
-            percent(maxOf(talkingMs(tl, from, now) / minTalkMs.toDouble(), byStarts))
+            // Talking heard alone only goes so far: the rest is how far the sentence starts stand out.
+            percent(maxOf(minOf(talkingMs(tl, from, now) / minTalkMs.toDouble(), 1.0) * QUICK_HALF / 100.0, byStarts))
         }
     }
 
@@ -502,6 +515,10 @@ class OffsetTracker(
     fun seeked(toMs: Long, timeline: SpeechTimeline) {
         if (toMs < 0) return
         val f = frame(toMs)
+        // A quick look's film ends where the heard film does: landing past film never heard after it (on film heard
+        // some other time), its delay isn't that film's, in use or not.
+        val q = maxOf(quickFromMs, provisional?.fromMs ?: -1L)
+        if (q >= 0 && toMs > q && longestUnheard(timeline, frame(q), f) * 10L >= GAP_MS) endQuick()
         // The film before the landing: listening ahead has marked the landing's own first moments by now.
         val lastHeard = timeline.heard.previousSetBit(f - 1)
         if (lastHeard < 0 || lastHeard < f - NEAR_FRAMES) {
@@ -511,6 +528,8 @@ class OffsetTracker(
             if (map.isEmpty()) learnAgain() else {
                 jumpChecks++
                 jumpedToMs = toMs
+                // Fitting the delay exactly never goes by talking from both sides of a jump.
+                polishFromMs = -1
                 // Settled quickly, near the delay in use ([quick]); one from a landing before this isn't this film's.
                 endQuick()
                 // (Not on the film's own subtitles: every step looks there, sure on a few lines.)
@@ -526,6 +545,7 @@ class OffsetTracker(
     fun learnAgain() {
         learnPlayedMs = 0
         steadyLooks = 0
+        lastOnset = null
     }
 
     /**
@@ -594,8 +614,9 @@ class OffsetTracker(
         }
         candidate = null
         tried = null
-        // Check sync: the usual looks say, on the map; a delay only quickly found isn't held on to.
-        endQuick()
+        // Check sync pressed again (the delay in use turned down): one only quickly found goes too. Checked as it is,
+        // it stays in use while the usual looks say.
+        if (reject) endQuick()
         guessFloorMs = -1
         polishFromMs = -1
         lastCheckToMs = -1

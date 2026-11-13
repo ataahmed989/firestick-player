@@ -310,6 +310,7 @@ class AutoSync(
         baseUs?.let { if (delayUs() == putUs) setDelayUs(it) }
         baseUs = null
         putUs = null
+        jumpAt = 0L
         resyncRelearn = false
         stopListening()
         // Other subtitles for the same film: what's kept stays (taken over below); another film's isn't wanted.
@@ -420,6 +421,7 @@ class AutoSync(
             // Undo puts back what was found before this press, and auto sync carries on from it.
             beforeResync = segments
             undoUs = delayUs()
+            provisionalSetUndo = false
             val ask = {
                 // Not following now (it stopped, or was finding the first delay afresh): it carries on from what's known.
                 if (job.let { it == null || it.relearnAtMs != null }) start()
@@ -835,6 +837,7 @@ class AutoSync(
         provisionalAt = 0L
         provisionalSetUndo = false
         progress = 0
+        checkedAt = 0L
     }
 
     /**
@@ -1170,7 +1173,8 @@ class AutoSync(
             }
             // After a jump: the delay a quick look found is in use at once, from where the jump landed, until the film
             // heard since confirms it (it's in the map then) or drops it.
-            val pv = tr.provisional
+            // (Not while still looking for the film's own subtitles: a track taking over would take it out again.)
+            val pv = if (mode == Mode.LOOKING) null else tr.provisional
             if (pv != toldProvisional) {
                 toldProvisional = pv
                 val how = if (ahead) "the speech heard ahead" else "the speech where the film plays"
@@ -2192,6 +2196,9 @@ class AutoSync(
         if (current.generation != generation || byHand || state != State.SYNCED) return
         if (on) {
             if (checkingAt >= 0 && checkingAt != jumpCheckAt) return
+            // Counted from the jump the beat saw; with none lately (the film just opened with delays kept), from now.
+            val now = SystemClock.elapsedRealtime()
+            if (now - jumpAt > JUMP_STAMP_MS) jumpAt = now
             checkingAt = position().first.coerceAtLeast(0L)
             jumpCheckAt = checkingAt
         } else {
@@ -2501,6 +2508,8 @@ class AutoSync(
         private const val BEAT_MS = 1_000L
         // The playhead further than this from where it was a beat ago: playing jumped.
         private const val JUMP_BEAT_MS = 10_000L
+        // A jump the beat saw this long ago or less is the one a check after a jump counts from.
+        private const val JUMP_STAMP_MS = 60_000L
         // The badge's percent is told again when it has moved this much.
         private const val PROGRESS_STEP = 5
         // Nothing of the film's sound heard ahead this long after starting (a stream in pieces, a protected film, a
