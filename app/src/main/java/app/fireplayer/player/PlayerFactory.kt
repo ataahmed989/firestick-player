@@ -58,6 +58,8 @@ import io.github.peerless2012.ass.media.type.AssRenderType
 class Delays {
     @Volatile var subtitleUs: Long = 0L
     @Volatile var audioUs: Long = 0L
+    /** Subtitle files added to the film, by their track id: the file's path and its type ([TextOffsetRenderer]). */
+    @Volatile var textFiles: Map<String, Pair<String, String>> = emptyMap()
 }
 
 /**
@@ -697,7 +699,9 @@ private class DelayRenderersFactory(
         renderer is AssRenderer -> AssOffsetRenderer(renderer, delays)
         // The lines a delay above zero would make the renderer miss are handed to it again ([TextOffsetRenderer]).
         renderer.trackType == C.TRACK_TYPE_TEXT ->
-            TextOffsetRenderer(renderer) { -delays.subtitleUs }
+            TextOffsetRenderer(renderer, { -delays.subtitleUs }) { id ->
+                delays.textFiles.entries.firstOrNull { (k, _) -> id == k || id.endsWith(":$k") }?.value
+            }
         renderer.trackType == C.TRACK_TYPE_VIDEO ->
             OffsetRenderer(renderer) { delays.audioUs }
         else -> renderer

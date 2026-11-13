@@ -12,8 +12,14 @@ import androidx.media3.exoplayer.Renderer
 import androidx.media3.exoplayer.RendererConfiguration
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.SampleStream
+import androidx.media3.extractor.text.CueEncoder
+import androidx.media3.extractor.text.DefaultSubtitleParserFactory
+import androidx.media3.extractor.text.SubtitleParser
+import android.util.Log
+import java.io.File
 import java.util.ArrayDeque
 import java.util.TreeMap
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * The text renderer on a clock shifted by the subtitle delay, with the lines it would otherwise miss handed to it again.
@@ -32,7 +38,12 @@ import java.util.TreeMap
 internal class TextOffsetRenderer(
     renderer: Renderer,
     private val shiftUs: () -> Long,
+    /** The subtitle file a track (by its id) was added from, and its type; null for a track of the film's own. */
+    private val fileOf: (trackId: String) -> Pair<String, String>? = { null },
 ) : ForwardingRenderer(renderer) {
+    // A subtitle file's lines, read off the playback thread for the stream they're for, waiting to be taken over.
+    private val loaded = AtomicReference<Pair<ReplayStream, List<Pair<Long, ByteArray>>>?>()
+
     // The stream the player handed over (it asks for it back, and compares), and the one the renderer reads instead.
     private var original: SampleStream? = null
     private var replay: ReplayStream? = null
@@ -74,12 +85,17 @@ internal class TextOffsetRenderer(
     }
 
     override fun render(positionUs: Long, elapsedRealtimeUs: Long) {
+        // The file's lines have come: with the subtitles set later, the ones due now may be among them (the stream
+        // gave none from before where the film was opened), so the renderer starts afresh with them.
+        val filed = loaded.getAndSet(null)?.let { (stream, lines) -> stream === replay && stream.preload(lines) } == true
         val shift = shiftUs()
-        if (replay?.complete == true && heldShiftUs != Long.MIN_VALUE && shift <= heldShiftUs - REPLAY_STEP_US) {
+        val late = shift < -REPLAY_STEP_US
+        if (replay?.complete == true && heldShiftUs != Long.MIN_VALUE && (shift <= heldShiftUs - REPLAY_STEP_US || filed && late)) {
             // The delay went up: the lines due now were dropped as gone by. The renderer starts afresh where it is (as
             // it does after a skip, its stream's end kept as the player marked it) and is handed the kept ones: only
             // while every line read is kept, as the lines to come are among them.
             val wasFinal = isCurrentStreamFinal
+            Log.i("TextReplay", "afresh: shift ${shift / 1000} ms, held ${heldShiftUs / 1000} ms, file's lines just in $filed, final $wasFinal, at ${positionUs / 1000} ms")
             super.resetPosition(positionUs)
             if (wasFinal) setCurrentStreamFinal()
             // Further back than after a skip: a line up for minutes (a sign, a song) was showing and must stay.
@@ -102,8 +118,23 @@ internal class TextOffsetRenderer(
         val plain = formats.isNotEmpty() && formats.all {
             it.sampleMimeType == MimeTypes.APPLICATION_MEDIA3_CUES && it.cueReplacementBehavior == Format.CUE_REPLACEMENT_BEHAVIOR_MERGE
         }
-        replay = if (plain) ReplayStream(stream) else null
-        return replay ?: stream
+        val made = if (plain) ReplayStream(stream) else null
+        replay = made
+        Log.i("TextReplay", "stream: ${formats.joinToString { "${it.id} ${it.sampleMimeType} ${it.codecs} merge=${it.cueReplacementBehavior == Format.CUE_REPLACEMENT_BEHAVIOR_MERGE}" }}; kept=${made != null}; file=${made?.let { formats[0].id }?.let(fileOf) != null}; offset $offsetUs")
+        loaded.set(null)
+        // A subtitle file's lines are read here too, all of them: the stream only gives the ones from where the film
+        // is on, so after a rewind to before where the film was opened the lines due then were never read (and with
+        // the subtitles set later none showed for the delay's worth of film).
+        val file = made?.let { formats[0].id }?.let(fileOf)
+        if (made != null && file != null) {
+            Thread({
+                val lines = runCatching { SubtitleFileLines.read(file.first, file.second) }
+                    .onFailure { Log.w("TextReplay", "file's lines not read", it) }.getOrNull()
+                Log.i("TextReplay", "file's lines read: ${lines?.size}")
+                if (!lines.isNullOrEmpty()) loaded.set(made to lines)
+            }, "FirePlayerSubLines").apply { priority = Thread.MIN_PRIORITY }.start()
+        }
+        return made ?: stream
     }
 
     private fun replayAround(positionUs: Long, lookbackUs: Long = ReplayStream.LOOKBACK_US) {
@@ -117,6 +148,28 @@ internal class TextOffsetRenderer(
         const val REPLAY_STEP_US = 250_000L
         // Kept lines handed over in one pass at most (a few ms of work); the rest on the next.
         const val MAX_EXTRA_PASSES = 96
+    }
+}
+
+/** A subtitle file's lines as the player's own reading of it makes them: each line's start (µs) and its sample. */
+@OptIn(UnstableApi::class)
+internal object SubtitleFileLines {
+    private const val MAX_FILE_BYTES = 4 * 1024 * 1024
+
+    fun read(path: String, mimeType: String): List<Pair<Long, ByteArray>> {
+        // Only the plain-text kinds the player's own parser reads the same way; anything else is left to the stream.
+        if (mimeType != MimeTypes.APPLICATION_SUBRIP && mimeType != MimeTypes.TEXT_VTT) return emptyList()
+        val file = File(path)
+        if (!file.isFile || file.length() > MAX_FILE_BYTES) return emptyList()
+        val format = Format.Builder().setSampleMimeType(mimeType).build()
+        val factory = DefaultSubtitleParserFactory()
+        if (!factory.supportsFormat(format)) return emptyList()
+        val encoder = CueEncoder()
+        val out = ArrayList<Pair<Long, ByteArray>>()
+        factory.create(format).parse(file.readBytes(), SubtitleParser.OutputOptions.allCues()) { cues ->
+            out += cues.startTimeUs to encoder.encode(cues.cues, cues.durationUs)
+        }
+        return out
     }
 }
 
@@ -137,6 +190,9 @@ internal class ReplayStream(private val inner: SampleStream) : SampleStream {
     // The lines read, by their time in the stream (two can share one).
     private val kept = TreeMap<Long, ArrayList<Line>>()
     private var keptBytes = 0
+    // The file's lines read apart from the stream ([preload]): taken as kept only once a line the stream gives is
+    // among them to the byte (then they're the stream's own, all of them); dropped if one it gives isn't.
+    private var filed: TreeMap<Long, ArrayList<Line>>? = null
     // Goes up with every [replayFrom]: a line is handed over once in each.
     private var epoch = 0
     // Asked for, around which time; the kept lines being handed over; and the stream's own next line, read to know
@@ -157,6 +213,39 @@ internal class ReplayStream(private val inner: SampleStream) : SampleStream {
     /** Kept lines are waiting to be handed over again. */
     val replaying: Boolean get() = queue.isNotEmpty()
 
+    /**
+     * The whole file's lines ([SubtitleFileLines]), so the ones the stream never gave (from before where the film was
+     * opened) can be handed over after a rewind. Used only once the stream's own lines prove to be the same ones:
+     * true when that's so already (they're kept from now).
+     */
+    fun preload(lines: List<Pair<Long, ByteArray>>): Boolean {
+        if (broken || !complete || lines.isEmpty() || lines.sumOf { it.second.size } + keptBytes > MAX_KEPT_BYTES) return false
+        val map = TreeMap<Long, ArrayList<Line>>()
+        for ((timeUs, data) in lines) map.getOrPut(timeUs) { ArrayList(1) }.add(Line(timeUs, true, data))
+        // Lines read already settle it at once.
+        for (list in kept.values) for (line in list) {
+            if (map[line.timeUs]?.any { it.data.contentEquals(line.data) } != true) return false
+        }
+        filed = map
+        Log.i("TextReplay", "file's ${lines.size} lines are the stream's (${kept.size} times read so far)")
+        if (kept.isEmpty()) return false
+        adopt()
+        return true
+    }
+
+    // The file's lines become kept ones (those read already stay as they are).
+    private fun adopt() {
+        val map = filed ?: return
+        filed = null
+        for (list in map.values) for (line in list) {
+            val at = kept.getOrPut(line.timeUs) { ArrayList(1) }
+            if (at.none { it.data.contentEquals(line.data) }) {
+                at.add(line)
+                keptBytes += line.data.size
+            }
+        }
+    }
+
     /** How many lines are kept, for tests. */
     val keptCount: Int get() = kept.values.sumOf { it.size }
 
@@ -172,6 +261,7 @@ internal class ReplayStream(private val inner: SampleStream) : SampleStream {
         next = null
         meanwhile = false
         pending = !broken && complete
+        Log.i("TextReplay", "replay from ${timeUs / 1000} ms, back ${lookbackUs / 1000} ms: kept ${kept.size} times, complete $complete, broken $broken, file's waiting ${filed != null}")
         aroundUs = timeUs
         this.lookbackUs = lookbackUs
     }
@@ -187,6 +277,7 @@ internal class ReplayStream(private val inner: SampleStream) : SampleStream {
             read(formatHolder, buffer, readFlags)
         } catch (e: RuntimeException) {
             // Never expected; rather than stop the film, read on as the stream alone would.
+            Log.w("TextReplay", "reading on as the stream alone", e)
             broken = true
             complete = false
             pending = false
@@ -206,6 +297,7 @@ internal class ReplayStream(private val inner: SampleStream) : SampleStream {
                 pending = false
                 meanwhile = false
                 queue.clear()
+                Log.i("TextReplay", "stream goes on from ${if (buffer.isEndOfStream) "its end" else "${buffer.timeUs / 1000} ms"}")
                 if (buffer.isEndOfStream) {
                     // Nothing more of its own: all the kept ones from there on. The stream says it has ended again later.
                     buffer.clear()
@@ -222,6 +314,7 @@ internal class ReplayStream(private val inner: SampleStream) : SampleStream {
                 // stream gives later is sorted out then, each line still once.
                 meanwhile = true
                 enqueue(Long.MAX_VALUE)
+                Log.i("TextReplay", "stream has nothing yet: ${queue.size} kept lines meanwhile")
             }
         }
         while (true) {
@@ -259,12 +352,14 @@ internal class ReplayStream(private val inner: SampleStream) : SampleStream {
         val split = minOf(aroundUs, untilUs)
         // In the order they matter: the ones that may be showing now (nearest before the time first), the ones coming
         // up, then older ones (only a line up for minutes is still showing), then the rest to come.
-        val recent = maxOf(from, aroundUs - LOOKBACK_US)
+        // (Each range in order, whatever the times: the stream's own next line can lie before all of them.)
+        val recent = maxOf(from, aroundUs - LOOKBACK_US).coerceAtMost(split)
         val soon = if (untilUs - SOON_US > split) split + SOON_US else untilUs
         for (list in kept.subMap(recent, true, split, true).descendingMap().values) queue.addAll(list)
         if (split < soon) for (list in kept.subMap(split, false, soon, true).values) queue.addAll(list)
         if (from < recent) for (list in kept.subMap(from, true, recent, false).descendingMap().values) queue.addAll(list)
         if (soon < untilUs) for (list in kept.subMap(soon, false, untilUs, true).values) queue.addAll(list)
+        Log.i("TextReplay", "handing over ${queue.size} kept lines up to ${if (untilUs == Long.MAX_VALUE) "the end" else "${untilUs / 1000} ms"}")
     }
 
     /** The line in [buffer] as kept: the one kept before if it was read before, else kept now (if there's room). */
@@ -278,6 +373,16 @@ internal class ReplayStream(private val inner: SampleStream) : SampleStream {
             copy.get(bytes)
         }
         kept[buffer.timeUs]?.firstOrNull { it.data.contentEquals(bytes) }?.let { return it }
+        filed?.let { map ->
+            if (map[buffer.timeUs]?.any { it.data.contentEquals(bytes) } == true) {
+                adopt()
+                kept[buffer.timeUs]?.firstOrNull { it.data.contentEquals(bytes) }?.let { return it }
+            } else {
+                // Not the lines the stream gives: the file's are left out of it.
+                Log.i("TextReplay", "file's lines are not the stream's (at ${buffer.timeUs / 1000} ms): left out")
+                filed = null
+            }
+        }
         val line = Line(buffer.timeUs, buffer.isKeyFrame, bytes)
         if (broken || !complete || size > MAX_LINE_BYTES || keptBytes + size > MAX_KEPT_BYTES) {
             // More than any film's subtitles should come to: read on, but not every line is kept from here.

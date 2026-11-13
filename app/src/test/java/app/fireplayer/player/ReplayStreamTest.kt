@@ -161,6 +161,45 @@ class ReplayStreamTest {
         assertEquals(lines(350 downTo 320) + lines(351..400) + lines(319 downTo 50), got)
     }
 
+    private fun filed(range: Iterable<Int>) = range.map { it * sec to "line $it".toByteArray() }
+
+    @Test
+    fun aRewindToBeforeWhereTheFilmWasOpenedHasTheFilesLines() {
+        // Opened at 300 s: the stream gives the lines from there on. The file's lines, read apart, are all of them.
+        val inner = Lines(0, 600)
+        inner.seek(300)
+        val stream = ReplayStream(inner)
+        stream.replayFrom(295 * sec)
+        stream.preload(filed(0..600))
+        // The lines due at the start (the subtitles 5 s late) are the file's too.
+        assertEquals(lines(295 downTo 265) + lines(296..600), read(stream))
+        assertEquals(601, stream.keptCount)
+        // A rewind to 200 s with the subtitles 6 s late: the lines due now were never given by the stream.
+        inner.seek(200)
+        stream.replayFrom(194 * sec)
+        val got = read(stream)
+        assertEquals(lines(194 downTo 164) + lines(195..600), got)
+        assertEquals("each line once", got.size, got.toSet().size)
+    }
+
+    @Test
+    fun aFileThatIsntWhatTheStreamGivesIsLeftOut() {
+        val inner = Lines(0, 100)
+        inner.seek(50)
+        val stream = ReplayStream(inner)
+        stream.replayFrom(45 * sec)
+        // Other lines than the stream's (another file, or read another way).
+        stream.preload((0..100).map { it * sec to "other $it".toByteArray() })
+        assertEquals(lines(50..100), read(stream))
+        assertEquals(51, stream.keptCount)
+        inner.seek(20)
+        stream.replayFrom(14 * sec)
+        assertEquals(lines(20..100), read(stream))
+        // And one given after lines were read that it doesn't have is never taken at all.
+        stream.preload(filed(30..100))
+        assertEquals(81, stream.keptCount)
+    }
+
     @Test
     fun linesSharingATimeAreAllHandedOverOnce() {
         // Two lines at 50 s and at 51 s (one above, one below, say); a skip lands the stream on the second of a pair.
