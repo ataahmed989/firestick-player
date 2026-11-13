@@ -3881,7 +3881,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             refresh()
         }
         if (downloaded && prefs.autoSync) {
-            // Its value: what the checks made as the film plays last said ("In sync · 2 min ago").
+            // Its value: what the checks made as the film plays last said ("In sync 2m ago").
             row("Check sync", autoSync.checkedText) { autoSync.resync(); refresh() }.asSubRow()
             if (autoSync.undoUs != null) row("Undo last sync") { autoSync.undo(); refresh() }.asSubRow()
             syncWithRow(panel)

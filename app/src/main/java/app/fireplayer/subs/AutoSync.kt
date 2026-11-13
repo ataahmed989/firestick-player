@@ -230,15 +230,15 @@ class AutoSync(
         }
 
     /**
-     * What the checks made as the film plays last said, for the panel: "In sync · 2 min ago", "Adjusted · just now";
+     * What the checks made as the film plays last said, for the panel: "In sync 2m ago", "Adjusted now";
      * null before the first one.
      */
     val checkedText: String?
         get() {
             if (checkedAt <= 0 || state != State.SYNCED || byHand) return null
+            // Short: the row's value has room for about fifteen letters.
             val min = (SystemClock.elapsedRealtime() - checkedAt) / 60_000
-            val ago = if (min < 1) "just now" else "$min min ago"
-            return "${if (checkedMoved) "Adjusted" else "In sync"} · $ago"
+            return "${if (checkedMoved) "Adjusted" else "In sync"} ${if (min < 1) "now" else "${min}m ago"}"
         }
 
     // What "in N s" counts from: the last jump, else auto sync starting on these subtitles.
@@ -966,6 +966,7 @@ class AutoSync(
         // The delay quickly found after a jump, and the look's progress, as last told to the main thread.
         var toldProvisional: OffsetTracker.Segment? = null
         var toldProgress = 0
+        var toldQuickNote: String? = null
         // Checking the film's own subtitles against the talking ([CrossCheck]): listening now, from where (film time,
         // once heard), since when, when next, whether after Resync, and the last verdict.
         var crossing = false
@@ -1180,6 +1181,8 @@ class AutoSync(
                 val how = if (ahead) "the speech heard ahead" else "the speech where the film plays"
                 main.post { provisional(current, pv, how) }
             }
+            // What an undecided quick look saw, for the log: why one took long can be read from it.
+            tr.quickNote?.let { if (it != toldQuickNote) { toldQuickNote = it; Log.i(TAG, "quick look: $it") } }
             val pr = tr.progress
             if (pr != toldProgress && (abs(pr - toldProgress) >= PROGRESS_STEP || pr == 0 || toldProgress == 0)) {
                 toldProgress = pr
@@ -2231,6 +2234,8 @@ class AutoSync(
         val was = provisional
         if (was == null || abs(seg.delayMs - was.delayMs) > TENTATIVE_AGREE_MS) {
             provisionalAt = SystemClock.elapsedRealtime()
+            // No jump lately (the timing changed as the film played): counted from when that was noticed.
+            if (was == null && provisionalAt - jumpAt > JUMP_STAMP_MS) jumpAt = provisionalAt
             Log.i(TAG, "after a jump: in use after ${"%.1f".format(java.util.Locale.ROOT, (provisionalAt - since()) / 1000.0)} s, " +
                 "confirming: ${SyncMatcher.formatShift(seg.delayMs)} from ${OffsetTracker.clock(seg.fromMs)}, by $how")
         }
