@@ -967,6 +967,7 @@ class AutoSync(
         var toldProvisional: OffsetTracker.Segment? = null
         var toldProgress = 0
         var toldQuickNote: String? = null
+        var toldFitsAt = -1L
         // Checking the film's own subtitles against the talking ([CrossCheck]): listening now, from where (film time,
         // once heard), since when, when next, whether after Resync, and the last verdict.
         var crossing = false
@@ -1109,6 +1110,7 @@ class AutoSync(
                 jumpTracker = tr
                 jumpsSeen = tr.jumpChecks
                 jumpSince = 0L
+                toldFitsAt = tr.fitsAtMs
                 // Another tracker: what the last one had quickly found isn't its.
                 if (toldProvisional != null) {
                     toldProvisional = null
@@ -1183,6 +1185,12 @@ class AutoSync(
             }
             // What an undecided quick look saw, for the log: why one took long can be read from it.
             tr.quickNote?.let { if (it != toldQuickNote) { toldQuickNote = it; Log.i(TAG, "quick look: $it") } }
+            // The watch on the latest film found it fitting the delay in use well: counted, for the panel's "In sync".
+            val fits = tr.fitsAtMs
+            if (fits != toldFitsAt) {
+                toldFitsAt = fits
+                if (fits >= 0 && !onTrack) main.post { checked(current, moved = false) }
+            }
             val pr = tr.progress
             if (pr != toldProgress && (abs(pr - toldProgress) >= PROGRESS_STEP || pr == 0 || toldProgress == 0)) {
                 toldProgress = pr
@@ -2460,7 +2468,7 @@ class AutoSync(
         // Checking the film's own subtitles against the talking: the first a while after lining up, then this often;
         // each until this much talking is heard (or this much film, or this long), and after Resync if unsure, again soon.
         private const val CROSS_FIRST_MS = 60_000L
-        private const val CROSS_EVERY_MS = 15 * 60_000L
+        private const val CROSS_EVERY_MS = 5 * 60_000L
         private const val CROSS_RETRY_MS = 2 * 60_000L
         private const val CROSS_TALK_MS = 40_000L
         private const val CROSS_MAX_FILM_MS = 4 * 60_000L
