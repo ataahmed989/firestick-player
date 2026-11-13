@@ -16,12 +16,15 @@ class ReplayStreamTest {
     private class Lines(val lines: List<Pair<Int, String>>) : SampleStream {
         constructor(first: Int, last: Int) : this((first..last).map { it to "line $it" })
         var at = 0
+        /** Nothing to give for now though lines remain (all that's loaded was read; more comes as the film loads on). */
+        var stalled = false
         /** The player put the stream at the line at or before [second] (a skip). */
         fun seek(second: Int) { at = lines.indexOfLast { it.first <= second }.coerceAtLeast(0) }
         override fun isReady() = true
         override fun maybeThrowError() {}
         override fun skipData(positionUs: Long) = 0
         override fun readData(formatHolder: FormatHolder, buffer: DecoderInputBuffer, readFlags: Int): Int {
+            if (stalled) return C.RESULT_NOTHING_READ
             if (at >= lines.size) {
                 buffer.setFlags(C.BUFFER_FLAG_END_OF_STREAM)
                 return C.RESULT_BUFFER_READ
@@ -101,6 +104,60 @@ class ReplayStreamTest {
         inner.seek(110)
         stream.replayFrom(105 * sec)
         assertEquals(lines(105 downTo 100) + lines(106..130), read(stream))
+    }
+
+    /** Reads [stream] for [passes] renderer passes, whatever comes. */
+    private fun readSome(stream: SampleStream, passes: Int): List<String> {
+        val out = ArrayList<String>()
+        val buffer = DecoderInputBuffer(DecoderInputBuffer.BUFFER_REPLACEMENT_MODE_NORMAL)
+        repeat(passes) {
+            buffer.clear()
+            if (stream.readData(FormatHolder(), buffer, 0) == C.RESULT_BUFFER_READ && !buffer.isEndOfStream) {
+                buffer.flip()
+                out += String(buffer.data!!.array(), buffer.data!!.arrayOffset(), buffer.data!!.limit())
+            }
+        }
+        return out
+    }
+
+    @Test
+    fun theDelayTurnedUpMidFilmBringsTheLineBackThoughTheStreamHasNothingToGiveYet() {
+        // Mid-film: the lines loaded so far (to 200 s) were all read, the next comes when the film has loaded on.
+        val inner = Lines(0, 600)
+        val stream = ReplayStream(inner)
+        assertEquals(lines(0..200), readSome(stream, 201))
+        inner.stalled = true
+        // The delay goes up and the renderer starts afresh at 100 s: the line due now is back on the very next pass,
+        // and those to come follow, with nothing waited for.
+        stream.replayFrom(100 * sec)
+        assertEquals(lines(100 downTo 96), readSome(stream, 5))
+        assertEquals(lines(95 downTo 70) + lines(101..200), readSome(stream, 200))
+        // The film loads on: the stream's own lines follow, none again.
+        inner.stalled = false
+        assertEquals(lines(201..600), read(stream))
+        // And the same again with the stream giving a line partway through the kept ones.
+        inner.at = 0
+        assertEquals(lines(0..600).size, 601)
+        inner.seek(300)
+        inner.stalled = true
+        stream.replayFrom(290 * sec)
+        val first = readSome(stream, 10)
+        assertEquals(lines(290 downTo 281), first)
+        inner.stalled = false
+        val rest = read(stream)
+        val all = first + rest
+        assertEquals("each line once", all.size, all.toSet().size)
+        assertEquals(lines(260..600).toSet(), all.toSet())
+    }
+
+    @Test
+    fun aLineUpForMinutesComesBackWhenLookedBackFarEnough() {
+        val inner = Lines(0, 400)
+        val stream = ReplayStream(inner)
+        read(stream)
+        stream.replayFrom(350 * sec, ReplayStream.LONG_LOOKBACK_US)
+        val got = read(stream)
+        assertEquals(lines(350 downTo 50) + lines(351..400), got)
     }
 
     @Test

@@ -82,7 +82,8 @@ internal class TextOffsetRenderer(
             val wasFinal = isCurrentStreamFinal
             super.resetPosition(positionUs)
             if (wasFinal) setCurrentStreamFinal()
-            replayAround(positionUs)
+            // Further back than after a skip: a line up for minutes (a sign, a song) was showing and must stay.
+            replayAround(positionUs, ReplayStream.LONG_LOOKBACK_US)
         } else if (shift > heldShiftUs) {
             heldShiftUs = shift
         }
@@ -101,10 +102,10 @@ internal class TextOffsetRenderer(
         return replay ?: stream
     }
 
-    private fun replayAround(positionUs: Long) {
+    private fun replayAround(positionUs: Long, lookbackUs: Long = ReplayStream.LOOKBACK_US) {
         val shift = shiftUs()
         heldShiftUs = shift
-        replay?.replayFrom(positionUs + shift - streamOffsetUs)
+        replay?.replayFrom(positionUs + shift - streamOffsetUs, lookbackUs)
     }
 
     private companion object {
@@ -136,8 +137,11 @@ internal class ReplayStream(private val inner: SampleStream) : SampleStream {
     // where it goes on from, handed over after them.
     private var pending = false
     private var aroundUs = 0L
+    private var lookbackUs = LOOKBACK_US
     private val queue = ArrayDeque<Line>()
     private var next: Line? = null
+    // While the stream has nothing to give yet, every kept line from the time asked for on is being handed over.
+    private var meanwhile = false
     private var broken = false
 
     /** Every line read so far is kept: the renderer can be started afresh from them. */
@@ -147,16 +151,20 @@ internal class ReplayStream(private val inner: SampleStream) : SampleStream {
     /** How many lines are kept, for tests. */
     val keptCount: Int get() = kept.values.sumOf { it.size }
 
-    /** The lines kept from a little before [timeUs] (stream time) are handed over again before the stream goes on. */
-    fun replayFrom(timeUs: Long) {
-        if (broken) return
+    /**
+     * The lines kept from [lookbackUs] before [timeUs] (stream time) are handed over again before the stream goes on.
+     * Not once the lines have outgrown what's kept: then the stream alone is read, as it always was.
+     */
+    fun replayFrom(timeUs: Long, lookbackUs: Long = LOOKBACK_US) {
         epoch++
-        aroundUs = timeUs
-        pending = true
         queue.clear()
-        // A line of the stream's own read ahead of time and not handed over yet is still to come: first in the queue.
-        next?.let { queue.add(it) }
+        // A line of the stream's own read ahead and not handed over yet: kept, so it's handed over with the others
+        // (or the stream gives it again).
         next = null
+        meanwhile = false
+        pending = !broken && complete
+        aroundUs = timeUs
+        this.lookbackUs = lookbackUs
     }
 
     override fun isReady(): Boolean = queue.isNotEmpty() || next != null || inner.isReady
@@ -184,17 +192,27 @@ internal class ReplayStream(private val inner: SampleStream) : SampleStream {
         if (pending) {
             // Where the stream itself goes on from: its next line is read (and kept for after the kept ones before it).
             val result = inner.readData(formatHolder, buffer, readFlags)
-            if (result != C.RESULT_BUFFER_READ) return result
-            pending = false
-            if (buffer.isEndOfStream) {
-                // Nothing more of its own: all the kept ones from there on. The stream says it has ended again later.
-                buffer.clear()
+            if (result == C.RESULT_FORMAT_READ) return result
+            if (result == C.RESULT_BUFFER_READ) {
+                pending = false
+                meanwhile = false
+                queue.clear()
+                if (buffer.isEndOfStream) {
+                    // Nothing more of its own: all the kept ones from there on. The stream says it has ended again later.
+                    buffer.clear()
+                    enqueue(Long.MAX_VALUE)
+                } else {
+                    val line = keep(buffer)
+                    buffer.clear()
+                    enqueue(line.timeUs)
+                    if (line.given != epoch && line !in queue) next = line
+                }
+            } else if (!meanwhile) {
+                // Nothing to give yet (all it has loaded was read; more comes as the film loads on, which can be a long
+                // while): the kept lines are handed over meanwhile, so the line due now is never waited for. What the
+                // stream gives later is sorted out then, each line still once.
+                meanwhile = true
                 enqueue(Long.MAX_VALUE)
-            } else {
-                val line = keep(buffer)
-                buffer.clear()
-                enqueue(line.timeUs)
-                if (line.given != epoch && line !in queue) next = line
             }
         }
         while (true) {
@@ -202,6 +220,7 @@ internal class ReplayStream(private val inner: SampleStream) : SampleStream {
             if (line.given == epoch) continue
             return hand(buffer, line)
         }
+        if (pending) return C.RESULT_NOTHING_READ
         next?.let {
             next = null
             if (it.given != epoch) return hand(buffer, it)
@@ -226,7 +245,7 @@ internal class ReplayStream(private val inner: SampleStream) : SampleStream {
     // line apart): nearest before the time first, then on from it.
     private fun enqueue(untilUs: Long) {
         if (broken || kept.isEmpty()) return
-        val from = aroundUs - LOOKBACK_US
+        val from = aroundUs - lookbackUs
         if (from > untilUs) return
         val split = minOf(aroundUs, untilUs)
         for (list in kept.subMap(from, true, split, true).descendingMap().values) queue.addAll(list)
@@ -268,6 +287,8 @@ internal class ReplayStream(private val inner: SampleStream) : SampleStream {
     companion object {
         // A line can have started this long before the time asked for and still be showing.
         const val LOOKBACK_US = 30_000_000L
+        // ...and when the renderer is started afresh where it is, a line up for minutes must come back too.
+        const val LONG_LOOKBACK_US = 300_000_000L
         private const val MAX_LINE_BYTES = 256 * 1024
         private const val MAX_KEPT_BYTES = 8 * 1024 * 1024
         // Lines of the stream's own passed by in one read (handed over already) before saying "nothing yet".
