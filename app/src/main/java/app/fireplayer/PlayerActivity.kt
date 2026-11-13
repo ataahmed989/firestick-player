@@ -3022,7 +3022,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             val density = resources.displayMetrics.density
             // The lowest subtitles may reach: a little above the chips, or the "+4:00" card in their place.
             val infoTop = if (seekBubble.visibility == View.VISIBLE) minOf(chips.top, seekBubble.top) else chips.top
-            val limit = bottomBlock.top + (chips.parent as View).top + infoTop - 14f * density
+            val limit = bottomBlock.top + (chips.parent as View).top + infoTop - SUBTITLE_CLEAR_DP * density
             // With only the time bar showing, subtitles entirely below it can stay where they are.
             val floor = if (controlsShown) Float.MAX_VALUE else bottomBlock.top + seekRow.bottom + 6f * density
             val height = root.height.toFloat()
@@ -3035,12 +3035,26 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         if (screen != screenLift) {
             screenLift = screen
-            screenSubtitles.animate().translationY(-screen).setDuration(if (animate) 200 else 0).start()
+            glide(screenSubtitles, -screen, animate)
         }
         if (frame != frameLift) {
             frameLift = frame
-            frameSubtitles.animate().translationY(-frame).setDuration(if (animate) 200 else 0).start()
+            glide(frameSubtitles, -frame, animate)
         }
+    }
+
+    /**
+     * Subtitles glide to their place: eased to a stop like the rows of buttons, and moved as one picture while they
+     * go (the lines aren't drawn again for every frame of it, which stuttered on a Fire TV Stick).
+     */
+    private fun glide(view: View, toY: Float, animate: Boolean) {
+        view.animate().cancel()
+        if (!animate) {
+            view.translationY = toY
+            return
+        }
+        view.animate().translationY(toY).setStartDelay(0).setDuration(SUBTITLE_GLIDE_MS)
+            .setInterpolator(DecelerateInterpolator(1.6f)).withLayer().start()
     }
 
     /** How many rows the subtitles showing now take on screen, wrapped the way the subtitle view wraps them. */
@@ -5082,6 +5096,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     // ---------------------------------------------------------------------
 
     companion object {
+        // How far above the controls' info chips the subtitles rest while the controls are up (dp), and how long they
+        // take to glide there.
+        private const val SUBTITLE_CLEAR_DP = 5f
+        private const val SUBTITLE_GLIDE_MS = 280L
         // The player screen opened last.
         private var shown: WeakReference<PlayerActivity>? = null
         private const val STATE_PROCESS = "fireplayer.process"
