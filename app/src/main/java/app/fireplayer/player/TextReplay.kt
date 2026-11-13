@@ -88,6 +88,10 @@ internal class TextOffsetRenderer(
             heldShiftUs = shift
         }
         super.render(positionUs + shift, elapsedRealtimeUs)
+        // The renderer takes one line a pass. Kept lines waiting to be handed over again are all taken now, so the
+        // lines coming up are in place at once (a line a pass left the next ones out for a second or two).
+        var extra = 0
+        while (replay?.replaying == true && extra++ < MAX_EXTRA_PASSES) super.render(positionUs + shift, elapsedRealtimeUs)
     }
 
     private fun wrap(formats: Array<Format>, stream: SampleStream, offsetUs: Long): SampleStream {
@@ -111,6 +115,8 @@ internal class TextOffsetRenderer(
     private companion object {
         // The delay turned up by this much or more: the lines due now are handed over again (less isn't seen).
         const val REPLAY_STEP_US = 250_000L
+        // Kept lines handed over in one pass at most (a few ms of work); the rest on the next.
+        const val MAX_EXTRA_PASSES = 96
     }
 }
 
@@ -147,6 +153,9 @@ internal class ReplayStream(private val inner: SampleStream) : SampleStream {
     /** Every line read so far is kept: the renderer can be started afresh from them. */
     var complete = true
         private set
+
+    /** Kept lines are waiting to be handed over again. */
+    val replaying: Boolean get() = queue.isNotEmpty()
 
     /** How many lines are kept, for tests. */
     val keptCount: Int get() = kept.values.sumOf { it.size }
@@ -248,8 +257,14 @@ internal class ReplayStream(private val inner: SampleStream) : SampleStream {
         val from = aroundUs - lookbackUs
         if (from > untilUs) return
         val split = minOf(aroundUs, untilUs)
-        for (list in kept.subMap(from, true, split, true).descendingMap().values) queue.addAll(list)
-        if (split < untilUs) for (list in kept.subMap(split, false, untilUs, true).values) queue.addAll(list)
+        // In the order they matter: the ones that may be showing now (nearest before the time first), the ones coming
+        // up, then older ones (only a line up for minutes is still showing), then the rest to come.
+        val recent = maxOf(from, aroundUs - LOOKBACK_US)
+        val soon = if (untilUs - SOON_US > split) split + SOON_US else untilUs
+        for (list in kept.subMap(recent, true, split, true).descendingMap().values) queue.addAll(list)
+        if (split < soon) for (list in kept.subMap(split, false, soon, true).values) queue.addAll(list)
+        if (from < recent) for (list in kept.subMap(from, true, recent, false).descendingMap().values) queue.addAll(list)
+        if (soon < untilUs) for (list in kept.subMap(soon, false, untilUs, true).values) queue.addAll(list)
     }
 
     /** The line in [buffer] as kept: the one kept before if it was read before, else kept now (if there's room). */
@@ -289,6 +304,8 @@ internal class ReplayStream(private val inner: SampleStream) : SampleStream {
         const val LOOKBACK_US = 30_000_000L
         // ...and when the renderer is started afresh where it is, a line up for minutes must come back too.
         const val LONG_LOOKBACK_US = 300_000_000L
+        // Lines starting within this of the time asked for are handed over before older ones.
+        private const val SOON_US = 60_000_000L
         private const val MAX_LINE_BYTES = 256 * 1024
         private const val MAX_KEPT_BYTES = 8 * 1024 * 1024
         // Lines of the stream's own passed by in one read (handed over already) before saying "nothing yet".
