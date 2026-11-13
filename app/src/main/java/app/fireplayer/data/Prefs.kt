@@ -174,7 +174,8 @@ class Prefs(context: Context) {
     fun forgetSyncedDelay(key: String) = sp.edit().remove("sync|$key").remove("sync|$key|at").remove("sync|$key|track")
         .remove("sync|$key|trim").remove("sync|$key|drop").apply()
 
-    // ...and by film position once the timing changed along the film (an ad break): see OffsetTracker.encode.
+    // The delays auto sync found for a subtitle and film, by film position (more than one once the timing changed along
+    // the film: an ad break): see OffsetTracker.encode.
     fun syncedSegments(key: String): String? = sp.getString("sync|$key|at", null)
 
     /**

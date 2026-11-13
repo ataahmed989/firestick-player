@@ -38,7 +38,7 @@ import kotlin.math.abs
  * Which track is ranked by how well each lines up ([ReferenceSync.rank]), or chosen in the Subtitle delay window
  * ([chooseSyncWith], kept per show). One source giving up hands over to the other: the track having too few lines or no
  * delay fitting it, to listening; listening giving up, or the sound not being there to hear, to the track; the track
- * disagreeing with the talking, to listening for good (in this film).
+ * disagreeing with the talking, to listening for good (for these subtitles in this film, the next time too).
  *
  * A new episode starts from the delay the show's last one started with, for subtitles from the same source, checked as
  * it plays; with nothing to go on, a downloaded line is held back for a moment ([holdsCues]) while the film's own
@@ -64,9 +64,14 @@ import kotlin.math.abs
  * Kept light for the Fire TV Stick: one background thread at low priority (and FFmpeg's decode threads, for the sound
  * heard ahead and when the sound goes out undecoded, at the same), 10 ms marks of what was heard and of talking (about
  * 180 KB for two hours), the sound heard ahead decoded at most a quarter of the time while finding the first delay and
- * a tenth after, at most 3 MB of it waiting (let go rather than held up), matching at most every 15 s of film and
- * usually every few minutes (less often while nothing heard fits), and it backs off while the picture drops frames.
- * What it costs is logged every few minutes (tag AutoSync).
+ * a tenth after, at most 3 MB of it waiting (let go rather than held up), film heard before never decoded again when
+ * the player loads it again (a rewind), matching at most every 15 s of film and usually every few minutes (less often
+ * while nothing heard fits), and it backs off while the picture drops frames. With the player gone (the activity
+ * stopped) nothing is listened to, copied or followed ([playerGone]). What it costs is logged every few minutes (tag
+ * AutoSync).
+ *
+ * It cleans up after itself: the delay it put in goes when its subtitles do ([follow]), and what it keeps for a subtitle
+ * file is let go with the file ([SavedSubtitles.prune]).
  */
 @OptIn(UnstableApi::class)
 class AutoSync(
@@ -601,7 +606,8 @@ class AutoSync(
      * back, [follow] for the same subtitles and film picks it up again ([playerBack]); for any others it starts as usual.
      */
     fun playerGone() {
-        if (away) return
+        // Gone before, never picked up since (the film's tracks didn't come back), and nothing started since: as it was.
+        if (away && job == null && !aheadStandby) return
         away = true
         awayAt = SystemClock.elapsedRealtime()
         awayJob = job
