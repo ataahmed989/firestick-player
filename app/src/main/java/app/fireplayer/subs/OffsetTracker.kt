@@ -348,23 +348,31 @@ class OffsetTracker(
      * nothing changed, the right delay 67–91% where it had, under 1.5% wrong.
      */
     private fun quick(tl: SpeechTimeline, now: Long): Decision? {
-        val from = quickFromMs
-        if (from < 0) return null
-        if (now <= from) {
+        val landed = quickFromMs
+        if (landed < 0) return null
+        if (now <= landed) {
             // Heard again before the landing (a rewind onto film heard before): nothing in hand there.
             progress = 0
             return null
         }
-        val i = indexAt(from)
-        // Heard on into a stretch with a delay of its own: the looks were of the one the jump landed in.
-        if (now > (map.getOrNull(i + 1)?.fromMs ?: Long.MAX_VALUE)) {
-            // One in use stays in use up to there (the usual looks decide); nothing more is looked at.
-            if (provisional == null) endQuick() else {
+        var from = landed
+        var i = indexAt(from)
+        // Heard on into a stretch with a delay of its own (a jump that landed just before it): the looks were of the
+        // one before. One in use stays in use up to there (the usual looks decide) and nothing more is looked at;
+        // else that stretch is looked at now, from where it starts, against its own delay.
+        while (now > (map.getOrNull(i + 1)?.fromMs ?: Long.MAX_VALUE)) {
+            if (provisional != null) {
                 quickFromMs = -1
                 progress = 0
+                return null
             }
-            return null
+            i++
+            from = map[i].fromMs
+            quickFromMs = from
+            quickAtMs = -1
+            progress = 0
         }
+        if (now <= from) return null
         val cur = map[i].delayMs
         val p = provisional
         if (p == null) {
