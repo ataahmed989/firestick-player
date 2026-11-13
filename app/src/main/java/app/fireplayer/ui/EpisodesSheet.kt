@@ -85,13 +85,26 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
         clipToPadding = false
         setPadding(dp(4), dp(8), dp(4), dp(6))
     }
-    private val cardsScroll = HorizontalScrollView(activity).apply {
+    // The row moves only as [glideTo] moves it: the chosen card stays at the left edge, like Glass Home's rows.
+    private val cardsScroll = object : HorizontalScrollView(activity) {
+        override fun computeScrollDeltaToGetChildRectOnScreen(rect: android.graphics.Rect?): Int = 0
+    }.apply {
         isHorizontalScrollBarEnabled = false
         clipChildren = false
         clipToPadding = false
         isFillViewport = false
+        isSmoothScrollingEnabled = false
         addView(cardsRow)
+        // Room after the last card, so it too can come to the left edge.
+        addOnLayoutChangeListener { v, l, _, r, _, ol, _, or, _ ->
+            if (r - l != or - ol) {
+                val end = ((r - l) - dp(CARD_W) - cardsRow.paddingLeft).coerceAtLeast(dp(4))
+                if (cardsRow.paddingRight != end) cardsRow.setPadding(cardsRow.paddingLeft, cardsRow.paddingTop, end, cardsRow.paddingBottom)
+                (v.findFocus()?.takeIf { it.parent === cardsRow })?.let { card -> afterLayout { glideTo(card, animate = false) } }
+            }
+        }
     }
+    private var glide: android.animation.ValueAnimator? = null
 
     private var guide: ShowGuide? = null
     private var playingId: String? = null
@@ -324,12 +337,28 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
     private fun focusCard(index: Int) {
         val n = cardsRow.childCount
         if (n == 0) return
-        cardsRow.getChildAt(index.coerceIn(0, n - 1)).requestFocus()
+        val card = cardsRow.getChildAt(index.coerceIn(0, n - 1))
+        card.requestFocus()
+        // Straight there on opening, once the cards are laid out: the one playing at the left, never out of sight.
+        afterLayout { glideTo(card, animate = false) }
+    }
+
+    /** Runs [action] once the row is laid out again, just before it's drawn. */
+    private fun afterLayout(action: () -> Unit) {
+        val observer = cardsScroll.viewTreeObserver
+        observer.addOnPreDrawListener(object : android.view.ViewTreeObserver.OnPreDrawListener {
+            override fun onPreDraw(): Boolean {
+                if (cardsScroll.viewTreeObserver.isAlive) cardsScroll.viewTreeObserver.removeOnPreDrawListener(this)
+                action()
+                return true
+            }
+        })
     }
 
     private fun buildCards() {
         val guide = guide ?: return
         cardsRow.removeAllViews()
+        glide?.cancel()
         cardsScroll.scrollTo(0, 0)
         guide.inSeason(season).forEach { ep -> cardsRow.addView(card(ep)) }
     }
@@ -422,11 +451,18 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
             thumb.elevation = if (has) dp(6).toFloat() else 0f
             v.animate().translationY(if (has) -dp(3).toFloat() else 0f).setDuration(140)
                 .setInterpolator(android.view.animation.DecelerateInterpolator()).start()
-            if (has) scrollToCard(v)
+            if (has) glideTo(v, animate = true)
         }
         card.setOnClickListener { onPlay(ep) }
-        card.setOnKeyListener { _, keyCode, event ->
-            if (keyCode == KeyEvent.KEYCODE_DPAD_UP) {
+        card.setOnKeyListener { v, keyCode, event ->
+            if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
+                // One card at a time, also while held; the row glides behind the chosen one.
+                if (event.action == KeyEvent.ACTION_DOWN) {
+                    val at = cardsRow.indexOfChild(v) + if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) -1 else 1
+                    cardsRow.getChildAt(at)?.requestFocus()
+                }
+                true
+            } else if (keyCode == KeyEvent.KEYCODE_DPAD_UP) {
                 if (event.action == KeyEvent.ACTION_DOWN) pills.firstOrNull { it.tag == season }?.requestFocus()
                 true
             } else keyCode == KeyEvent.KEYCODE_DPAD_DOWN
@@ -434,14 +470,20 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
         return card
     }
 
-    /** Keeps the chosen card a card's width in from the edge, so the next one shows. */
-    private fun scrollToCard(card: View) {
-        val margin = dp(CARD_W) / 2
-        val left = card.left - cardsScroll.scrollX
-        val right = card.right - cardsScroll.scrollX
-        when {
-            right > cardsScroll.width - margin -> cardsScroll.smoothScrollBy(right - (cardsScroll.width - margin), 0)
-            left < margin -> cardsScroll.smoothScrollBy(left - margin, 0)
+    /** Brings the chosen card to the row's left edge: a short glide from wherever the row is, or straight there. */
+    private fun glideTo(card: View, animate: Boolean) {
+        val target = (card.left - cardsRow.paddingLeft).coerceAtLeast(0)
+        glide?.cancel()
+        val from = cardsScroll.scrollX
+        if (!animate || from == target || !cardsScroll.isLaidOut) {
+            cardsScroll.scrollTo(target, 0)
+            return
+        }
+        glide = android.animation.ValueAnimator.ofInt(from, target).apply {
+            duration = GLIDE_MS
+            interpolator = android.view.animation.DecelerateInterpolator(1.6f)
+            addUpdateListener { cardsScroll.scrollTo(it.animatedValue as Int, 0) }
+            start()
         }
     }
 
@@ -473,6 +515,7 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
 
     private companion object {
         const val CARD_W = 210
+        private const val GLIDE_MS = 220L
         val MONTHS = listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
         /** The dark wash over the whole screen while the sheet is up. */
         const val SHADE = 0x66000000
