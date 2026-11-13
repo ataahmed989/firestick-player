@@ -232,6 +232,11 @@ class OffsetTracker(
     // Where the jump being settled landed, or -1; and where the heard film ended when [provisional] was put in.
     private var quickFromMs = -1L
     private var quickAtMs = -1L
+    // [provisional] is a guess that stood out once ([guess]): it goes when that guess does.
+    private var provisionalByGuess = false
+    /** The quick look's last undecided look in words, for the log (what it saw, so a slow one can be told why). */
+    var quickNote: String? = null
+        private set
     // Finding the first delay: the sentence starts' last look, for [progress].
     private var lastOnset: SyncMatcher.OnsetResult? = null
 
@@ -317,6 +322,11 @@ class OffsetTracker(
         ) {
             endQuick()
         }
+        // A guess put in use that's gone since (not borne out, or the film moved on): its delay goes with it.
+        if (provisionalByGuess && tried == null) {
+            provisionalByGuess = false
+            provisional = null
+        }
         return d
     }
 
@@ -378,6 +388,28 @@ class OffsetTracker(
                 return Decision(Outcome.NOT_SURE, segments, d, now, from, now, null, Double.NaN,
                     "quick look after a jump: ${SyncMatcher.formatShift(d - cur)} in use, to be confirmed ($o)")
             }
+            // Neither on all the film since the landing: the change may lie in it (a bumper just after the landing, or
+            // in the film as it plays: the talking before fits one delay, the talking after another). The latest of it
+            // alone, then: the delay in use fits that, or another does from there on.
+            var latest: SyncMatcher.OnsetResult? = null
+            if (now - from >= QUICK_RECENT_MS + QUICK_CONFIRM_MS) {
+                val rf = now - QUICK_RECENT_MS
+                latest = SyncMatcher.onsetMatch(tl, lines, rf, now, cur, QUICK_RANGE_MS, QUICK_MIN_ONSETS)
+                if (latest != null && quickKeeps(latest, cur)) {
+                    endQuick()
+                    return Decision(Outcome.KEPT, segments, cur, now, rf, now, null, Double.NaN, "quick look: the delay in use fits the latest film ($latest)")
+                }
+                if (latest != null && quickSwitches(latest, cur)) {
+                    val dl = latest.delayMs - QUICK_LATE_MS
+                    provisional = Segment(rf, dl)
+                    quickAtMs = now
+                    progress = 0
+                    return Decision(Outcome.NOT_SURE, segments, dl, now, rf, now, null, Double.NaN,
+                        "quick look, the latest film: ${SyncMatcher.formatShift(dl - cur)} in use from ${clock(rf)}, to be confirmed ($latest)")
+                }
+            }
+            quickNote = "undecided ${(now - from) / 1000} s after ${clock(from)}, delay in use ${SyncMatcher.formatShift(cur)}: all of it $o at-centre=${o.atCentre}" +
+                (latest?.let { "; the latest ${QUICK_RECENT_MS / 1000} s $it at-centre=${it.atCentre}" } ?: "")
             // Neither, with a fair stretch heard: further off than that reaches (an ad break cut in or out of the film
             // jumped over). The same sentence starts over [NEAR_MS], standing out as a first delay's must.
             if (now - from >= QUICK_WIDE_AFTER_MS) {
@@ -462,6 +494,7 @@ class OffsetTracker(
         quickFromMs = -1
         quickAtMs = -1
         provisional = null
+        provisionalByGuess = false
         progress = 0
     }
 
@@ -1045,6 +1078,14 @@ class OffsetTracker(
         val z = SyncMatcher.zAt(h, lines, best, cur, RANGE_MS)
         if (z < rules.z1) return null
         tried = Tried(best, seg.fromMs, b, now)
+        // The delay in use doesn't fit here and a jump the show makes does: in use at once, from where the timing may
+        // have changed (the jump's landing, or where the talking stopped fitting), while the talking since bears it
+        // out (it's in the map then) or doesn't (it goes: step's tail). Not on the film's own subtitles.
+        if (!clean && provisional == null) {
+            provisional = Segment(maxOf(if (suspectMs >= 0) suspectMs else b, seg.fromMs), best)
+            provisionalByGuess = true
+            quickAtMs = now
+        }
         return Decision(Outcome.NOT_SURE, segments, best, now, b, now, null, rHere,
             "tried first (${SyncMatcher.formatShift(best - cur)}), stands out once (z=${"%.1f".format(java.util.Locale.ROOT, z)})")
     }
@@ -1179,6 +1220,8 @@ class OffsetTracker(
         if (mostlyVerified(from, now)) return
         if (fitsLatest(tl, cur, from, now)) return
         hint(fitEnd(tl, cur, floor, now), Hint.MISFIT)
+        // Settled quickly too, near the delay in use, from where it stopped fitting ([quick]).
+        if (!clean && quickFromMs < 0 && provisional == null && suspectMs >= 0) quickFromMs = suspectMs
     }
 
     /** Whether [delay] fits the last minute and a half of [from]..[now]; true when there are too few lines or talking to say. */
@@ -1668,6 +1711,8 @@ class OffsetTracker(
         // With this much film heard and nothing said: the wider look, for a change beyond the quick reach.
         private const val QUICK_WIDE_AFTER_MS = 45_000L
         private const val QUICK_CONFIRM_MS = 15_000L
+        // The latest of the film since the landing, looked at on its own once there's more than it.
+        private const val QUICK_RECENT_MS = 45_000L
         private const val QUICK_REPLACE_MS = 500L
         // Quick looks go on for this much film after the landing (or after a delay was put in); most say within the
         // typical time (for the panel's percent, with the first half going to hearing enough to look at all).
