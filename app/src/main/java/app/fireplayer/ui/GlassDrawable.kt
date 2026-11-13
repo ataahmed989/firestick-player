@@ -187,7 +187,8 @@ class GlassDrawable(context: Context, val style: Glass.Kind, private val backdro
             val lower = if (topAlpha >= 1f) 0f else (a * (1f - f) / (1f - topAlpha)).coerceIn(0f, 1f)
             drawSource(canvas, under, lower)
             drawSource(canvas, top, a * f)
-            invalidateSelf()
+            // Held still while the D-pad moves round (see GlassBackdrop.navigating): drawn again when it carries on.
+            if (!bd.navigating) invalidateSelf()
         }
         bd.onGlassDrawn()
     }

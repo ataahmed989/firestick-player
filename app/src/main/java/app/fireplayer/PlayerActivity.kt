@@ -3385,6 +3385,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val code = event.keyCode
+        // Moving round with the D-pad: the glass holds still meanwhile, so the move gets the TV's full attention.
+        if (event.action == KeyEvent.ACTION_DOWN && (code == KeyEvent.KEYCODE_DPAD_LEFT || code == KeyEvent.KEYCODE_DPAD_RIGHT ||
+                code == KeyEvent.KEYCODE_DPAD_UP || code == KeyEvent.KEYCODE_DPAD_DOWN)) backdrop?.holdForNavigation()
         // A small window (a list of choices, a question) open over the screen takes the keys first.
         if (FireDialog.dispatch(this, event)) return true
         if (event.action == KeyEvent.ACTION_UP) {
