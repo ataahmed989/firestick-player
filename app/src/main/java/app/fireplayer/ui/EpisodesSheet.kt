@@ -83,9 +83,11 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
         orientation = LinearLayout.HORIZONTAL
         clipChildren = false
         clipToPadding = false
-        setPadding(dp(4), dp(8), dp(4), dp(6))
+        // Room below for the chosen card, which grows.
+        setPadding(dp(4), dp(8), dp(4), dp(20))
     }
-    // The row moves only as [glideTo] moves it: the chosen card stays at the left edge, like Glass Home's rows.
+    // Only lays the row out wider than the screen: it never scrolls itself. The row is moved by [motion] alone, the
+    // chosen card kept at the left edge like Glass Home's rows.
     private val cardsScroll = object : HorizontalScrollView(activity) {
         override fun computeScrollDeltaToGetChildRectOnScreen(rect: android.graphics.Rect?): Int = 0
     }.apply {
@@ -95,16 +97,17 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
         isFillViewport = false
         isSmoothScrollingEnabled = false
         addView(cardsRow)
-        // Room after the last card, so it too can come to the left edge.
-        addOnLayoutChangeListener { v, l, _, r, _, ol, _, or, _ ->
-            if (r - l != or - ol) {
-                val end = ((r - l) - dp(CARD_W) - cardsRow.paddingLeft).coerceAtLeast(dp(4))
-                if (cardsRow.paddingRight != end) cardsRow.setPadding(cardsRow.paddingLeft, cardsRow.paddingTop, end, cardsRow.paddingBottom)
-                (v.findFocus()?.takeIf { it.parent === cardsRow })?.let { card -> afterLayout { glideTo(card, animate = false) } }
-            }
-        }
+        addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyMotion() }
     }
-    private var glide: android.animation.ValueAnimator? = null
+
+    /*
+     * The row's motion, from two springs: where it is, as a card number (between two while it moves), and how far the
+     * chosen card is grown (0 while the season pills are chosen). Every card's size and place and the row's offset
+     * follow from those two each frame, so the row slides, the new card grows and the old one shrinks as one fluid
+     * movement that carries on smoothly from press to press.
+     */
+    private val at = Spring(omega = 14f, settle = 0.001f) { applyMotion() }
+    private val grown = Spring(omega = 16f, settle = 0.001f) { applyMotion() }
 
     private var guide: ShowGuide? = null
     private var playingId: String? = null
@@ -221,14 +224,18 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
         status.visibility = View.GONE
         val now = guide.episode(playing)
         if (firstTime || guide.seasons.none { it == season }) season = now?.season ?: guide.seasons.firstOrNull() ?: 0
+        // Shown again with a newer guide: the card chosen stays chosen, where it was.
+        val chosenCard = cardsRow.findFocus()?.let { f -> (0 until cardsRow.childCount).firstOrNull { cardsRow.getChildAt(it) === f || cardsRow.getChildAt(it).findFocus() === f } }
         buildPills()
         buildCards()
         if (firstTime) {
             val list = guide.inSeason(season)
-            val at = list.indexOfFirst { it.id == playing }
+            val playingAt = list.indexOfFirst { it.id == playing }
             // The episode playing (Ahmed's choice over Netflix's "the one after").
-            focusCard(if (at < 0) 0 else at)
+            focusCard(if (playingAt < 0) 0 else playingAt, jump = true)
             root.isFocusable = false
+        } else if (chosenCard != null) {
+            focusCard(chosenCard, jump = true)
         }
     }
 
@@ -236,6 +243,10 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
         if (!isOpen) return
         root.animate().cancel()
         root.visibility = View.GONE
+        root.removeCallbacks(buildLater)
+        buildPending = false
+        at.stop()
+        grown.stop()
         cardsRow.removeAllViews()
         seasonsRow.removeAllViews()
         pills.clear()
@@ -273,7 +284,7 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
                 if (has && season != s) {
                     season = s
                     pills.forEach { stylePill(it, it.isFocused) }
-                    buildCards()
+                    buildCardsSoon()
                 }
             }
             pill.setOnClickListener { focusCard(0) }
@@ -334,13 +345,60 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
 
     private fun playingIndex(): Int = guide?.inSeason(season)?.indexOfFirst { it.id == playingId } ?: -1
 
-    private fun focusCard(index: Int) {
+    /** Chooses card [index]: straight there with [jump] (opening the sheet), else gliding from where the row is. */
+    private fun focusCard(index: Int, jump: Boolean = false) {
+        flushCards()
         val n = cardsRow.childCount
         if (n == 0) return
-        val card = cardsRow.getChildAt(index.coerceIn(0, n - 1))
-        card.requestFocus()
-        // Straight there on opening, once the cards are laid out: the one playing at the left, never out of sight.
-        afterLayout { glideTo(card, animate = false) }
+        val i = index.coerceIn(0, n - 1)
+        if (jump) {
+            // The one playing at the left, grown, never out of sight; placed again once the cards are laid out.
+            at.snap(i.toFloat())
+            grown.snap(1f)
+            afterLayout { applyMotion() }
+        }
+        cardsRow.getChildAt(i).requestFocus()
+    }
+
+    /** Sizes and places every card, and the row, for where the springs are now. */
+    private fun applyMotion() {
+        val n = cardsRow.childCount
+        if (n == 0) return
+        val f = at.value.coerceIn(0f, (n - 1).toFloat())
+        val g = grown.value.coerceIn(0f, 1f)
+        val i0 = kotlin.math.floor(f).toInt()
+        val frac = f - i0
+        val l0 = cardsRow.getChildAt(i0).left
+        val l1 = cardsRow.getChildAt(minOf(i0 + 1, n - 1)).left
+        // Float offsets, not scrollTo's whole pixels: the slide is drawn between pixels too.
+        cardsRow.translationX = -(l0 + (l1 - l0) * frac - cardsRow.paddingLeft)
+        val extra = dp(CARD_W) * GROW
+        for (i in 0 until n) {
+            val card = cardsRow.getChildAt(i)
+            val share = (1f - kotlin.math.abs(i - f)).coerceIn(0f, 1f) * g
+            val s = 1f + GROW * share
+            card.scaleX = s
+            card.scaleY = s
+            // Cards after the grown one make room for it.
+            card.translationX = extra * g * (i - f).coerceIn(0f, 1f)
+            (card.tag as? View)?.alpha = share
+        }
+    }
+
+    // Moving across the season pills: the cards are made once it rests on one, not for each pill passed.
+    private val buildLater = Runnable { buildCards() }
+    private var buildPending = false
+
+    private fun buildCardsSoon() {
+        buildPending = true
+        root.removeCallbacks(buildLater)
+        root.postDelayed(buildLater, SEASON_SETTLE_MS)
+    }
+
+    private fun flushCards() {
+        if (!buildPending) return
+        root.removeCallbacks(buildLater)
+        buildCards()
     }
 
     /** Runs [action] once the row is laid out again, just before it's drawn. */
@@ -356,11 +414,14 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
     }
 
     private fun buildCards() {
+        buildPending = false
         val guide = guide ?: return
         cardsRow.removeAllViews()
-        glide?.cancel()
         cardsScroll.scrollTo(0, 0)
+        at.snap(0f)
+        grown.snap(0f)
         guide.inSeason(season).forEach { ep -> cardsRow.addView(card(ep)) }
+        afterLayout { applyMotion() }
     }
 
     private fun card(ep: ShowGuide.Ep): View {
@@ -446,12 +507,20 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
             }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(4) })
         }
 
+        // Grows from its left edge and the middle of its picture; the ring fades in as it grows (see applyMotion).
+        card.pivotX = 0f
+        card.pivotY = thumbH / 2f
+        ring.visibility = View.VISIBLE
+        ring.alpha = 0f
+        card.tag = ring
         card.setOnFocusChangeListener { v, has ->
-            ring.visibility = if (has) View.VISIBLE else View.INVISIBLE
-            thumb.elevation = if (has) dp(6).toFloat() else 0f
-            v.animate().translationY(if (has) -dp(3).toFloat() else 0f).setDuration(140)
-                .setInterpolator(android.view.animation.DecelerateInterpolator()).start()
-            if (has) glideTo(v, animate = true)
+            if (has) {
+                at.glideTo(cardsRow.indexOfChild(v).toFloat())
+                grown.glideTo(1f)
+            } else {
+                // Gone up to the seasons: the card shrinks back; to the next card, that one takes over at once.
+                v.post { if (isOpen && cardsRow.findFocus() == null) grown.glideTo(0f) }
+            }
         }
         card.setOnClickListener { onPlay(ep) }
         card.setOnKeyListener { v, keyCode, event ->
@@ -468,23 +537,6 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
             } else keyCode == KeyEvent.KEYCODE_DPAD_DOWN
         }
         return card
-    }
-
-    /** Brings the chosen card to the row's left edge: a short glide from wherever the row is, or straight there. */
-    private fun glideTo(card: View, animate: Boolean) {
-        val target = (card.left - cardsRow.paddingLeft).coerceAtLeast(0)
-        glide?.cancel()
-        val from = cardsScroll.scrollX
-        if (!animate || from == target || !cardsScroll.isLaidOut) {
-            cardsScroll.scrollTo(target, 0)
-            return
-        }
-        glide = android.animation.ValueAnimator.ofInt(from, target).apply {
-            duration = GLIDE_MS
-            interpolator = android.view.animation.DecelerateInterpolator(1.6f)
-            addUpdateListener { cardsScroll.scrollTo(it.animatedValue as Int, 0) }
-            start()
-        }
     }
 
     private fun badge(label: String, textColor: Int, fill: Int) = text(10f, font700, textColor).apply {
@@ -515,7 +567,9 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
 
     private companion object {
         const val CARD_W = 210
-        private const val GLIDE_MS = 220L
+        // How much bigger the chosen card is.
+        private const val GROW = 0.12f
+        private const val SEASON_SETTLE_MS = 160L
         val MONTHS = listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
         /** The dark wash over the whole screen while the sheet is up. */
         const val SHADE = 0x66000000
