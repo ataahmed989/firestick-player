@@ -232,8 +232,10 @@ class OffsetTracker(
     // Where the jump being settled landed, or -1; and where the heard film ended when [provisional] was put in.
     private var quickFromMs = -1L
     private var quickAtMs = -1L
-    // [provisional] is a guess that stood out once ([guess]): it goes when that guess does.
+    // [provisional] is a guess that stood out once ([guess]): it goes when that guess does; and the last one put in
+    // and taken out again (not put in a second time where the film is; forgotten at the next jump).
     private var provisionalByGuess = false
+    private var guessTakenOutMs = Long.MIN_VALUE
     /** Where the film heard last fitted the delay in use well, by the watch kept every full step (for the panel); -1 before. */
     var fitsAtMs = -1L
         private set
@@ -328,6 +330,7 @@ class OffsetTracker(
         // A guess put in use that's gone since (not borne out, or the film moved on): its delay goes with it.
         if (provisionalByGuess && tried == null) {
             provisionalByGuess = false
+            guessTakenOutMs = provisional?.delayMs ?: guessTakenOutMs
             provisional = null
         }
         return d
@@ -572,6 +575,7 @@ class OffsetTracker(
             if (map.isEmpty()) learnAgain() else {
                 jumpChecks++
                 jumpedToMs = toMs
+                guessTakenOutMs = Long.MIN_VALUE
                 // Fitting the delay exactly never goes by talking from both sides of a jump.
                 polishFromMs = -1
                 // Settled quickly, near the delay in use ([quick]); one from a landing before this isn't this film's.
@@ -1099,7 +1103,9 @@ class OffsetTracker(
         // The delay in use doesn't fit here and a jump the show makes does: in use at once, from where the timing may
         // have changed (the jump's landing, or where the talking stopped fitting), while the talking since bears it
         // out (it's in the map then) or doesn't (it goes: step's tail). Not on the film's own subtitles.
-        if (!clean && provisional == null) {
+        // Only a jump worth it: under a second the lines are near enough meanwhile, and a guess put in and taken out
+        // again moves them twice for nothing. Nor the guess that was just put in and not borne out.
+        if (!clean && provisional == null && abs(best - cur) >= GUESS_AT_ONCE_MS && best != guessTakenOutMs) {
             provisional = Segment(maxOf(if (suspectMs >= 0) suspectMs else b, seg.fromMs), best)
             provisionalByGuess = true
             quickAtMs = now
@@ -1739,6 +1745,8 @@ class OffsetTracker(
         private const val QUICK_CONFIRM_MS = 15_000L
         // The latest of the film since the landing, looked at on its own once there's more than it.
         private const val QUICK_RECENT_MS = 45_000L
+        // A guess is put in use the first time it stands out only when it moves the lines by this much or more.
+        private const val GUESS_AT_ONCE_MS = 1_000L
         // The watch on the latest film says "fits well" from this much of a fit on (as a sure match must have).
         private const val WATCH_R = 0.15
         private const val QUICK_REPLACE_MS = 500L

@@ -157,7 +157,8 @@ class ReplayStreamTest {
         read(stream)
         stream.replayFrom(350 * sec, ReplayStream.LONG_LOOKBACK_US)
         val got = read(stream)
-        assertEquals(lines(350 downTo 50) + lines(351..400), got)
+        // The ones that may be showing and the ones coming up first; the older ones after.
+        assertEquals(lines(350 downTo 320) + lines(351..400) + lines(319 downTo 50), got)
     }
 
     @Test
