@@ -234,6 +234,9 @@ class OffsetTracker(
     private var quickAtMs = -1L
     // [provisional] is a guess that stood out once ([guess]): it goes when that guess does.
     private var provisionalByGuess = false
+    /** Where the film heard last fitted the delay in use well, by the watch kept every full step (for the panel); -1 before. */
+    var fitsAtMs = -1L
+        private set
     /** The quick look's last undecided look in words, for the log (what it saw, so a slow one can be told why). */
     var quickNote: String? = null
         private set
@@ -1233,7 +1236,15 @@ class OffsetTracker(
         // The delay in use no longer fits the last minute and a half, though there were lines and talking in it.
         val from = maxOf(floor, now - misfitWindowMs)
         if (mostlyVerified(from, now)) return
-        if (fitsLatest(tl, cur, from, now)) return
+        if (fitsLatest(tl, cur, from, now)) {
+            // For the panel only: judged on lines and talking enough, and fitting well (nothing is decided by it).
+            val a = maxOf(from, now - misfitWindowMs)
+            if (lines.onScreen(cur, a, now) >= misfitLines && talkingMs(tl, a, now) >= MISFIT_TALK_MS) {
+                val h = SyncMatcher.heard(tl.speech, tl.heard, frame(a), frame(now) + 1)
+                if (h != null && SyncMatcher.rAt(h, lines, cur) >= WATCH_R) fitsAtMs = now
+            }
+            return
+        }
         hint(fitEnd(tl, cur, floor, now), Hint.MISFIT)
         // Settled quickly too, near the delay in use, from where it stopped fitting ([quick]).
         if (!clean && quickFromMs < 0 && provisional == null && suspectMs >= 0) quickFromMs = suspectMs
@@ -1687,7 +1698,7 @@ class OffsetTracker(
         /** Matching that costs (searching every shift) is looked at no more often than this. */
         const val FULL_STEP_MS = 15_000L
         /** Without a hint, a check every this much film. */
-        const val PERIOD_MS = 60_000L
+        const val PERIOD_MS = 3 * 60_000L
         /** The most film one check matches: its cost is this × the shifts tried. */
         const val WINDOW_MS = 4 * 60_000L
         /** While learning the first delay: the most film matched, and how long to try. */
@@ -1728,6 +1739,8 @@ class OffsetTracker(
         private const val QUICK_CONFIRM_MS = 15_000L
         // The latest of the film since the landing, looked at on its own once there's more than it.
         private const val QUICK_RECENT_MS = 45_000L
+        // The watch on the latest film says "fits well" from this much of a fit on (as a sure match must have).
+        private const val WATCH_R = 0.15
         private const val QUICK_REPLACE_MS = 500L
         // Quick looks go on for this much film after the landing (or after a delay was put in); most say within the
         // typical time (for the panel's percent, with the first half going to hearing enough to look at all).
