@@ -174,6 +174,44 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
             if (value) startTicking(now) else scheduleCapture(CHANGE_DELAY_MS)
         }
 
+    /**
+     * True for a moment after each D-pad press ([holdForNavigation]): the glass holds still, with no new copies and
+     * no fades, so moving round the controls, windows and Episodes has the TV's full attention and doesn't stutter.
+     * The pictures don't age meanwhile; a fresh copy comes once the presses stop.
+     */
+    var navigating = false
+        private set
+    private var navigatingSince = 0L
+
+    fun holdForNavigation() {
+        val now = SystemClock.uptimeMillis()
+        if (!navigating) {
+            navigating = true
+            navigatingSince = now
+            main.removeCallbacks(captureRunnable)
+            capturePending = false
+        }
+        main.removeCallbacks(endNavigation)
+        main.postAtTime(endNavigation, now + NAV_HOLD_MS)
+    }
+
+    private val endNavigation = Runnable {
+        if (!navigating) return@Runnable
+        val now = SystemClock.uptimeMillis()
+        val held = now - navigatingSince
+        navigating = false
+        // The fade carries on from where it stood, and the picture shown counts as no older than when the hold began.
+        if (fadeStart > 0L) fadeStart += held
+        if (playing && capturedAt > 0L) capturedAt += held
+        if (!started) return@Runnable
+        scheduleExpiry()
+        invalidateAll()
+        if (anyVisible()) {
+            if (playing) startTicking(now)
+            scheduleCapture(0L)
+        }
+    }
+
     /** True while the TV changes its refresh rate: no copies then, the screen is blank and timing is measured. */
     var suspended = false
         set(value) {
@@ -228,6 +266,8 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
         main.removeCallbacks(probeTick)
         main.removeCallbacks(probeWatchdog)
         main.removeMessages(MSG_PROBED)
+        main.removeCallbacks(endNavigation)
+        navigating = false
         ticking = false
         inFlight = false
         probeLooping = false
@@ -262,7 +302,8 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
     fun fadeFraction(): Float {
         if (fadeStart == 0L) return 1f
         val length = if (fastFade) CUT_FADE_MS.toFloat() else crossfadeMs
-        val f = (SystemClock.uptimeMillis() - fadeStart).toFloat() / length
+        val clock = if (navigating) navigatingSince else SystemClock.uptimeMillis()
+        val f = (clock - fadeStart).toFloat() / length
         if (f >= 1f) return 1f
         if (f <= 0f) return 0f
         // Eased at both ends, so one fade flows into the next without a visible start or stop.
@@ -286,9 +327,11 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
 
     private fun copiesPossible() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && !disabled
 
-    private fun canCapture() = started && copiesPossible() && !suspended && !waitingForSurface && !blocked
+    private fun canCapture() = started && copiesPossible() && !suspended && !waitingForSurface && !blocked && !navigating
 
-    private fun drawableAt(time: Long): Boolean {
+    private fun drawableAt(at: Long): Boolean {
+        // Held still while the D-pad moves round: as it was when the hold began.
+        val time = if (navigating) minOf(at, navigatingSince) else at
         if (frames[0] == null) return false
         if (!valid && time >= holdUntil) return false
         // Playing, the picture moves on; paused, a copy taken since the pause stays right.
@@ -438,6 +481,8 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
 
     /** A picture that's too old or out of date: glass showing it fades to the dark fill, and it's forgotten. */
     private val expiry = Runnable {
+        // Looked at again when the hold ends.
+        if (navigating) return@Runnable
         val now = SystemClock.uptimeMillis()
         if (frames[0] != null && !drawableAt(now)) {
             dropFrames(fade = drawableAt(expiryAt - 1) && anyVisible(), now = now)
@@ -1041,6 +1086,8 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
         const val MIN_GAP_MS = 100L
         const val CHANGE_DELAY_MS = 150L
         const val HOLD_MS = 1_000L
+        /** How long the glass holds still after the last D-pad press. */
+        const val NAV_HOLD_MS = 600L
         const val NO_DATA_RETRY_MS = 500L
         const val NO_DATA_TRIES = 3
         const val WATCHDOG_MS = 5_000L

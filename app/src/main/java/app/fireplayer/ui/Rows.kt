@@ -1,6 +1,5 @@
 package app.fireplayer.ui
 
-import android.animation.ValueAnimator
 import android.content.Context
 import android.content.res.ColorStateList
 import android.graphics.Rect
@@ -15,7 +14,6 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewTreeObserver
-import android.view.animation.DecelerateInterpolator
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -34,7 +32,8 @@ class CenterScrollView @JvmOverloads constructor(
 ) : ScrollView(context, attrs) {
 
     private val rect = Rect()
-    private var glide: ValueAnimator? = null
+    // Our own glide: keeps its speed from one press to the next, so a held D-pad scrolls in one smooth run.
+    private val glide = Spring(omega = 20f) { scrollTo(0, it.toInt()) }
 
     /** The tallest the list may grow, in pixels; 0 means no limit. */
     var maxHeight = 0
@@ -64,7 +63,7 @@ class CenterScrollView @JvmOverloads constructor(
     }
 
     override fun onDetachedFromWindow() {
-        glide?.cancel()
+        glide.stop()
         super.onDetachedFromWindow()
     }
 
@@ -83,18 +82,13 @@ class CenterScrollView @JvmOverloads constructor(
         val content = getChildAt(0)?.height ?: 0
         val maxScroll = (content - (height - paddingTop - paddingBottom)).coerceAtLeast(0)
         val target = (rect.centerY() - height / 2).coerceIn(0, maxScroll)
-        glide?.cancel()
         if (!animate || target == scrollY) {
-            scrollTo(0, target)
+            glide.snap(target.toFloat())
             return
         }
-        // Our own glide: ScrollView's smooth scroll jumps instead when presses come quickly.
-        glide = ValueAnimator.ofInt(scrollY, target).apply {
-            duration = 180
-            interpolator = DecelerateInterpolator()
-            addUpdateListener { scrollTo(0, it.animatedValue as Int) }
-            start()
-        }
+        // From where it is now (a scroll by other means since moves the start too).
+        if (kotlin.math.abs(glide.value - scrollY) >= 1f) glide.snap(scrollY.toFloat())
+        glide.glideTo(target.toFloat())
     }
 }
 
