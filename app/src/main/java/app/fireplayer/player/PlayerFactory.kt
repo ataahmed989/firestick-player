@@ -695,8 +695,9 @@ private class DelayRenderersFactory(
 
     private fun wrap(renderer: Renderer): Renderer = when {
         renderer is AssRenderer -> AssOffsetRenderer(renderer, delays)
+        // The lines a delay above zero would make the renderer miss are handed to it again ([TextOffsetRenderer]).
         renderer.trackType == C.TRACK_TYPE_TEXT ->
-            OffsetRenderer(renderer) { -delays.subtitleUs }
+            TextOffsetRenderer(renderer) { -delays.subtitleUs }
         renderer.trackType == C.TRACK_TYPE_VIDEO ->
             OffsetRenderer(renderer) { delays.audioUs }
         else -> renderer
