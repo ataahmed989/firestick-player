@@ -17,7 +17,7 @@ jobs:
       # Builds made outside GitHub reached 1.0.70 while this was at 63: numbered past them, so every
       # release here installs over what the TVs have
       - name: Build number
-        run: echo "BUILD_NUMBER=$(( ${{ github.run_number }} + 10 ))" >> "$GITHUB_ENV"
+        run: echo "BUILD_NUMBER=$(( ${{ github.run_number }} + 13 ))" >> "$GITHUB_ENV"
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

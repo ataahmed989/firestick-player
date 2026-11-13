@@ -898,6 +898,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     private fun mediaItem(entry: Entry): MediaItem {
+        // The subtitle files by track id, for the text renderer: it reads a file's lines itself as well, so the ones
+        // from before where the film is are there after a rewind (see TextOffsetRenderer).
+        // (Added to the ones known: every video in the list comes through here, and each track id is used once.)
+        delays.textFiles = delays.textFiles + entry.subtitles.mapNotNull { s ->
+            val id = s.id ?: return@mapNotNull null
+            val path = s.uri.takeIf { it.scheme == "file" }?.path ?: return@mapNotNull null
+            id to (path to (s.mimeType ?: MimeTypes.APPLICATION_SUBRIP))
+        }
         val builder = MediaItem.Builder()
             .setUri(entry.uri)
             .setMediaId(entry.key)
