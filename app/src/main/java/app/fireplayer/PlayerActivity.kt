@@ -4631,6 +4631,31 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         edit.putString(key, text).apply()
     }
 
+    /** A title's name as copies of it are matched: letters and digits only, no year ("missionimpossiblefallout"). */
+    private fun nameKey(title: String): String =
+        title.replace(YEAR_IN_NAME, "").lowercase(Locale.ROOT).filter { it.isLetterOrDigit() }
+
+    /**
+     * Copies of [entry]'s title played before, on any playlist, from FirePlayer's own record of everything played: the
+     * same TMDB id, or the same name (and year, when both have one); for an episode the same season and number. Blocks.
+     */
+    private fun playedCopies(entry: Entry, tmdbId: Int): List<Copies.Copy> {
+        val title = entry.english?.title ?: entry.info.title
+        val name = nameKey(title)
+        val year = YEAR_IN_NAME.find(title)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+        val season = entry.info.season ?: 0
+        val episode = entry.info.episode ?: 0
+        return ContinueWatching.played(this).mapNotNull { r ->
+            val same = (tmdbId > 0 && r.tmdbId == tmdbId) ||
+                (name.isNotEmpty() && nameKey(r.title) == name && (year == 0 || r.year == 0 || r.year == year))
+            if (!same || r.season != season || r.episode != episode) return@mapNotNull null
+            val uri = Uri.parse(r.resume.uri)
+            val raw = r.resume.title ?: r.title
+            Copies.Copy(raw, uri, measuredQuality(uri), false, NextEpisode.portal(uri).orEmpty(),
+                app.fireplayer.titles.Quality.of(raw, null))
+        }
+    }
+
     // How the copy playing has played in this play (see CopyHealth), for which link, and since when it's been playing
     // or waiting to load; what earlier plays had made of it.
     private var health = CopyHealth()
@@ -4734,7 +4759,20 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         copiesIo.execute {
             val found = runCatching {
                 val finder = Copies(book(), headersFromIntent()) { measuredQuality(it) }
-                if (show) seriesId?.let { finder.ofEpisode(uri, it) }.orEmpty() else finder.ofFilm(uri)
+                // A playlist that doesn't go through the title server isn't in its book: the title's TMDB id by name.
+                val direct = TitleProxy.serverIn(uri) == null
+                val titleTmdb = if (show) showTmdb else if (tmdb.isConfigured) runCatching { filmTmdbId(entry) }.getOrDefault(0) else 0
+                val listed = if (show) seriesId?.let { finder.ofEpisode(uri, it, if (direct) showTmdb else 0) }.orEmpty()
+                else finder.ofFilm(uri, if (direct) titleTmdb else 0)
+                // Copies played before, from any playlist, that the lists didn't bring.
+                val here = qualityKey(uri)
+                val listedKeys = listed.mapNotNull { qualityKey(it.uri) }.toSet()
+                val played = playedCopies(entry, if (show) 0 else titleTmdb)
+                    .filter { c -> qualityKey(c.uri).let { it != null && it != here && it !in listedKeys } }
+                    .distinctBy { qualityKey(it.uri) }
+                if (listed.isEmpty() && played.isEmpty()) emptyList()
+                else (listed.ifEmpty { listOf(Copies.Copy(entry.rawTitle.orEmpty(), uri, measuredQuality(uri), true,
+                    NextEpisode.portal(uri).orEmpty())) }) + played
             }
             val original = if (!tmdb.isConfigured) null else runCatching {
                 val id = if (show) showTmdb else filmTmdbId(entry)
@@ -4746,7 +4784,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 copiesOriginal = original
                 copiesStatus = when {
                     found.isFailure -> "Couldn't ask the provider just now."
-                    copyList.isNullOrEmpty() -> "Only titles listed through FirePlayer's title server can be compared."
+                    copyList.isNullOrEmpty() -> "Copies are found on playlists TiviMate reaches through FirePlayer's title server."
                     else -> null
                 }
                 // Asked again next time, rather than kept as it went.
@@ -4815,7 +4853,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val best = v?.verdict?.best
         when {
             v == null -> actionRow(if (copiesStatus == LOADING) "Finding other copies…" else "No other copies to compare", null,
-                "Best", Rows.Badge.INACTIVE) {}
+                "—", Rows.Badge.INACTIVE) {}
             best == null -> actionRow("Best copy not known yet",
                 if (v.list.size > 1) "Play another copy for a minute and FirePlayer measures it." else null, "—", Rows.Badge.INACTIVE) {}
             best == v.current -> actionRow("You're on the best copy", v.verdict!!.reasons.firstOrNull()?.replaceFirstChar { it.uppercase() },

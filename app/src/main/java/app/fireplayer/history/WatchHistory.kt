@@ -127,6 +127,9 @@ class WatchHistory(records: List<Record> = emptyList()) {
     /** The rows, newest first. */
     fun rows(): List<Row> = records.filter { it.shown }.map { it.row() }
 
+    /** Every film and episode played, newest first, shown in Continue Watching or not. */
+    fun played(): List<Record> = records.toList()
+
     fun record(id: String): Record? = records.firstOrNull { it.id == id }
 
     /** Notes what was watched; true when the rows changed. [newId] names an entry seen for the first time. */

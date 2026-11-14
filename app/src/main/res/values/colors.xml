@@ -9,6 +9,8 @@
     <color name="row_fill">#E61A1E24</color>
     <!-- A row that keeps its dark look when selected (Picture & sound's top button), a little lighter than a row. -->
     <color name="action_focus_fill">#F22A303A</color>
+    <!-- The same with the glass look: the glass stays, a shade darker. -->
+    <color name="action_focus_dim">#47000000</color>
     <color name="panel_fill">#D60B0E12</color>
     <color name="panel_stroke">#1FFFFFFF</color>
     <color name="chip_fill">#26FFFFFF</color>
