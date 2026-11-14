@@ -142,6 +142,9 @@ object ContinueWatching {
         }
     }
 
+    /** Every film and episode played, newest first: what's known of each, and its link (login and all). */
+    fun played(context: Context): List<WatchHistory.Record> = synchronized(lock) { current(context.applicationContext).played() }
+
     /**
      * The rows, newest first. Those without a TMDB id (noted before one could be found) are looked up meanwhile
      * ([lookUp]): not here, as Glass Home waits for the rows.

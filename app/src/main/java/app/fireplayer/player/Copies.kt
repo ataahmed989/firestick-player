@@ -38,12 +38,15 @@ class Copies(
 
     private val account = XtreamAccount(headers)
 
-    /** The film at [uri] and its other copies; empty when they can't be looked up. */
-    fun ofFilm(uri: Uri): List<Copy> {
-        val server = TitleProxy.serverIn(uri) ?: return emptyList()
+    /**
+     * The film at [uri] and its other copies; empty when they can't be looked up. [tmdbFallback]: its TMDB id as found by
+     * name, for a film the title book doesn't know (one whose playlist doesn't go through the title server).
+     */
+    fun ofFilm(uri: Uri, tmdbFallback: Int = 0): List<Copy> {
+        val server = serverOf(uri) ?: return emptyList()
         val id = idIn(uri) ?: return emptyList()
         val known = book.about(server, TitleBook.Kind.MOVIE, id)
-        val tmdb = known?.tmdb ?: 0
+        val tmdb = known?.tmdb?.takeIf { it > 0 } ?: tmdbFallback
         // By TMDB id, and by the English name and year TMDB gave: a copy matched to another id is still found.
         val byTitle = known?.title?.let { book.copiesByTitle(TitleBook.Kind.MOVIE, it, known.year) }.orEmpty()
         val listed = (book.copies(TitleBook.Kind.MOVIE, tmdb) + byTitle).distinctBy { it.server to it.id }
@@ -65,11 +68,11 @@ class Copies(
     }
 
     /** The episode at [uri] of show [seriesId], and the same episode in the other copies of the show, on every playlist. */
-    fun ofEpisode(uri: Uri, seriesId: String): List<Copy> {
-        val server = TitleProxy.serverIn(uri) ?: return emptyList()
+    fun ofEpisode(uri: Uri, seriesId: String, tmdbFallback: Int = 0): List<Copy> {
+        val server = serverOf(uri) ?: return emptyList()
         val episodeId = idIn(uri)?.toString() ?: return emptyList()
         val show = seriesId.toIntOrNull() ?: return emptyList()
-        val tmdb = book.about(server, TitleBook.Kind.SHOW, show)?.tmdb ?: 0
+        val tmdb = book.about(server, TitleBook.Kind.SHOW, show)?.tmdb?.takeIf { it > 0 } ?: tmdbFallback
         val here = episodes(uri, seriesId) ?: return emptyList()
         val mine = here.firstOrNull { it.id == episodeId } ?: return emptyList()
         val listed = book.copies(TitleBook.Kind.SHOW, tmdb)
@@ -95,12 +98,19 @@ class Copies(
      * title server with that playlist's login, or null when it isn't known yet.
      */
     private fun onPlaylist(current: Uri, server: String, kind: String): Uri? {
-        if (server == TitleProxy.serverIn(current)) return current
+        if (server == serverOf(current)) return current
         val (user, pass) = book.login(server) ?: return null
-        return current.buildUpon()
+        return Uri.parse("http://127.0.0.1:${TitleProxy.PORT}").buildUpon()
             .encodedPath("/$server/$kind/${Uri.encode(user)}/${Uri.encode(pass)}/0.${extensionIn(current)}")
             .build()
     }
+
+    /**
+     * The playlist a link plays from, as the title book names it: through the title server, the server it stands for;
+     * a provider's own link ("http://example.tv:80/movie/…"), its address.
+     */
+    private fun serverOf(uri: Uri): String? =
+        TitleProxy.serverIn(uri) ?: uri.encodedAuthority?.substringAfterLast('@')?.takeIf { XtreamAccount.login(uri) != null }
 
     /** The provider's description, with what FirePlayer measured standing in for what it didn't say. */
     private fun best(provider: MediaSpec?, seen: MediaSpec?): MediaSpec? = when {

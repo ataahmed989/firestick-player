@@ -387,10 +387,9 @@ class SidePanel(private val activity: Activity) {
         return row
     }
 
-    /** A small gray pill with a blue tick: all of it done. */
-    fun tickPill(): TextView = rows.badge("✓", Rows.Badge.INACTIVE).apply {
+    /** A small blue pill with a white tick, as the "Active" pills: all of it done. */
+    fun tickPill(): TextView = rows.badge("✓", Rows.Badge.ACTIVE).apply {
         minWidth = rows.dp(26)
-        setTextColor(ContextCompat.getColorStateList(activity, R.color.sel_value_on))
         contentDescription = "All checked"
     }
 
@@ -400,18 +399,33 @@ class SidePanel(private val activity: Activity) {
      */
     fun actionRow(label: String, note: String?, badge: String, style: Rows.Badge, onClick: () -> Unit): View {
         val row = rows.base()
-        // Selected, it keeps its dark fill with a blue outline instead of turning white, so its blue or gray pill and
-        // its words stay as they are.
+        // Selected, it doesn't turn white, so its blue or gray pill and its words stay as they are: with the glass look
+        // it stays glass, dimmed, with a blue outline; without it, a dark fill with a blue outline.
         val d = rows.density
-        row.background = android.graphics.drawable.StateListDrawable().apply {
-            setEnterFadeDuration(140)
-            setExitFadeDuration(140)
-            addState(intArrayOf(android.R.attr.state_focused), android.graphics.drawable.GradientDrawable().apply {
-                cornerRadius = 9 * d
-                setColor(ContextCompat.getColor(activity, R.color.action_focus_fill))
-                setStroke(rows.dp(2), ContextCompat.getColor(activity, R.color.accent))
-            })
-            row.background?.let { addState(intArrayOf(), it) }
+        val focused = intArrayOf(android.R.attr.state_focused)
+        val outline = android.graphics.drawable.GradientDrawable().apply {
+            cornerRadius = 9 * d
+            setColor(ContextCompat.getColor(activity, if (Glass.on) R.color.action_focus_dim else R.color.action_focus_fill))
+            setStroke(rows.dp(2), ContextCompat.getColor(activity, R.color.accent))
+        }
+        val plain = row.background
+        row.background = if (Glass.on && plain != null) {
+            android.graphics.drawable.LayerDrawable(arrayOf(
+                Unfocused(plain),
+                android.graphics.drawable.StateListDrawable().apply {
+                    setEnterFadeDuration(140)
+                    setExitFadeDuration(140)
+                    addState(focused, outline)
+                    addState(intArrayOf(), android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT))
+                },
+            ))
+        } else {
+            android.graphics.drawable.StateListDrawable().apply {
+                setEnterFadeDuration(140)
+                setExitFadeDuration(140)
+                addState(focused, outline)
+                plain?.let { addState(intArrayOf(), it) }
+            }
         }
         val white = ContextCompat.getColor(activity, R.color.text)
         val column = LinearLayout(activity).apply {
@@ -481,6 +495,25 @@ class SidePanel(private val activity: Activity) {
         row.setOnClickListener { onClick() }
         add(row, groupable = false)
         return row
+    }
+
+    /** [inner] as it looks unselected, whatever the row's state: the glass under [actionRow]'s dimmed outline. */
+    private class Unfocused(private val inner: android.graphics.drawable.Drawable) : android.graphics.drawable.Drawable() {
+        override fun draw(canvas: android.graphics.Canvas) = inner.draw(canvas)
+        override fun onBoundsChange(bounds: android.graphics.Rect) { inner.bounds = bounds }
+        override fun setAlpha(alpha: Int) { inner.alpha = alpha }
+        override fun setColorFilter(colorFilter: android.graphics.ColorFilter?) { inner.colorFilter = colorFilter }
+        @Deprecated("Deprecated in Java")
+        override fun getOpacity(): Int = android.graphics.PixelFormat.TRANSLUCENT
+        override fun isStateful(): Boolean = false
+        init {
+            // It redraws as the glass behind it changes.
+            inner.callback = object : Callback {
+                override fun invalidateDrawable(who: android.graphics.drawable.Drawable) = invalidateSelf()
+                override fun scheduleDrawable(who: android.graphics.drawable.Drawable, what: Runnable, `when`: Long) = scheduleSelf(what, `when`)
+                override fun unscheduleDrawable(who: android.graphics.drawable.Drawable, what: Runnable) = unscheduleSelf(what)
+            }
+        }
     }
 
     /** A picture from TMDB, [w] by [h] dp with [corner] dp corners, on a faint fill while it loads (or has none). */
