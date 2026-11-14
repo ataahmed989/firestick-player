@@ -3,28 +3,28 @@ package app.fireplayer.player
 import java.util.Locale
 
 /**
- * Which copies have the sound the viewer wants: their own language for a film made in it (or when nobody says what it
- * was made in), and otherwise the film's own language, watched with subtitles. What a copy has comes from its tracks
- * once FirePlayer has played it, else from the language tag the provider puts in front of its name ("|FR| …").
+ * Which copies have the sound the viewer wants: their own language always, and for a film made in another language its
+ * own language too (watched with subtitles), either one as good. What a copy has comes from its tracks once FirePlayer
+ * has played it, else from the language tag the provider puts in front of its name ("|FR| …").
  */
 object CopyLanguage {
 
     const val MULTI = "multi"
 
-    /** The sound to look for. [original] is the language the film was made in; [preferred] the viewer's. */
-    fun wanted(original: String?, preferred: String): String {
-        val o = code(original)
+    /** The sounds to look for, either as good: the viewer's language, and [original] (the film's own) when it differs. */
+    fun wanted(original: String?, preferred: String): List<String> {
         val p = code(preferred) ?: "en"
-        return if (o == null || o == p) p else o
+        val o = code(original)
+        return if (o == null || o == p) listOf(p) else listOf(p, o)
     }
 
-    /** 2: has the sound wanted; 1: may have it (several languages, or nothing known); 0: known not to have it. */
-    fun fit(wanted: String, audioLangs: String, tag: String?): Int {
+    /** 2: has a sound wanted; 1: may have one (several languages, or nothing known); 0: known to have none. */
+    fun fit(wanted: List<String>, audioLangs: String, tag: String?): Int {
         val langs = audioLangs.split(',').mapNotNull { code(it) }
         return when {
-            langs.isNotEmpty() -> if (wanted in langs) 2 else 0
+            langs.isNotEmpty() -> if (langs.any { it in wanted }) 2 else 0
             tag == null || tag == MULTI -> 1
-            tag == wanted -> 2
+            tag in wanted -> 2
             else -> 0
         }
     }

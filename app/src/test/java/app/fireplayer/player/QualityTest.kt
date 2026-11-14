@@ -264,11 +264,15 @@ class QualityTest {
     // --- Which sound is wanted
 
     @Test
-    fun englishForEnglishFilmsTheFilmsOwnOtherwise() {
-        assertEquals("en", CopyLanguage.wanted("en", "en"))
-        assertEquals("en", CopyLanguage.wanted(null, "en"))
-        assertEquals("ko", CopyLanguage.wanted("ko", "en"))
-        assertEquals("fr", CopyLanguage.wanted("fre", "eng"))
+    fun englishAlwaysAndTheFilmsOwnForForeignFilms() {
+        assertEquals(listOf("en"), CopyLanguage.wanted("en", "en"))
+        assertEquals(listOf("en"), CopyLanguage.wanted(null, "en"))
+        assertEquals(listOf("en", "ko"), CopyLanguage.wanted("ko", "en"))
+        assertEquals(listOf("en", "fr"), CopyLanguage.wanted("fre", "eng"))
+        // A Korean film: Korean or English sound, either as good.
+        assertEquals(2, CopyLanguage.fit(listOf("en", "ko"), "ko", null))
+        assertEquals(2, CopyLanguage.fit(listOf("en", "ko"), "en", null))
+        assertEquals(0, CopyLanguage.fit(listOf("en", "ko"), "fr", null))
     }
 
     @Test
@@ -278,10 +282,10 @@ class QualityTest {
         assertEquals("en", CopyLanguage.tagIn("EN - The Matrix (1999)"))
         assertNull(CopyLanguage.tagIn("Mission: Impossible - Fallout"))
         // What its tracks say beats its tag.
-        assertEquals(2, CopyLanguage.fit("en", "fr,eng", "fr"))
-        assertEquals(0, CopyLanguage.fit("en", "fr", "en"))
-        assertEquals(1, CopyLanguage.fit("en", "", CopyLanguage.MULTI))
-        assertEquals(0, CopyLanguage.fit("en", "", "fr"))
+        assertEquals(2, CopyLanguage.fit(listOf("en"), "fr,eng", "fr"))
+        assertEquals(0, CopyLanguage.fit(listOf("en"), "fr", "en"))
+        assertEquals(1, CopyLanguage.fit(listOf("en"), "", CopyLanguage.MULTI))
+        assertEquals(0, CopyLanguage.fit(listOf("en"), "", "fr"))
         assertTrue(CopyLanguage.hasSubs("en,fr", "eng"))
     }
 

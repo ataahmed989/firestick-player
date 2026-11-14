@@ -4768,7 +4768,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val healths: List<CopyHealth?>,
         val current: Int,
         val verdict: CopyRank.Verdict?,
-        val wanted: String,
+        val wanted: List<String>,
     )
 
     private fun copyVerdict(): CopyView? {
@@ -4791,32 +4791,32 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         val current = list.indexOfFirst { it.current }
         val healths = list.map { healthOf(it.uri) }
-        // English sound for a film made in English (or when TMDB doesn't say); the film's own language otherwise, with
-        // subtitles, which in the viewer's language only tip a close call.
+        // English sound (the viewer's language) always; for a film made in another language, its own as well, watched
+        // with subtitles, which in the viewer's language only tip a close call.
         val wanted = CopyLanguage.wanted(copiesOriginal, prefs.audioLanguage)
         val fits = list.mapIndexed { i, c -> CopyLanguage.fit(wanted, specs[i].audioLangs, CopyLanguage.tagIn(c.name)) }
         val subs = specs.map { CopyLanguage.hasSubs(it.subLangs, prefs.subtitleLanguage.ifEmpty { "en" }) }
-        val verdict = if (list.size > 1) CopyRank.rank(specs, current, hdrScreen(), healths, fits, CopyLanguage.name(wanted), subs) else null
+        val wantedName = wanted.joinToString(" or ") { CopyLanguage.name(it) }
+        val verdict = if (list.size > 1) CopyRank.rank(specs, current, hdrScreen(), healths, fits, wantedName, subs) else null
         return CopyView(list, specs, healths, current, verdict, wanted)
     }
 
     /**
-     * The top of Picture & sound: blue, to switch to the best copy and go on from here; gray when this is the best,
-     * or while it can't be told. The only place that says which is best, with the reason under it.
+     * The top of Picture & sound: blue when this is the best copy; gray to switch to the best one, going on from here,
+     * and while it can't be told. The only place that says which is best, with the reason under it.
      */
     private fun SidePanel.bestButton(v: CopyView?) {
         val best = v?.verdict?.best
-        val at = formatTime(player?.currentPosition ?: 0L, long = true)
         when {
             v == null -> actionRow(if (copiesStatus == LOADING) "Finding other copies…" else "No other copies to compare", null,
                 "Best", Rows.Badge.INACTIVE) {}
             best == null -> actionRow("Best copy not known yet",
                 if (v.list.size > 1) "Play another copy for a minute and FirePlayer measures it." else null, "—", Rows.Badge.INACTIVE) {}
             best == v.current -> actionRow("You're on the best copy", v.verdict!!.reasons.firstOrNull()?.replaceFirstChar { it.uppercase() },
-                "Best", Rows.Badge.INACTIVE) {}
+                "Best", Rows.Badge.ACTIVE) {}
             else -> actionRow("Switch to the best copy",
                 (v.verdict!!.reasons + v.verdict.tradeOffs.map { "but $it" }).joinToString(" · ").replaceFirstChar { it.uppercase() },
-                "Resume $at", Rows.Badge.ACTIVE) { playCopy(v.list[best]) }
+                "Switch", Rows.Badge.INACTIVE) { playCopy(v.list[best]) }
         }
     }
 
