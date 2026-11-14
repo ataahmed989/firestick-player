@@ -246,6 +246,24 @@ class Prefs(context: Context) {
     fun forgetHandDelay(key: String) = sp.edit().remove("subdelay|$key").apply()
 
     /**
+     * Downloaded subtitles [file]'s timing as found or set for one copy of a film ([from], a film key) kept for another
+     * copy of it ([to]) as well: the delays where they were found, and one set by hand. Not which of the film's own tracks
+     * they were matched with: the other copy's tracks are its own.
+     */
+    fun copySubtitleTiming(file: String, from: String, to: String) {
+        val all = sp.all
+        val e = sp.edit()
+        for (suffix in listOf("", "|at")) {
+            when (val v = all["sync|$file|$from$suffix"]) {
+                is Long -> e.putLong("sync|$file|$to$suffix", v)
+                is String -> e.putString("sync|$file|$to$suffix", v)
+            }
+        }
+        (all["subdelay|$file|$from"] as? Long)?.let { e.putLong("subdelay|$file|$to", it) }
+        e.apply()
+    }
+
+    /**
      * Downloaded subtitle files were let go: what was found or set for the timing of every one no longer kept goes
      * with them, in one sweep ([files]: the names still kept), and a "Sync with" choice made for a single film that has
      * none left ([videos]: the films that still have some). A show's choice, jumps and starting delays stay.

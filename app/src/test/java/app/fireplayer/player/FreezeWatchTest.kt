@@ -175,9 +175,9 @@ class FreezeWatchTest {
         playing = false
         quiet(2_000)
         playing = true
-        // Nothing before the sound's window and the stuck time have both passed.
+        // Nothing before the sound's window and the stuck time have both passed; then a jump, which starts the sound afresh
         val (e, _) = until()
-        assertEquals(Step.PAUSE_PLAY, act(e).step)
+        assertEquals(Step.JUMP, act(e).step)
         assertEquals(FreezeWatch.SWITCH_SOUND_MS + FreezeWatch.STUCK_MS, t - t0)
     }
 
@@ -291,5 +291,19 @@ class FreezeWatchTest {
         watch.reset()
         quiet(60_000, filmPerTick = 200)
         assertNull(tick(200))
+    }
+
+    @Test
+    fun soonAfterATvSwitchAJumpComesFirst() {
+        // The TV switched; its sound window passes, and the film stands on its first picture
+        switchAt = t
+        quiet(FreezeWatch.SWITCH_SOUND_MS)
+        assertEquals(Step.JUMP, act(until().first).step)
+    }
+
+    @Test
+    fun longAfterATvSwitchPauseAndPlayComesFirst() {
+        switchAt = t - FreezeWatch.SWITCH_JUMP_FIRST_MS - 1_000L
+        expectAct(Step.PAUSE_PLAY, FreezeWatch.STUCK_MS)
     }
 }

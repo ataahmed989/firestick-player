@@ -631,18 +631,26 @@ internal class BatchedInput(private val base: ExtractorInput) : ExtractorInput {
 
     override fun readFully(target: ByteArray, offset: Int, length: Int, allowEndOfInput: Boolean): Boolean {
         if (direct) return base.readFully(target, offset, length, allowEndOfInput)
-        var done = 0
-        while (done < length) {
-            if (!ready()) {
-                if (done == 0 && allowEndOfInput) return false
-                throw EOFException()
-            }
-            val n = minOf(length - done, chunkLength - taken)
-            System.arraycopy(chunk, taken, target, offset + done, n)
-            taken += n
-            done += n
+        if (length == 0) return true
+        if (taken == chunkLength && !ready()) {
+            if (allowEndOfInput) return false
+            throw EOFException()
         }
-        return true
+        if (length <= chunkLength - taken) {
+            System.arraycopy(chunk, taken, target, offset, length)
+            taken += length
+            return true
+        }
+        // More than the piece holds: all of it from base in one go, which either reads it all or leaves its position as
+        // it was. Taken in parts, a failed read (a dropped connection) left base part of the way into it, and the read
+        // tried again from there came out of step.
+        return whole { base.readFully(target, offset, length, allowEndOfInput) }
+    }
+
+    /** [read] of a whole request from [base], after what was handed out is taken from it; pieces start afresh after. */
+    private inline fun whole(read: () -> Boolean): Boolean {
+        flush()
+        return read()
     }
 
     override fun readFully(target: ByteArray, offset: Int, length: Int) {
@@ -660,23 +668,17 @@ internal class BatchedInput(private val base: ExtractorInput) : ExtractorInput {
 
     override fun skipFully(length: Int, allowEndOfInput: Boolean): Boolean {
         if (direct) return base.skipFully(length, allowEndOfInput)
-        var done = 0
-        while (done < length) {
-            // A long stretch skipped is left to base, which needn't bring it in to skip it.
-            if (taken == chunkLength && length - done > CHUNK) {
-                flush()
-                if (!base.skipFully(length - done, allowEndOfInput && done == 0)) return false
-                return true
-            }
-            if (!ready()) {
-                if (done == 0 && allowEndOfInput) return false
-                throw EOFException()
-            }
-            val n = minOf(length - done, chunkLength - taken)
-            taken += n
-            done += n
+        if (length == 0) return true
+        if (taken == chunkLength && length <= CHUNK && !ready()) {
+            if (allowEndOfInput) return false
+            throw EOFException()
         }
-        return true
+        if (length <= chunkLength - taken) {
+            taken += length
+            return true
+        }
+        // As in readFully: a skip past the piece is base's, in one go
+        return whole { base.skipFully(length, allowEndOfInput) }
     }
 
     override fun skipFully(length: Int) {
