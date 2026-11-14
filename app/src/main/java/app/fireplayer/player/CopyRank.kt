@@ -44,9 +44,9 @@ object CopyRank {
         current: Int,
         hdrScreen: Boolean,
         health: List<CopyHealth?> = emptyList(),
-        /** Per copy, [CopyLanguage.fit] for the sound wanted, and [wantedName] its language's name, for the reason. */
+        /** Per copy, [CopyLanguage.fit] for the sound wanted, and [fitName] the language a fit level stands for. */
         fits: List<Int> = emptyList(),
-        wantedName: String? = null,
+        fitName: (Int) -> String? = { null },
         /** Per copy, whether it has subtitles in the viewer's language. */
         subs: List<Boolean> = emptyList(),
     ): Verdict {
@@ -102,8 +102,8 @@ object CopyRank {
         val played = ArrayList<String>()
         if (troubled(against) && !troubled(best)) played += "the other ${theirs?.summary()}"
         // Then the sound: the language wanted, where the other doesn't have it (or may not).
-        if (wantedName != null && fit(best) > fit(against)) played += "$wantedName sound"
-        if (wantedName != null && fit(best) < fit(against)) costs.add(0, "may not have $wantedName sound")
+        if (fit(best) > fit(against)) fitName(fit(best))?.let { played += "$it sound" }
+        if (fit(best) < fit(against)) fitName(fit(against))?.let { costs.add(0, "may not have $it sound") }
         if (mine != null && !mine.troubled) mine.summary()?.takeIf { it.startsWith("smooth") }?.let { played += it }
         if (sub(best) && !sub(against) && subs.isNotEmpty()) reasons += "subtitles in your language"
         if (troubled(best)) mine?.summary()?.let { costs.add(0, it) }
