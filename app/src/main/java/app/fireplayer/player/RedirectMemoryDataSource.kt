@@ -3,6 +3,7 @@ package app.fireplayer.player
 import android.net.Uri
 import android.os.SystemClock
 import androidx.annotation.OptIn
+import androidx.media3.common.C
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSourceException
@@ -44,19 +45,59 @@ class RedirectMemoryDataSource(
     // How much has come since this connection opened.
     private var readSinceOpen = 0L
 
+    // The film's index read from the box instead ([IndexCache]): from where, up to where, and the request to go on with
+    // from the server if more is wanted than was kept.
+    private var kept: IndexCache.Reader? = null
+    private var keptAt = 0L
+    private var keptSpec: DataSpec? = null
+    private var keptEnd = 0L
+    // The film's index as it comes from the server, to keep.
+    private var keeping: IndexCache.Writer? = null
+    // What has come of the index ahead of the player: it reads it a few bytes at a time, each read costing as much as a
+    // big one, so it's fetched in big ones and handed out from here.
+    private var ahead: ByteArray? = null
+    private var aheadFrom = 0
+    private var aheadTo = 0
+
     override fun addTransferListener(transferListener: TransferListener) = upstream.addTransferListener(transferListener)
 
     override fun open(dataSpec: DataSpec): Long {
         redirectedLink = null
         readSinceOpen = 0
+        val film = serverSwitch != null && !readOnly
+        val size = if (film) fileSizes[dataSpec.uri.toString()] ?: 0L else 0L
+        if (size > 0) {
+            IndexCache.open(dataSpec.uri.toString(), size, dataSpec.position)?.let { reader ->
+                val end = if (dataSpec.length != C.LENGTH_UNSET.toLong()) dataSpec.position + dataSpec.length else size
+                if (end <= size) {
+                    kept = reader
+                    keptAt = dataSpec.position
+                    keptSpec = dataSpec
+                    keptEnd = end
+                    return end - dataSpec.position
+                }
+                reader.close()
+            }
+        }
+        val length = openNetwork(dataSpec)
+        if (film && size > 0 && length != C.LENGTH_UNSET.toLong() && IndexCache.wanted(size, dataSpec.position)) {
+            keeping = IndexCache.Writer(dataSpec.uri.toString(), size, dataSpec.position)
+            ahead = ByteArray(AHEAD_BYTES)
+            aheadFrom = 0
+            aheadTo = 0
+        }
+        return length
+    }
+
+    private fun openNetwork(dataSpec: DataSpec): Long {
         // A move asked for between connections: this one simply goes through the provider, nothing to break off.
         if (serverSwitch?.take() == true) remembered.remove(dataSpec.uri.toString())
         if (serverSwitch != null) filmOpenedAt = SystemClock.elapsedRealtime()
         val length = openRemembering(dataSpec)
         if (serverSwitch != null && !readOnly) speedFor(dataSpec.uri.toString())
         // The film's whole size, from a reply that runs to its end: for its quality details.
-        if (serverSwitch != null && !readOnly && length != androidx.media3.common.C.LENGTH_UNSET.toLong() &&
-            dataSpec.length == androidx.media3.common.C.LENGTH_UNSET.toLong()) {
+        if (serverSwitch != null && !readOnly && length != C.LENGTH_UNSET.toLong() &&
+            dataSpec.length == C.LENGTH_UNSET.toLong()) {
             if (fileSizes.size >= MAX_REMEMBERED) fileSizes.clear()
             fileSizes[dataSpec.uri.toString()] = dataSpec.position + length
         }
@@ -108,6 +149,35 @@ class RedirectMemoryDataSource(
     }
 
     override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+        ahead?.let { store ->
+            if (aheadFrom == aheadTo) {
+                val n = readServer(store, 0, store.size)
+                if (n <= 0) return n
+                aheadFrom = 0
+                aheadTo = n
+            }
+            val n = minOf(length, aheadTo - aheadFrom)
+            System.arraycopy(store, aheadFrom, buffer, offset, n)
+            aheadFrom += n
+            return n
+        }
+        kept?.let { reader ->
+            if (keptAt >= keptEnd) return C.RESULT_END_OF_INPUT
+            val n = reader.read(keptAt, buffer, offset, minOf(length.toLong(), keptEnd - keptAt).toInt())
+            if (n > 0) {
+                keptAt += n
+                return n
+            }
+            // More is wanted than was kept: the rest comes from the server.
+            reader.close()
+            kept = null
+            val spec = keptSpec!!
+            openNetwork(spec.subrange(keptAt - spec.position, if (spec.length == C.LENGTH_UNSET.toLong()) C.LENGTH_UNSET.toLong() else keptEnd - keptAt))
+        }
+        return readServer(buffer, offset, length)
+    }
+
+    private fun readServer(buffer: ByteArray, offset: Int, length: Int): Int {
         val link = redirectedLink
         // The film is coming too slowly from this server: forget it and break off, and the player reconnects where it
         // left off, through the provider again, which may send it somewhere quicker. Only once this connection has
@@ -131,16 +201,22 @@ class RedirectMemoryDataSource(
         if (read > 0) {
             readSinceOpen += read
             if (film) timed(read, System.nanoTime() - started)
+            keeping?.add(buffer, offset, read)
         }
         return read
     }
 
-    override fun getUri(): Uri? = upstream.uri
+    override fun getUri(): Uri? = if (kept != null) keptSpec?.uri else upstream.uri
 
-    override fun getResponseHeaders(): Map<String, List<String>> = upstream.responseHeaders
+    override fun getResponseHeaders(): Map<String, List<String>> = if (kept != null) emptyMap() else upstream.responseHeaders
 
     override fun close() {
         redirectedLink = null
+        ahead = null
+        kept?.close()
+        kept = null
+        keptSpec = null
+        keeping?.let { w -> keeping = null; w.finish() }
         upstream.close()
     }
 
@@ -240,5 +316,6 @@ class RedirectMemoryDataSource(
         private const val MAX_MISSES = 2
         private const val MAX_REMEMBERED = 200
         private const val MIN_READ_BEFORE_MOVE = 256 * 1024
+        private const val AHEAD_BYTES = 64 * 1024
     }
 }

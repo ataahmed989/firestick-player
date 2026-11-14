@@ -148,14 +148,25 @@ private class SeekableMkvExtractor(
             }
             landingPos = -1
         }
+        // The file's index, at its end: Media3 reads it a byte or two at a time (millions of reads for a long film), each
+        // going through every layer below, so it's handed out from big pieces read at once.
+        val batched = if (length > 0 && input.position >= length - IndexCache.TAIL) BatchedInput(input) else null
+        if (batched != null) this.input = batched
         return try {
-            inner.read(input, seekPosition)
+            inner.read(batched ?: input, seekPosition)
         } catch (e: IllegalStateException) {
+            batched?.finish()
             damaged(input, seekPosition, e)
         } catch (e: ParserException) {
             // Only bytes that don't make sense: a feature Media3 doesn't support stays that error.
             if (!e.contentIsMalformed) throw e
+            batched?.finish()
             damaged(input, seekPosition, e)
+        } finally {
+            if (batched != null) {
+                batched.finish()
+                this.input = input
+            }
         }
     }
 
@@ -559,5 +570,160 @@ private class SeekableMkvExtractor(
         private const val ID_TRACK_ENTRY = 0xAEL
         private const val ID_TRACK_TYPE = 0x83L
         private const val ID_DEFAULT_DURATION = 0x23E383L
+    }
+}
+
+/**
+ * [base], with reads handed out from pieces of [CHUNK] bytes peeked at once: what's handed out is only taken from
+ * [base] (from what it already holds) a piece at a time, and at [finish], so [base]'s position is always right to go
+ * on from. Anything else asked of it (a peek, a retry position) goes straight to [base] from then on.
+ */
+@OptIn(UnstableApi::class)
+internal class BatchedInput(private val base: ExtractorInput) : ExtractorInput {
+    private val chunk = ByteArray(CHUNK)
+    private var chunkLength = 0
+    // Handed out of the chunk, not yet taken from base.
+    private var taken = 0
+    private var direct = false
+    private var ended = false
+
+    /** Takes what was handed out from [base]; after this, everything goes straight to it. */
+    fun finish() {
+        flush()
+        direct = true
+    }
+
+    private fun flush() {
+        if (direct) return
+        if (taken > 0) base.skipFully(taken)
+        taken = 0
+        chunkLength = 0
+        base.resetPeekPosition()
+    }
+
+    /** Bytes ready to hand out, reading the next piece if none are; false at the end of the file. */
+    private fun ready(): Boolean {
+        if (taken < chunkLength) return true
+        if (ended) return false
+        flush()
+        val n = base.peek(chunk, 0, CHUNK)
+        if (n == C.RESULT_END_OF_INPUT) {
+            ended = true
+            return false
+        }
+        chunkLength = n
+        return true
+    }
+
+    private fun goDirect() {
+        if (!direct) finish()
+    }
+
+    override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+        if (direct) return base.read(buffer, offset, length)
+        if (length == 0) return 0
+        if (!ready()) return C.RESULT_END_OF_INPUT
+        val n = minOf(length, chunkLength - taken)
+        System.arraycopy(chunk, taken, buffer, offset, n)
+        taken += n
+        return n
+    }
+
+    override fun readFully(target: ByteArray, offset: Int, length: Int, allowEndOfInput: Boolean): Boolean {
+        if (direct) return base.readFully(target, offset, length, allowEndOfInput)
+        var done = 0
+        while (done < length) {
+            if (!ready()) {
+                if (done == 0 && allowEndOfInput) return false
+                throw EOFException()
+            }
+            val n = minOf(length - done, chunkLength - taken)
+            System.arraycopy(chunk, taken, target, offset + done, n)
+            taken += n
+            done += n
+        }
+        return true
+    }
+
+    override fun readFully(target: ByteArray, offset: Int, length: Int) {
+        readFully(target, offset, length, false)
+    }
+
+    override fun skip(length: Int): Int {
+        if (direct) return base.skip(length)
+        if (length == 0) return 0
+        if (!ready()) return C.RESULT_END_OF_INPUT
+        val n = minOf(length, chunkLength - taken)
+        taken += n
+        return n
+    }
+
+    override fun skipFully(length: Int, allowEndOfInput: Boolean): Boolean {
+        if (direct) return base.skipFully(length, allowEndOfInput)
+        var done = 0
+        while (done < length) {
+            // A long stretch skipped is left to base, which needn't bring it in to skip it.
+            if (taken == chunkLength && length - done > CHUNK) {
+                flush()
+                if (!base.skipFully(length - done, allowEndOfInput && done == 0)) return false
+                return true
+            }
+            if (!ready()) {
+                if (done == 0 && allowEndOfInput) return false
+                throw EOFException()
+            }
+            val n = minOf(length - done, chunkLength - taken)
+            taken += n
+            done += n
+        }
+        return true
+    }
+
+    override fun skipFully(length: Int) {
+        skipFully(length, false)
+    }
+
+    override fun peek(target: ByteArray, offset: Int, length: Int): Int {
+        goDirect()
+        return base.peek(target, offset, length)
+    }
+
+    override fun peekFully(target: ByteArray, offset: Int, length: Int, allowEndOfInput: Boolean): Boolean {
+        goDirect()
+        return base.peekFully(target, offset, length, allowEndOfInput)
+    }
+
+    override fun peekFully(target: ByteArray, offset: Int, length: Int) {
+        goDirect()
+        base.peekFully(target, offset, length)
+    }
+
+    override fun advancePeekPosition(length: Int, allowEndOfInput: Boolean): Boolean {
+        goDirect()
+        return base.advancePeekPosition(length, allowEndOfInput)
+    }
+
+    override fun advancePeekPosition(length: Int) {
+        goDirect()
+        base.advancePeekPosition(length)
+    }
+
+    override fun resetPeekPosition() {
+        if (direct) base.resetPeekPosition()
+    }
+
+    override fun getPeekPosition(): Long = if (direct) base.peekPosition else position
+
+    override fun getPosition(): Long = if (direct) base.position else base.position + taken
+
+    override fun getLength(): Long = base.length
+
+    override fun <E : Throwable> setRetryPosition(position: Long, e: E) {
+        goDirect()
+        base.setRetryPosition(position, e)
+    }
+
+    companion object {
+        const val CHUNK = 16 * 1024
     }
 }

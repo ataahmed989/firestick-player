@@ -1051,6 +1051,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             p.playWhenReady = savedPlayWhenReady
         }
         switchEarly(entry, index)
+        // The film's first picture before subtitles are read (see PictureText.holdFor).
+        pictureText.holdFor(START_HOLD_MS)
         updateTitle()
         updatePlayButton()
         updateKeepScreenOn()
@@ -1328,6 +1330,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             hideBuffering()
         }
         if (state == Player.STATE_READY) {
+            pictureText.go()
             noteEpisodeLength()
             if (glassAfterSeek) {
                 glassAfterSeek = false
@@ -5701,6 +5704,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         const val REAL_AGAIN_MS = 20_000L
         // How long the film waits for the TV to change refresh rate.
         const val DISPLAY_SWITCH_PAUSE_MS = 2_000L
+        /** At most this long, picture subtitles wait for the film to start before they're read. */
+        const val START_HOLD_MS = 10_000L
         /** How long a film that froze is paused before it's played again (the viewer did the same, and it went on). */
         const val FREEZE_PAUSE_MS = 1_000L
         private const val TAG = "FirePlayer"

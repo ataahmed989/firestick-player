@@ -179,6 +179,7 @@ object PlayerFactory {
         /** Where damaged stretches of a film the player went past are noted, so the viewer can be told. */
         damageSkips: DamageSkips? = null,
     ): Built {
+        IndexCache.dir = context.cacheDir
         val serverSwitch = ServerSwitch()
         val dataSourceFactory = dataSourceFactory(context, headers, serverSwitch)
 
