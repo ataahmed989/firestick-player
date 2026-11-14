@@ -7,9 +7,6 @@ import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Shader
-import android.text.SpannableStringBuilder
-import android.text.Spanned
-import android.text.style.ForegroundColorSpan
 import android.util.TypedValue
 import android.view.View
 import android.view.ViewGroup
@@ -23,7 +20,8 @@ import app.fireplayer.titles.TitleStatus
 
 /**
  * How far TiviMate's titles are, under their switch in Settings: a slim blue bar (renamed and kept as they are, of
- * everything listed) and a short line per provider ([TitleStatus]). Not a row: the D-pad passes it by.
+ * everything listed). Each playlist's counts are in its own row under Playlists; a line here only says when there are
+ * none yet. Not a row: the D-pad passes it by.
  */
 class TitleStatusView(context: Context) : LinearLayout(context) {
 
@@ -34,7 +32,6 @@ class TitleStatusView(context: Context) : LinearLayout(context) {
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
         setLineSpacing(2f * density, 1f)
     }
-    private val nameColor = ContextCompat.getColor(context, R.color.text)
     private var shown: CharSequence? = null
 
     init {
@@ -52,23 +49,13 @@ class TitleStatusView(context: Context) : LinearLayout(context) {
 
     /** Shows [progress] (null until it's been read), moving the bar there smoothly when [animate]. */
     fun show(progress: List<TitleBook.Progress>?, animate: Boolean) {
-        val text: CharSequence = when {
+        val text: CharSequence? = when {
             progress == null -> " "
             progress.isEmpty() -> "No playlists yet"
-            else -> SpannableStringBuilder().apply {
-                TitleStatus.lines(progress).forEachIndexed { i, l ->
-                    if (i > 0) append('\n')
-                    l.provider?.let { name ->
-                        val start = length
-                        append(name)
-                        setSpan(ForegroundColorSpan(nameColor), start, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-                        append("  ")
-                    }
-                    append(l.counts)
-                }
-            }
+            else -> null
         }
-        if (text.toString() != shown?.toString()) {
+        line.visibility = if (text == null) GONE else VISIBLE
+        if (text != null && text.toString() != shown?.toString()) {
             shown = text
             line.text = text
         }

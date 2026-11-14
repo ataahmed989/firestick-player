@@ -30,6 +30,7 @@ import app.fireplayer.subs.Tmdb
 import app.fireplayer.titles.TitleBook
 import app.fireplayer.titles.TitleProxy
 import app.fireplayer.titles.TitleService
+import app.fireplayer.titles.TitleStatus
 import app.fireplayer.update.Updater
 import java.util.Locale
 import java.util.concurrent.ExecutorService
@@ -335,24 +336,29 @@ class SettingsPanels(
         if (prefs.tivimateTitles) view(titleStatus(), top = 6, bottom = 4)
         if (detailsShown) view(titleDetails(), top = 4, bottom = 4)
         if (!prefs.tivimateTitles) return@with
-        row("Check playlists now", checkValue) {
-            if (prefs.keys.isSet(KeyStore.Key.TMDB)) {
-                TitleService.checkNow(activity)
-                if (inPlayer) checkNote = "Starts once the film is closed." else checkValue = "Started"
-            }
-            refresh()
-        }.asSubRow()
+        // The arrow beside it tells what happens to a playlist taken out of TiviMate.
+        val noteTurned = playlistArrowTurned
+        playlistArrowTurned = false
+        rowWithArrow("Check playlists now", checkValue, expanded = playlistNoteShown, turned = noteTurned,
+            onClick = {
+                if (prefs.keys.isSet(KeyStore.Key.TMDB)) {
+                    TitleService.checkNow(activity)
+                    if (inPlayer) checkNote = "Starts once the film is closed." else checkValue = "Started"
+                }
+                refresh()
+            },
+            onArrow = { playlistNoteShown = !playlistNoteShown; playlistArrowTurned = true; refresh() })
         when {
             !prefs.keys.isSet(KeyStore.Key.TMDB) -> message("Needs a TMDB API key (Online subtitles and TMDB API).")
             checkNote != null -> message(checkNote!!)
         }
-        // Each playlist's English names; one taken out of TiviMate is forgotten by itself after a week, or here now.
+        if (playlistNoteShown) message("Removed a playlist from TiviMate? Its English names are deleted here a week after TiviMate last used it, or now from this list.")
+        // Each playlist's English names, and a tick once every one of its titles has been checked; one taken out of
+        // TiviMate is forgotten by itself after a week, or here now.
         val playlists = titleCounts.orEmpty()
         if (playlists.isNotEmpty()) {
             header("Playlists")
-            val noteTurned = playlistArrowTurned
-            playlistArrowTurned = false
-            playlists.forEachIndexed { i, p ->
+            playlists.forEach { p ->
                 val onClick = {
                     FireDialog.choose(activity, p.server, listOf("Delete its English names", "Keep them"), 1, besidePanel = true) { pick ->
                         if (pick != 0) return@choose
@@ -363,17 +369,8 @@ class SettingsPanels(
                         }
                     }
                 }
-                // The last pod carries the arrow for what happens to a playlist taken out of TiviMate, as the titles'
-                // switch carries the set-up details.
-                if (i == playlists.lastIndex) {
-                    rowWithArrow(p.server, "${p.renamed} renamed", expanded = playlistNoteShown, turned = noteTurned,
-                        onClick = { onClick() },
-                        onArrow = { playlistNoteShown = !playlistNoteShown; playlistArrowTurned = true; refresh() })
-                } else {
-                    row(p.server, "${p.renamed} renamed") { onClick() }
-                }
+                compactRow(p.server, "${TitleStatus.count(p.renamed)} renamed", if (p.waiting == 0) tickPill() else null) { onClick() }
             }
-            if (playlistNoteShown) message("Removed a playlist from TiviMate? Its English names are deleted here a week after TiviMate last used it, or now from this list.")
         }
     }
 

@@ -260,4 +260,45 @@ class QualityTest {
         assertEquals(a, CopyHealth.decode(CopyHealth.encode(a)))
         assertEquals(CopyHealth(2000, 2, 400, 0, 2), a + a)
     }
+
+    // --- Which sound is wanted
+
+    @Test
+    fun englishForEnglishFilmsTheFilmsOwnOtherwise() {
+        assertEquals("en", CopyLanguage.wanted("en", "en"))
+        assertEquals("en", CopyLanguage.wanted(null, "en"))
+        assertEquals("ko", CopyLanguage.wanted("ko", "en"))
+        assertEquals("fr", CopyLanguage.wanted("fre", "eng"))
+    }
+
+    @Test
+    fun aCopysLanguageFromItsTracksElseItsTag() {
+        assertEquals("fr", CopyLanguage.tagIn("|FR| Mission: Impossible - Fallout"))
+        assertEquals(CopyLanguage.MULTI, CopyLanguage.tagIn("|MULTI| Mission Impossible Fallout"))
+        assertEquals("en", CopyLanguage.tagIn("EN - The Matrix (1999)"))
+        assertNull(CopyLanguage.tagIn("Mission: Impossible - Fallout"))
+        // What its tracks say beats its tag.
+        assertEquals(2, CopyLanguage.fit("en", "fr,eng", "fr"))
+        assertEquals(0, CopyLanguage.fit("en", "fr", "en"))
+        assertEquals(1, CopyLanguage.fit("en", "", CopyLanguage.MULTI))
+        assertEquals(0, CopyLanguage.fit("en", "", "fr"))
+        assertTrue(CopyLanguage.hasSubs("en,fr", "eng"))
+    }
+
+    @Test
+    fun theWantedSoundComesBeforeMorePictureData() {
+        // A French copy with more data, an English one with less: for an English film, the English one.
+        val copies = listOf(copy("HEVC", 20.0), copy("HEVC", 9.0))
+        val v = CopyRank.rank(copies, 0, false, fits = listOf(0, 2), wantedName = "English")
+        assertEquals(1, v.best)
+        assertEquals("English sound", v.reasons.first())
+    }
+
+    @Test
+    fun subtitlesOnlyTipACloseCall() {
+        val close = listOf(copy("HEVC", 10.0), copy("HEVC", 9.6))
+        assertEquals(1, CopyRank.rank(close, 0, false, subs = listOf(false, true)).best)
+        val far = listOf(copy("HEVC", 20.0), copy("HEVC", 9.0))
+        assertEquals(0, CopyRank.rank(far, 1, false, subs = listOf(false, true)).best)
+    }
 }
