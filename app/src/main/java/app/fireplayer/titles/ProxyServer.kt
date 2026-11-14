@@ -123,6 +123,17 @@ class ProxyServer(
 
     // When each provider was last noted as asked about, so the database is written about once an hour each.
     private val seenNoted = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    // The login each playlist was last kept with, so it's written once, not on every request.
+    private val loginKept = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    /** Keeps the playlist's login (see [TitleBook.saveLogin]), so FirePlayer can play its copies of a title. */
+    private fun rememberLogin(server: String, params: Uri) {
+        val user = params.getQueryParameter("username")?.takeIf { it.isNotEmpty() } ?: return
+        val pass = params.getQueryParameter("password")?.takeIf { it.isNotEmpty() } ?: return
+        val hash = (user + "\u0000" + pass).hashCode()
+        if (loginKept[server] == hash) return
+        runCatching { book.saveLogin(server, user, pass) }.onSuccess { loginKept[server] = hash }
+    }
 
     private fun api(request: Request, server: String, upstream: String, query: String, output: OutputStream) {
         val now = System.currentTimeMillis() / 1000
@@ -132,6 +143,7 @@ class ProxyServer(
         }
         val params = Uri.parse("http://x/?$query")
         val action = params.getQueryParameter("action")
+        rememberLogin(server, params)
         val started = System.currentTimeMillis()
         val conn = open(request, upstream)
         try {

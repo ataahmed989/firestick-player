@@ -49,6 +49,8 @@ object CopyRank {
         fitName: (Int) -> String? = { null },
         /** Per copy, whether it has subtitles in the viewer's language. */
         subs: List<Boolean> = emptyList(),
+        /** Per copy, the rank of the quality group its playlist puts it in ([Copies.groupRank]): tips a close call. */
+        groups: List<Int> = emptyList(),
     ): Verdict {
         fun troubled(i: Int) = health.getOrNull(i)?.troubled == true
         fun fit(i: Int) = fits.getOrNull(i) ?: 1
@@ -78,6 +80,7 @@ object CopyRank {
         if (close.size > 1) {
             best = close.sortedWith(
                 compareByDescending<Int> { copies[it].width }
+                    .thenByDescending { groups.getOrNull(it) ?: 0 }
                     .thenByDescending { copies[it].bitDepth }
                     .thenByDescending { soundRank(copies[it]) }
                     .thenByDescending { copies[it].channels }

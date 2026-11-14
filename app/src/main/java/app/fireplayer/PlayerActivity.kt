@@ -86,6 +86,7 @@ import app.fireplayer.player.CopyRank
 import app.fireplayer.player.CopyHealth
 import app.fireplayer.player.CopyLanguage
 import app.fireplayer.player.MediaSpec
+import app.fireplayer.titles.TitleStatus
 import app.fireplayer.player.RedirectMemoryDataSource
 import app.fireplayer.subs.AutoSync
 import app.fireplayer.subs.EmbeddedCues
@@ -4769,6 +4770,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val current: Int,
         val verdict: CopyRank.Verdict?,
         val wanted: List<String>,
+        /** Per copy, how well its sound suits ([CopyLanguage.fit]) and its quality group's rank. */
+        val fits: List<Int>,
+        val groups: List<Int>,
     )
 
     private fun copyVerdict(): CopyView? {
@@ -4796,10 +4800,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val wanted = CopyLanguage.wanted(copiesOriginal, prefs.audioLanguage)
         val fits = list.mapIndexed { i, c -> CopyLanguage.fit(wanted, specs[i].audioLangs, CopyLanguage.tagIn(c.name)) }
         val subs = specs.map { CopyLanguage.hasSubs(it.subLangs, prefs.subtitleLanguage.ifEmpty { "en" }) }
+        val groups = list.map { Copies.groupRank(it.group) }
         val verdict = if (list.size > 1) {
-            CopyRank.rank(specs, current, hdrScreen(), healths, fits, { CopyLanguage.levelName(wanted, it) }, subs)
+            CopyRank.rank(specs, current, hdrScreen(), healths, fits, { CopyLanguage.levelName(wanted, it) }, subs, groups)
         } else null
-        return CopyView(list, specs, healths, current, verdict, wanted)
+        return CopyView(list, specs, healths, current, verdict, wanted, fits, groups)
     }
 
     /**
@@ -4831,10 +4836,16 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val list = v.list
         val best = v.verdict?.best
         fun nameOf(i: Int) = list[i].name.ifBlank { currentEntry()?.info?.title ?: "Copy ${i + 1}" }
-        // The one playing, the one recommended, then the others known; copies nothing is known of fold into one row.
+        // The one playing, the one recommended, then the others known; copies nothing is known of fold into one row. Each
+        // part in the order they'd suit: the sound wanted (the film's own, then English), then the quality group.
+        val suits = compareByDescending<Int> { v.fits[it] }.thenByDescending { v.groups[it] }
         val known = list.indices.filter { it == v.current || it == best || v.specs[it].videoBps > 0 || v.specs[it].overallBps > 0 || list[it].spec != null }
+            .sortedWith(suits)
         val order = (listOfNotNull(v.current.takeIf { it >= 0 }, best) + known).distinct()
-        val unknown = list.indices.filter { it !in order }
+        val unknown = list.indices.filter { it !in order }.sortedWith(suits)
+        // With copies from several playlists, each says which it's on.
+        val playlists = list.map { it.playlist }.distinct()
+        val shortNames = TitleStatus.shortNames(playlists).let { names -> playlists.indices.associate { playlists[it] to names[it] } }
         fun copyRow(i: Int) {
             val c = list[i]
             val sp = v.specs[i]
@@ -4850,7 +4861,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 langs.takeIf { it.isNotEmpty() }?.joinToString("/") { CopyLanguage.name(it) },
                 v.healths[i]?.summary()?.replaceFirstChar { it.uppercase() },
             ).joinToString(" · ")
-            val notes = listOf(picture, sound).filter { it.isNotEmpty() }.joinToString(" · ").ifEmpty { "Nothing known yet" }
+            val where = listOfNotNull(
+                c.group?.let { "$it group" },
+                if (playlists.size > 1) shortNames[c.playlist] else null,
+            ).joinToString(" · ")
+            val notes = listOf(where, picture, sound).filter { it.isNotEmpty() }.joinToString(" · ").ifEmpty { "Nothing known yet" }
             val rate = when {
                 sp.videoBps > 0 -> (if (sp.videoHow == MediaSpec.How.ESTIMATED) "~" else "") + MediaSpec.mbps(sp.videoBps)
                 sp.overallBps > 0 -> MediaSpec.mbps(sp.overallBps)

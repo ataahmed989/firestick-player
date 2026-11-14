@@ -60,6 +60,7 @@ class TitleBook(context: Context) : SQLiteOpenHelper(context, "titles.db", null,
         db.execSQL("CREATE TABLE tmdb(key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID")
         createEpisodes(db)
         createSeen(db)
+        createLogins(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -70,12 +71,33 @@ class TitleBook(context: Context) : SQLiteOpenHelper(context, "titles.db", null,
         if (oldVersion < 4) db.execSQL("ALTER TABLE item ADD COLUMN found INTEGER NOT NULL DEFAULT 0")
         // A quality tag in round brackets ("- 2021 (4K HDR)") now comes off, so the year is read: asked about again
         if (oldVersion in 2..4) db.execSQL("UPDATE item SET state = $WAITING, checked = 0 WHERE state = $KEPT")
+        if (oldVersion < 7) createLogins(db)
         if (oldVersion < 6) {
             createSeen(db)
             // Providers already listed count as asked about now, so none is taken for gone the day this comes in.
             db.execSQL("INSERT OR IGNORE INTO seen(server, at) SELECT DISTINCT server, ${System.currentTimeMillis() / 1000} FROM item")
         }
     }
+
+    /**
+     * Each playlist's login as TiviMate uses it, so a copy of a title on another playlist can be played: kept only here,
+     * in FirePlayer's own storage, never logged or shown.
+     */
+    private fun createLogins(db: SQLiteDatabase) =
+        db.execSQL("CREATE TABLE IF NOT EXISTS login(server TEXT PRIMARY KEY, user TEXT NOT NULL, pass TEXT NOT NULL) WITHOUT ROWID")
+
+    fun saveLogin(server: String, user: String, pass: String) {
+        writableDatabase.insertWithOnConflict("login", null, ContentValues().apply {
+            put("server", server)
+            put("user", user)
+            put("pass", pass)
+        }, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    /** The playlist's login (user, password), or null when TiviMate hasn't used it through FirePlayer yet. */
+    fun login(server: String): Pair<String, String>? =
+        readableDatabase.rawQuery("SELECT user, pass FROM login WHERE server = ?", arrayOf(server))
+            .use { c -> if (c.moveToFirst()) c.getString(0) to c.getString(1) else null }
 
     private fun createSeen(db: SQLiteDatabase) =
         db.execSQL("CREATE TABLE IF NOT EXISTS seen(server TEXT PRIMARY KEY, at INTEGER NOT NULL) WITHOUT ROWID")
@@ -109,7 +131,7 @@ class TitleBook(context: Context) : SQLiteOpenHelper(context, "titles.db", null,
         val db = writableDatabase
         db.beginTransaction()
         try {
-            for (table in listOf("item", "category", "episode", "seen")) db.delete(table, "server = ?", arrayOf(server))
+            for (table in listOf("item", "category", "episode", "seen", "login")) db.delete(table, "server = ?", arrayOf(server))
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
@@ -176,33 +198,35 @@ class TitleBook(context: Context) : SQLiteOpenHelper(context, "titles.db", null,
             arrayOf(server, kind.code.toString(), id.toString()),
         ).use { c -> if (c.moveToFirst()) About(if (c.isNull(0)) null else c.getString(0), c.getInt(1), c.getInt(2)) else null }
 
-    /** One listing of a film or show: the provider's id and its name for it. */
-    class Copy(val id: Int, val raw: String)
+    /** One listing of a film or show: the playlist it's on, the provider's id, its name for it and its category's name. */
+    class Copy(val server: String, val id: Int, val raw: String, val category: String? = null)
+
+    private val copyColumns = "SELECT i.server, i.id, i.raw, c.name FROM item i LEFT JOIN category c " +
+        "ON c.server = i.server AND c.kind = i.kind AND c.id = i.category WHERE i.kind = ? AND "
 
     /**
-     * Every listing of the film or show with TMDB id [tmdb] on [server], this one included: providers often list a
-     * title several times (4K, 1080p, another language). At most [limit], as they were listed.
+     * Every listing of the film or show with TMDB id [tmdb] on every playlist, this one included: providers often list
+     * a title several times (4K, 1080p, another language). At most [limit].
      */
-    fun copies(server: String, kind: Kind, tmdb: Int, limit: Int = 12): List<Copy> {
+    fun copies(kind: Kind, tmdb: Int, limit: Int = 40): List<Copy> {
         if (tmdb <= 0) return emptyList()
-        val out = ArrayList<Copy>()
-        readableDatabase.rawQuery(
-            "SELECT id, raw FROM item WHERE server = ? AND kind = ? AND " +
-                // The number written in: bound as text it would never equal the CASE, which has no type to convert it to.
-                "(CASE WHEN found > 0 THEN found WHEN state = $RENAMED THEN tmdb ELSE 0 END) = $tmdb LIMIT $limit",
-            arrayOf(server, kind.code.toString()),
-        ).use { c -> while (c.moveToNext()) out += Copy(c.getInt(0), c.getString(1)) }
-        return out
+        // The number written in: bound as text it would never equal the CASE, which has no type to convert it to.
+        return copyQuery("(CASE WHEN i.found > 0 THEN i.found WHEN i.state = $RENAMED THEN i.tmdb ELSE 0 END) = $tmdb LIMIT $limit",
+            arrayOf(kind.code.toString()))
     }
 
-    /** Every listing on [server] with the English [title] and [year] TMDB gave it: copies whose TMDB id differs or wasn't kept. */
-    fun copiesByTitle(server: String, kind: Kind, title: String, year: Int, limit: Int = 12): List<Copy> {
-        val out = ArrayList<Copy>()
+    /** Every listing with the English [title] and [year] TMDB gave it, on every playlist: copies whose TMDB id differs or wasn't kept. */
+    fun copiesByTitle(kind: Kind, title: String, year: Int, limit: Int = 40): List<Copy> {
         // A name alone could be another film ("Home"): only with its year.
-        if (year <= 0) return out
-        val sql = "SELECT id, raw FROM item WHERE server = ? AND kind = ? AND title = ? AND year = $year LIMIT $limit"
-        readableDatabase.rawQuery(sql, arrayOf(server, kind.code.toString(), title))
-            .use { c -> while (c.moveToNext()) out += Copy(c.getInt(0), c.getString(1)) }
+        if (year <= 0) return emptyList()
+        return copyQuery("i.title = ? AND i.year = $year LIMIT $limit", arrayOf(kind.code.toString(), title))
+    }
+
+    private fun copyQuery(where: String, args: Array<String>): List<Copy> {
+        val out = ArrayList<Copy>()
+        readableDatabase.rawQuery(copyColumns + where, args).use { c ->
+            while (c.moveToNext()) out += Copy(c.getString(0), c.getInt(1), c.getString(2), if (c.isNull(3)) null else c.getString(3))
+        }
         return out
     }
 
@@ -353,7 +377,7 @@ class TitleBook(context: Context) : SQLiteOpenHelper(context, "titles.db", null,
     private companion object {
         // 2: TitleMatcher's better rules; 3: episodes and their shows; 4: episodes' file types, and TMDB ids found.
         // 6: when TiviMate last asked about each provider, so a playlist taken out of TiviMate is forgotten here too.
-        const val VERSION = 6
+        const val VERSION = 7
         const val WAITING = 0
         const val RENAMED = 1
         const val KEPT = 2
