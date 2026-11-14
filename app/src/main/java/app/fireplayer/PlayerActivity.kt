@@ -100,6 +100,7 @@ import app.fireplayer.titles.TitleBook
 import app.fireplayer.titles.TitleProxy
 import app.fireplayer.titles.TitleService
 import app.fireplayer.subs.PictureText
+import app.fireplayer.subs.ReferenceCues
 import app.fireplayer.subs.SubtitlePresets
 import app.fireplayer.subs.SubtitleStyler
 import app.fireplayer.subs.placedLikePicture
@@ -665,7 +666,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             initPlayer()
             if (tvSwitching && play) {
                 pausedForSwitch = true
-                handler.postDelayed(resumeAfterSwitch, DISPLAY_SWITCH_PAUSE_MS)
+                waitForSwitch()
             }
         }
         if (sleepRemainingMs > 0) {
@@ -2910,13 +2911,29 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private fun switchFor(switching: Boolean, wasPlaying: Boolean) {
         if (!switching) return
         displaySwitchAt = SystemClock.elapsedRealtime()
-        if (!wasPlaying) return
+        // Already waiting on a switch: the wait now runs from this one
+        if (!wasPlaying && !pausedForSwitch) return
         // The TV blanks for a moment while it switches; don't play through it.
         player?.pause()
         pausedForSwitch = true
-        handler.removeCallbacks(resumeAfterSwitch)
-        handler.postDelayed(resumeAfterSwitch, DISPLAY_SWITCH_PAUSE_MS)
+        waitForSwitch()
     }
+
+    /**
+     * The film waits for the TV's switch: until the mode asked for shows, then [DISPLAY_SWITCH_PAUSE_MS] for its sound to
+     * come back (at most [SWITCH_WAIT_MAX_MS] for the mode). Asked for as the player opens, before its window is shown,
+     * the switch only starts once it is: timed from the asking, the film started while the TV's sound was still gone, and
+     * on a Fire TV Stick 4K Plus its time then stood still on the first picture, with no spinner, till a jump.
+     */
+    private fun waitForSwitch() {
+        switchAskedAt = SystemClock.elapsedRealtime()
+        modeShownAt = 0L
+        handler.removeCallbacks(resumeAfterSwitch)
+        handler.postDelayed(resumeAfterSwitch, SWITCH_POLL_MS)
+    }
+
+    private var switchAskedAt = 0L
+    private var modeShownAt = 0L
 
     /**
      * The TV's mode changed under the film and has settled: turned on, reconnected, or Fire OS putting its own mode back
@@ -2964,7 +2981,19 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     @Suppress("DEPRECATION")
     private fun tvHz(): String = "%.3f".format(Locale.US, windowManager.defaultDisplay?.refreshRate ?: 0f)
 
-    private val resumeAfterSwitch = Runnable {
+    private val resumeAfterSwitch: Runnable = Runnable {
+        val now = SystemClock.elapsedRealtime()
+        if (modeShownAt == 0L) {
+            if (frameRateMatcher.switchPending() && now - switchAskedAt < SWITCH_WAIT_MAX_MS) {
+                handler.postDelayed(resumeAfterSwitch, SWITCH_POLL_MS)
+                return@Runnable
+            }
+            // The mode shows (or the TV won't change): its sound comes back in the next second or two, timed from here
+            modeShownAt = now
+            displaySwitchAt = now
+            handler.postDelayed(resumeAfterSwitch, DISPLAY_SWITCH_PAUSE_MS)
+            return@Runnable
+        }
         pausedForSwitch = false
         player?.play()
     }
@@ -3823,9 +3852,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private fun chooseTrack(o: TrackOption) {
         val f = o.group.getTrackFormat(o.trackIndex)
         val type = o.group.type
-        trackWishes[type] = TrackWish(
-            f.language, f.label, f.roleFlags, f.selectionFlags and C.SELECTION_FLAG_FORCED != 0, f.channelCount,
-        )
+        trackWishes[type] = wishOf(f)
         selectTrack(o)
         // Downloaded subtitles chosen (or others instead): remembered as the ones on, last used first.
         if (type == C.TRACK_TYPE_TEXT) currentEntry()?.let { SavedSubtitles.use(this, it.key, savedFileOf(f.id)) }
@@ -3847,13 +3874,17 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private fun reapplyChoices() {
         if (player?.currentTracks?.groups.isNullOrEmpty()) return
         reapplyWishes = false
+        // A subtitle file carried over to another copy of the film stays the one on
+        val keep = keepTextId?.let { id -> trackOptions(C.TRACK_TYPE_TEXT).firstOrNull { it.external && sameId(it, id) } }
+        keepTextId = null
+        if (keep != null && !keep.selected) selectTrack(keep)
         for ((type, wish) in trackWishes) {
+            if (type == C.TRACK_TYPE_TEXT && keep != null) continue
             val same = trackOptions(type).filter { it.group.getTrackFormat(it.trackIndex).language == wish.language }
             fun format(o: TrackOption) = o.group.getTrackFormat(o.trackIndex)
             // The same kind (forced or full subtitles, commentary or main sound) matters more than the name, which
             // tracks often don't have or share.
-            fun kind(o: TrackOption) = format(o).roleFlags == wish.roleFlags &&
-                (format(o).selectionFlags and C.SELECTION_FLAG_FORCED != 0) == wish.forced
+            fun kind(o: TrackOption) = format(o).roleFlags == wish.roleFlags && forcedish(format(o)) == wish.forced
             fun channels(o: TrackOption) = type != C.TRACK_TYPE_AUDIO || format(o).channelCount == wish.channels
             fun named(o: TrackOption) = wish.label != null && format(o).label == wish.label
             val pick = same.firstOrNull { named(it) && kind(it) && channels(it) }
@@ -4880,7 +4911,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // subtitles in the viewer's language only tip a close call.
         val wanted = CopyLanguage.wanted(copiesOriginal, prefs.audioLanguage)
         val fits = list.mapIndexed { i, c -> CopyLanguage.fit(wanted, specs[i].audioLangs, CopyLanguage.tagIn(c.name)) }
-        val subs = specs.map { CopyLanguage.hasSubs(it.subLangs, prefs.subtitleLanguage.ifEmpty { "en" }) }
+        // Only while subtitles are on: then a copy without them in the viewer's language says so
+        val subs = if (selectedFormat(C.TRACK_TYPE_TEXT) == null) emptyList()
+            else specs.map { CopyLanguage.hasSubs(it.subLangs, prefs.subtitleLanguage.ifEmpty { "en" }) }
         val groups = list.map { Copies.groupRank(it.group) }
         val verdict = if (list.size > 1) {
             CopyRank.rank(specs, current, hdrScreen(), healths, fits, { CopyLanguage.levelName(wanted, it) }, subs, groups)
@@ -4990,6 +5023,25 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         entry.englishAsked = current.englishAsked
         entry.real = current.real
         attachSaved(entry, chooseOn = false)
+        // The same film: the subtitles and sound on now stay on, as the same kind (see reapplyChoices). Left to the new
+        // copy's own tracks, its first English subtitles could be a forced or signs-only track, and the screen blank.
+        val text = selectedFormat(C.TRACK_TYPE_TEXT)
+        for (type in intArrayOf(C.TRACK_TYPE_TEXT, C.TRACK_TYPE_AUDIO)) selectedFormat(type)?.let { trackWishes[type] = wishOf(it) }
+        keepTextId = text?.id?.takeIf { it.matches(EXT_ID) }
+        // Downloaded subtitles on now come along with what's known of them (language, release) and the timing found
+        // for them, so they show at once on this copy, where auto sync goes on listening and corrects them if this copy
+        // is timed differently. Before, they were held back and their timing started from nothing.
+        savedFileOf(keepTextId)?.let { name ->
+            SavedSubtitles.forVideo(this, current.key).firstOrNull { it.file == name }?.let { s ->
+                SavedSubtitles.add(this, entry.key, File(SavedSubtitles.dir(this), s.file), s.language, s.release, s.fileId)
+            }
+            prefs.copySubtitleTiming(name, current.key, entry.key)
+        }
+        // A delay set by hand for the old copy's own subtitles: the new copy's have timing of their own.
+        if (text != null && keepTextId == null && delays.subtitleUs != 0L) {
+            delays.subtitleUs = 0L
+            refreshLabels()
+        }
         entries += entry
         p.addMediaItem(mediaItem(entry))
         nextLookedUpFor = null
@@ -4997,6 +5049,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         p.seekTo(entries.lastIndex, at)
         p.play()
     }
+
+    /** A subtitle or sound track as a wish (see reapplyChoices): a track labelled forced or signs counts as forced. */
+    private fun wishOf(f: Format) = TrackWish(f.language, f.label, f.roleFlags, forcedish(f), f.channelCount)
+
+    private fun forcedish(f: Format) = f.selectionFlags and C.SELECTION_FLAG_FORCED != 0 || ReferenceCues.forcedLabel(f.label)
+
+    /** A downloaded or handed subtitle file that was on before a copy switch: kept on, by its id, on the new copy. */
+    private var keepTextId: String? = null
 
     private fun loadAbout(entry: Entry, show: Boolean) {
         val key = entry.key
@@ -5717,6 +5777,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         const val REAL_AGAIN_MS = 20_000L
         // How long the film waits for the TV to change refresh rate.
         const val DISPLAY_SWITCH_PAUSE_MS = 2_000L
+        /** How often the TV is looked at while the film waits for its switch, and how long that wait lasts at most. */
+        const val SWITCH_POLL_MS = 150L
+        const val SWITCH_WAIT_MAX_MS = 3_000L
         private const val GLASS_HOME = "app.glasshome.launcher"
         private const val GLASS_HOME_WARM = "app.glasshome.launcher.action.WARM"
         /** At most this long, picture subtitles wait for the film to start before they're read. */

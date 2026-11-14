@@ -109,6 +109,8 @@ object CopyRank {
         if (fit(best) < fit(against)) fitName(fit(against))?.let { costs.add(0, "may not have $it sound") }
         if (mine != null && !mine.troubled) mine.summary()?.takeIf { it.startsWith("smooth") }?.let { played += it }
         if (sub(best) && !sub(against) && subs.isNotEmpty()) reasons += "subtitles in your language"
+        // Not known to have them (a copy not played yet only says what its picture and sound are)
+        if (!sub(best) && sub(against) && subs.isNotEmpty()) costs += "may not have subtitles in your language"
         if (troubled(best)) mine?.summary()?.let { costs.add(0, it) }
         else if ((mine?.skips ?: 0) > 0) costs += "it skips damaged parts"
         return Verdict(best, against, played + reasons, costs)

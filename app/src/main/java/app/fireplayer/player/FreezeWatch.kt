@@ -107,6 +107,9 @@ class FreezeWatch(private val now: () -> Long) {
         }
         if (t - anchorAt < if (awaiting) STEP_WAIT_MS else STUCK_MS) return null
         var step = Step.entries[level]
+        // Soon after a TV switch it is the sound the switch took away: pausing doesn't bring it back, a jump does (it
+        // starts the sound afresh), so that comes first.
+        if (step == Step.PAUSE_PLAY && s.seekable && s.switchAtMs > 0 && t - s.switchAtMs < SWITCH_JUMP_FIRST_MS) step = Step.JUMP
         if (step == Step.JUMP && !s.seekable) step = Step.NEW_PLAYER
         return act(step, s, t, ahead, silent = false)
     }
@@ -159,6 +162,9 @@ class FreezeWatch(private val now: () -> Long) {
 
         /** While a TV switch's sound comes back the film waits on its first picture (see [SwitchTolerantAudioSink]). */
         const val SWITCH_SOUND_MS = SwitchTolerantAudioSink.WINDOW_MS
+
+        /** A freeze beginning this soon after a TV switch is met with a jump first. */
+        const val SWITCH_JUMP_FIRST_MS = 30_000L
 
         /** The last seconds aren't watched: sound and picture can end a few seconds apart, and a pause at the end stops there. */
         const val END_GUARD_MS = 10_000L

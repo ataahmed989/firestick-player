@@ -95,4 +95,40 @@ class BatchedInputTest {
         val threw = try { BatchedInput(input()).apply { skipFully(bytes.size - 1) }.readFully(out, 0, 2); false } catch (e: EOFException) { true }
         assertEquals(true, threw)
     }
+
+    @Test fun aReadThatFailsLeavesBaseWhereItWas() {
+        var at = 0
+        var failAt = Int.MAX_VALUE
+        // A connection that drops at byte failAt
+        val source = DataReader { buffer, offset, length ->
+            if (at >= bytes.size) return@DataReader C.RESULT_END_OF_INPUT
+            if (at >= failAt) throw java.io.IOException("dropped")
+            val n = minOf(length, bytes.size - at, 3000, failAt - at)
+            System.arraycopy(bytes, at, buffer, offset, n)
+            at += n
+            n
+        }
+        val base = DefaultExtractorInput(source, 0, bytes.size.toLong())
+        val batched = BatchedInput(base)
+        val small = ByteArray(10)
+        batched.readFully(small, 0, 10)
+        failAt = 10 + BatchedInput.CHUNK / 2   // inside the next read
+        val big = ByteArray(BatchedInput.CHUNK)
+        val threw = try { batched.readFully(big, 0, big.size); false } catch (e: java.io.IOException) { true }
+        assertEquals(true, threw)
+        batched.finish()
+        // Only what was really handed out is taken: the failed read is tried again from its start
+        assertEquals(10L, base.position)
+        // The player tries again on a new connection from there, and reads what was meant
+        var at2 = base.position.toInt()
+        val again = DefaultExtractorInput(DataReader { buffer, offset, length ->
+            val n = minOf(length, bytes.size - at2, 3000)
+            if (n <= 0) return@DataReader C.RESULT_END_OF_INPUT
+            System.arraycopy(bytes, at2, buffer, offset, n)
+            at2 += n
+            n
+        }, base.position, bytes.size.toLong())
+        BatchedInput(again).readFully(big, 0, big.size)
+        assertArrayEquals(bytes.copyOfRange(10, 10 + big.size), big)
+    }
 }
