@@ -1288,10 +1288,23 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             duration?.let { result.putExtra("extra_duration", it) }
         }
         savePosition()
-        // Silence at once; the player itself is released only after TiviMate is back on screen.
-        p?.pause()
+        // Silence at once, and the film let go of: its decoders and what was loaded ahead are freed now, on the
+        // player's own thread, while the TV changes back to its usual refresh rate (the screen blank anyway). Paused
+        // instead, all of that came with the release a second later, in the middle of the app's first moments back
+        // (on the Fire TV Stick 4K Max, 2 s of work while Glass Home was coming back). The player itself is released
+        // only after the app is back on screen. Nothing more is heard from it: the screen is closing.
+        p?.let {
+            it.removeListener(this)
+            it.stop()
+        }
         result.putExtra("end_by", if (completed) "playback_completion" else "user")
         setResult(RESULT_OK, result)
+        // Glass Home, if a film had it let go of the GPU, puts its screen back on it while this closes, not in its
+        // first frame (over 2 s on the Fire TV Stick 4K Max, the remote not answering meanwhile)
+        try {
+            sendBroadcast(Intent(GLASS_HOME_WARM).setPackage(GLASS_HOME))
+        } catch (_: RuntimeException) {
+        }
         // Straight back to the app that opened us, without a lingering empty task. Opened by another app, the whole
         // player task goes: a player left in it from before (Home pressed, then Fire OS closed the app, so the newer
         // one couldn't close it) would otherwise come back and play the old film on Back.
@@ -5704,6 +5717,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         const val REAL_AGAIN_MS = 20_000L
         // How long the film waits for the TV to change refresh rate.
         const val DISPLAY_SWITCH_PAUSE_MS = 2_000L
+        private const val GLASS_HOME = "app.glasshome.launcher"
+        private const val GLASS_HOME_WARM = "app.glasshome.launcher.action.WARM"
         /** At most this long, picture subtitles wait for the film to start before they're read. */
         const val START_HOLD_MS = 10_000L
         /** How long a film that froze is paused before it's played again (the viewer did the same, and it went on). */
