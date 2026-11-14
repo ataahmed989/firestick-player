@@ -84,8 +84,10 @@ private class SeekableMkvExtractor(
     private var recovery: Recovery? = null
     // Damaged stretches got past in this file, so one that's damaged throughout ends in an error.
     private var recovered = 0
-    // The latest time of film read since the last jump: where playback runs out before a damaged stretch.
+    // The latest time of film read since the last jump: where playback runs out before a damaged stretch. A jump
+    // straight into one has read nothing, and playback goes on from where the jump was to ([jumpedToUs]).
     @Volatile private var lastSampleUs = C.TIME_UNSET
+    private var jumpedToUs = 0L
 
     override fun init(output: ExtractorOutput) {
         inner.init(object : ExtractorOutput by output {
@@ -177,6 +179,7 @@ private class SeekableMkvExtractor(
         landingPos = -1
         recovery = null
         lastSampleUs = C.TIME_UNSET
+        jumpedToUs = timeUs
         inner.seek(position, timeUs)
         search = if (active && (position != 0L || timeUs != 0L)) Search(timeUs) else null
     }
@@ -261,10 +264,10 @@ private class SeekableMkvExtractor(
                 Log.w(TAG, "The file doesn't read at byte $damagedAt of $length, nor at the $tries places after it tried", cause)
                 throw ParserException.createForMalformedContainer("Damaged from byte $damagedAt", cause)
             }
-            val fromUs = lastSampleUs
+            val fromUs = lastSampleUs.takeIf { it != C.TIME_UNSET } ?: jumpedToUs
             Log.w(TAG, "The file doesn't read at byte $damagedAt of $length (${cause.message}); going on at " +
                 "${g.timeUs / 1000} ms, byte ${g.position} ($tries looks), read to ${fromUs / 1000} ms")
-            if (fromUs != C.TIME_UNSET) runCatching { onSkip?.invoke(uri, fromUs, g.timeUs) }
+            runCatching { onSkip?.invoke(uri, fromUs, g.timeUs) }
             inner.seek(g.position, g.timeUs)
             // The last look may have been further on than the place found: reading starts there (see [read]).
             landingPos = g.position
