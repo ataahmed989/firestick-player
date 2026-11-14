@@ -4791,13 +4791,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         val current = list.indexOfFirst { it.current }
         val healths = list.map { healthOf(it.uri) }
-        // English sound (the viewer's language) always; for a film made in another language, its own as well, watched
-        // with subtitles, which in the viewer's language only tip a close call.
+        // The film's own language first (a foreign film is watched with subtitles), English (the viewer's) next;
+        // subtitles in the viewer's language only tip a close call.
         val wanted = CopyLanguage.wanted(copiesOriginal, prefs.audioLanguage)
         val fits = list.mapIndexed { i, c -> CopyLanguage.fit(wanted, specs[i].audioLangs, CopyLanguage.tagIn(c.name)) }
         val subs = specs.map { CopyLanguage.hasSubs(it.subLangs, prefs.subtitleLanguage.ifEmpty { "en" }) }
-        val wantedName = wanted.joinToString(" or ") { CopyLanguage.name(it) }
-        val verdict = if (list.size > 1) CopyRank.rank(specs, current, hdrScreen(), healths, fits, wantedName, subs) else null
+        val verdict = if (list.size > 1) {
+            CopyRank.rank(specs, current, hdrScreen(), healths, fits, { CopyLanguage.levelName(wanted, it) }, subs)
+        } else null
         return CopyView(list, specs, healths, current, verdict, wanted)
     }
 

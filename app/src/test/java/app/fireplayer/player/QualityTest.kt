@@ -264,15 +264,20 @@ class QualityTest {
     // --- Which sound is wanted
 
     @Test
-    fun englishAlwaysAndTheFilmsOwnForForeignFilms() {
+    fun theFilmsOwnLanguageFirstThenEnglish() {
         assertEquals(listOf("en"), CopyLanguage.wanted("en", "en"))
         assertEquals(listOf("en"), CopyLanguage.wanted(null, "en"))
-        assertEquals(listOf("en", "ko"), CopyLanguage.wanted("ko", "en"))
-        assertEquals(listOf("en", "fr"), CopyLanguage.wanted("fre", "eng"))
-        // A Korean film: Korean or English sound, either as good.
-        assertEquals(2, CopyLanguage.fit(listOf("en", "ko"), "ko", null))
-        assertEquals(2, CopyLanguage.fit(listOf("en", "ko"), "en", null))
-        assertEquals(0, CopyLanguage.fit(listOf("en", "ko"), "fr", null))
+        assertEquals(listOf("ko", "en"), CopyLanguage.wanted("ko", "en"))
+        assertEquals(listOf("fr", "en"), CopyLanguage.wanted("fre", "eng"))
+        // A Korean film: Korean sound first, English next, then a copy that may have either.
+        val w = listOf("ko", "en")
+        assertEquals(3, CopyLanguage.fit(w, "ko,en", null))
+        assertEquals(2, CopyLanguage.fit(w, "en", null))
+        assertEquals(0, CopyLanguage.fit(w, "fr", null))
+        assertEquals(1, CopyLanguage.fit(w, "", CopyLanguage.MULTI))
+        assertEquals(2, CopyLanguage.fit(w, "", "en"))
+        assertEquals("Korean", CopyLanguage.levelName(w, 3))
+        assertEquals("English", CopyLanguage.levelName(w, 2))
     }
 
     @Test
@@ -282,7 +287,7 @@ class QualityTest {
         assertEquals("en", CopyLanguage.tagIn("EN - The Matrix (1999)"))
         assertNull(CopyLanguage.tagIn("Mission: Impossible - Fallout"))
         // What its tracks say beats its tag.
-        assertEquals(2, CopyLanguage.fit(listOf("en"), "fr,eng", "fr"))
+        assertEquals(3, CopyLanguage.fit(listOf("en"), "fr,eng", "fr"))
         assertEquals(0, CopyLanguage.fit(listOf("en"), "fr", "en"))
         assertEquals(1, CopyLanguage.fit(listOf("en"), "", CopyLanguage.MULTI))
         assertEquals(0, CopyLanguage.fit(listOf("en"), "", "fr"))
@@ -293,9 +298,13 @@ class QualityTest {
     fun theWantedSoundComesBeforeMorePictureData() {
         // A French copy with more data, an English one with less: for an English film, the English one.
         val copies = listOf(copy("HEVC", 20.0), copy("HEVC", 9.0))
-        val v = CopyRank.rank(copies, 0, false, fits = listOf(0, 2), wantedName = "English")
+        val v = CopyRank.rank(copies, 0, false, fits = listOf(0, 3), fitName = { if (it == 3) "English" else null })
         assertEquals(1, v.best)
         assertEquals("English sound", v.reasons.first())
+        // The film's own language over English.
+        val korean = CopyRank.rank(copies, 0, false, fits = listOf(2, 3), fitName = { mapOf(3 to "Korean", 2 to "English")[it] })
+        assertEquals(1, korean.best)
+        assertEquals("Korean sound", korean.reasons.first())
     }
 
     @Test

@@ -400,11 +400,26 @@ class SidePanel(private val activity: Activity) {
      */
     fun actionRow(label: String, note: String?, badge: String, style: Rows.Badge, onClick: () -> Unit): View {
         val row = rows.base()
-        val column = RowLayout(activity, rows.textColors).apply {
+        // Selected, it keeps its dark fill with a blue outline instead of turning white, so its blue or gray pill and
+        // its words stay as they are.
+        val d = rows.density
+        row.background = android.graphics.drawable.StateListDrawable().apply {
+            setEnterFadeDuration(140)
+            setExitFadeDuration(140)
+            addState(intArrayOf(android.R.attr.state_focused), android.graphics.drawable.GradientDrawable().apply {
+                cornerRadius = 9 * d
+                setColor(ContextCompat.getColor(activity, R.color.action_focus_fill))
+                setStroke(rows.dp(2), ContextCompat.getColor(activity, R.color.accent))
+            })
+            row.background?.let { addState(intArrayOf(), it) }
+        }
+        val white = ContextCompat.getColor(activity, R.color.text)
+        val column = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
-            isDuplicateParentStateEnabled = true
-            addView(rows.text(label))
+            addView(rows.text(label).apply { tag = KEEP_COLORS; setTextColor(white) })
             if (!note.isNullOrEmpty()) addView(rows.text(note).apply {
+                tag = KEEP_COLORS
+                setTextColor(white)
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
                 alpha = 0.75f
                 isSingleLine = false
@@ -414,7 +429,8 @@ class SidePanel(private val activity: Activity) {
             })
         }
         row.addView(column, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        row.addView(rows.badge(badge, style))
+        // Its own colors, not the ones it would take on a white selected row.
+        row.addView(rows.badge(badge, style).apply { isDuplicateParentStateEnabled = false })
         row.setOnClickListener { onClick() }
         add(row, groupable = false)
         return row

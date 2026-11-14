@@ -3,30 +3,44 @@ package app.fireplayer.player
 import java.util.Locale
 
 /**
- * Which copies have the sound the viewer wants: their own language always, and for a film made in another language its
- * own language too (watched with subtitles), either one as good. What a copy has comes from its tracks once FirePlayer
- * has played it, else from the language tag the provider puts in front of its name ("|FR| …").
+ * Which copies have the sound the viewer wants: the film's own language first (a foreign film watched with subtitles),
+ * the viewer's own (English) next. What a copy has comes from its tracks once FirePlayer has played it, else from the
+ * language tag the provider puts in front of its name ("|FR| …").
  */
 object CopyLanguage {
 
     const val MULTI = "multi"
 
-    /** The sounds to look for, either as good: the viewer's language, and [original] (the film's own) when it differs. */
+    /** The sounds to look for, best first: [original] (the film's own), then the viewer's language when it differs. */
     fun wanted(original: String?, preferred: String): List<String> {
         val p = code(preferred) ?: "en"
         val o = code(original)
-        return if (o == null || o == p) listOf(p) else listOf(p, o)
+        return if (o == null || o == p) listOf(p) else listOf(o, p)
     }
 
-    /** 2: has a sound wanted; 1: may have one (several languages, or nothing known); 0: known to have none. */
+    /**
+     * How well a copy's sound suits: 3 has the first language [wanted], 2 the second; 1 may have one (several
+     * languages, or nothing known); 0 is known to have neither.
+     */
     fun fit(wanted: List<String>, audioLangs: String, tag: String?): Int {
         val langs = audioLangs.split(',').mapNotNull { code(it) }
-        return when {
-            langs.isNotEmpty() -> if (langs.any { it in wanted }) 2 else 0
-            tag == null || tag == MULTI -> 1
-            tag in wanted -> 2
-            else -> 0
+        fun level(has: (String) -> Boolean): Int? = when {
+            has(wanted[0]) -> 3
+            wanted.size > 1 && has(wanted[1]) -> 2
+            else -> null
         }
+        return when {
+            langs.isNotEmpty() -> level { it in langs } ?: 0
+            tag == null || tag == MULTI -> 1
+            else -> level { it == tag } ?: 0
+        }
+    }
+
+    /** The language a [fit] level stands for, by name; null for none. */
+    fun levelName(wanted: List<String>, fit: Int): String? = when (fit) {
+        3 -> name(wanted[0])
+        2 -> wanted.getOrNull(1)?.let { name(it) }
+        else -> null
     }
 
     /** Whether the file carries subtitles in [language]. */
