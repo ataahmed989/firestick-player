@@ -84,6 +84,7 @@ import app.fireplayer.player.XtreamAccount
 import app.fireplayer.player.Copies
 import app.fireplayer.player.CopyRank
 import app.fireplayer.player.CopyHealth
+import app.fireplayer.player.CopyLanguage
 import app.fireplayer.player.MediaSpec
 import app.fireplayer.player.RedirectMemoryDataSource
 import app.fireplayer.subs.AutoSync
@@ -4432,7 +4433,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 rebuildFromFix()
                 refresh()
             }.asSubRow()
-            row("Show details") { openDetails(from, show = true) }.asSubRow()
+            if (tmdb.isConfigured && g.tmdbId > 0) row("Show details") { openDetails(from, show = true) }.asSubRow()
+            row("Picture & sound") { openQuality(from, show = true) }.asSubRow()
             if (tmdb.isConfigured) row("Fix match") { panel.close(); openFixShow(from) }.asSubRow()
             if (portal != null) row("Source", portal) {}.asSubRow()
             // Why it was matched so, under the card, so the card stays whole.
@@ -4449,7 +4451,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 refresh()
             }
             if (!thisTitleOpen) return
-            row("Film details") { openDetails(from, show = false) }.asSubRow()
+            if (tmdb.isConfigured) row("Film details") { openDetails(from, show = false) }.asSubRow()
+            row("Picture & sound") { openQuality(from, show = false) }.asSubRow()
             if (tmdb.isConfigured) row("Fix match") { panel.close(); openFixFilm(from) }.asSubRow()
             row("Source", portal) {}.asSubRow()
             if (!tmdb.isConfigured) message("Add a TMDB API key below to fix this film's name.")
@@ -4463,26 +4466,34 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     private fun openDetails(from: View, show: Boolean) {
         val entry = currentEntry() ?: return
-        val canAsk = tmdb.isConfigured && (!show || (guide?.tmdbId ?: 0) > 0)
         if (aboutFor != entry.key || (about == null && aboutStatus != LOADING)) {
             aboutFor = entry.key
             about = null
-            if (canAsk) {
-                aboutStatus = LOADING
-                loadAbout(entry, show)
-            } else {
-                aboutStatus = if (tmdb.isConfigured) "TMDB doesn't know this show by your provider's name. Fix match finds it."
-                    else "Add a TMDB API key in Settings for the cover and story."
-            }
+            aboutStatus = LOADING
+            loadAbout(entry, show)
         }
-        if (copiesFor != entry.key) loadCopies(entry, show)
         panel.close()
         openPanel(if (show) "Show details" else "Film details", from) {
             val a = about
             if (a == null) message(aboutStatus ?: LOADING)
             else details(a, if (show) guideEpisode(entry) else null, NextEpisode.portal(entry.uri))
+        }
+    }
+
+    /**
+     * Picture & sound: at the top, the best copy (a blue button to switch to it from here, or gray when this is it);
+     * then what the copy playing is made of; then every copy the provider lists. The button is the first thing focused,
+     * so the window opens at its top.
+     */
+    private fun openQuality(from: View, show: Boolean) {
+        val entry = currentEntry() ?: return
+        if (copiesFor != entry.key) loadCopies(entry, show)
+        panel.close()
+        openPanel("Picture & sound", from) {
+            val v = copyVerdict()
+            bestButton(v)
             pictureAndSound()
-            copies(show)
+            copies(show, v)
         }
     }
 
@@ -4513,14 +4524,31 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             sizeBytes = size,
             overallBps = if (size > 0 && seconds > 0) size * 8 / seconds else 0L,
             measuredSecs = secs,
+            audioLangs = trackLanguages(C.TRACK_TYPE_AUDIO, inFileOnly = false),
+            subLangs = trackLanguages(C.TRACK_TYPE_TEXT, inFileOnly = true),
         )
+    }
+
+    /** The languages of the film's tracks of [type] ("en,fr"); for subtitles only those inside the file, not ones added. */
+    private fun trackLanguages(type: Int, inFileOnly: Boolean): String {
+        val groups = player?.currentTracks?.groups ?: return ""
+        val out = LinkedHashSet<String>()
+        for (g in groups) {
+            if (g.type != type) continue
+            for (i in 0 until g.length) {
+                val f = g.getTrackFormat(i)
+                if (inFileOnly && f.containerMimeType?.startsWith("video/") != true) continue
+                CopyLanguage.code(f.language)?.let { out += it }
+            }
+        }
+        return out.joinToString(",")
     }
 
     /** Film or show details: what the copy playing is made of, every number with where it came from. */
     private fun SidePanel.pictureAndSound() {
         val spec = playingSpec() ?: return
         val p = player ?: return
-        header("Picture & sound")
+        header("This copy")
         val link = p.currentMediaItem?.localConfiguration?.uri?.toString()
         val rates = embeddedCues.source(link)?.rates
         fun over(id: String?): String {
@@ -4679,17 +4707,21 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private fun measuredQuality(uri: Uri): MediaSpec? =
         qualityKey(uri)?.let { qualitySeen.getString(it, null) }?.let { MediaSpec.decode(it) }
 
-    // Other copies of the title playing, as the provider describes them: for this entry, while it's the one shown.
+    // Other copies of the title playing, as the provider describes them: for this entry, while it's the one shown; and
+    // the language the title was made in (TMDB's), for which sound to look for.
     private var copiesFor: String? = null
     private var copyList: List<Copies.Copy>? = null
     private var copiesStatus: String? = null
+    private var copiesOriginal: String? = null
 
     private fun loadCopies(entry: Entry, show: Boolean) {
         val key = entry.key
         val uri = entry.uri
         val seriesId = if (show) NextEpisode.rememberedShowId(this, uri) else null
+        val showTmdb = guide?.tmdbId ?: 0
         moreCopiesOpen = false
         copyList = null
+        copiesOriginal = null
         if (show && seriesId == null) {
             // Not known yet which show this is: asked again next time.
             copiesFor = null
@@ -4703,9 +4735,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 val finder = Copies(book(), headersFromIntent()) { measuredQuality(it) }
                 if (show) seriesId?.let { finder.ofEpisode(uri, it) }.orEmpty() else finder.ofFilm(uri)
             }
+            val original = if (!tmdb.isConfigured) null else runCatching {
+                val id = if (show) showTmdb else filmTmdbId(entry)
+                if (id > 0) tmdb.about(id, show)?.originalLanguage else null
+            }.getOrNull()
             handler.post {
                 if (isFinishing || copiesFor != key) return@post
                 copyList = found.getOrNull()
+                copiesOriginal = original
                 copiesStatus = when {
                     found.isFailure -> "Couldn't ask the provider just now."
                     copyList.isNullOrEmpty() -> "Only titles listed through FirePlayer's title server can be compared."
@@ -4724,19 +4761,20 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         windowManager.defaultDisplay.hdrCapabilities?.supportedHdrTypes?.isNotEmpty() == true
     }.getOrDefault(false)
 
-    /**
-     * Film or show details: every copy the provider lists of this title, as its probe of each file describes it, the
-     * one with the best picture and sound recommended and why. Choosing another plays it from here.
-     */
-    private fun SidePanel.copies(show: Boolean) {
-        header("Copies")
+    /** The copies of the title playing, what's known of each, and which is best: worked out once per drawing of the window. */
+    private class CopyView(
+        val list: List<Copies.Copy>,
+        val specs: List<MediaSpec>,
+        val healths: List<CopyHealth?>,
+        val current: Int,
+        val verdict: CopyRank.Verdict?,
+        val wanted: String,
+    )
+
+    private fun copyVerdict(): CopyView? {
         // Only this entry's copies: after the next episode came on with the window open, the old list isn't offered.
         val list = copyList.takeIf { copiesFor != null && copiesFor == currentEntry()?.key }
-        if (list == null || list.isEmpty()) {
-            message(copiesStatus ?: LOADING)
-            return
-        }
-        if (list.size == 1) message("Your provider lists no other copy of this ${if (show) "episode" else "film"}.")
+        if (list.isNullOrEmpty()) return null
         // The copy playing: measured here (with what earlier plays measured of it), unless its file states its rates.
         val playing = playingSpec()
         val playKey = player?.let { pl -> pl.currentMediaItem?.localConfiguration?.uri?.let { qualityKey(it) }?.let { "$it@${pl.currentMediaItemIndex}" } }
@@ -4753,60 +4791,82 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         val current = list.indexOfFirst { it.current }
         val healths = list.map { healthOf(it.uri) }
-        val verdict = if (list.size > 1) CopyRank.rank(specs, current, hdrScreen(), healths) else null
-        val best = verdict?.best
-        fun nameOf(i: Int) = list[i].name.ifBlank { currentEntry()?.info?.title ?: "Copy ${i + 1}" }
-        if (verdict != null) {
-            when {
-                best == null -> message("Nothing is known of the other copies yet. Play one for a minute and FirePlayer measures it.")
-                best == current -> message("This copy looks best" + (verdict.reasons.firstOrNull()?.let { ": $it" } ?: "") + ".")
-                else -> message("“${nameOf(best)}” looks best: " + verdict.reasons.joinToString("; ") +
-                    (if (verdict.tradeOffs.isNotEmpty()) ". It has " + verdict.tradeOffs.joinToString(" and ") else "") + ".", accent = true)
-            }
+        // English sound for a film made in English (or when TMDB doesn't say); the film's own language otherwise, with
+        // subtitles, which in the viewer's language only tip a close call.
+        val wanted = CopyLanguage.wanted(copiesOriginal, prefs.audioLanguage)
+        val fits = list.mapIndexed { i, c -> CopyLanguage.fit(wanted, specs[i].audioLangs, CopyLanguage.tagIn(c.name)) }
+        val subs = specs.map { CopyLanguage.hasSubs(it.subLangs, prefs.subtitleLanguage.ifEmpty { "en" }) }
+        val verdict = if (list.size > 1) CopyRank.rank(specs, current, hdrScreen(), healths, fits, CopyLanguage.name(wanted), subs) else null
+        return CopyView(list, specs, healths, current, verdict, wanted)
+    }
+
+    /**
+     * The top of Picture & sound: blue, to switch to the best copy and go on from here; gray when this is the best,
+     * or while it can't be told. The only place that says which is best, with the reason under it.
+     */
+    private fun SidePanel.bestButton(v: CopyView?) {
+        val best = v?.verdict?.best
+        val at = formatTime(player?.currentPosition ?: 0L, long = true)
+        when {
+            v == null -> actionRow(if (copiesStatus == LOADING) "Finding other copies…" else "No other copies to compare", null,
+                "Best", Rows.Badge.INACTIVE) {}
+            best == null -> actionRow("Best copy not known yet",
+                if (v.list.size > 1) "Play another copy for a minute and FirePlayer measures it." else null, "—", Rows.Badge.INACTIVE) {}
+            best == v.current -> actionRow("You're on the best copy", v.verdict!!.reasons.firstOrNull()?.replaceFirstChar { it.uppercase() },
+                "Best", Rows.Badge.INACTIVE) {}
+            else -> actionRow("Switch to the best copy",
+                (v.verdict!!.reasons + v.verdict.tradeOffs.map { "but $it" }).joinToString(" · ").replaceFirstChar { it.uppercase() },
+                "Resume $at", Rows.Badge.ACTIVE) { playCopy(v.list[best]) }
         }
+    }
+
+    /** Every copy the provider lists of this title: picture, sound, how it has played; the best one marked "Best". */
+    private fun SidePanel.copies(show: Boolean, v: CopyView?) {
+        header("Copies")
+        if (v == null) {
+            message(copiesStatus ?: LOADING)
+            return
+        }
+        val list = v.list
+        val best = v.verdict?.best
+        fun nameOf(i: Int) = list[i].name.ifBlank { currentEntry()?.info?.title ?: "Copy ${i + 1}" }
         // The one playing, the one recommended, then the others known; copies nothing is known of fold into one row.
-        val known = list.indices.filter { it == current || it == best || specs[it].videoBps > 0 || specs[it].overallBps > 0 || list[it].spec != null }
-        val order = (listOfNotNull(current.takeIf { it >= 0 }, best) + known).distinct()
+        val known = list.indices.filter { it == v.current || it == best || v.specs[it].videoBps > 0 || v.specs[it].overallBps > 0 || list[it].spec != null }
+        val order = (listOfNotNull(v.current.takeIf { it >= 0 }, best) + known).distinct()
         val unknown = list.indices.filter { it !in order }
         fun copyRow(i: Int) {
             val c = list[i]
-            val sp = specs[i]
-            val tags = listOfNotNull(
-                if (c.current) "Playing" else null,
-                if (i == best && list.size > 1) "Best" else null,
-                healths[i]?.summary()?.replaceFirstChar { it.uppercase() },
-                when {
-                    sp.videoHow == MediaSpec.How.MEASURED -> "measured by FirePlayer"
-                    sp.videoHow == MediaSpec.How.STATED -> "stated in the file"
-                    sp.videoHow == MediaSpec.How.ESTIMATED -> "estimated from the file's rate"
-                    else -> null
-                },
-            ).joinToString(" · ")
+            val sp = v.specs[i]
             val picture = listOfNotNull(
                 sp.videoCodec,
                 sp.bitDepth.takeIf { it > 8 }?.let { "$it-bit" },
                 sp.hdr?.takeIf { it != "SDR" },
                 if (sp.width > 0 && sp.height > 0) "${sp.width}×${sp.height}" else null,
+            ).joinToString(" · ")
+            val langs = sp.audioLangs.split(',').mapNotNull { CopyLanguage.code(it) }.distinct()
+            val sound = listOfNotNull(
                 sp.soundLine(),
-            ).joinToString(" · ").ifEmpty { "Nothing known yet" }
+                langs.takeIf { it.isNotEmpty() }?.joinToString("/") { CopyLanguage.name(it) },
+                v.healths[i]?.summary()?.replaceFirstChar { it.uppercase() },
+            ).joinToString(" · ")
+            val notes = listOf(picture, sound).filter { it.isNotEmpty() }.joinToString(" · ").ifEmpty { "Nothing known yet" }
             val rate = when {
                 sp.videoBps > 0 -> (if (sp.videoHow == MediaSpec.How.ESTIMATED) "~" else "") + MediaSpec.mbps(sp.videoBps)
                 sp.overallBps > 0 -> MediaSpec.mbps(sp.overallBps)
                 else -> null
             }
-            resultRow(nameOf(i), listOf(tags, picture).filter { it.isNotEmpty() }.joinToString("\n"), rate, selected = c.current) {
+            copyRow(nameOf(i), notes, rate, best = i == best && list.size > 1, playing = c.current) {
                 if (!c.current) playCopy(c)
             }
         }
         order.forEach { copyRow(it) }
         if (unknown.isNotEmpty()) {
-            dropdownRow("${unknown.size} more ${if (unknown.size == 1) "copy" else "copies"}", "No details", Rows.Badge.INACTIVE, moreCopiesOpen) {
+            dropdownRow("${unknown.size} more ${if (unknown.size == 1) "copy" else "copies"}", null, Rows.Badge.INACTIVE, moreCopiesOpen) {
                 moreCopiesOpen = !moreCopiesOpen
                 refresh()
             }
             if (moreCopiesOpen) unknown.forEach { copyRow(it) }
         }
-        message("Picture data is the rate of the picture alone. The frame size can include black bars, so it says less about sharpness.")
     }
 
     private var moreCopiesOpen = false

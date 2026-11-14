@@ -13,7 +13,8 @@ import kotlin.math.abs
  * [CLOSE]) are told apart by width, bit depth, then sound. A copy nobody measured is listed but never recommended.
  *
  * Before any of that, a copy that plays: one that failed to play or keeps stopping to load ([CopyHealth.troubled]) is
- * only recommended when every copy known does the same.
+ * only recommended when every copy known does the same. Then the sound wanted ([CopyLanguage.fit]): a copy known to
+ * lack it only when no copy is known to have it. Subtitles in the viewer's language only break a tie.
  */
 object CopyRank {
 
@@ -38,8 +39,20 @@ object CopyRank {
     )
 
     /** [copies] in the order shown; [current] is the one playing; [hdrScreen]: the TV shows HDR; [health]: how each has played. */
-    fun rank(copies: List<MediaSpec>, current: Int, hdrScreen: Boolean, health: List<CopyHealth?> = emptyList()): Verdict {
+    fun rank(
+        copies: List<MediaSpec>,
+        current: Int,
+        hdrScreen: Boolean,
+        health: List<CopyHealth?> = emptyList(),
+        /** Per copy, [CopyLanguage.fit] for the sound wanted, and [wantedName] its language's name, for the reason. */
+        fits: List<Int> = emptyList(),
+        wantedName: String? = null,
+        /** Per copy, whether it has subtitles in the viewer's language. */
+        subs: List<Boolean> = emptyList(),
+    ): Verdict {
         fun troubled(i: Int) = health.getOrNull(i)?.troubled == true
+        fun fit(i: Int) = fits.getOrNull(i) ?: 1
+        fun sub(i: Int) = subs.getOrNull(i) == true
         // The picture's own rate when every copy known has one (an estimate from the whole file's rate doesn't count), else
         // the whole file's for all of them: never one against the other. A copy with neither isn't in the running.
         fun picture(s: MediaSpec) = s.videoBps > 0 && s.videoHow != MediaSpec.How.ESTIMATED
@@ -49,8 +62,10 @@ object CopyRank {
         if (known.isEmpty()) return Verdict(null, null, emptyList(), emptyList())
         val usePicture = known.all { picture(copies[it]) }
         val all = if (usePicture) known else known.filter { whole(copies[it]) > 0 }
-        // Copies that play come first: the others only when nothing else is known.
-        val measured = all.filterNot { troubled(it) }.ifEmpty { all }
+        // Copies that play come first: the others only when nothing else is known. Then the sound wanted.
+        val playing = all.filterNot { troubled(it) }.ifEmpty { all }
+        val bestFit = playing.maxOf { fit(it) }
+        val measured = playing.filter { fit(it) == bestFit }
         fun bits(i: Int) = if (usePicture) copies[i].videoBps else whole(copies[i])
         val codecs = measured.mapNotNull { copies[it].videoCodec }.toSet()
         val mixed = codecs.size > 1
@@ -66,6 +81,7 @@ object CopyRank {
                     .thenByDescending { copies[it].bitDepth }
                     .thenByDescending { soundRank(copies[it]) }
                     .thenByDescending { copies[it].channels }
+                    .thenByDescending { sub(it) }
                     .thenByDescending { effective(it) },
             ).first()
         }
@@ -85,7 +101,11 @@ object CopyRank {
         val theirs = health.getOrNull(against)
         val played = ArrayList<String>()
         if (troubled(against) && !troubled(best)) played += "the other ${theirs?.summary()}"
+        // Then the sound: the language wanted, where the other doesn't have it (or may not).
+        if (wantedName != null && fit(best) > fit(against)) played += "$wantedName sound"
+        if (wantedName != null && fit(best) < fit(against)) costs.add(0, "may not have $wantedName sound")
         if (mine != null && !mine.troubled) mine.summary()?.takeIf { it.startsWith("smooth") }?.let { played += it }
+        if (sub(best) && !sub(against) && subs.isNotEmpty()) reasons += "subtitles in your language"
         if (troubled(best)) mine?.summary()?.let { costs.add(0, it) }
         else if ((mine?.skips ?: 0) > 0) costs += "it skips damaged parts"
         return Verdict(best, against, played + reasons, costs)

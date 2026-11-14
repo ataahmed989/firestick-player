@@ -375,6 +375,98 @@ class SidePanel(private val activity: Activity) {
         return row
     }
 
+    /**
+     * A row in smaller type, for a list of many (Playlists), with [trailing] after its value, such as [tickPill].
+     */
+    fun compactRow(label: String, value: String?, trailing: View?, onClick: () -> Unit): View {
+        val row = rows.build(label, value, null)
+        for (i in 0 until row.childCount) (row.getChildAt(i) as? TextView)?.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+        if (trailing != null) row.addView(trailing)
+        row.setOnClickListener { onClick() }
+        add(row)
+        return row
+    }
+
+    /** A small gray pill with a blue tick: all of it done. */
+    fun tickPill(): TextView = rows.badge("✓", Rows.Badge.INACTIVE).apply {
+        minWidth = rows.dp(26)
+        setTextColor(ContextCompat.getColorStateList(activity, R.color.sel_value_on))
+        contentDescription = "All checked"
+    }
+
+    /**
+     * A row that does one thing, with what it does in a pill on the right: blue ([Rows.Badge.ACTIVE]) when it's worth
+     * doing, gray when there's nothing to do. [note] is a second, smaller line under the label.
+     */
+    fun actionRow(label: String, note: String?, badge: String, style: Rows.Badge, onClick: () -> Unit): View {
+        val row = rows.base()
+        val column = RowLayout(activity, rows.textColors).apply {
+            orientation = LinearLayout.VERTICAL
+            isDuplicateParentStateEnabled = true
+            addView(rows.text(label))
+            if (!note.isNullOrEmpty()) addView(rows.text(note).apply {
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+                alpha = 0.75f
+                isSingleLine = false
+                maxLines = 2
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                    .apply { topMargin = rows.dp(2) }
+            })
+        }
+        row.addView(column, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        row.addView(rows.badge(badge, style))
+        row.setOnClickListener { onClick() }
+        add(row, groupable = false)
+        return row
+    }
+
+    /**
+     * One of a title's copies: its name, a line of what it is, and on the right its data rate under a "Best" pill when
+     * it's the one recommended. Blue while it's the one playing.
+     */
+    fun copyRow(title: String, notes: String, rate: String?, best: Boolean, playing: Boolean, onClick: () -> Unit): View {
+        val row = rows.base()
+        row.isSelected = playing
+        row.setPadding(rows.dp(16), rows.dp(9), rows.dp(14), rows.dp(9))
+        val column = RowLayout(activity, rows.textColors).apply {
+            orientation = LinearLayout.VERTICAL
+            isDuplicateParentStateEnabled = true
+            addView(rows.text(title).apply { setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f) })
+            if (notes.isNotEmpty()) addView(FactsText(activity, notes.split(" · ")).apply {
+                typeface = ResourcesCompat.getFont(activity, R.font.figtree_600)
+                setTextColor(rows.textColors)
+                alpha = 0.72f
+                maxLines = 2
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                    .apply { topMargin = rows.dp(2) }
+            })
+        }
+        row.addView(column, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        val side = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.END
+            isDuplicateParentStateEnabled = true
+            if (best) addView(rows.badge("Best", Rows.Badge.ACTIVE).apply {
+                minWidth = 0
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            })
+            if (rate != null) addView(rows.text(rate).apply {
+                typeface = ResourcesCompat.getFont(activity, R.font.figtree_700)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
+                gravity = Gravity.END
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                    .apply { if (best) topMargin = rows.dp(4) }
+            })
+        }
+        row.addView(side, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            .apply { marginStart = rows.dp(10) })
+        row.setOnClickListener { onClick() }
+        add(row, groupable = false)
+        return row
+    }
+
     /** A picture from TMDB, [w] by [h] dp with [corner] dp corners, on a faint fill while it loads (or has none). */
     fun cover(url: String?, w: Int, h: Int, corner: Int): ImageView = CoverImage(activity).apply {
         scaleType = ImageView.ScaleType.CENTER_CROP

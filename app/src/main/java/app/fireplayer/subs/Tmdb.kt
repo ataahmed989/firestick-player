@@ -200,6 +200,8 @@ class Tmdb(private val key: () -> String, private val memory: Memory) {
         val seasons: Int,
         /** The US age rating (PG-13, TV-MA...); empty when TMDB has none. */
         val ageRating: String = "",
+        /** The language it was made in, ISO 639-1 ("en", "fr"); empty when TMDB doesn't say. */
+        val originalLanguage: String = "",
     )
 
     /** A film or show's details by its TMDB id; null when TMDB has none. Blocks. */
@@ -228,6 +230,7 @@ class Tmdb(private val key: () -> String, private val memory: Memory) {
             runtime = if (show) 0 else item.optInt("runtime"),
             seasons = if (show) item.optInt("number_of_seasons") else 0,
             ageRating = ageRating(item, show),
+            originalLanguage = item.optString("original_language").lowercase(java.util.Locale.ROOT),
         )
     }
 

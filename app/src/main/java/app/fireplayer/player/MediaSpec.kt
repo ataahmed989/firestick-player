@@ -41,6 +41,9 @@ data class MediaSpec(
     val sizeBytes: Long = 0,
     /** How much of the film the measured rates were counted over, in seconds (all plays together). */
     val measuredSecs: Long = 0,
+    /** The languages of its sound tracks and of the subtitles inside the file, ISO 639-1, comma-separated ("en,fr"). */
+    val audioLangs: String = "",
+    val subLangs: String = "",
 ) {
     /** Where a number came from. */
     enum class How(val label: String) {
@@ -81,7 +84,7 @@ data class MediaSpec(
             spec.videoCodec.orEmpty(), spec.profile.orEmpty(), spec.width, spec.height, spec.fps, spec.bitDepth,
             spec.hdr.orEmpty(), spec.videoBps, spec.videoHow.name, spec.audioCodec.orEmpty(), if (spec.atmos) 1 else 0,
             spec.channels, spec.sampleRate, spec.audioBps, spec.audioHow.name, spec.overallBps, spec.sizeBytes,
-            spec.measuredSecs,
+            spec.measuredSecs, spec.audioLangs, spec.subLangs,
         ).joinToString(SEP) { it.toString().replace(SEP, " ") }
 
         fun decode(text: String): MediaSpec? {
@@ -96,6 +99,8 @@ data class MediaSpec(
                 audioCodec = s(9), atmos = f[10] == "1", channels = l(11).toInt(), sampleRate = l(12).toInt(),
                 audioBps = l(13), audioHow = how(14), overallBps = l(15), sizeBytes = l(16),
                 measuredSecs = if (f.size > 17) l(17) else 0L,
+                audioLangs = f.getOrNull(18).orEmpty(),
+                subLangs = f.getOrNull(19).orEmpty(),
             )
         }
 
