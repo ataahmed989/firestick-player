@@ -205,6 +205,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     private val handler = Handler(Looper.getMainLooper())
     private val io = Executors.newSingleThreadExecutor()
+    // The provider asked about a title's copies: slow at worst, so not in the way of subtitle searches on [io].
+    private val copiesIo = Executors.newSingleThreadExecutor()
     // FirePlayer's title server's names, opened when first needed (on [io]).
     private var titleBook: TitleBook? = null
     private val delays = Delays()
@@ -757,6 +759,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         handler.removeCallbacks(lookUpSegmentsAgain)
         autoSync.release()
         io.shutdownNow()
+        copiesIo.shutdownNow()
         segmentWorker.shutdownNow()
         handler.removeCallbacksAndMessages(null)
         FontImport.stopAll()
@@ -2176,7 +2179,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             checkFreeze()
             tellDamageSkip()
             // The pods' data rates firm up as the film loads.
-            if (controlsShown && ++chipTicks % CHIP_REFRESH_TICKS == 0) updateChips()
+            chipTicks++
+            if (controlsShown && chipTicks % CHIP_REFRESH_TICKS == 0) updateChips()
+            // What's measured of the copy playing is kept as it goes, so an episode that runs into the next isn't lost.
+            if (chipTicks % KEEP_QUALITY_TICKS == 0) rememberQuality()
             handler.postDelayed(this, 200)
         }
     }
@@ -4538,12 +4544,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (spec.sizeBytes > 0) pairs += "File" to fact(
             MediaSpec.size(spec.sizeBytes) + (if (spec.overallBps > 0) " · ${MediaSpec.mbps(spec.overallBps)} on average" else ""),
         )
-        val server = RedirectMemoryDataSource.serverBps()
+        val server = RedirectMemoryDataSource.serverBps(link)
         if (server > 0) {
             // The whole file comes, every sound track included: that's what the server has to keep up with.
             val need = spec.overallBps.takeIf { it > 0 } ?: (spec.videoBps + spec.audioBps)
             pairs += "Server" to fact(
-                MediaSpec.mbps(server) + (if (need > 0) String.format(Locale.US, " · %.1f× the file's rate", server.toDouble() / need) else ""),
+                "at least " + MediaSpec.mbps(server) + (if (need > 0) String.format(Locale.US, " · %.1f× the file's rate", server.toDouble() / need) else ""),
             )
         }
         (p as? ExoPlayer)?.videoDecoderCounters?.let { c ->
@@ -4598,12 +4604,19 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     private fun loadCopies(entry: Entry, show: Boolean) {
         val key = entry.key
-        copiesFor = key
-        copyList = null
-        copiesStatus = LOADING
         val uri = entry.uri
         val seriesId = if (show) NextEpisode.rememberedShowId(this, uri) else null
-        io.execute {
+        moreCopiesOpen = false
+        copyList = null
+        if (show && seriesId == null) {
+            // Not known yet which show this is: asked again next time.
+            copiesFor = null
+            copiesStatus = "FirePlayer hasn't found this episode's show yet. Try again in a moment."
+            return
+        }
+        copiesFor = key
+        copiesStatus = LOADING
+        copiesIo.execute {
             val found = runCatching {
                 val finder = Copies(book(), headersFromIntent()) { measuredQuality(it) }
                 if (show) seriesId?.let { finder.ofEpisode(uri, it) }.orEmpty() else finder.ofFilm(uri)
@@ -4616,6 +4629,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                     copyList.isNullOrEmpty() -> "Only titles listed through FirePlayer's title server can be compared."
                     else -> null
                 }
+                // Asked again next time, rather than kept as it went.
+                if (found.isFailure) copiesFor = null
                 if (panel.isOpen) panel.refresh()
             }
         }
@@ -4633,7 +4648,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
      */
     private fun SidePanel.copies(show: Boolean) {
         header("Copies")
-        val list = copyList
+        // Only this entry's copies: after the next episode came on with the window open, the old list isn't offered.
+        val list = copyList.takeIf { copiesFor != null && copiesFor == currentEntry()?.key }
         if (list == null || list.isEmpty()) {
             message(copiesStatus ?: LOADING)
             return
@@ -4725,8 +4741,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             entries.removeAt(i)
             p.removeMediaItem(i)
         }
-        val entry = Entry(copy.uri, current.rawTitle, null, nextEpisode = current.nextEpisode)
+        // The same film: its subtitles (handed over or downloaded), names and episode numbers come along.
+        val entry = Entry(copy.uri, current.rawTitle, null, current.subtitles.toMutableList(), nextEpisode = current.nextEpisode)
+        entry.handedSubtitles += current.handedSubtitles
         entry.showName = current.showName
+        entry.english = current.english
+        entry.englishAsked = current.englishAsked
+        entry.real = current.real
         attachSaved(entry, chooseOn = false)
         entries += entry
         p.addMediaItem(mediaItem(entry))
@@ -5510,6 +5531,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         const val SKIP_NOTE_MS = 5_000L
         /** The pods are looked at again this often while the controls are up (in play ticks of 200 ms). */
         const val CHIP_REFRESH_TICKS = 15
+        /** What's measured of the copy playing is kept this often (play ticks of 200 ms: 30 s). */
+        const val KEEP_QUALITY_TICKS = 150
         /** Copies' measurements kept at most; past it they start again. */
         const val MAX_QUALITY_SEEN = 400
         const val SKIP_NOTE_FADE_MS = 250L

@@ -194,4 +194,29 @@ class QualityTest {
         assertEquals(0, v.best)
         assertTrue(v.reasons.first(), v.reasons.first().contains("data (whole file)"))
     }
+
+    @Test
+    fun aCopyWithOnlyItsPictureRateStillCountsInWholeFileMode() {
+        // The copy playing was measured but its size isn't known; the other only has the whole file's rate.
+        val playing = MediaSpec(videoCodec = "HEVC", videoBps = 20_000_000, videoHow = MediaSpec.How.MEASURED, audioBps = 640_000)
+        val other = MediaSpec(videoCodec = "HEVC", overallBps = 6_000_000)
+        val v = CopyRank.rank(listOf(playing, other), 0, false)
+        assertEquals(0, v.best)
+        assertTrue(v.reasons.isNotEmpty())
+    }
+
+    @Test
+    fun anEstimatedPictureRateIsComparedAsTheWholeFile() {
+        // An estimate (the file's rate less one sound track) is never set against a measured picture rate.
+        val measured = MediaSpec(videoCodec = "H.264", videoBps = 5_000_000, videoHow = MediaSpec.How.MEASURED, overallBps = 5_600_000)
+        val estimated = MediaSpec(videoCodec = "H.264", videoBps = 5_400_000, videoHow = MediaSpec.How.ESTIMATED, overallBps = 6_000_000)
+        val v = CopyRank.rank(listOf(measured, estimated), 0, false)
+        assertTrue(v.reasons.joinToString(), v.reasons.any { it.contains("whole file") })
+    }
+
+    @Test
+    fun bitsPerPixelNeedsTheFrameRate() {
+        assertEquals(0.0, MediaSpec(videoBps = 10_000_000, width = 1920, height = 1080).bitsPerPixel, 0.0)
+        assertTrue(MediaSpec(videoBps = 10_000_000, width = 1920, height = 1080, fps = 24f).bitsPerPixel > 0)
+    }
 }

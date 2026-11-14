@@ -34,9 +34,11 @@ class Copies(
         // By TMDB id, and by the English name and year TMDB gave: a copy matched to another id is still found.
         val byTitle = known?.title?.let { book.copiesByTitle(server, TitleBook.Kind.MOVIE, it, known.year) }.orEmpty()
         val listed = (book.copies(server, TitleBook.Kind.MOVIE, tmdb) + byTitle).distinctBy { it.id }
-        val all = if (listed.any { it.id == id }) listed else listOf(TitleBook.Copy(id, "")) + listed
+        // The copy playing first, always (with its listed name), then the others.
+        val self = listed.firstOrNull { it.id == id } ?: TitleBook.Copy(id, "")
+        val all = listOf(self) + listed.filter { it.id != id }.take(MAX_COPIES - 1)
         Log.i(TAG, "film: tmdb ${tmdb > 0}, named ${known?.title != null}, ${listed.size} listed (${byTitle.size} by name)")
-        return all.take(MAX_COPIES).map { copy ->
+        return all.map { copy ->
             val info = account.api(uri, "get_vod_info", "vod_id" to copy.id.toString())
             val about = info?.optJSONObject("info")
             val data = info?.optJSONObject("movie_data")

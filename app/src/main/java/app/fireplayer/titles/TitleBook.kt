@@ -198,8 +198,9 @@ class TitleBook(context: Context) : SQLiteOpenHelper(context, "titles.db", null,
     /** Every listing on [server] with the English [title] and [year] TMDB gave it: copies whose TMDB id differs or wasn't kept. */
     fun copiesByTitle(server: String, kind: Kind, title: String, year: Int, limit: Int = 12): List<Copy> {
         val out = ArrayList<Copy>()
-        // Without a year, the name alone.
-        val sql = "SELECT id, raw FROM item WHERE server = ? AND kind = ? AND title = ?" + (if (year > 0) " AND year = $year" else "") + " LIMIT $limit"
+        // A name alone could be another film ("Home"): only with its year.
+        if (year <= 0) return out
+        val sql = "SELECT id, raw FROM item WHERE server = ? AND kind = ? AND title = ? AND year = $year LIMIT $limit"
         readableDatabase.rawQuery(sql, arrayOf(server, kind.code.toString(), title))
             .use { c -> while (c.moveToNext()) out += Copy(c.getInt(0), c.getString(1)) }
         return out

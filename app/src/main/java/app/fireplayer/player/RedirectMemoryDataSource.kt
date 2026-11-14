@@ -53,6 +53,7 @@ class RedirectMemoryDataSource(
         if (serverSwitch?.take() == true) remembered.remove(dataSpec.uri.toString())
         if (serverSwitch != null) filmOpenedAt = SystemClock.elapsedRealtime()
         val length = openRemembering(dataSpec)
+        if (serverSwitch != null && !readOnly) speedFor(dataSpec.uri.toString())
         // The film's whole size, from a reply that runs to its end: for its quality details.
         if (serverSwitch != null && !readOnly && length != androidx.media3.common.C.LENGTH_UNSET.toLong() &&
             dataSpec.length == androidx.media3.common.C.LENGTH_UNSET.toLong()) {
@@ -161,6 +162,19 @@ class RedirectMemoryDataSource(
         private var windowNanos = 0L
         private var lastReadEnd = 0L
         @Volatile private var lastBps = 0L
+        @Volatile private var speedLink: String? = null
+
+        /** A connection to [link] opened: another film's speed isn't this one's. */
+        @Synchronized
+        private fun speedFor(link: String) {
+            if (link == speedLink) return
+            speedLink = link
+            lastBps = 0
+            windowBytes = 0
+            windowNanos = 0
+            lastReadEnd = 0
+            warmUp = WARM_UP_BYTES
+        }
 
         /**
          * Only time spent loading counts: the reads and the short gaps between them while the player keeps reading, not
@@ -192,14 +206,16 @@ class RedirectMemoryDataSource(
             windowBytes += bytes
             windowNanos += nanos
             if (windowBytes >= SPEED_WINDOW_BYTES && windowNanos > 0) {
-                lastBps = windowBytes * 8 * 1_000_000_000 / windowNanos
+                // The fastest stretch: topped up in short steps, the film comes only as fast as it plays, which says
+                // nothing of the server. So it's "at least" this fast.
+                lastBps = maxOf(lastBps, windowBytes * 8 * 1_000_000_000 / windowNanos)
                 windowBytes = 0
                 windowNanos = 0
             }
         }
 
-        /** How fast the film last came from the server while loading, bits a second; 0 until enough has come in one go. */
-        fun serverBps(): Long = lastBps
+        /** How fast the film at [link] has come from the server at best while loading, bits a second; 0 before it's known. */
+        fun serverBps(link: String?): Long = if (link != null && link == speedLink) lastBps else 0L
 
         private const val SPEED_WINDOW_BYTES = 16L * 1024 * 1024
         private const val WARM_UP_BYTES = 6L * 1024 * 1024

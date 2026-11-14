@@ -36,11 +36,16 @@ object CopyRank {
 
     /** [copies] in the order shown; [current] is the one playing; [hdrScreen]: the TV shows HDR. */
     fun rank(copies: List<MediaSpec>, current: Int, hdrScreen: Boolean): Verdict {
-        // The picture's own rate when every measured copy has one, else the whole file's: never one against the other.
-        val measured = copies.indices.filter { copies[it].videoBps > 0 || copies[it].overallBps > 0 }
-        if (measured.isEmpty()) return Verdict(null, null, emptyList(), emptyList())
-        val usePicture = measured.all { copies[it].videoBps > 0 }
-        fun bits(i: Int) = if (usePicture) copies[i].videoBps else copies[i].overallBps
+        // The picture's own rate when every copy known has one (an estimate from the whole file's rate doesn't count), else
+        // the whole file's for all of them: never one against the other. A copy with neither isn't in the running.
+        fun picture(s: MediaSpec) = s.videoBps > 0 && s.videoHow != MediaSpec.How.ESTIMATED
+        fun whole(s: MediaSpec) = s.overallBps.takeIf { it > 0 }
+            ?: (s.videoBps + s.audioBps).takeIf { s.videoBps > 0 && s.videoHow != MediaSpec.How.ESTIMATED } ?: 0L
+        val known = copies.indices.filter { picture(copies[it]) || whole(copies[it]) > 0 }
+        if (known.isEmpty()) return Verdict(null, null, emptyList(), emptyList())
+        val usePicture = known.all { picture(copies[it]) }
+        val measured = if (usePicture) known else known.filter { whole(copies[it]) > 0 }
+        fun bits(i: Int) = if (usePicture) copies[i].videoBps else whole(copies[i])
         val codecs = measured.mapNotNull { copies[it].videoCodec }.toSet()
         val mixed = codecs.size > 1
         fun effective(i: Int): Double = bits(i) * (if (mixed) EFFICIENCY[copies[i].videoCodec] ?: 1.0 else 1.0)

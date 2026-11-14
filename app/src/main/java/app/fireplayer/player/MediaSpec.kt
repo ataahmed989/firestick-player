@@ -53,14 +53,12 @@ data class MediaSpec(
         ESTIMATED("about"),
     }
 
-    /** The picture's pixels a second... */
-    private val pixelRate: Double get() = width.toDouble() * height * (if (fps > 0) fps.toDouble() else 24.0)
-
     /**
-     * ...and how many bits of picture each pixel of each frame gets: the same codec at a higher figure has more to
-     * draw it with. Only for comparing copies of one codec; 0 when either number is unknown.
+     * How many bits of picture each pixel of each frame gets: the same codec at a higher figure has more to draw it
+     * with. Only for comparing copies of one codec; 0 when any number it needs is unknown.
      */
-    val bitsPerPixel: Double get() = if (videoBps > 0 && width > 0 && height > 0) videoBps / pixelRate else 0.0
+    val bitsPerPixel: Double get() =
+        if (videoBps > 0 && width > 0 && height > 0 && fps > 0) videoBps / (width.toDouble() * height * fps) else 0.0
 
     /** "HEVC · 10-bit · HDR10 · 19.8 Mb/s": the compact pod's line, of what is known. */
     fun pictureLine(): String? = listOfNotNull(
