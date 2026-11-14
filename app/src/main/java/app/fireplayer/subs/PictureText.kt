@@ -59,6 +59,8 @@ class PictureText(private val onRead: () -> Unit) {
     // The picture track being shown as text: the only one read ahead. Null: none.
     @Volatile private var shownTrack: String? = null
     @Volatile private var released = false
+    // Reading waits till then (elapsedRealtime): see [holdFor].
+    @Volatile private var heldUntil = 0L
     private var recognizer: TextRecognizer? = null
     // Recognition itself runs here. Playback runs at a far higher priority, so it still comes first, but a
     // background priority could starve this behind the film's audio decoding and make subtitles late.
@@ -71,6 +73,11 @@ class PictureText(private val onRead: () -> Unit) {
         while (!released) {
             val job = try {
                 jobs.take()
+            } catch (_: InterruptedException) {
+                break
+            }
+            try {
+                while (!released && SystemClock.elapsedRealtime() < heldUntil) Thread.sleep(HOLD_STEP_MS)
             } catch (_: InterruptedException) {
                 break
             }
@@ -88,6 +95,20 @@ class PictureText(private val onRead: () -> Unit) {
     }, "FirePlayerOcr").apply {
         isDaemon = true
         start()
+    }
+
+    /**
+     * Nothing is read for [ms], or until [go]: while a film starts. The first read loads the reader (4 threads, its
+     * models from the app), which held the film's first picture back by over a second (measured on a Fire TV Stick 4K
+     * Max); nothing is on screen to read before the film plays anyway.
+     */
+    fun holdFor(ms: Long) {
+        heldUntil = SystemClock.elapsedRealtime() + ms
+    }
+
+    /** Reading goes ahead (the film has started). */
+    fun go() {
+        heldUntil = 0L
     }
 
     /** Whether pictures in [language] can be read. */
@@ -347,6 +368,7 @@ class PictureText(private val onRead: () -> Unit) {
     companion object {
         private const val TAG = "FirePlayerOcr"
         private const val MAX_QUEUED = 30
+        private const val HOLD_STEP_MS = 100L
         // Blu-ray pictures of two lines are about 140 pixels tall, DVD ones about 80.
         private const val LARGE_HEIGHT = 120
         private const val SMALL_HEIGHT = 50

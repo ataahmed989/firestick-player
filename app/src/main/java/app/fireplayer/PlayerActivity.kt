@@ -396,6 +396,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     /** Whether the current player was built with libass ("Keep embedded styling" on). */
     private var builtWithAss = false
     private var matchedFpsForIndex = -1
+    // The frame rate the TV was switched for (for matchedFpsForIndex): one remembered from the last play may be wrong.
+    private var matchedFps = 0f
     // The video the TV wouldn't stay on the film's rate for: not asked again (see rematchFrameRate). And how often it was
     // asked again for the video playing.
     private var refusedForIndex = -1
@@ -1048,6 +1050,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         } else {
             p.playWhenReady = savedPlayWhenReady
         }
+        switchEarly(entry, index)
+        // The film's first picture before subtitles are read (see PictureText.holdFor).
+        pictureText.holdFor(START_HOLD_MS)
         updateTitle()
         updatePlayButton()
         updateKeepScreenOn()
@@ -1325,6 +1330,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             hideBuffering()
         }
         if (state == Player.STATE_READY) {
+            pictureText.go()
             noteEpisodeLength()
             if (glassAfterSeek) {
                 glassAfterSeek = false
@@ -2854,13 +2860,37 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     private fun matchFrameRate() {
         val p = player ?: return
-        if (!prefs.matchFrameRate || matchedFpsForIndex == p.currentMediaItemIndex) return
+        if (!prefs.matchFrameRate) return
         // Only the rate the file declares: a measured one arrives seconds into playback, too late to switch.
         val fps = selectedFormat(C.TRACK_TYPE_VIDEO)?.frameRate ?: Format.NO_VALUE.toFloat()
         if (fps <= 0) return
+        rememberFps(fps)
+        // Switched for it already (maybe early, from the last play): only a different rate asks again.
+        if (matchedFpsForIndex == p.currentMediaItemIndex && abs(matchedFps - fps) < 0.01f) return
         matchedFpsForIndex = p.currentMediaItemIndex
+        matchedFps = fps
         val wasPlaying = p.playWhenReady
         switchFor(frameRateMatcher.match(fps), wasPlaying)
+    }
+
+    /**
+     * A film played before: the TV is asked for its frame rate as it opens, from what the file said last time, so the
+     * TV's switch (and the film's wait for it) happens while the film loads instead of after its first part has come.
+     */
+    private fun switchEarly(entry: Entry, index: Int) {
+        if (!prefs.matchFrameRate) return
+        val key = qualityKey(entry.uri) ?: return
+        val fps = qualitySeen.getFloat("fps|$key", 0f).takeIf { it > 0f } ?: return
+        matchedFpsForIndex = index
+        matchedFps = fps
+        switchFor(frameRateMatcher.match(fps), player?.playWhenReady == true)
+    }
+
+    /** The frame rate the file playing declares, kept for [switchEarly] next time. */
+    private fun rememberFps(fps: Float) {
+        val uri = player?.currentMediaItem?.localConfiguration?.uri ?: return
+        val key = qualityKey(uri) ?: return
+        if (abs(qualitySeen.getFloat("fps|$key", 0f) - fps) >= 0.001f) qualitySeen.edit().putFloat("fps|$key", fps).apply()
     }
 
     /** The TV was asked for another mode ([switching]): the film waits for the picture if it was playing. */
@@ -5674,6 +5704,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         const val REAL_AGAIN_MS = 20_000L
         // How long the film waits for the TV to change refresh rate.
         const val DISPLAY_SWITCH_PAUSE_MS = 2_000L
+        /** At most this long, picture subtitles wait for the film to start before they're read. */
+        const val START_HOLD_MS = 10_000L
         /** How long a film that froze is paused before it's played again (the viewer did the same, and it went on). */
         const val FREEZE_PAUSE_MS = 1_000L
         private const val TAG = "FirePlayer"
