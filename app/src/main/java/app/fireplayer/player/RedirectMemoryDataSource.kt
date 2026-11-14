@@ -53,6 +53,12 @@ class RedirectMemoryDataSource(
         if (serverSwitch?.take() == true) remembered.remove(dataSpec.uri.toString())
         if (serverSwitch != null) filmOpenedAt = SystemClock.elapsedRealtime()
         val length = openRemembering(dataSpec)
+        // The film's whole size, from a reply that runs to its end: for its quality details.
+        if (serverSwitch != null && !readOnly && length != androidx.media3.common.C.LENGTH_UNSET.toLong() &&
+            dataSpec.length == androidx.media3.common.C.LENGTH_UNSET.toLong()) {
+            if (fileSizes.size >= MAX_REMEMBERED) fileSizes.clear()
+            fileSizes[dataSpec.uri.toString()] = dataSpec.position + length
+        }
         if (upstream.uri != dataSpec.uri) {
             redirectedLink = dataSpec.uri.toString()
             // Subtitles opened with the film come straight from their own server; they don't say the film can't move.
@@ -143,6 +149,12 @@ class RedirectMemoryDataSource(
     companion object {
         // When the film last opened a connection (elapsedRealtime).
         @Volatile private var filmOpenedAt = 0L
+
+        // Each film's size in bytes, by its link.
+        private val fileSizes = ConcurrentHashMap<String, Long>()
+
+        /** The size of the film at [link], once a connection to it has said; 0 before. */
+        fun fileSize(link: String?): Long = link?.let { fileSizes[it] } ?: 0L
 
         /** Whether the film opened a connection within the last [ms]; a server allowing one may have cut the preview off for it. */
         fun filmOpenedWithin(ms: Long): Boolean = SystemClock.elapsedRealtime() - filmOpenedAt < ms

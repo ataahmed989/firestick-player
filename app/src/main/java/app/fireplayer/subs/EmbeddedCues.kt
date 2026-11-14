@@ -40,6 +40,8 @@ class EmbeddedCues {
 
     /** One film's subtitle tracks, as loaded so far. */
     class Source internal constructor(val uri: String) {
+        /** Each picture and sound track's data rate, counted as the film loads (for its quality details). */
+        val rates = app.fireplayer.player.TrackRates()
         // By the file's track number, so a new extractor for the same film (the player rebuilt) carries on the same.
         private val tracks = LinkedHashMap<Int, ReferenceCues>()
         // Loaded stretches of film (ms), as start-end pairs in order; the one being loaded now is [runFrom]..[runTo].
@@ -240,7 +242,7 @@ class EmbeddedCues {
             return when (type) {
                 C.TRACK_TYPE_TEXT -> TextTap(track, source, id)
                 C.TRACK_TYPE_AUDIO -> AudioTap(track, source, id, owner)
-                C.TRACK_TYPE_VIDEO -> LoadedTap(track, source)
+                C.TRACK_TYPE_VIDEO -> LoadedTap(track, source, id)
                 else -> track
             }
         }
@@ -254,14 +256,20 @@ class EmbeddedCues {
     }
 
     /** Passes everything on; notes how far the film has loaded. */
-    private class LoadedTap(private val inner: TrackOutput, private val source: Source) : TrackOutput {
-        override fun format(format: Format) = inner.format(format)
+    private class LoadedTap(private val inner: TrackOutput, private val source: Source, id: Int) : TrackOutput {
+        // Its rate is kept under the id the player knows the track by (the format's), else the extractor's.
+        private var key = id.toString()
+        override fun format(format: Format) {
+            format.id?.let { key = it }
+            inner.format(format)
+        }
         override fun durationUs(durationUs: Long) = inner.durationUs(durationUs)
         override fun sampleData(input: DataReader, length: Int, allowEndOfInput: Boolean, sampleDataPart: Int): Int =
             inner.sampleData(input, length, allowEndOfInput, sampleDataPart)
         override fun sampleData(data: ParsableByteArray, length: Int, sampleDataPart: Int) = inner.sampleData(data, length, sampleDataPart)
         override fun sampleMetadata(timeUs: Long, flags: Int, size: Int, offset: Int, cryptoData: TrackOutput.CryptoData?) {
             if (timeUs >= 0) source.loaded(timeUs / 1000)
+            source.rates.add(key, timeUs, size)
             inner.sampleMetadata(timeUs, flags, size, offset, cryptoData)
         }
     }
@@ -279,6 +287,7 @@ class EmbeddedCues {
         private val owner: EmbeddedCues,
     ) : TrackOutput {
         private var format: Format? = null
+        private var key = id.toString()
         // The sample's bytes so far (and any of the samples after it already given, see sampleMetadata's offset).
         private var staging = ByteArray(0)
         private var staged = 0
@@ -296,6 +305,7 @@ class EmbeddedCues {
 
         override fun format(format: Format) {
             this.format = format
+            format.id?.let { key = it }
             try { source.audioTrack(id, format) } catch (t: Throwable) { fail(t) }
             inner.format(format)
         }
@@ -321,6 +331,7 @@ class EmbeddedCues {
 
         override fun sampleMetadata(timeUs: Long, flags: Int, size: Int, offset: Int, cryptoData: TrackOutput.CryptoData?) {
             if (timeUs >= 0) source.loaded(timeUs / 1000)
+            source.rates.add(key, timeUs, size)
             if (copying) {
                 try { take(timeUs, flags, size, offset, cryptoData) } catch (t: Throwable) { fail(t) }
             } else {

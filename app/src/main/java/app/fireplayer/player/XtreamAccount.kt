@@ -20,14 +20,27 @@ class XtreamAccount(private val headers: Map<String, String>) {
 
     /** Null when the provider can't be asked or doesn't say. */
     fun screens(uri: Uri): Screens? {
+        val info = api(uri, null)?.optJSONObject("user_info") ?: return null
+        val inUse = info.optString("active_cons").trim().toIntOrNull() ?: return null
+        val allowed = info.optString("max_connections").trim().toIntOrNull() ?: return null
+        return Screens(inUse, allowed)
+    }
+
+    /**
+     * The provider's answer to [action] for the account in [uri] ("get_vod_info" with "vod_id"…), or null when it
+     * can't be asked or doesn't answer with an object. Blocks.
+     */
+    fun api(uri: Uri, action: String?, vararg params: Pair<String, String>, maxChars: Int = MAX_CHARS): JSONObject? {
         val (user, password) = login(uri) ?: return null
         val builder = Uri.Builder().scheme(uri.scheme).encodedAuthority(uri.encodedAuthority)
         // Through FirePlayer's title proxy, the provider is asked the same way.
         TitleProxy.serverIn(uri)?.let { builder.appendPath(it) }
-        val url = builder.appendPath("player_api.php")
+        builder.appendPath("player_api.php")
             .appendQueryParameter("username", user)
             .appendQueryParameter("password", password)
-            .build().toString()
+        if (action != null) builder.appendQueryParameter("action", action)
+        params.forEach { builder.appendQueryParameter(it.first, it.second) }
+        val url = builder.build().toString()
         return runCatching {
             val conn = URL(url).openConnection() as HttpURLConnection
             conn.connectTimeout = 8_000
@@ -41,26 +54,25 @@ class XtreamAccount(private val headers: Map<String, String>) {
                 val text = conn.inputStream.bufferedReader().use { reader ->
                     val out = StringBuilder()
                     val buffer = CharArray(8 * 1024)
-                    while (out.length < MAX_CHARS) {
+                    while (out.length < maxChars) {
                         val n = reader.read(buffer)
                         if (n < 0) break
                         out.append(buffer, 0, n)
                     }
                     out.toString()
                 }
-                val info = JSONObject(text).optJSONObject("user_info") ?: return null
-                val inUse = info.optString("active_cons").trim().toIntOrNull() ?: return null
-                val allowed = info.optString("max_connections").trim().toIntOrNull() ?: return null
-                Screens(inUse, allowed)
+                JSONObject(text)
             } finally {
                 conn.disconnect()
             }
-        }.onFailure { Log.i(TAG, "Couldn't ask the provider about screens: $it") }.getOrNull()
+        }.onFailure { Log.i(TAG, "Couldn't ask the provider (${action ?: "account"}): $it") }.getOrNull()
     }
 
     companion object {
         private const val TAG = "FirePlayerAccount"
         private const val MAX_CHARS = 256 * 1024
+        /** A show's whole list of episodes can be long. */
+        const val SERIES_CHARS = 4 * 1024 * 1024
         private val KINDS = setOf("movie", "series", "live", "timeshift")
 
         /** The username and password in an Xtream link, or null when it isn't one. */
