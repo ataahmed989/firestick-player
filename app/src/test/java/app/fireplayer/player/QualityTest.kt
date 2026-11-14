@@ -219,4 +219,45 @@ class QualityTest {
         assertEquals(0.0, MediaSpec(videoBps = 10_000_000, width = 1920, height = 1080).bitsPerPixel, 0.0)
         assertTrue(MediaSpec(videoBps = 10_000_000, width = 1920, height = 1080, fps = 24f).bitsPerPixel > 0)
     }
+
+    // --- How copies have played
+
+    @Test
+    fun aCopyThatKeepsBufferingOrFailedIsTroubled() {
+        assertTrue(CopyHealth(watchedMs = 20 * 60_000L, stalls = 7, stallMs = 30_000).troubled)
+        assertEquals("buffered 7× in 20 min", CopyHealth(watchedMs = 20 * 60_000L, stalls = 7, stallMs = 30_000).summary())
+        assertTrue(CopyHealth(failures = 1).troubled)
+        assertEquals("failed to play", CopyHealth(failures = 1).summary())
+        // One wait in two minutes says little; a failure long since played past is forgiven.
+        assertTrue(!CopyHealth(watchedMs = 2 * 60_000L, stalls = 1, stallMs = 3_000).troubled)
+        assertTrue(!CopyHealth(watchedMs = 40 * 60_000L, failures = 1).troubled)
+        assertEquals("smooth over 40 min", CopyHealth(watchedMs = 40 * 60_000L).summary())
+    }
+
+    @Test
+    fun aCopyThatPlaysBeatsABetterOneThatBuffers() {
+        val copies = listOf(copy("HEVC", 20.0), copy("HEVC", 9.0))
+        val health = listOf(CopyHealth(watchedMs = 20 * 60_000L, stalls = 8, stallMs = 60_000), CopyHealth(watchedMs = 30 * 60_000L))
+        val v = CopyRank.rank(copies, 0, false, health)
+        assertEquals(1, v.best)
+        assertEquals("the other buffered 8× in 20 min", v.reasons.first())
+        assertTrue(v.reasons.contains("smooth over 30 min"))
+        assertTrue(v.tradeOffs.joinToString(), v.tradeOffs.any { it.startsWith("less picture data") })
+    }
+
+    @Test
+    fun whenEveryCopyBuffersQualityDecidesAndSaysSo() {
+        val copies = listOf(copy("HEVC", 20.0), copy("HEVC", 9.0))
+        val bad = CopyHealth(watchedMs = 20 * 60_000L, stalls = 8, stallMs = 60_000)
+        val v = CopyRank.rank(copies, 1, false, listOf(bad, bad))
+        assertEquals(0, v.best)
+        assertEquals("buffered 8× in 20 min", v.tradeOffs.first())
+    }
+
+    @Test
+    fun healthKeptBetweenPlaysAddsUp() {
+        val a = CopyHealth(watchedMs = 1000, stalls = 1, stallMs = 200, failures = 0, skips = 1)
+        assertEquals(a, CopyHealth.decode(CopyHealth.encode(a)))
+        assertEquals(CopyHealth(2000, 2, 400, 0, 2), a + a)
+    }
 }

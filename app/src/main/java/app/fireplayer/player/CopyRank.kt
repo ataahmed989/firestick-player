@@ -11,6 +11,9 @@ import kotlin.math.abs
  * need less data for the same picture: a rule of thumb ([EFFICIENCY]) is used then, and the reason says so. HDR comes
  * first when the screen shows it and the HDR copy isn't starved of data. Copies close in picture data (within
  * [CLOSE]) are told apart by width, bit depth, then sound. A copy nobody measured is listed but never recommended.
+ *
+ * Before any of that, a copy that plays: one that failed to play or keeps stopping to load ([CopyHealth.troubled]) is
+ * only recommended when every copy known does the same.
  */
 object CopyRank {
 
@@ -34,8 +37,9 @@ object CopyRank {
         val tradeOffs: List<String>,
     )
 
-    /** [copies] in the order shown; [current] is the one playing; [hdrScreen]: the TV shows HDR. */
-    fun rank(copies: List<MediaSpec>, current: Int, hdrScreen: Boolean): Verdict {
+    /** [copies] in the order shown; [current] is the one playing; [hdrScreen]: the TV shows HDR; [health]: how each has played. */
+    fun rank(copies: List<MediaSpec>, current: Int, hdrScreen: Boolean, health: List<CopyHealth?> = emptyList()): Verdict {
+        fun troubled(i: Int) = health.getOrNull(i)?.troubled == true
         // The picture's own rate when every copy known has one (an estimate from the whole file's rate doesn't count), else
         // the whole file's for all of them: never one against the other. A copy with neither isn't in the running.
         fun picture(s: MediaSpec) = s.videoBps > 0 && s.videoHow != MediaSpec.How.ESTIMATED
@@ -44,7 +48,9 @@ object CopyRank {
         val known = copies.indices.filter { picture(copies[it]) || whole(copies[it]) > 0 }
         if (known.isEmpty()) return Verdict(null, null, emptyList(), emptyList())
         val usePicture = known.all { picture(copies[it]) }
-        val measured = if (usePicture) known else known.filter { whole(copies[it]) > 0 }
+        val all = if (usePicture) known else known.filter { whole(copies[it]) > 0 }
+        // Copies that play come first: the others only when nothing else is known.
+        val measured = all.filterNot { troubled(it) }.ifEmpty { all }
         fun bits(i: Int) = if (usePicture) copies[i].videoBps else whole(copies[i])
         val codecs = measured.mapNotNull { copies[it].videoCodec }.toSet()
         val mixed = codecs.size > 1
@@ -67,13 +73,22 @@ object CopyRank {
             measured.filter { isHdr(copies[it]) && effective(it) >= effective(best) * HDR_FLOOR }
                 .maxByOrNull { effective(it) }?.let { best = it }
         }
-        if (measured.size == 1) {
-            return Verdict(best, null, listOf("the only copy with its data rate known"), emptyList())
-        }
+        val others = all.sortedByDescending { effective(it) }
         val against = if (best != current && current in copies.indices) current
-            else byData.firstOrNull { it != best } ?: return Verdict(best, null, emptyList(), emptyList())
+            else others.firstOrNull { it != best }
+        if (against == null) {
+            return Verdict(best, null, listOfNotNull("the only copy with its data rate known", health.getOrNull(best)?.summary()), emptyList())
+        }
         val (reasons, costs) = compare(copies[best], copies[against], bits(best), bits(against), usePicture, mixed)
-        return Verdict(best, against, reasons, costs)
+        // How they played outweighs what they're made of, so it's said first.
+        val mine = health.getOrNull(best)
+        val theirs = health.getOrNull(against)
+        val played = ArrayList<String>()
+        if (troubled(against) && !troubled(best)) played += "the other ${theirs?.summary()}"
+        if (mine != null && !mine.troubled) mine.summary()?.takeIf { it.startsWith("smooth") }?.let { played += it }
+        if (troubled(best)) mine?.summary()?.let { costs.add(0, it) }
+        else if ((mine?.skips ?: 0) > 0) costs += "it skips damaged parts"
+        return Verdict(best, against, played + reasons, costs)
     }
 
     private fun isHdr(s: MediaSpec) = s.hdr != null && s.hdr != "SDR"
@@ -94,7 +109,7 @@ object CopyRank {
         bBits: Long,
         picture: Boolean,
         mixed: Boolean,
-    ): Pair<List<String>, List<String>> {
+    ): Pair<MutableList<String>, MutableList<String>> {
         val reasons = ArrayList<String>()
         val costs = ArrayList<String>()
         val what = if (picture) "picture data" else "data (whole file)"
