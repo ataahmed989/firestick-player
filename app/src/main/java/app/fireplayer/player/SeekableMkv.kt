@@ -1,9 +1,11 @@
 package app.fireplayer.player
 
 import android.net.Uri
+import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.C
 import androidx.media3.common.Format
+import androidx.media3.common.ParserException
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.extractor.Extractor
 import androidx.media3.extractor.ExtractorInput
@@ -24,6 +26,12 @@ import java.io.EOFException
  * write them) skippable. Media3 plays such files but refuses to seek in them. This wraps every
  * Matroska extractor; when it reports an unseekable file of known length and duration, a jump is
  * found by reading cluster timestamps at a few points in the file and narrowing in on the target.
+ *
+ * And it gets past a damaged stretch of a file that has an index: where the bytes stop making sense (a provider's copy
+ * with a blank hole in it, all zeros, was seen), it goes on from the next clusters the index lists that start as
+ * clusters should, instead of failing at the same spot every time it's tried again (which looked like endless
+ * buffering). With nothing usable after the damage, it fails as a damaged file rather than as a dropped connection, so
+ * the error shows at once. A file without an index is left to fail as before.
  */
 @OptIn(UnstableApi::class)
 class SeekableMkvExtractorsFactory(private val base: ExtractorsFactory) : ExtractorsFactory by base {
@@ -63,6 +71,12 @@ private class SeekableMkvExtractor(private val inner: Extractor) : Extractor by 
     /** From the video track's DefaultDuration; 0 when the file doesn't say. */
     private var videoFrameRate = 0f
 
+    /** The file's own index, when it has one: where a damaged stretch is got past. */
+    private var index: SeekMap? = null
+    private var recovery: Recovery? = null
+    // Damaged stretches got past in this file, so one that's damaged throughout ends in an error.
+    private var recovered = 0
+
     override fun init(output: ExtractorOutput) {
         inner.init(object : ExtractorOutput by output {
             override fun track(id: Int, type: Int): TrackOutput {
@@ -81,6 +95,7 @@ private class SeekableMkvExtractor(private val inner: Extractor) : Extractor by 
                 val position = input?.position ?: -1L
                 val usable = !seekMap.isSeekable && seekMap.durationUs != C.TIME_UNSET && length > 0 && position > 0
                 if (!usable) {
+                    if (seekMap.isSeekable && seekMap.durationUs != C.TIME_UNSET) index = seekMap
                     output.seekMap(seekMap)
                     return
                 }
@@ -102,6 +117,7 @@ private class SeekableMkvExtractor(private val inner: Extractor) : Extractor by 
             readHeader(input)
         }
         search?.let { return it.step(input, seekPosition) }
+        recovery?.let { return it.step(input, seekPosition) }
         val landing = landingPos
         if (landing >= 0) {
             // A reconnect that failed is tried again where the last connection had got to, not where the jump was to
@@ -112,13 +128,139 @@ private class SeekableMkvExtractor(private val inner: Extractor) : Extractor by 
             }
             landingPos = -1
         }
-        return inner.read(input, seekPosition)
+        return try {
+            inner.read(input, seekPosition)
+        } catch (e: IllegalStateException) {
+            damaged(input, seekPosition, e)
+        } catch (e: ParserException) {
+            // Only bytes that don't make sense: a feature Media3 doesn't support stays that error.
+            if (!e.contentIsMalformed) throw e
+            damaged(input, seekPosition, e)
+        }
+    }
+
+    /** The bytes at the input's position don't read as MKV: goes on past them if the index allows, else fails. */
+    private fun damaged(input: ExtractorInput, holder: PositionHolder, e: Exception): Int {
+        val at = input.position
+        val map = index
+        // Without an index, it's left as it was: Media3's error, tried again by the player.
+        if (map == null || length <= 0) throw e
+        if (recovered >= MAX_RECOVERIES) {
+            Log.w(TAG, "The file doesn't read at byte $at of $length, after $recovered damaged stretches got past", e)
+            throw ParserException.createForMalformedContainer("Damaged at byte $at", e)
+        }
+        recovered++
+        val r = Recovery(map, at, e)
+        recovery = r
+        return r.step(input, holder)
     }
 
     override fun seek(position: Long, timeUs: Long) {
         landingPos = -1
+        recovery = null
         inner.seek(position, timeUs)
         search = if (active && (position != 0L || timeUs != 0L)) Search(timeUs) else null
+    }
+
+    /**
+     * Finds where the file reads again after [damagedAt]: index entries further and further on (each step twice as
+     * far) until one starts as a cluster should, then halving the stretch between the last damaged entry and that one,
+     * so as little of the film as possible is passed over. Each look is one request for a few bytes.
+     */
+    private inner class Recovery(private val map: SeekMap, private val damagedAt: Long, private val cause: Exception) {
+        // The last place found damaged, and the earliest found to read (with the times either side, for halving).
+        private var badPos = damagedAt
+        private var good: SeekPoint? = null
+        private var lo = 0L
+        private var hi = 0L
+        private var expandUs = firstTimeAfter(damagedAt)
+        private var stepUs = FIRST_STEP_US
+        private var visiting: SeekPoint? = null
+        private var tries = 0
+        private val head = ByteArray(4)
+
+        fun step(input: ExtractorInput, holder: PositionHolder): Int {
+            while (true) {
+                val v = visiting ?: next() ?: return finish()
+                visiting = v
+                if (input.position != v.position) {
+                    holder.position = v.position
+                    return Extractor.RESULT_SEEK
+                }
+                visiting = null
+                tries++
+                if (startsCluster(input)) {
+                    good = v
+                    hi = v.timeUs
+                } else {
+                    badPos = v.position
+                    lo = maxOf(lo, v.timeUs)
+                }
+            }
+        }
+
+        /** The next index entry to look at, or null when there's nothing more worth looking at. */
+        private fun next(): SeekPoint? {
+            if (tries >= MAX_PROBES) return null
+            val g = good
+            if (g == null) {
+                while (true) {
+                    val p = map.getSeekPoints(expandUs).first
+                    if (p.position > badPos) return p.takeIf { it.position < length }
+                    if (expandUs >= map.durationUs) return null
+                    expandUs = minOf(map.durationUs, expandUs + stepUs)
+                    stepUs *= 2
+                }
+            }
+            while (hi - lo > 1) {
+                val mid = lo + (hi - lo) / 2
+                val p = map.getSeekPoints(mid).first
+                when {
+                    p.position <= badPos -> lo = mid
+                    p.position >= g.position -> hi = mid
+                    else -> return p
+                }
+            }
+            return null
+        }
+
+        private fun startsCluster(input: ExtractorInput): Boolean {
+            val ok = try {
+                input.peekFully(head, 0, head.size, true)
+            } catch (e: EOFException) {
+                false
+            } finally {
+                input.resetPeekPosition()
+            }
+            return ok && head[0] == ID0 && head[1] == ID1 && head[2] == ID2 && head[3] == ID3
+        }
+
+        private fun finish(): Int {
+            recovery = null
+            val g = good
+            if (g == null) {
+                Log.w(TAG, "The file doesn't read at byte $damagedAt of $length, nor at the $tries places after it tried", cause)
+                throw ParserException.createForMalformedContainer("Damaged from byte $damagedAt", cause)
+            }
+            Log.w(TAG, "The file doesn't read at byte $damagedAt of $length (${cause.message}); going on at " +
+                "${g.timeUs / 1000} ms, byte ${g.position} ($tries looks)")
+            inner.seek(g.position, g.timeUs)
+            // The last look may have been further on than the place found: reading starts there (see [read]).
+            landingPos = g.position
+            return Extractor.RESULT_CONTINUE
+        }
+
+        /** The earliest time whose index entry starts after [position]. */
+        private fun firstTimeAfter(position: Long): Long {
+            var a = 0L
+            var b = map.durationUs
+            if (map.getSeekPoints(b).first.position <= position) return b
+            while (b - a > 1) {
+                val mid = a + (b - a) / 2
+                if (map.getSeekPoints(mid).first.position > position) b = mid else a = mid
+            }
+            return b
+        }
     }
 
     /** Points the player at a rough spot; [Search] then finds the exact cluster. */
@@ -369,6 +511,12 @@ private class SeekableMkvExtractor(private val inner: Extractor) : Extractor by 
     }
 
     companion object {
+        private const val TAG = "FirePlayerMkv"
+        /** Damaged stretches got past in one file before it counts as damaged throughout. */
+        private const val MAX_RECOVERIES = 20
+        /** Places looked at after a damaged stretch: further on (each step twice as far, from 2 s), then halving back. */
+        private const val MAX_PROBES = 32
+        private const val FIRST_STEP_US = 2_000_000L
         private val ID0 = 0x1F.toByte()
         private val ID1 = 0x43.toByte()
         private val ID2 = 0xB6.toByte()
