@@ -34,22 +34,30 @@ import java.io.EOFException
  * the error shows at once. A file without an index is left to fail as before.
  */
 @OptIn(UnstableApi::class)
-class SeekableMkvExtractorsFactory(private val base: ExtractorsFactory) : ExtractorsFactory by base {
+class SeekableMkvExtractorsFactory(
+    private val base: ExtractorsFactory,
+    /** Told of each damaged stretch gone past: the film's link, and the times it plays to and goes on from. */
+    private val onSkip: ((uri: String?, fromUs: Long, toUs: Long) -> Unit)? = null,
+) : ExtractorsFactory by base {
 
-    override fun createExtractors(): Array<Extractor> = wrap(base.createExtractors())
+    override fun createExtractors(): Array<Extractor> = wrap(base.createExtractors(), null)
 
     override fun createExtractors(uri: Uri, responseHeaders: Map<String, List<String>>): Array<Extractor> =
-        wrap(base.createExtractors(uri, responseHeaders))
+        wrap(base.createExtractors(uri, responseHeaders), uri.toString())
 
-    private fun wrap(extractors: Array<Extractor>): Array<Extractor> =
+    private fun wrap(extractors: Array<Extractor>, uri: String?): Array<Extractor> =
         Array(extractors.size) { i ->
             val e = extractors[i]
-            if (e is MatroskaExtractor) SeekableMkvExtractor(e) else e
+            if (e is MatroskaExtractor) SeekableMkvExtractor(e, uri, onSkip) else e
         }
 }
 
 @OptIn(UnstableApi::class)
-private class SeekableMkvExtractor(private val inner: Extractor) : Extractor by inner {
+private class SeekableMkvExtractor(
+    private val inner: Extractor,
+    private val uri: String?,
+    private val onSkip: ((uri: String?, fromUs: Long, toUs: Long) -> Unit)?,
+) : Extractor by inner {
 
     private class Cluster(val position: Long, val timeUs: Long)
 
@@ -76,17 +84,27 @@ private class SeekableMkvExtractor(private val inner: Extractor) : Extractor by 
     private var recovery: Recovery? = null
     // Damaged stretches got past in this file, so one that's damaged throughout ends in an error.
     private var recovered = 0
+    // The latest time of film read since the last jump: where playback runs out before a damaged stretch.
+    @Volatile private var lastSampleUs = C.TIME_UNSET
 
     override fun init(output: ExtractorOutput) {
         inner.init(object : ExtractorOutput by output {
             override fun track(id: Int, type: Int): TrackOutput {
                 val track = output.track(id, type)
-                if (type != C.TRACK_TYPE_VIDEO) return track
+                if (type != C.TRACK_TYPE_VIDEO && type != C.TRACK_TYPE_AUDIO) return track
                 return object : TrackOutput by track {
                     override fun format(format: Format) {
                         val fps = videoFrameRate
-                        val missing = format.frameRate <= 0f && fps > 0f
+                        val missing = type == C.TRACK_TYPE_VIDEO && format.frameRate <= 0f && fps > 0f
                         track.format(if (missing) format.buildUpon().setFrameRate(fps).build() else format)
+                    }
+
+                    // A Java default method, which `by` doesn't pass on by itself.
+                    override fun durationUs(durationUs: Long) = track.durationUs(durationUs)
+
+                    override fun sampleMetadata(timeUs: Long, flags: Int, size: Int, offset: Int, cryptoData: TrackOutput.CryptoData?) {
+                        if (timeUs > lastSampleUs || lastSampleUs == C.TIME_UNSET) lastSampleUs = timeUs
+                        track.sampleMetadata(timeUs, flags, size, offset, cryptoData)
                     }
                 }
             }
@@ -158,6 +176,7 @@ private class SeekableMkvExtractor(private val inner: Extractor) : Extractor by 
     override fun seek(position: Long, timeUs: Long) {
         landingPos = -1
         recovery = null
+        lastSampleUs = C.TIME_UNSET
         inner.seek(position, timeUs)
         search = if (active && (position != 0L || timeUs != 0L)) Search(timeUs) else null
     }
@@ -242,8 +261,10 @@ private class SeekableMkvExtractor(private val inner: Extractor) : Extractor by 
                 Log.w(TAG, "The file doesn't read at byte $damagedAt of $length, nor at the $tries places after it tried", cause)
                 throw ParserException.createForMalformedContainer("Damaged from byte $damagedAt", cause)
             }
+            val fromUs = lastSampleUs
             Log.w(TAG, "The file doesn't read at byte $damagedAt of $length (${cause.message}); going on at " +
-                "${g.timeUs / 1000} ms, byte ${g.position} ($tries looks)")
+                "${g.timeUs / 1000} ms, byte ${g.position} ($tries looks), read to ${fromUs / 1000} ms")
+            if (fromUs != C.TIME_UNSET) runCatching { onSkip?.invoke(uri, fromUs, g.timeUs) }
             inner.seek(g.position, g.timeUs)
             // The last look may have been further on than the place found: reading starts there (see [read]).
             landingPos = g.position

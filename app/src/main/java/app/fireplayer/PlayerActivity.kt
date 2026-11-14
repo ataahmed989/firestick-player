@@ -208,6 +208,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private val speechTap = SpeechTap()
     // The timing of the film's own subtitle tracks as they load: auto sync lines downloaded subtitles up against it.
     private val embeddedCues = EmbeddedCues()
+    // Damaged stretches of the film gone past, told in a corner note as playback reaches them.
+    private val damageSkips = app.fireplayer.player.DamageSkips()
+    private lateinit var skipNote: View
+    private lateinit var skipNoteDetail: TextView
     private lateinit var autoSync: AutoSync
     // The Subtitle delay window is open, so auto sync's news shows in it at once.
     private var delayPanelOpen = false
@@ -958,6 +962,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             displaySwitch = displaySwitch,
             speechTap = speechTap,
             embeddedCues = embeddedCues,
+            damageSkips = damageSkips,
         )
         vsyncFix = vsync.also { it.start() }
         // The TV's mode can change under the film (turned on, reconnected): its rate is asked for again then.
@@ -1636,6 +1641,30 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
     }
 
+    /** When playback has just been taken past a damaged stretch of the file, says so in a corner for a few seconds. */
+    private fun tellDamageSkip() {
+        val p = player ?: return
+        if (!p.isPlaying) return
+        val uri = p.currentMediaItem?.localConfiguration?.uri?.toString()
+        val skip = damageSkips.reached(uri, p.currentPosition) ?: return
+        val seconds = ((skip.toMs - skip.fromMs + 500) / 1000).coerceAtLeast(1)
+        skipNoteDetail.text = "${formatTime(skip.fromMs, long = true)} to ${formatTime(skip.toMs, long = true)} · " +
+            "$seconds s missing on the server"
+        handler.removeCallbacks(hideSkipNote)
+        skipNote.animate().cancel()
+        if (skipNote.visibility != View.VISIBLE) {
+            skipNote.alpha = 0f
+            skipNote.visibility = View.VISIBLE
+        }
+        skipNote.animate().alpha(1f).setDuration(SKIP_NOTE_FADE_MS).start()
+        handler.postDelayed(hideSkipNote, SKIP_NOTE_MS)
+    }
+
+    private val hideSkipNote = Runnable {
+        skipNote.animate().cancel()
+        skipNote.animate().alpha(0f).setDuration(SKIP_NOTE_FADE_MS).withEndAction { skipNote.visibility = View.GONE }.start()
+    }
+
     /** Tries again after [delayMs] with the spinner up instead of an error. */
     private fun retryQuietly(delayMs: Long) {
         retryPending = true
@@ -1929,6 +1958,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         audioLabel = findViewById(R.id.audio_label)
         errorBox = findViewById(R.id.error_box)
         errorHint = findViewById(R.id.error_hint)
+        skipNote = findViewById(R.id.skip_note)
+        skipNoteDetail = findViewById(R.id.skip_note_detail)
         errorText = findViewById(R.id.error_text)
 
         // Holds focus while the controls are hidden.
@@ -2130,6 +2161,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             updatePostPlay()
             noteWhilePlaying()
             checkFreeze()
+            tellDamageSkip()
             handler.postDelayed(this, 200)
         }
     }
@@ -5192,6 +5224,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         const val REMATCH_AGAIN_MS = 10_000L
         /** The most times one video asks for its rate again after the TV changed mode under it. */
         const val REMATCH_MAX = 3
+        /** How long the note about a damaged stretch gone past stays up, and its fade. */
+        const val SKIP_NOTE_MS = 5_000L
+        const val SKIP_NOTE_FADE_MS = 250L
         /** File missing, no permission and cleartext blocked won't fix themselves. */
         val NOT_RETRIED = setOf(
             PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND,

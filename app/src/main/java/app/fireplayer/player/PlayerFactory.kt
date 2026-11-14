@@ -176,6 +176,8 @@ object PlayerFactory {
         speechTap: SpeechTap,
         /** Where the timing of the film's own subtitle tracks goes as they load, for auto sync (see [EmbeddedCues]). */
         embeddedCues: EmbeddedCues? = null,
+        /** Where damaged stretches of a film the player went past are noted, so the viewer can be told. */
+        damageSkips: DamageSkips? = null,
     ): Built {
         val serverSwitch = ServerSwitch()
         val dataSourceFactory = dataSourceFactory(context, headers, serverSwitch)
@@ -238,7 +240,7 @@ object PlayerFactory {
             val parsers = pictureText.readAhead(DefaultSubtitleParserFactory())
             // Set on the extractors themselves too: the MKV wrapper doesn't pass this setting on to them.
             extractors.setSubtitleParserFactory(parsers)
-            val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory, tapped(SeekableMkvExtractorsFactory(extractors), embeddedCues))
+            val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory, tapped(SeekableMkvExtractorsFactory(extractors, damageSkips?.let { it::add }), embeddedCues))
                 .setLoadErrorHandlingPolicy(retryPolicy)
                 .setSubtitleParserFactory(parsers)
             val player = builder
@@ -256,7 +258,7 @@ object PlayerFactory {
         val parserFactory = AssSubtitleParserFactory(assHandler)
         val mediaSourceFactory = DefaultMediaSourceFactory(
             dataSourceFactory,
-            tapped(SeekableMkvExtractorsFactory(extractors.withAssMkvSupport(parserFactory, assHandler)), embeddedCues),
+            tapped(SeekableMkvExtractorsFactory(extractors.withAssMkvSupport(parserFactory, assHandler), damageSkips?.let { it::add }), embeddedCues),
         )
         mediaSourceFactory.setSubtitleParserFactory(parserFactory)
         mediaSourceFactory.setLoadErrorHandlingPolicy(retryPolicy)
