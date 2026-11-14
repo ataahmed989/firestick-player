@@ -83,6 +83,7 @@ import app.fireplayer.player.VsyncFix
 import app.fireplayer.player.XtreamAccount
 import app.fireplayer.player.Copies
 import app.fireplayer.player.CopyRank
+import app.fireplayer.player.CopyHealth
 import app.fireplayer.player.MediaSpec
 import app.fireplayer.player.RedirectMemoryDataSource
 import app.fireplayer.subs.AutoSync
@@ -1312,6 +1313,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     override fun onPlaybackStateChanged(state: Int) {
         handler.removeCallbacks(showBuffering)
         updateKeepScreenOn()
+        noteStall(state)
         if (state == Player.STATE_BUFFERING) {
             shownPercent = 0
             handler.postDelayed(showBuffering, 400)
@@ -1365,6 +1367,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     override fun onIsPlayingChanged(isPlaying: Boolean) {
         countPlaying(isPlaying)
+        noteWatching(isPlaying)
         backdrop?.playing = isPlaying
         updatePlayButton()
         updateKeepScreenOn()
@@ -1494,6 +1497,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
         // Every jump, the viewer's or FreezeWatch's own: the film's time starts afresh there.
         freezeWatch.jumped()
+        // The wait after a jump is the jump's, not the copy's.
+        if (reason == Player.DISCONTINUITY_REASON_SEEK) jumpedAt = SystemClock.elapsedRealtime()
         // A jump while already waiting is a new wait (the state doesn't change), so the percentage starts again.
         if (reason == Player.DISCONTINUITY_REASON_SEEK) {
             restartPostPlayCount(newPosition.positionMs)
@@ -1623,6 +1628,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // The error box needs OK, so a settings window can't be left in front of it.
         if (panel.isOpen) panel.close()
         errorText.text = errorMessage(error, status)
+        // This copy didn't play: counted against it when copies are compared.
+        health = health.copy(failures = health.failures + 1)
+        keepHealth()
         // The number helps if the error has to be reported; the name of the code would be noise here.
         errorHint.text = "Press OK to try again  ·  Error ${error.errorCode}"
         errorBox.visibility = View.VISIBLE
@@ -1658,6 +1666,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val uri = p.currentMediaItem?.localConfiguration?.uri?.toString()
         val skip = damageSkips.reached(uri, p.currentPosition) ?: return
         val seconds = ((skip.toMs - skip.fromMs + 500) / 1000).coerceAtLeast(1)
+        health = health.copy(skips = health.skips + 1)
         skipNoteTitle.text = "Skipped $seconds s"
         skipNoteDetail.text = "${formatTime(skip.fromMs, long = true)}–${formatTime(skip.toMs, long = true)} · damaged on the server"
         handler.removeCallbacks(hideSkipNote)
@@ -3014,6 +3023,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         Glass.background(btnSubs, Glass.Kind.PILL)
         Glass.background(btnAudio, Glass.Kind.PILL)
         for (chip in listOf(chipResolution, chipFps, chipFormat, chipAudio, chipPortal)) Glass.background(chip, Glass.Kind.CHIP)
+        // The corner note looks like the pods it sits with.
+        Glass.background(skipNote, Glass.Kind.CHIP)
         // Glass chips cast a shadow below them that their row would cut off; classic chips keep the row as it was.
         (chips as ViewGroup).apply {
             clipChildren = !Glass.on
@@ -4571,6 +4582,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     /** Keeps what was measured of the copy playing, once its picture's data rate has been counted. */
     private fun rememberQuality() {
+        healthFor(player?.currentMediaItem?.localConfiguration?.uri)
+        keepHealth()
         val p = player ?: return
         val uri = p.currentMediaItem?.localConfiguration?.uri ?: return
         val spec = playingSpec()?.takeIf { it.videoHow == MediaSpec.How.MEASURED } ?: return
@@ -4587,6 +4600,75 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val edit = qualitySeen.edit()
         if (qualitySeen.all.size >= MAX_QUALITY_SEEN && !qualitySeen.contains(key)) edit.clear()
         edit.putString(key, text).apply()
+    }
+
+    // How the copy playing has played in this play (see CopyHealth), for which link, and since when it's been playing
+    // or waiting to load; what earlier plays had made of it.
+    private var health = CopyHealth()
+    private var healthKey: String? = null
+    private var healthBefore: CopyHealth? = null
+    private var watchingSince = 0L
+    private var stallSince = 0L
+    private var jumpedAt = 0L
+    private var readyOnce = false
+
+    /** A new copy came on (or the same again): this play's counters start afresh, after the last one's are kept. */
+    private fun healthFor(uri: Uri?): String? {
+        val key = uri?.let { qualityKey(it) }
+        if (key != healthKey) {
+            keepHealth()
+            healthKey = key
+            healthBefore = key?.let { CopyHealth.decode(qualitySeen.getString("h|$it", null)) }
+            health = CopyHealth()
+            readyOnce = false
+            stallSince = 0
+            if (watchingSince > 0) watchingSince = SystemClock.elapsedRealtime()
+        }
+        return key
+    }
+
+    private fun noteWatching(playing: Boolean) {
+        healthFor(player?.currentMediaItem?.localConfiguration?.uri)
+        val now = SystemClock.elapsedRealtime()
+        if (!playing && watchingSince > 0) health = health.copy(watchedMs = health.watchedMs + now - watchingSince)
+        watchingSince = if (playing) now else 0
+    }
+
+    /** Waits to load once a copy has played, not after a jump or while the player tries again quietly: stalls. */
+    private fun noteStall(state: Int) {
+        val p = player ?: return
+        healthFor(p.currentMediaItem?.localConfiguration?.uri)
+        val now = SystemClock.elapsedRealtime()
+        when (state) {
+            Player.STATE_BUFFERING ->
+                if (readyOnce && p.playWhenReady && now - jumpedAt > JUMP_WAIT_MS && !retryPending && stallSince == 0L) stallSince = now
+            Player.STATE_READY -> {
+                readyOnce = true
+                if (stallSince > 0) health = health.copy(stalls = health.stalls + 1, stallMs = health.stallMs + now - stallSince)
+                stallSince = 0
+            }
+            else -> stallSince = 0
+        }
+    }
+
+    /** This play's counters on top of earlier plays', kept for the copy. */
+    private fun keepHealth() {
+        val key = healthKey ?: return
+        val now = SystemClock.elapsedRealtime()
+        val sofar = if (watchingSince > 0) health.copy(watchedMs = health.watchedMs + now - watchingSince) else health
+        if (sofar == CopyHealth()) return
+        val text = CopyHealth.encode((healthBefore ?: CopyHealth()) + sofar)
+        if (qualitySeen.getString("h|$key", null) != text) qualitySeen.edit().putString("h|$key", text).apply()
+    }
+
+    /** How the copy at [uri] has played, this play included if it's the one playing. */
+    private fun healthOf(uri: Uri): CopyHealth? {
+        val key = qualityKey(uri) ?: return null
+        val kept = CopyHealth.decode(qualitySeen.getString("h|$key", null))
+        if (key != healthKey) return kept
+        val now = SystemClock.elapsedRealtime()
+        val sofar = if (watchingSince > 0) health.copy(watchedMs = health.watchedMs + now - watchingSince) else health
+        return (healthBefore ?: CopyHealth()) + sofar
     }
 
     // The play being kept, and what earlier plays had measured of it when it started.
@@ -4670,7 +4752,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             }
         }
         val current = list.indexOfFirst { it.current }
-        val verdict = if (list.size > 1) CopyRank.rank(specs, current, hdrScreen()) else null
+        val healths = list.map { healthOf(it.uri) }
+        val verdict = if (list.size > 1) CopyRank.rank(specs, current, hdrScreen(), healths) else null
         val best = verdict?.best
         fun nameOf(i: Int) = list[i].name.ifBlank { currentEntry()?.info?.title ?: "Copy ${i + 1}" }
         if (verdict != null) {
@@ -4691,6 +4774,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             val tags = listOfNotNull(
                 if (c.current) "Playing" else null,
                 if (i == best && list.size > 1) "Best" else null,
+                healths[i]?.summary()?.replaceFirstChar { it.uppercase() },
                 when {
                     sp.videoHow == MediaSpec.How.MEASURED -> "measured by FirePlayer"
                     sp.videoHow == MediaSpec.How.STATED -> "stated in the file"
@@ -5533,6 +5617,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         const val CHIP_REFRESH_TICKS = 15
         /** What's measured of the copy playing is kept this often (play ticks of 200 ms: 30 s). */
         const val KEEP_QUALITY_TICKS = 150
+        /** A wait to load this soon after a jump is the jump's. */
+        const val JUMP_WAIT_MS = 3_000L
         /** Copies' measurements kept at most; past it they start again. */
         const val MAX_QUALITY_SEEN = 400
         const val SKIP_NOTE_FADE_MS = 250L
