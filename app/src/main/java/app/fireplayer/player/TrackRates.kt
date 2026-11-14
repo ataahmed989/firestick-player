@@ -58,7 +58,8 @@ class TrackRates {
     }
 
     companion object {
-        const val MIN_SPAN_US = 20_000_000L
+        /** Scenes differ a lot: less than this much film says too little about the whole. */
+        const val MIN_SPAN_US = 45_000_000L
         private const val JUMP_BACK_US = 2_000_000L
         private const val JUMP_AHEAD_US = 3_000_000L
     }

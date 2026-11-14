@@ -983,7 +983,6 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         p.addListener(this)
         p.addAnalyticsListener(filmLoadErrors)
         p.addAnalyticsListener(droppedFrames)
-        p.addAnalyticsListener(serverSpeed)
         p.setVideoFrameMetadataListener(fpsMeter)
         fpsMeter.reset()
         p.pauseAtEndOfMediaItems = sleepAtEnd
@@ -1150,6 +1149,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     private fun savePosition() {
+        rememberQuality()
         // Until the question is answered, the old resume point still stands.
         if (resumeDialogShowing) return
         val p = player ?: return
@@ -1863,14 +1863,6 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private val droppedFrames = object : AnalyticsListener {
         override fun onDroppedVideoFrames(eventTime: AnalyticsListener.EventTime, droppedFrames: Int, elapsedMs: Long) {
             autoSync.framesDropped()
-        }
-    }
-
-    // How fast the server sends the film, as the player last estimated it (bits a second; 0 until it has).
-    private var serverBps = 0L
-    private val serverSpeed = object : AnalyticsListener {
-        override fun onBandwidthEstimate(eventTime: AnalyticsListener.EventTime, totalLoadTimeMs: Int, totalBytesLoaded: Long, bitrateEstimate: Long) {
-            if (bitrateEstimate > 0) serverBps = bitrateEstimate
         }
     }
 
@@ -4490,6 +4482,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val h = p.videoSize.height.takeIf { it > 0 } ?: base.height
         val videoBps = rates?.bps(video?.id) ?: 0L
         val audioBps = rates?.bps(audio?.id) ?: 0L
+        val secs = if (videoBps > 0) rates?.seconds(video?.id) ?: 0L else 0L
         val size = RedirectMemoryDataSource.fileSize(link)
         val seconds = p.duration.takeIf { it > 0 }?.div(1000) ?: 0L
         return base.copy(
@@ -4502,6 +4495,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             audioHow = if (audioBps > 0) MediaSpec.How.MEASURED else base.audioHow,
             sizeBytes = size,
             overallBps = if (size > 0 && seconds > 0) size * 8 / seconds else 0L,
+            measuredSecs = secs,
         )
     }
 
@@ -4514,7 +4508,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val rates = embeddedCues.source(link)?.rates
         fun over(id: String?): String {
             val secs = rates?.seconds(id) ?: 0
-            return if (secs >= 120) "measured over ${secs / 60} min" else "measured over $secs s"
+            return if (secs >= 120) "measured, ${secs / 60} min" else "measured, $secs s"
         }
         val video = selectedFormat(C.TRACK_TYPE_VIDEO)
         val audio = selectedFormat(C.TRACK_TYPE_AUDIO)
@@ -4535,7 +4529,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         listOfNotNull(
             spec.audioCodec?.let { if (spec.atmos) "$it Atmos" else it },
             MediaSpec.channelsLabel(spec.channels),
-            spec.sampleRate.takeIf { it > 0 }?.let { "${it / 1000} kHz" },
+            // AAC under 32 kHz is usually HE-AAC's core rate, half of what's heard: left out rather than misread.
+            spec.sampleRate.takeIf { it >= 32_000 || (it > 0 && spec.audioCodec != "AAC") }?.let { "${it / 1000} kHz" },
         ).joinToString(" · ").ifEmpty { null }?.let { pairs += "Sound" to fact(it) }
         if (spec.audioBps > 0) pairs += "Sound data" to fact(
             "${MediaSpec.mbps(spec.audioBps)} · " + (if (spec.audioHow == MediaSpec.How.MEASURED) over(audio?.id) else "stated by the file"),
@@ -4543,10 +4538,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (spec.sizeBytes > 0) pairs += "File" to fact(
             MediaSpec.size(spec.sizeBytes) + (if (spec.overallBps > 0) " · ${MediaSpec.mbps(spec.overallBps)} on average" else ""),
         )
-        if (serverBps > 0) {
+        val server = RedirectMemoryDataSource.serverBps()
+        if (server > 0) {
+            // The whole file comes, every sound track included: that's what the server has to keep up with.
             val need = spec.overallBps.takeIf { it > 0 } ?: (spec.videoBps + spec.audioBps)
             pairs += "Server" to fact(
-                MediaSpec.mbps(serverBps) + (if (need > 0) String.format(Locale.US, " · %.1f× what it needs", serverBps.toDouble() / need) else ""),
+                MediaSpec.mbps(server) + (if (need > 0) String.format(Locale.US, " · %.1f× the file's rate", server.toDouble() / need) else ""),
             )
         }
         (p as? ExoPlayer)?.videoDecoderCounters?.let { c ->
@@ -4556,6 +4553,43 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         facts(pairs)
     }
+
+    // What was measured of each copy played, kept so copies can be compared later: by provider and id, no login.
+    private val qualitySeen by lazy { getSharedPreferences("quality_seen", MODE_PRIVATE) }
+
+    private fun qualityKey(uri: Uri): String? {
+        val portal = NextEpisode.portal(uri) ?: return null
+        val id = Copies.idIn(uri) ?: return null
+        return "$portal|${if (NextEpisode.isEpisodeLink(uri)) "s" else "m"}|$id"
+    }
+
+    /** Keeps what was measured of the copy playing, once its picture's data rate has been counted. */
+    private fun rememberQuality() {
+        val p = player ?: return
+        val uri = p.currentMediaItem?.localConfiguration?.uri ?: return
+        val spec = playingSpec()?.takeIf { it.videoHow == MediaSpec.How.MEASURED } ?: return
+        val key = qualityKey(uri) ?: return
+        // Added to what earlier plays measured, once per play: this play's figure replaces its own last one.
+        val playKey = "$key@${p.currentMediaItemIndex}"
+        val before = if (keptPlay == playKey) keptBefore else qualitySeen.getString(key, null)?.let { MediaSpec.decode(it) }
+        if (keptPlay != playKey) {
+            keptPlay = playKey
+            keptBefore = before
+        }
+        val text = MediaSpec.encode(MediaSpec.merged(before, spec))
+        if (qualitySeen.getString(key, null) == text) return
+        val edit = qualitySeen.edit()
+        if (qualitySeen.all.size >= MAX_QUALITY_SEEN && !qualitySeen.contains(key)) edit.clear()
+        edit.putString(key, text).apply()
+    }
+
+    // The play being kept, and what earlier plays had measured of it when it started.
+    private var keptPlay: String? = null
+    private var keptBefore: MediaSpec? = null
+
+    /** What was measured of the copy at [uri] when it was played; null if it never was. Any thread. */
+    private fun measuredQuality(uri: Uri): MediaSpec? =
+        qualityKey(uri)?.let { qualitySeen.getString(it, null) }?.let { MediaSpec.decode(it) }
 
     // Other copies of the title playing, as the provider describes them: for this entry, while it's the one shown.
     private var copiesFor: String? = null
@@ -4571,7 +4605,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val seriesId = if (show) NextEpisode.rememberedShowId(this, uri) else null
         io.execute {
             val found = runCatching {
-                val finder = Copies(book(), headersFromIntent())
+                val finder = Copies(book(), headersFromIntent()) { measuredQuality(it) }
                 if (show) seriesId?.let { finder.ofEpisode(uri, it) }.orEmpty() else finder.ofFilm(uri)
             }
             handler.post {
@@ -4604,61 +4638,78 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             message(copiesStatus ?: LOADING)
             return
         }
-        if (list.size == 1) {
-            message("Your provider lists no other copy of this ${if (show) "episode" else "film"}.")
-        }
-        // The copy playing: what was measured here stands in for what the provider didn't say.
+        if (list.size == 1) message("Your provider lists no other copy of this ${if (show) "episode" else "film"}.")
+        // The copy playing: measured here (with what earlier plays measured of it), unless its file states its rates.
         val playing = playingSpec()
+        val playKey = player?.let { pl -> pl.currentMediaItem?.localConfiguration?.uri?.let { qualityKey(it) }?.let { "$it@${pl.currentMediaItemIndex}" } }
+        val earlier = if (playKey != null && keptPlay == playKey) keptBefore
+            else player?.currentMediaItem?.localConfiguration?.uri?.let { measuredQuality(it) }
         val specs = list.map { c ->
             val s = c.spec
-            if (!c.current || playing == null) s ?: MediaSpec()
-            else (s ?: playing).let { p ->
-                if (p.videoBps <= 0 && playing.videoBps > 0) p.copy(videoBps = playing.videoBps, videoHow = playing.videoHow) else p
-            }.let { p -> if (p.videoCodec == null) p.copy(videoCodec = playing.videoCodec, bitDepth = playing.bitDepth, hdr = playing.hdr) else p }
+            when {
+                !c.current || playing == null -> s ?: MediaSpec()
+                s != null && s.videoHow == MediaSpec.How.STATED -> s
+                playing.videoHow == MediaSpec.How.MEASURED -> MediaSpec.merged(earlier, playing)
+                else -> earlier ?: s ?: playing
+            }
         }
         val current = list.indexOfFirst { it.current }
         val verdict = if (list.size > 1) CopyRank.rank(specs, current, hdrScreen()) else null
         val best = verdict?.best
+        fun nameOf(i: Int) = list[i].name.ifBlank { currentEntry()?.info?.title ?: "Copy ${i + 1}" }
         if (verdict != null) {
             when {
-                best == null -> message("Your provider doesn't say enough about these copies to compare them.")
-                best == current -> message("This copy has the best picture" +
-                    (verdict.reasons.firstOrNull()?.let { ": $it" } ?: "") + ".")
-                else -> message("Copy ${best + 1} looks best: " + verdict.reasons.joinToString("; ") +
+                best == null -> message("Nothing is known of the other copies yet. Play one for a minute and FirePlayer measures it.")
+                best == current -> message("This copy looks best" + (verdict.reasons.firstOrNull()?.let { ": $it" } ?: "") + ".")
+                else -> message("“${nameOf(best)}” looks best: " + verdict.reasons.joinToString("; ") +
                     (if (verdict.tradeOffs.isNotEmpty()) ". It has " + verdict.tradeOffs.joinToString(" and ") else "") + ".", accent = true)
             }
         }
-        list.forEachIndexed { i, c ->
-            val s = specs[i]
+        // The one playing, the one recommended, then the others known; copies nothing is known of fold into one row.
+        val known = list.indices.filter { it == current || it == best || specs[it].videoBps > 0 || specs[it].overallBps > 0 || list[it].spec != null }
+        val order = (listOfNotNull(current.takeIf { it >= 0 }, best) + known).distinct()
+        val unknown = list.indices.filter { it !in order }
+        fun copyRow(i: Int) {
+            val c = list[i]
+            val sp = specs[i]
             val tags = listOfNotNull(
                 if (c.current) "Playing" else null,
                 if (i == best && list.size > 1) "Best" else null,
                 when {
-                    s.videoHow == MediaSpec.How.MEASURED -> "measured here"
-                    c.spec == null -> "provider gives no details"
+                    sp.videoHow == MediaSpec.How.MEASURED -> "measured by FirePlayer"
+                    sp.videoHow == MediaSpec.How.STATED -> "stated in the file"
+                    sp.videoHow == MediaSpec.How.ESTIMATED -> "estimated from the file's rate"
                     else -> null
                 },
             ).joinToString(" · ")
             val picture = listOfNotNull(
-                s.videoCodec,
-                s.bitDepth.takeIf { it > 8 }?.let { "$it-bit" },
-                s.hdr?.takeIf { it != "SDR" },
-                if (s.width > 0 && s.height > 0) "${s.width}×${s.height}" else null,
-                s.soundLine(),
-            ).joinToString(" · ")
-            val name = c.name.ifBlank { "Copy ${i + 1}" }
+                sp.videoCodec,
+                sp.bitDepth.takeIf { it > 8 }?.let { "$it-bit" },
+                sp.hdr?.takeIf { it != "SDR" },
+                if (sp.width > 0 && sp.height > 0) "${sp.width}×${sp.height}" else null,
+                sp.soundLine(),
+            ).joinToString(" · ").ifEmpty { "Nothing known yet" }
             val rate = when {
-                s.videoBps > 0 -> (if (s.videoHow == MediaSpec.How.ESTIMATED) "~" else "") + MediaSpec.mbps(s.videoBps)
-                s.overallBps > 0 -> MediaSpec.mbps(s.overallBps)
+                sp.videoBps > 0 -> (if (sp.videoHow == MediaSpec.How.ESTIMATED) "~" else "") + MediaSpec.mbps(sp.videoBps)
+                sp.overallBps > 0 -> MediaSpec.mbps(sp.overallBps)
                 else -> null
             }
-            resultRow("${i + 1}. $name", listOf(tags, picture).filter { it.isNotEmpty() }.joinToString("\n"), rate,
-                selected = c.current) {
+            resultRow(nameOf(i), listOf(tags, picture).filter { it.isNotEmpty() }.joinToString("\n"), rate, selected = c.current) {
                 if (!c.current) playCopy(c)
             }
         }
-        message("Data rates are the picture's own; the frame size can include black bars, so it says less about sharpness.")
+        order.forEach { copyRow(it) }
+        if (unknown.isNotEmpty()) {
+            dropdownRow("${unknown.size} more ${if (unknown.size == 1) "copy" else "copies"}", "No details", Rows.Badge.INACTIVE, moreCopiesOpen) {
+                moreCopiesOpen = !moreCopiesOpen
+                refresh()
+            }
+            if (moreCopiesOpen) unknown.forEach { copyRow(it) }
+        }
+        message("Picture data is the rate of the picture alone. The frame size can include black bars, so it says less about sharpness.")
     }
+
+    private var moreCopiesOpen = false
 
     /** Plays another copy of this title from where this one is, in place of it. */
     private fun playCopy(copy: Copies.Copy) {
@@ -5459,6 +5510,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         const val SKIP_NOTE_MS = 5_000L
         /** The pods are looked at again this often while the controls are up (in play ticks of 200 ms). */
         const val CHIP_REFRESH_TICKS = 15
+        /** Copies' measurements kept at most; past it they start again. */
+        const val MAX_QUALITY_SEEN = 400
         const val SKIP_NOTE_FADE_MS = 250L
         /** File missing, no permission and cleartext blocked won't fix themselves. */
         val NOT_RETRIED = setOf(

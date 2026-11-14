@@ -67,23 +67,42 @@ class QualityTest {
         assertEquals("Dolby Vision", s.hdr)
     }
 
+    @Test
+    fun aMeasurementKeptBetweenPlaysReadsBackTheSame() {
+        val s = MediaSpec(videoCodec = "HEVC", profile = "Main 10", width = 3840, height = 2024, fps = 23.976f, bitDepth = 10,
+            hdr = "HDR10", videoBps = 19_800_000, videoHow = MediaSpec.How.MEASURED, audioCodec = "TrueHD", atmos = true,
+            channels = 8, sampleRate = 48000, audioBps = 4_100_000, audioHow = MediaSpec.How.MEASURED, sizeBytes = 15_920_000_000)
+        assertEquals(s, MediaSpec.decode(MediaSpec.encode(s)))
+        assertNull(MediaSpec.decode("garbage"))
+    }
+
+    @Test
+    fun measurementsFromSeveralPlaysAreWeightedByTheFilmTheyCovered() {
+        val before = MediaSpec(videoBps = 9_000_000, audioBps = 600_000, measuredSecs = 300)
+        val now = MediaSpec(videoBps = 3_000_000, audioBps = 600_000, measuredSecs = 100, videoHow = MediaSpec.How.MEASURED)
+        val m = MediaSpec.merged(before, now)
+        assertEquals(7_500_000L, m.videoBps)
+        assertEquals(400L, m.measuredSecs)
+        assertEquals(now, MediaSpec.merged(null, now))
+    }
+
     // --- Rates counted as the film loads
 
     @Test
     fun aTracksRateIsItsBytesOverTheFilmTheyCover() {
         val r = TrackRates()
         // 25 frames a second, 100,000 bytes each: 20 Mb/s.
-        for (i in 0..(30 * 25)) r.add("1", i * 40_000L, 100_000)
+        for (i in 0..(60 * 25)) r.add("1", i * 40_000L, 100_000)
         assertEquals(20_000_000.0, r.bps("1").toDouble(), 20_000_000 * 0.01)
-        assertEquals(30, r.seconds("1"))
+        assertEquals(60, r.seconds("1"))
     }
 
     @Test
     fun aJumpDoesNotCountTheGapAsFilm() {
         val r = TrackRates()
-        for (i in 0..(15 * 25)) r.add("1", i * 40_000L, 100_000)
+        for (i in 0..(30 * 25)) r.add("1", i * 40_000L, 100_000)
         // Ten minutes on.
-        for (i in 0..(15 * 25)) r.add("1", 600_000_000L + i * 40_000L, 100_000)
+        for (i in 0..(30 * 25)) r.add("1", 600_000_000L + i * 40_000L, 100_000)
         assertEquals(20_000_000.0, r.bps("1").toDouble(), 20_000_000 * 0.01)
     }
 
@@ -92,7 +111,7 @@ class QualityTest {
         val r = TrackRates()
         // B-frames: decode order 0, 3, 1, 2, 6, 4, 5…
         val order = listOf(0, 3, 1, 2)
-        for (gop in 0 until 200) for (o in order) r.add("1", (gop * 4 + o) * 40_000L, 50_000)
+        for (gop in 0 until 400) for (o in order) r.add("1", (gop * 4 + o) * 40_000L, 50_000)
         assertEquals(10_000_000.0, r.bps("1").toDouble(), 10_000_000 * 0.02)
     }
 
@@ -106,7 +125,7 @@ class QualityTest {
     @Test
     fun theMergedSourcesIdFindsTheTrack() {
         val r = TrackRates()
-        for (i in 0..(30 * 25)) r.add("2", i * 40_000L, 10_000)
+        for (i in 0..(60 * 25)) r.add("2", i * 40_000L, 10_000)
         assertTrue(r.bps("0:2") > 0)
         assertEquals(0, r.bps("0:3"))
     }

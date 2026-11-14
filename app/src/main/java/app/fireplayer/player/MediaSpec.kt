@@ -39,6 +39,8 @@ data class MediaSpec(
     /** The whole file's average data rate (picture, sound and the rest), bits a second. */
     val overallBps: Long = 0,
     val sizeBytes: Long = 0,
+    /** How much of the film the measured rates were counted over, in seconds (all plays together). */
+    val measuredSecs: Long = 0,
 ) {
     /** Where a number came from. */
     enum class How(val label: String) {
@@ -76,6 +78,50 @@ data class MediaSpec(
     }
 
     companion object {
+        /** [spec] as one line of text, to keep between plays ([decode] reads it back). */
+        fun encode(spec: MediaSpec): String = listOf(
+            spec.videoCodec.orEmpty(), spec.profile.orEmpty(), spec.width, spec.height, spec.fps, spec.bitDepth,
+            spec.hdr.orEmpty(), spec.videoBps, spec.videoHow.name, spec.audioCodec.orEmpty(), if (spec.atmos) 1 else 0,
+            spec.channels, spec.sampleRate, spec.audioBps, spec.audioHow.name, spec.overallBps, spec.sizeBytes,
+            spec.measuredSecs,
+        ).joinToString(SEP) { it.toString().replace(SEP, " ") }
+
+        fun decode(text: String): MediaSpec? {
+            val f = text.split(SEP)
+            if (f.size < 17) return null
+            fun s(i: Int) = f[i].ifEmpty { null }
+            fun l(i: Int) = f[i].toLongOrNull() ?: 0L
+            fun how(i: Int) = runCatching { How.valueOf(f[i]) }.getOrDefault(How.NONE)
+            return MediaSpec(
+                videoCodec = s(0), profile = s(1), width = l(2).toInt(), height = l(3).toInt(),
+                fps = f[4].toFloatOrNull() ?: 0f, bitDepth = l(5).toInt(), hdr = s(6), videoBps = l(7), videoHow = how(8),
+                audioCodec = s(9), atmos = f[10] == "1", channels = l(11).toInt(), sampleRate = l(12).toInt(),
+                audioBps = l(13), audioHow = how(14), overallBps = l(15), sizeBytes = l(16),
+                measuredSecs = if (f.size > 17) l(17) else 0L,
+            )
+        }
+
+        /**
+         * What was measured of a copy before ([kept]) and in this play ([now]), as one: each rate weighted by how much
+         * film it was counted over, so a copy's figure firms up every time it's played instead of following one scene.
+         */
+        fun merged(kept: MediaSpec?, now: MediaSpec): MediaSpec {
+            if (kept == null || kept.measuredSecs <= 0 || now.measuredSecs <= 0) return now
+            val a = kept.measuredSecs
+            val b = now.measuredSecs
+            fun mix(x: Long, y: Long) = if (x > 0 && y > 0) (x * a + y * b) / (a + b) else maxOf(x, y)
+            return now.copy(
+                videoBps = mix(kept.videoBps, now.videoBps),
+                audioBps = mix(kept.audioBps, now.audioBps),
+                measuredSecs = (a + b).coerceAtMost(MAX_MEASURED_SECS),
+            )
+        }
+
+        /** Past this much film, older plays count as much as new ones never more. */
+        private const val MAX_MEASURED_SECS = 4 * 3600L
+
+        private const val SEP = "|"
+
         /** "19.8 Mb/s", "850 kb/s". */
         fun mbps(bps: Long): String = when {
             bps >= 10_000_000 -> String.format(Locale.US, "%.0f Mb/s", bps / 1e6)

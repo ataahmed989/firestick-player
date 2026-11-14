@@ -50,7 +50,10 @@ class XtreamAccount(private val headers: Map<String, String>) {
             conn.setRequestProperty("User-Agent", userAgent ?: "FirePlayer/1.0 (Linux; Android)")
             headers.filterKeys { !it.equals("User-Agent", true) }.forEach { (k, v) -> conn.setRequestProperty(k, v) }
             try {
-                if (conn.responseCode != HttpURLConnection.HTTP_OK) return null
+                if (conn.responseCode != HttpURLConnection.HTTP_OK) {
+                    Log.i(TAG, "The provider answered ${conn.responseCode} (${action ?: "account"})")
+                    return null
+                }
                 val text = conn.inputStream.bufferedReader().use { reader ->
                     val out = StringBuilder()
                     val buffer = CharArray(8 * 1024)

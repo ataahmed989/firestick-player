@@ -107,8 +107,11 @@ object CopyRank {
                 reasons += "about the same $what ($numbers)"
             }
         }
-        if (isHdr(a) && !isHdr(b)) reasons += "${a.hdr} instead of ${if (b.hdr == "SDR") "SDR" else "no HDR"}"
-        if (!isHdr(a) && isHdr(b)) costs += "no ${b.hdr}"
+        // Only what's known on both sides: a file that doesn't say isn't taken for SDR.
+        if (isHdr(a) && b.hdr == "SDR") reasons += "${a.hdr} instead of SDR"
+        if (isHdr(a) && b.hdr == null) reasons += "${a.hdr} (the other doesn't say)"
+        if (a.hdr == "SDR" && isHdr(b)) costs += "SDR instead of ${b.hdr}"
+        if (a.hdr == null && isHdr(b)) costs += "no HDR stated, where the other is ${b.hdr}"
         if (a.bitDepth > b.bitDepth && b.bitDepth > 0) reasons += "${a.bitDepth}-bit instead of ${b.bitDepth}-bit"
         if (a.bitDepth in 1 until b.bitDepth) costs += "${a.bitDepth}-bit instead of ${b.bitDepth}-bit"
         if (a.width > 0 && b.width > 0 && abs(a.width - b.width) >= 320) {

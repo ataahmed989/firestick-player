@@ -188,9 +188,20 @@ class TitleBook(context: Context) : SQLiteOpenHelper(context, "titles.db", null,
         val out = ArrayList<Copy>()
         readableDatabase.rawQuery(
             "SELECT id, raw FROM item WHERE server = ? AND kind = ? AND " +
-                "(CASE WHEN found > 0 THEN found WHEN state = $RENAMED THEN tmdb ELSE 0 END) = ? LIMIT $limit",
-            arrayOf(server, kind.code.toString(), tmdb.toString()),
+                // The number written in: bound as text it would never equal the CASE, which has no type to convert it to.
+                "(CASE WHEN found > 0 THEN found WHEN state = $RENAMED THEN tmdb ELSE 0 END) = $tmdb LIMIT $limit",
+            arrayOf(server, kind.code.toString()),
         ).use { c -> while (c.moveToNext()) out += Copy(c.getInt(0), c.getString(1)) }
+        return out
+    }
+
+    /** Every listing on [server] with the English [title] and [year] TMDB gave it: copies whose TMDB id differs or wasn't kept. */
+    fun copiesByTitle(server: String, kind: Kind, title: String, year: Int, limit: Int = 12): List<Copy> {
+        val out = ArrayList<Copy>()
+        // Without a year, the name alone.
+        val sql = "SELECT id, raw FROM item WHERE server = ? AND kind = ? AND title = ?" + (if (year > 0) " AND year = $year" else "") + " LIMIT $limit"
+        readableDatabase.rawQuery(sql, arrayOf(server, kind.code.toString(), title))
+            .use { c -> while (c.moveToNext()) out += Copy(c.getInt(0), c.getString(1)) }
         return out
     }
 

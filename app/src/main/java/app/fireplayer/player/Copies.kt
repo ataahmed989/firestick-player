@@ -13,7 +13,12 @@ import org.json.JSONObject
  * by TMDB id; only links that come through FirePlayer's title server can be looked up. Blocks: run it off the main
  * thread. One small request per copy (a show's episode list per copy of the show), only when asked.
  */
-class Copies(private val book: TitleBook, headers: Map<String, String>) {
+class Copies(
+    private val book: TitleBook,
+    headers: Map<String, String>,
+    /** What FirePlayer measured of a copy when it was played, if it was. */
+    private val measured: (Uri) -> MediaSpec? = { null },
+) {
 
     /** A copy: the provider's [name] for it, the [uri] it plays from, and what's known of it (null: the provider didn't say). */
     class Copy(val name: String, val uri: Uri, val spec: MediaSpec?, val current: Boolean)
@@ -24,16 +29,23 @@ class Copies(private val book: TitleBook, headers: Map<String, String>) {
     fun ofFilm(uri: Uri): List<Copy> {
         val server = TitleProxy.serverIn(uri) ?: return emptyList()
         val id = idIn(uri) ?: return emptyList()
-        val tmdb = book.about(server, TitleBook.Kind.MOVIE, id)?.tmdb ?: 0
-        val listed = book.copies(server, TitleBook.Kind.MOVIE, tmdb).ifEmpty { listOf(TitleBook.Copy(id, "")) }
+        val known = book.about(server, TitleBook.Kind.MOVIE, id)
+        val tmdb = known?.tmdb ?: 0
+        // By TMDB id, and by the English name and year TMDB gave: a copy matched to another id is still found.
+        val byTitle = known?.title?.let { book.copiesByTitle(server, TitleBook.Kind.MOVIE, it, known.year) }.orEmpty()
+        val listed = (book.copies(server, TitleBook.Kind.MOVIE, tmdb) + byTitle).distinctBy { it.id }
         val all = if (listed.any { it.id == id }) listed else listOf(TitleBook.Copy(id, "")) + listed
+        Log.i(TAG, "film: tmdb ${tmdb > 0}, named ${known?.title != null}, ${listed.size} listed (${byTitle.size} by name)")
         return all.take(MAX_COPIES).map { copy ->
             val info = account.api(uri, "get_vod_info", "vod_id" to copy.id.toString())
             val about = info?.optJSONObject("info")
             val data = info?.optJSONObject("movie_data")
+            if (copy.id == id) Log.i(TAG, "the provider's answer has: ${info?.keys()?.asSequence()?.toList()?.sorted()?.joinToString(",")}; " +
+                "info is ${info?.opt("info")?.javaClass?.simpleName}: ${about?.keys()?.asSequence()?.toList()?.sorted()?.joinToString(",")}")
             val ext = data?.optString("container_extension")?.takeIf { it.isNotBlank() } ?: extensionIn(uri)
             val name = copy.raw.ifEmpty { data?.optString("name").orEmpty() }
-            Copy(name, linkFor(uri, copy.id.toString(), ext), about?.let { spec(it) }, copy.id == id)
+            val link = linkFor(uri, copy.id.toString(), ext)
+            Copy(name, link, best(about?.let { spec(it) }, measured(link)), copy.id == id)
         }.also { log("film", it) }
     }
 
@@ -47,14 +59,24 @@ class Copies(private val book: TitleBook, headers: Map<String, String>) {
         val mine = here.firstOrNull { it.id == episodeId } ?: return emptyList()
         val others = book.copies(server, TitleBook.Kind.SHOW, tmdb).filter { it.id != show }.take(MAX_COPIES - 1)
         val out = ArrayList<Copy>()
-        out += Copy(mine.name, uri, mine.spec, true)
+        out += Copy(mine.name, uri, best(mine.spec, measured(uri)), true)
         for (other in others) {
             val list = episodes(uri, other.id.toString()) ?: continue
             val same = list.firstOrNull { it.season == mine.season && it.number == mine.number } ?: continue
-            out += Copy(other.raw.ifEmpty { same.name }, linkFor(uri, same.id, same.extension), same.spec, false)
+            val link = linkFor(uri, same.id, same.extension)
+            out += Copy(other.raw.ifEmpty { same.name }, link, best(same.spec, measured(link)), false)
         }
         log("episode", out)
         return out
+    }
+
+    /** The provider's description, with what FirePlayer measured standing in for what it didn't say. */
+    private fun best(provider: MediaSpec?, seen: MediaSpec?): MediaSpec? = when {
+        provider == null -> seen
+        seen == null -> provider
+        provider.videoBps <= 0 && seen.videoBps > 0 -> provider.copy(videoBps = seen.videoBps, videoHow = seen.videoHow)
+            .let { if (it.videoCodec == null) seen.copy(overallBps = it.overallBps.takeIf { o -> o > 0 } ?: seen.overallBps) else it }
+        else -> provider
     }
 
     private class Ep(val id: String, val season: Int, val number: Int, val extension: String, val name: String, val spec: MediaSpec?)
