@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The small note tucked into a corner: the popup's dark fill, a finer rim, tighter corners. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="#E6121519" />
+    <stroke android:width="0.75dp" android:color="@color/panel_stroke" />
+    <corners android:radius="11dp" />
+</shape>

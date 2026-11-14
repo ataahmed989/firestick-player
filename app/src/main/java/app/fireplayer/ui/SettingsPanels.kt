@@ -618,7 +618,10 @@ class SettingsPanels(
         private val COUNTDOWNS = listOf(5, 10, 15, 20, 30, 0)
         const val FILE_POSITION = "As in the file"
         /** The pods above the time bar, by their keys in [Prefs.hiddenChips]. */
-        val CHIPS = listOf("quality" to "Quality", "fps" to "Frame rate", "sound" to "Sound", "source" to "Source")
+        val CHIPS = listOf(
+            "quality" to "Resolution", "fps" to "Frame rate", "format" to "Picture format & data rate",
+            "sound" to "Sound", "source" to "Source",
+        )
         fun onOff(on: Boolean) = if (on) "On" else "Off"
 
         private const val ACTIVE = "Active"

@@ -81,6 +81,10 @@ import app.fireplayer.player.ThreadBeat
 import app.fireplayer.player.TitleInfo
 import app.fireplayer.player.VsyncFix
 import app.fireplayer.player.XtreamAccount
+import app.fireplayer.player.Copies
+import app.fireplayer.player.CopyRank
+import app.fireplayer.player.MediaSpec
+import app.fireplayer.player.RedirectMemoryDataSource
 import app.fireplayer.subs.AutoSync
 import app.fireplayer.subs.EmbeddedCues
 import app.fireplayer.subs.FontImport
@@ -201,6 +205,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     private val handler = Handler(Looper.getMainLooper())
     private val io = Executors.newSingleThreadExecutor()
+    // The provider asked about a title's copies: slow at worst, so not in the way of subtitle searches on [io].
+    private val copiesIo = Executors.newSingleThreadExecutor()
     // FirePlayer's title server's names, opened when first needed (on [io]).
     private var titleBook: TitleBook? = null
     private val delays = Delays()
@@ -211,6 +217,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     // Damaged stretches of the film gone past, told in a corner note as playback reaches them.
     private val damageSkips = app.fireplayer.player.DamageSkips()
     private lateinit var skipNote: View
+    private lateinit var skipNoteTitle: TextView
     private lateinit var skipNoteDetail: TextView
     private lateinit var autoSync: AutoSync
     // The Subtitle delay window is open, so auto sync's news shows in it at once.
@@ -292,6 +299,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private lateinit var chipResolution: TextView
     private lateinit var chipFps: TextView
     private lateinit var chipAudio: TextView
+    private lateinit var chipFormat: TextView
     private lateinit var chipPortal: TextView
     private lateinit var btnEpisodes: View
     private lateinit var episodesGroup: View
@@ -751,6 +759,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         handler.removeCallbacks(lookUpSegmentsAgain)
         autoSync.release()
         io.shutdownNow()
+        copiesIo.shutdownNow()
         segmentWorker.shutdownNow()
         handler.removeCallbacksAndMessages(null)
         FontImport.stopAll()
@@ -1143,6 +1152,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     private fun savePosition() {
+        rememberQuality()
         // Until the question is answered, the old resume point still stands.
         if (resumeDialogShowing) return
         val p = player ?: return
@@ -1648,10 +1658,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val uri = p.currentMediaItem?.localConfiguration?.uri?.toString()
         val skip = damageSkips.reached(uri, p.currentPosition) ?: return
         val seconds = ((skip.toMs - skip.fromMs + 500) / 1000).coerceAtLeast(1)
-        skipNoteDetail.text = "${formatTime(skip.fromMs, long = true)} to ${formatTime(skip.toMs, long = true)} · " +
-            "$seconds s missing on the server"
+        skipNoteTitle.text = "Skipped $seconds s"
+        skipNoteDetail.text = "${formatTime(skip.fromMs, long = true)}–${formatTime(skip.toMs, long = true)} · damaged on the server"
         handler.removeCallbacks(hideSkipNote)
         skipNote.animate().cancel()
+        // Under the title and clock while the controls are up, so it never sits on them.
+        skipNote.translationY = if (topBar.visibility == View.VISIBLE) topBar.bottom.toFloat() else 0f
         if (skipNote.visibility != View.VISIBLE) {
             skipNote.alpha = 0f
             skipNote.visibility = View.VISIBLE
@@ -1918,6 +1930,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         chipResolution = findViewById(R.id.chip_resolution)
         chipFps = findViewById(R.id.chip_fps)
         chipAudio = findViewById(R.id.chip_audio)
+        chipFormat = findViewById(R.id.chip_format)
         chipPortal = findViewById(R.id.chip_portal)
         seekBubble = findViewById(R.id.seek_bubble)
         seekPreview = SeekPreview(
@@ -1959,6 +1972,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         errorBox = findViewById(R.id.error_box)
         errorHint = findViewById(R.id.error_hint)
         skipNote = findViewById(R.id.skip_note)
+        skipNoteTitle = findViewById(R.id.skip_note_title)
         skipNoteDetail = findViewById(R.id.skip_note_detail)
         errorText = findViewById(R.id.error_text)
 
@@ -2153,6 +2167,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
     }
 
+    private var chipTicks = 0
+
     /** Checks the end card (and a look-up waiting to start) five times a second, while the player screen is up. */
     private val postPlayTick = object : Runnable {
         override fun run() {
@@ -2162,6 +2178,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             noteWhilePlaying()
             checkFreeze()
             tellDamageSkip()
+            // The pods' data rates firm up as the film loads.
+            chipTicks++
+            if (controlsShown && chipTicks % CHIP_REFRESH_TICKS == 0) updateChips()
+            // What's measured of the copy playing is kept as it goes, so an episode that runs into the next isn't lost.
+            if (chipTicks % KEEP_QUALITY_TICKS == 0) rememberQuality()
             handler.postDelayed(this, 200)
         }
     }
@@ -2785,19 +2806,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         pod(chipResolution, "quality", if (w > 0 && h > 0) "$w×$h" else null)
         val fps = videoFps()
         pod(chipFps, "fps", if (fps > 0) fpsLabel(fps) else null)
-        val channels = audio?.channelCount ?: Format.NO_VALUE
-        pod(
-            chipAudio,
-            "sound",
-            when (channels) {
-                1 -> "Mono"
-                2 -> "Stereo"
-                6 -> "5.1"
-                8 -> "7.1"
-                in 3..16 -> "$channels ch"
-                else -> null
-            },
-        )
+        // What the picture is made of and how much data it gets, and the sound's format with its channels.
+        val spec = playingSpec()
+        pod(chipFormat, "format", spec?.pictureLine())
+        pod(chipAudio, "sound", spec?.soundLine() ?: MediaSpec.channelsLabel(audio?.channelCount ?: Format.NO_VALUE))
         // Which provider it plays from: "premium-pro2.com:8789".
         pod(chipPortal, "source", entries.getOrNull(p.currentMediaItemIndex)?.let { NextEpisode.portal(it.uri) })
     }
@@ -3001,7 +3013,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         Glass.background(btnEpisodes, Glass.Kind.CIRCLE)
         Glass.background(btnSubs, Glass.Kind.PILL)
         Glass.background(btnAudio, Glass.Kind.PILL)
-        for (chip in listOf(chipResolution, chipFps, chipAudio, chipPortal)) Glass.background(chip, Glass.Kind.CHIP)
+        for (chip in listOf(chipResolution, chipFps, chipFormat, chipAudio, chipPortal)) Glass.background(chip, Glass.Kind.CHIP)
         // Glass chips cast a shadow below them that their row would cut off; classic chips keep the row as it was.
         (chips as ViewGroup).apply {
             clipChildren = !Glass.on
@@ -4409,7 +4421,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 rebuildFromFix()
                 refresh()
             }.asSubRow()
-            if (tmdb.isConfigured && g.tmdbId > 0) row("Show details") { openDetails(from, show = true) }.asSubRow()
+            row("Show details") { openDetails(from, show = true) }.asSubRow()
             if (tmdb.isConfigured) row("Fix match") { panel.close(); openFixShow(from) }.asSubRow()
             if (portal != null) row("Source", portal) {}.asSubRow()
             // Why it was matched so, under the card, so the card stays whole.
@@ -4426,7 +4438,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 refresh()
             }
             if (!thisTitleOpen) return
-            if (tmdb.isConfigured) row("Film details") { openDetails(from, show = false) }.asSubRow()
+            row("Film details") { openDetails(from, show = false) }.asSubRow()
             if (tmdb.isConfigured) row("Fix match") { panel.close(); openFixFilm(from) }.asSubRow()
             row("Source", portal) {}.asSubRow()
             if (!tmdb.isConfigured) message("Add a TMDB API key below to fix this film's name.")
@@ -4440,18 +4452,309 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     private fun openDetails(from: View, show: Boolean) {
         val entry = currentEntry() ?: return
+        val canAsk = tmdb.isConfigured && (!show || (guide?.tmdbId ?: 0) > 0)
         if (aboutFor != entry.key || (about == null && aboutStatus != LOADING)) {
             aboutFor = entry.key
             about = null
-            aboutStatus = LOADING
-            loadAbout(entry, show)
+            if (canAsk) {
+                aboutStatus = LOADING
+                loadAbout(entry, show)
+            } else {
+                aboutStatus = if (tmdb.isConfigured) "TMDB doesn't know this show by your provider's name. Fix match finds it."
+                    else "Add a TMDB API key in Settings for the cover and story."
+            }
         }
+        if (copiesFor != entry.key) loadCopies(entry, show)
         panel.close()
         openPanel(if (show) "Show details" else "Film details", from) {
             val a = about
             if (a == null) message(aboutStatus ?: LOADING)
             else details(a, if (show) guideEpisode(entry) else null, NextEpisode.portal(entry.uri))
+            pictureAndSound()
+            copies(show)
         }
+    }
+
+    /** The picture and sound playing, as the file declares them, with the data rates counted as it loads. */
+    private fun playingSpec(): MediaSpec? {
+        val p = player ?: return null
+        val video = selectedFormat(C.TRACK_TYPE_VIDEO)
+        val audio = selectedFormat(C.TRACK_TYPE_AUDIO)
+        if (video == null && audio == null) return null
+        val link = p.currentMediaItem?.localConfiguration?.uri?.toString()
+        val rates = embeddedCues.source(link)?.rates
+        val base = MediaSpec.of(video, audio)
+        val w = p.videoSize.width.takeIf { it > 0 } ?: base.width
+        val h = p.videoSize.height.takeIf { it > 0 } ?: base.height
+        val videoBps = rates?.bps(video?.id) ?: 0L
+        val audioBps = rates?.bps(audio?.id) ?: 0L
+        val secs = if (videoBps > 0) rates?.seconds(video?.id) ?: 0L else 0L
+        val size = RedirectMemoryDataSource.fileSize(link)
+        val seconds = p.duration.takeIf { it > 0 }?.div(1000) ?: 0L
+        return base.copy(
+            width = w,
+            height = h,
+            fps = base.fps.takeIf { it > 0 } ?: measuredFps.takeIf { it > 0 } ?: 0f,
+            videoBps = if (videoBps > 0) videoBps else base.videoBps,
+            videoHow = if (videoBps > 0) MediaSpec.How.MEASURED else base.videoHow,
+            audioBps = if (audioBps > 0) audioBps else base.audioBps,
+            audioHow = if (audioBps > 0) MediaSpec.How.MEASURED else base.audioHow,
+            sizeBytes = size,
+            overallBps = if (size > 0 && seconds > 0) size * 8 / seconds else 0L,
+            measuredSecs = secs,
+        )
+    }
+
+    /** Film or show details: what the copy playing is made of, every number with where it came from. */
+    private fun SidePanel.pictureAndSound() {
+        val spec = playingSpec() ?: return
+        val p = player ?: return
+        header("Picture & sound")
+        val link = p.currentMediaItem?.localConfiguration?.uri?.toString()
+        val rates = embeddedCues.source(link)?.rates
+        fun over(id: String?): String {
+            val secs = rates?.seconds(id) ?: 0
+            return if (secs >= 120) "measured, ${secs / 60} min" else "measured, $secs s"
+        }
+        val video = selectedFormat(C.TRACK_TYPE_VIDEO)
+        val audio = selectedFormat(C.TRACK_TYPE_AUDIO)
+        val pairs = ArrayList<Pair<String, View>>()
+        listOfNotNull(spec.videoCodec, spec.profile, spec.bitDepth.takeIf { it > 0 }?.let { "$it-bit" })
+            .joinToString(" · ").ifEmpty { null }?.let { pairs += "Picture" to fact(it) }
+        listOfNotNull(
+            if (spec.width > 0 && spec.height > 0) "${spec.width}×${spec.height}" else null,
+            spec.fps.takeIf { it > 0 }?.let { fpsLabel(it).replace(" FPS", " fps") },
+        ).joinToString(" · ").ifEmpty { null }?.let { pairs += "Frame" to fact(it) }
+        pairs += "Range" to fact(spec.hdr ?: "Not stated by the file")
+        pairs += "Data" to fact(
+            if (spec.videoBps > 0) "${MediaSpec.mbps(spec.videoBps)} · " +
+                (if (spec.videoHow == MediaSpec.How.MEASURED) over(video?.id) else "stated by the file")
+            else "Measuring as it loads…",
+        )
+        if (spec.bitsPerPixel > 0) pairs += "Per pixel" to fact(String.format(Locale.US, "%.3f bits a frame", spec.bitsPerPixel))
+        listOfNotNull(
+            spec.audioCodec?.let { if (spec.atmos) "$it Atmos" else it },
+            MediaSpec.channelsLabel(spec.channels),
+            // AAC under 32 kHz is usually HE-AAC's core rate, half of what's heard: left out rather than misread.
+            spec.sampleRate.takeIf { it >= 32_000 || (it > 0 && spec.audioCodec != "AAC") }?.let { "${it / 1000} kHz" },
+        ).joinToString(" · ").ifEmpty { null }?.let { pairs += "Sound" to fact(it) }
+        if (spec.audioBps > 0) pairs += "Sound data" to fact(
+            "${MediaSpec.mbps(spec.audioBps)} · " + (if (spec.audioHow == MediaSpec.How.MEASURED) over(audio?.id) else "stated by the file"),
+        )
+        if (spec.sizeBytes > 0) pairs += "File" to fact(
+            MediaSpec.size(spec.sizeBytes) + (if (spec.overallBps > 0) " · ${MediaSpec.mbps(spec.overallBps)} on average" else ""),
+        )
+        val server = RedirectMemoryDataSource.serverBps(link)
+        if (server > 0) {
+            // The whole file comes, every sound track included: that's what the server has to keep up with.
+            val need = spec.overallBps.takeIf { it > 0 } ?: (spec.videoBps + spec.audioBps)
+            pairs += "Server" to fact(
+                "at least " + MediaSpec.mbps(server) + (if (need > 0) String.format(Locale.US, " · %.1f× the file's rate", server.toDouble() / need) else ""),
+            )
+        }
+        (p as? ExoPlayer)?.videoDecoderCounters?.let { c ->
+            c.ensureUpdated()
+            val shown = c.renderedOutputBufferCount
+            if (shown > 0) pairs += "Dropped" to fact("${c.droppedBufferCount} of ${String.format(Locale.US, "%,d", shown + c.droppedBufferCount)} frames")
+        }
+        facts(pairs)
+    }
+
+    // What was measured of each copy played, kept so copies can be compared later: by provider and id, no login.
+    private val qualitySeen by lazy { getSharedPreferences("quality_seen", MODE_PRIVATE) }
+
+    private fun qualityKey(uri: Uri): String? {
+        val portal = NextEpisode.portal(uri) ?: return null
+        val id = Copies.idIn(uri) ?: return null
+        return "$portal|${if (NextEpisode.isEpisodeLink(uri)) "s" else "m"}|$id"
+    }
+
+    /** Keeps what was measured of the copy playing, once its picture's data rate has been counted. */
+    private fun rememberQuality() {
+        val p = player ?: return
+        val uri = p.currentMediaItem?.localConfiguration?.uri ?: return
+        val spec = playingSpec()?.takeIf { it.videoHow == MediaSpec.How.MEASURED } ?: return
+        val key = qualityKey(uri) ?: return
+        // Added to what earlier plays measured, once per play: this play's figure replaces its own last one.
+        val playKey = "$key@${p.currentMediaItemIndex}"
+        val before = if (keptPlay == playKey) keptBefore else qualitySeen.getString(key, null)?.let { MediaSpec.decode(it) }
+        if (keptPlay != playKey) {
+            keptPlay = playKey
+            keptBefore = before
+        }
+        val text = MediaSpec.encode(MediaSpec.merged(before, spec))
+        if (qualitySeen.getString(key, null) == text) return
+        val edit = qualitySeen.edit()
+        if (qualitySeen.all.size >= MAX_QUALITY_SEEN && !qualitySeen.contains(key)) edit.clear()
+        edit.putString(key, text).apply()
+    }
+
+    // The play being kept, and what earlier plays had measured of it when it started.
+    private var keptPlay: String? = null
+    private var keptBefore: MediaSpec? = null
+
+    /** What was measured of the copy at [uri] when it was played; null if it never was. Any thread. */
+    private fun measuredQuality(uri: Uri): MediaSpec? =
+        qualityKey(uri)?.let { qualitySeen.getString(it, null) }?.let { MediaSpec.decode(it) }
+
+    // Other copies of the title playing, as the provider describes them: for this entry, while it's the one shown.
+    private var copiesFor: String? = null
+    private var copyList: List<Copies.Copy>? = null
+    private var copiesStatus: String? = null
+
+    private fun loadCopies(entry: Entry, show: Boolean) {
+        val key = entry.key
+        val uri = entry.uri
+        val seriesId = if (show) NextEpisode.rememberedShowId(this, uri) else null
+        moreCopiesOpen = false
+        copyList = null
+        if (show && seriesId == null) {
+            // Not known yet which show this is: asked again next time.
+            copiesFor = null
+            copiesStatus = "FirePlayer hasn't found this episode's show yet. Try again in a moment."
+            return
+        }
+        copiesFor = key
+        copiesStatus = LOADING
+        copiesIo.execute {
+            val found = runCatching {
+                val finder = Copies(book(), headersFromIntent()) { measuredQuality(it) }
+                if (show) seriesId?.let { finder.ofEpisode(uri, it) }.orEmpty() else finder.ofFilm(uri)
+            }
+            handler.post {
+                if (isFinishing || copiesFor != key) return@post
+                copyList = found.getOrNull()
+                copiesStatus = when {
+                    found.isFailure -> "Couldn't ask the provider just now."
+                    copyList.isNullOrEmpty() -> "Only titles listed through FirePlayer's title server can be compared."
+                    else -> null
+                }
+                // Asked again next time, rather than kept as it went.
+                if (found.isFailure) copiesFor = null
+                if (panel.isOpen) panel.refresh()
+            }
+        }
+    }
+
+    /** Whether the TV shows HDR, for which copy to recommend. */
+    private fun hdrScreen(): Boolean = runCatching {
+        @Suppress("DEPRECATION")
+        windowManager.defaultDisplay.hdrCapabilities?.supportedHdrTypes?.isNotEmpty() == true
+    }.getOrDefault(false)
+
+    /**
+     * Film or show details: every copy the provider lists of this title, as its probe of each file describes it, the
+     * one with the best picture and sound recommended and why. Choosing another plays it from here.
+     */
+    private fun SidePanel.copies(show: Boolean) {
+        header("Copies")
+        // Only this entry's copies: after the next episode came on with the window open, the old list isn't offered.
+        val list = copyList.takeIf { copiesFor != null && copiesFor == currentEntry()?.key }
+        if (list == null || list.isEmpty()) {
+            message(copiesStatus ?: LOADING)
+            return
+        }
+        if (list.size == 1) message("Your provider lists no other copy of this ${if (show) "episode" else "film"}.")
+        // The copy playing: measured here (with what earlier plays measured of it), unless its file states its rates.
+        val playing = playingSpec()
+        val playKey = player?.let { pl -> pl.currentMediaItem?.localConfiguration?.uri?.let { qualityKey(it) }?.let { "$it@${pl.currentMediaItemIndex}" } }
+        val earlier = if (playKey != null && keptPlay == playKey) keptBefore
+            else player?.currentMediaItem?.localConfiguration?.uri?.let { measuredQuality(it) }
+        val specs = list.map { c ->
+            val s = c.spec
+            when {
+                !c.current || playing == null -> s ?: MediaSpec()
+                s != null && s.videoHow == MediaSpec.How.STATED -> s
+                playing.videoHow == MediaSpec.How.MEASURED -> MediaSpec.merged(earlier, playing)
+                else -> earlier ?: s ?: playing
+            }
+        }
+        val current = list.indexOfFirst { it.current }
+        val verdict = if (list.size > 1) CopyRank.rank(specs, current, hdrScreen()) else null
+        val best = verdict?.best
+        fun nameOf(i: Int) = list[i].name.ifBlank { currentEntry()?.info?.title ?: "Copy ${i + 1}" }
+        if (verdict != null) {
+            when {
+                best == null -> message("Nothing is known of the other copies yet. Play one for a minute and FirePlayer measures it.")
+                best == current -> message("This copy looks best" + (verdict.reasons.firstOrNull()?.let { ": $it" } ?: "") + ".")
+                else -> message("“${nameOf(best)}” looks best: " + verdict.reasons.joinToString("; ") +
+                    (if (verdict.tradeOffs.isNotEmpty()) ". It has " + verdict.tradeOffs.joinToString(" and ") else "") + ".", accent = true)
+            }
+        }
+        // The one playing, the one recommended, then the others known; copies nothing is known of fold into one row.
+        val known = list.indices.filter { it == current || it == best || specs[it].videoBps > 0 || specs[it].overallBps > 0 || list[it].spec != null }
+        val order = (listOfNotNull(current.takeIf { it >= 0 }, best) + known).distinct()
+        val unknown = list.indices.filter { it !in order }
+        fun copyRow(i: Int) {
+            val c = list[i]
+            val sp = specs[i]
+            val tags = listOfNotNull(
+                if (c.current) "Playing" else null,
+                if (i == best && list.size > 1) "Best" else null,
+                when {
+                    sp.videoHow == MediaSpec.How.MEASURED -> "measured by FirePlayer"
+                    sp.videoHow == MediaSpec.How.STATED -> "stated in the file"
+                    sp.videoHow == MediaSpec.How.ESTIMATED -> "estimated from the file's rate"
+                    else -> null
+                },
+            ).joinToString(" · ")
+            val picture = listOfNotNull(
+                sp.videoCodec,
+                sp.bitDepth.takeIf { it > 8 }?.let { "$it-bit" },
+                sp.hdr?.takeIf { it != "SDR" },
+                if (sp.width > 0 && sp.height > 0) "${sp.width}×${sp.height}" else null,
+                sp.soundLine(),
+            ).joinToString(" · ").ifEmpty { "Nothing known yet" }
+            val rate = when {
+                sp.videoBps > 0 -> (if (sp.videoHow == MediaSpec.How.ESTIMATED) "~" else "") + MediaSpec.mbps(sp.videoBps)
+                sp.overallBps > 0 -> MediaSpec.mbps(sp.overallBps)
+                else -> null
+            }
+            resultRow(nameOf(i), listOf(tags, picture).filter { it.isNotEmpty() }.joinToString("\n"), rate, selected = c.current) {
+                if (!c.current) playCopy(c)
+            }
+        }
+        order.forEach { copyRow(it) }
+        if (unknown.isNotEmpty()) {
+            dropdownRow("${unknown.size} more ${if (unknown.size == 1) "copy" else "copies"}", "No details", Rows.Badge.INACTIVE, moreCopiesOpen) {
+                moreCopiesOpen = !moreCopiesOpen
+                refresh()
+            }
+            if (moreCopiesOpen) unknown.forEach { copyRow(it) }
+        }
+        message("Picture data is the rate of the picture alone. The frame size can include black bars, so it says less about sharpness.")
+    }
+
+    private var moreCopiesOpen = false
+
+    /** Plays another copy of this title from where this one is, in place of it. */
+    private fun playCopy(copy: Copies.Copy) {
+        val p = player ?: return
+        val index = p.currentMediaItemIndex
+        val current = entries.getOrNull(index) ?: return
+        val at = p.currentPosition
+        panel.close()
+        hideControls()
+        savePosition()
+        hidePostPlay()
+        for (i in entries.lastIndex downTo index + 1) {
+            entries.removeAt(i)
+            p.removeMediaItem(i)
+        }
+        // The same film: its subtitles (handed over or downloaded), names and episode numbers come along.
+        val entry = Entry(copy.uri, current.rawTitle, null, current.subtitles.toMutableList(), nextEpisode = current.nextEpisode)
+        entry.handedSubtitles += current.handedSubtitles
+        entry.showName = current.showName
+        entry.english = current.english
+        entry.englishAsked = current.englishAsked
+        entry.real = current.real
+        attachSaved(entry, chooseOn = false)
+        entries += entry
+        p.addMediaItem(mediaItem(entry))
+        nextLookedUpFor = null
+        copiesFor = null
+        p.seekTo(entries.lastIndex, at)
+        p.play()
     }
 
     private fun loadAbout(entry: Entry, show: Boolean) {
@@ -5226,6 +5529,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         const val REMATCH_MAX = 3
         /** How long the note about a damaged stretch gone past stays up, and its fade. */
         const val SKIP_NOTE_MS = 5_000L
+        /** The pods are looked at again this often while the controls are up (in play ticks of 200 ms). */
+        const val CHIP_REFRESH_TICKS = 15
+        /** What's measured of the copy playing is kept this often (play ticks of 200 ms: 30 s). */
+        const val KEEP_QUALITY_TICKS = 150
+        /** Copies' measurements kept at most; past it they start again. */
+        const val MAX_QUALITY_SEEN = 400
         const val SKIP_NOTE_FADE_MS = 250L
         /** File missing, no permission and cleartext blocked won't fix themselves. */
         val NOT_RETRIED = setOf(

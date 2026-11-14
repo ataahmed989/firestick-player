@@ -176,6 +176,36 @@ class TitleBook(context: Context) : SQLiteOpenHelper(context, "titles.db", null,
             arrayOf(server, kind.code.toString(), id.toString()),
         ).use { c -> if (c.moveToFirst()) About(if (c.isNull(0)) null else c.getString(0), c.getInt(1), c.getInt(2)) else null }
 
+    /** One listing of a film or show: the provider's id and its name for it. */
+    class Copy(val id: Int, val raw: String)
+
+    /**
+     * Every listing of the film or show with TMDB id [tmdb] on [server], this one included: providers often list a
+     * title several times (4K, 1080p, another language). At most [limit], as they were listed.
+     */
+    fun copies(server: String, kind: Kind, tmdb: Int, limit: Int = 12): List<Copy> {
+        if (tmdb <= 0) return emptyList()
+        val out = ArrayList<Copy>()
+        readableDatabase.rawQuery(
+            "SELECT id, raw FROM item WHERE server = ? AND kind = ? AND " +
+                // The number written in: bound as text it would never equal the CASE, which has no type to convert it to.
+                "(CASE WHEN found > 0 THEN found WHEN state = $RENAMED THEN tmdb ELSE 0 END) = $tmdb LIMIT $limit",
+            arrayOf(server, kind.code.toString()),
+        ).use { c -> while (c.moveToNext()) out += Copy(c.getInt(0), c.getString(1)) }
+        return out
+    }
+
+    /** Every listing on [server] with the English [title] and [year] TMDB gave it: copies whose TMDB id differs or wasn't kept. */
+    fun copiesByTitle(server: String, kind: Kind, title: String, year: Int, limit: Int = 12): List<Copy> {
+        val out = ArrayList<Copy>()
+        // A name alone could be another film ("Home"): only with its year.
+        if (year <= 0) return out
+        val sql = "SELECT id, raw FROM item WHERE server = ? AND kind = ? AND title = ? AND year = $year LIMIT $limit"
+        readableDatabase.rawQuery(sql, arrayOf(server, kind.code.toString(), title))
+            .use { c -> while (c.moveToNext()) out += Copy(c.getInt(0), c.getString(1)) }
+        return out
+    }
+
     /** Everything known of a provider's films or shows, by id. Read once per list TiviMate asks for. */
     fun known(server: String, kind: Kind): Map<Int, Known> {
         val map = HashMap<Int, Known>()

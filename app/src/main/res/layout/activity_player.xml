@@ -170,9 +170,15 @@
                     tools:text="24 FPS" />
 
                 <TextView
+                    android:id="@+id/chip_format"
+                    style="@style/Chip"
+                    android:fontFeatureSettings="tnum"
+                    tools:text="HEVC · 10-bit · HDR10 · 20 Mb/s" />
+
+                <TextView
                     android:id="@+id/chip_audio"
                     style="@style/Chip"
-                    tools:text="5.1" />
+                    tools:text="TrueHD 7.1" />
 
                 <TextView
                     android:id="@+id/chip_portal"
@@ -676,40 +682,56 @@
             android:textSize="12sp" />
     </LinearLayout>
 
-    <!-- A damaged stretch of the film was gone past: a small note in the corner for a few seconds. -->
+    <!-- A damaged stretch of the film was gone past: a small note tucked into the top corner for a few seconds. -->
     <LinearLayout
         android:id="@+id/skip_note"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="top|end"
-        android:layout_marginTop="66dp"
-        android:layout_marginEnd="42dp"
+        android:layout_marginTop="20dp"
+        android:layout_marginEnd="24dp"
         android:alpha="0"
-        android:background="@drawable/bg_popup"
-        android:orientation="vertical"
-        android:paddingStart="16dp"
-        android:paddingTop="10dp"
-        android:paddingEnd="16dp"
-        android:paddingBottom="10dp"
+        android:background="@drawable/bg_note"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="10dp"
+        android:paddingTop="6dp"
+        android:paddingEnd="12dp"
+        android:paddingBottom="6dp"
         android:visibility="gone">
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:fontFamily="@font/figtree_700"
-            android:text="Skipped a damaged part"
-            android:textColor="@color/text"
-            android:textSize="14sp" />
+        <ImageView
+            android:layout_width="14dp"
+            android:layout_height="14dp"
+            android:layout_marginEnd="8dp"
+            android:src="@drawable/ic_head_skip"
+            android:tint="@color/heading_icon"
+            android:importantForAccessibility="no" />
 
-        <TextView
-            android:id="@+id/skip_note_detail"
+        <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="2dp"
-            android:fontFamily="@font/figtree_500"
-            android:textColor="@color/text_muted"
-            android:textSize="12sp"
-            tools:text="0:40:19 to 0:41:11 · missing on the server" />
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/skip_note_title"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="@font/figtree_700"
+                android:textColor="@color/text"
+                android:textSize="12sp"
+                tools:text="Skipped 50 s" />
+
+            <TextView
+                android:id="@+id/skip_note_detail"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="@font/figtree_500"
+                android:fontFeatureSettings="tnum"
+                android:textColor="@color/text_muted"
+                android:textSize="10.5sp"
+                tools:text="0:40:20–0:41:11 · damaged on the server" />
+        </LinearLayout>
     </LinearLayout>
 
     <include
