@@ -314,4 +314,14 @@ class QualityTest {
         val far = listOf(copy("HEVC", 20.0), copy("HEVC", 9.0))
         assertEquals(0, CopyRank.rank(far, 1, false, subs = listOf(false, true)).best)
     }
+
+    @Test
+    fun qualityGroupsRankInOrderAndTipACloseCall() {
+        val order = listOf("4K HDR", "4K", "1080p HDR", "1080p", "720p", "HD", "SD", null).map { Copies.groupRank(it) }
+        assertEquals(order.sortedDescending(), order)
+        assertTrue(order.zipWithNext().all { (a, b) -> a > b })
+        // Close in data, same width: the copy from the 4K group.
+        val close = listOf(copy("HEVC", 10.0), copy("HEVC", 9.6))
+        assertEquals(1, CopyRank.rank(close, 0, false, groups = listOf(Copies.groupRank("1080p"), Copies.groupRank("4K"))).best)
+    }
 }

@@ -3,15 +3,18 @@ package app.fireplayer.player
 import android.net.Uri
 import android.util.Log
 import app.fireplayer.titles.TitleBook
+import app.fireplayer.titles.Quality
 import app.fireplayer.titles.TitleProxy
 import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * The other copies a provider lists of the film or episode playing, each as the provider's probe of its file describes
- * it (picture, sound, data rate), so they can be compared without playing them. Copies are found in the title book,
- * by TMDB id; only links that come through FirePlayer's title server can be looked up. Blocks: run it off the main
- * thread. One small request per copy (a show's episode list per copy of the show), only when asked.
+ * The other copies listed of the film or episode playing, on every playlist TiviMate reaches through FirePlayer, each
+ * as the provider's probe of its file describes it (picture, sound, data rate) when the provider says, so they can be
+ * compared without playing them. Copies are found in the title book, by TMDB id (or English name and year); only links
+ * that come through FirePlayer's title server can be looked up, and another playlist's copies only once TiviMate has
+ * used it through FirePlayer (its login is needed for the link). Blocks: run it off the main thread. One small request
+ * per copy (a show's episode list per copy of the show), only when asked.
  */
 class Copies(
     private val book: TitleBook,
@@ -20,8 +23,18 @@ class Copies(
     private val measured: (Uri) -> MediaSpec? = { null },
 ) {
 
-    /** A copy: the provider's [name] for it, the [uri] it plays from, and what's known of it (null: the provider didn't say). */
-    class Copy(val name: String, val uri: Uri, val spec: MediaSpec?, val current: Boolean)
+    /**
+     * A copy: the provider's [name] for it, the [uri] it plays from, what's known of it (null: nothing), the playlist
+     * ([playlist], its server) it's on, and the quality its name or category gives away ([group]: "4K", "1080p HDR").
+     */
+    class Copy(
+        val name: String,
+        val uri: Uri,
+        val spec: MediaSpec?,
+        val current: Boolean,
+        val playlist: String = "",
+        val group: String? = null,
+    )
 
     private val account = XtreamAccount(headers)
 
@@ -32,26 +45,26 @@ class Copies(
         val known = book.about(server, TitleBook.Kind.MOVIE, id)
         val tmdb = known?.tmdb ?: 0
         // By TMDB id, and by the English name and year TMDB gave: a copy matched to another id is still found.
-        val byTitle = known?.title?.let { book.copiesByTitle(server, TitleBook.Kind.MOVIE, it, known.year) }.orEmpty()
-        val listed = (book.copies(server, TitleBook.Kind.MOVIE, tmdb) + byTitle).distinctBy { it.id }
-        // The copy playing first, always (with its listed name), then the others.
-        val self = listed.firstOrNull { it.id == id } ?: TitleBook.Copy(id, "")
-        val all = listOf(self) + listed.filter { it.id != id }.take(MAX_COPIES - 1)
-        Log.i(TAG, "film: tmdb ${tmdb > 0}, named ${known?.title != null}, ${listed.size} listed (${byTitle.size} by name)")
-        return all.map { copy ->
-            val info = account.api(uri, "get_vod_info", "vod_id" to copy.id.toString())
+        val byTitle = known?.title?.let { book.copiesByTitle(TitleBook.Kind.MOVIE, it, known.year) }.orEmpty()
+        val listed = (book.copies(TitleBook.Kind.MOVIE, tmdb) + byTitle).distinctBy { it.server to it.id }
+        // The copy playing first, always (with its listed name), then the others, those of a better quality group first.
+        val self = listed.firstOrNull { it.server == server && it.id == id } ?: TitleBook.Copy(server, id, "")
+        val others = listed.filter { !(it.server == server && it.id == id) }
+            .sortedByDescending { groupRank(Quality.of(it.raw, it.category)) }.take(MAX_COPIES - 1)
+        Log.i(TAG, "film: tmdb ${tmdb > 0}, ${listed.size} listed on ${listed.map { it.server }.distinct().size} playlists (${byTitle.size} by name)")
+        return (listOf(self) + others).mapNotNull { copy ->
+            val base = onPlaylist(uri, copy.server, "movie") ?: return@mapNotNull null
+            val info = account.api(base, "get_vod_info", "vod_id" to copy.id.toString())
             val about = info?.optJSONObject("info")
             val data = info?.optJSONObject("movie_data")
-            if (copy.id == id) Log.i(TAG, "the provider's answer has: ${info?.keys()?.asSequence()?.toList()?.sorted()?.joinToString(",")}; " +
-                "info is ${info?.opt("info")?.javaClass?.simpleName}: ${about?.keys()?.asSequence()?.toList()?.sorted()?.joinToString(",")}")
             val ext = data?.optString("container_extension")?.takeIf { it.isNotBlank() } ?: extensionIn(uri)
             val name = copy.raw.ifEmpty { data?.optString("name").orEmpty() }
-            val link = linkFor(uri, copy.id.toString(), ext)
-            Copy(name, link, best(about?.let { spec(it) }, measured(link)), copy.id == id)
+            val link = linkFor(base, copy.id.toString(), ext)
+            Copy(name, link, best(about?.let { spec(it) }, measured(link)), copy === self, copy.server, Quality.of(copy.raw, copy.category))
         }.also { log("film", it) }
     }
 
-    /** The episode at [uri] of show [seriesId], and the same episode in the provider's other copies of the show. */
+    /** The episode at [uri] of show [seriesId], and the same episode in the other copies of the show, on every playlist. */
     fun ofEpisode(uri: Uri, seriesId: String): List<Copy> {
         val server = TitleProxy.serverIn(uri) ?: return emptyList()
         val episodeId = idIn(uri)?.toString() ?: return emptyList()
@@ -59,17 +72,34 @@ class Copies(
         val tmdb = book.about(server, TitleBook.Kind.SHOW, show)?.tmdb ?: 0
         val here = episodes(uri, seriesId) ?: return emptyList()
         val mine = here.firstOrNull { it.id == episodeId } ?: return emptyList()
-        val others = book.copies(server, TitleBook.Kind.SHOW, tmdb).filter { it.id != show }.take(MAX_COPIES - 1)
+        val listed = book.copies(TitleBook.Kind.SHOW, tmdb)
+        val selfListing = listed.firstOrNull { it.server == server && it.id == show }
+        val others = listed.filter { !(it.server == server && it.id == show) }
+            .sortedByDescending { groupRank(Quality.of(it.raw, it.category)) }.take(MAX_COPIES - 1)
         val out = ArrayList<Copy>()
-        out += Copy(mine.name, uri, best(mine.spec, measured(uri)), true)
+        out += Copy(mine.name, uri, best(mine.spec, measured(uri)), true, server, selfListing?.let { Quality.of(it.raw, it.category) })
         for (other in others) {
-            val list = episodes(uri, other.id.toString()) ?: continue
+            val base = onPlaylist(uri, other.server, "series") ?: continue
+            val list = episodes(base, other.id.toString()) ?: continue
             val same = list.firstOrNull { it.season == mine.season && it.number == mine.number } ?: continue
-            val link = linkFor(uri, same.id, same.extension)
-            out += Copy(other.raw.ifEmpty { same.name }, link, best(same.spec, measured(link)), false)
+            val link = linkFor(base, same.id, same.extension)
+            out += Copy(other.raw.ifEmpty { same.name }, link, best(same.spec, measured(link)), false, other.server,
+                Quality.of(other.raw, other.category))
         }
         log("episode", out)
         return out
+    }
+
+    /**
+     * A link like [current] on the playlist at [server]: the same one for its own playlist, else through FirePlayer's
+     * title server with that playlist's login, or null when it isn't known yet.
+     */
+    private fun onPlaylist(current: Uri, server: String, kind: String): Uri? {
+        if (server == TitleProxy.serverIn(current)) return current
+        val (user, pass) = book.login(server) ?: return null
+        return current.buildUpon()
+            .encodedPath("/$server/$kind/${Uri.encode(user)}/${Uri.encode(pass)}/0.${extensionIn(current)}")
+            .build()
     }
 
     /** The provider's description, with what FirePlayer measured standing in for what it didn't say. */
@@ -122,7 +152,21 @@ class Copies(
 
     companion object {
         private const val TAG = "FirePlayerCopies"
-        private const val MAX_COPIES = 8
+        private const val MAX_COPIES = 16
+
+        /** "4K HDR" over "4K" over "1080p" over "720p" over "HD" over "SD" over nothing said. */
+        fun groupRank(group: String?): Int {
+            val g = group ?: return 0
+            val level = when {
+                g.startsWith("4K") -> 6
+                g.startsWith("1080p") -> 5
+                g.startsWith("720p") -> 4
+                g.startsWith("HD") -> 3
+                g.startsWith("SD") -> 1
+                else -> 0
+            }
+            return level * 2 + if (g.endsWith("HDR")) 1 else 0
+        }
 
         /** The provider's id in a link: "123" of ".../movie/user/pass/123.mkv". */
         fun idIn(uri: Uri): Int? = uri.lastPathSegment?.substringBeforeLast('.')?.toIntOrNull()
