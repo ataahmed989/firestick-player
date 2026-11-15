@@ -2158,9 +2158,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (entries.lastOrNull() !== last || p.mediaItemCount != entries.size || p.currentMediaItemIndex != entries.lastIndex) return false
         val g = guide ?: return false
         val here = guideEpisode(last) ?: return false
-        val next = g.episodes
+        val after = g.episodes
             .filter { it.id != here.id && (it.season > here.season || (it.season == here.season && it.number > here.number)) }
-            .minWithOrNull(compareBy({ it.season }, { it.number })) ?: return false
+        val first = after.minWithOrNull(compareBy({ it.season }, { it.number })) ?: return false
+        // The provider can list an episode more than once (two versions): playing the second one goes on to the
+        // next episode's second one, when it has one too, else its first.
+        val version = g.episodes.filter { it.season == here.season && it.number == here.number }.indexOfFirst { it.id == here.id }
+        val next = after.filter { it.season == first.season && it.number == first.number }.getOrNull(version) ?: first
         val raw = ShowEpisodes.title(g.searchName.ifEmpty { last.info.title }, next)
         val entry = Entry(NextEpisode.episodeUri(last.uri, next.id, next.extension), raw, null, nextEpisode = true)
         attachSaved(entry, chooseOn = false)
