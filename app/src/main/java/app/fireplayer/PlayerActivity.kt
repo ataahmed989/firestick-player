@@ -1448,6 +1448,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             refusedForIndex = -1
             rematches = 0
             reapplyWishes = trackWishes.isNotEmpty()
+            handler.post { restartSubtitles() }
         }
         playingIndex = now
         deviceRetries = 0
@@ -3916,6 +3917,19 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
      * Another episode's tracks are in: the same kind of sound and subtitles as picked by hand before, by language and
      * then name ("English (Full)" over "English (Signs)"), then kind, then channels.
      */
+    /**
+     * Another episode in the same player: the subtitles are started afresh, as turning them off and on again does.
+     * Carried on from the episode before, the subtitles stopped showing for the rest of the new one (Fire TV Stick 4K
+     * Max: the lines came in, none was drawn; off and on, they showed at once).
+     */
+    private fun restartSubtitles() {
+        val p = player ?: return
+        val params = p.trackSelectionParameters
+        if (params.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)) return   // subtitles off: nothing to restart
+        p.trackSelectionParameters = params.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build()
+        p.trackSelectionParameters = params
+    }
+
     private fun reapplyChoices() {
         if (player?.currentTracks?.groups.isNullOrEmpty()) return
         reapplyWishes = false
