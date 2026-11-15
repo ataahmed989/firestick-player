@@ -1505,6 +1505,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     // When the picture was last brought back in step with the sound, so a file that keeps landing ahead can't loop.
     private var lastFrameFixAt = 0L
+    // Set by a jump the viewer made, used up by the first frame after it.
+    private var frameCheckArmed = false
 
     /**
      * The first frame after a jump came from later than where the film is (the jump landed on an index point that isn't
@@ -1515,6 +1517,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val p = player ?: return
         if (seeking || p.isPlayingAd) return
         val now = SystemClock.elapsedRealtime()
+        // Only the first frame after a jump the viewer made, once: never in the middle of playing, where another jump
+        // would only take the subtitle on screen away.
+        if (!frameCheckArmed || now - jumpedAt > FRAME_CHECK_WINDOW_MS) return
+        frameCheckArmed = false
         if (now - lastFrameFixAt < FRAME_FIX_GAP_MS) return
         val ahead = frameMs - p.currentPosition
         if (ahead !in FRAME_AHEAD_MIN_MS..FRAME_AHEAD_MAX_MS) return
@@ -1550,6 +1556,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         freezeWatch.jumped()
         // The wait after a jump is the jump's, not the copy's.
         if (reason == Player.DISCONTINUITY_REASON_SEEK) jumpedAt = SystemClock.elapsedRealtime()
+        // A jump of FirePlayer's own back into step isn't checked again.
+        if (reason == Player.DISCONTINUITY_REASON_SEEK) frameCheckArmed = SystemClock.elapsedRealtime() - lastFrameFixAt > 1_000L
         // A jump while already waiting is a new wait (the state doesn't change), so the percentage starts again.
         if (reason == Player.DISCONTINUITY_REASON_SEEK) {
             restartPostPlayCount(newPosition.positionMs)
@@ -5884,6 +5892,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         const val FRAME_AHEAD_MIN_MS = 400L
         const val FRAME_AHEAD_MAX_MS = 20_000L
         const val FRAME_FIX_GAP_MS = 4_000L
+        const val FRAME_CHECK_WINDOW_MS = 8_000L
         /** Copies' measurements kept at most; past it they start again. */
         const val MAX_QUALITY_SEEN = 400
         const val SKIP_NOTE_FADE_MS = 250L
