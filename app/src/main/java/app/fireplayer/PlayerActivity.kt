@@ -21,7 +21,6 @@ import android.text.TextPaint
 import android.text.format.DateFormat
 import android.text.style.ForegroundColorSpan
 import android.view.Gravity
-import android.util.Log
 import android.view.KeyEvent
 import android.view.LayoutInflater
 import android.view.SurfaceView
@@ -1449,7 +1448,6 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             refusedForIndex = -1
             rematches = 0
             reapplyWishes = trackWishes.isNotEmpty()
-            handler.post { restartSubtitles() }
         }
         playingIndex = now
         deviceRetries = 0
@@ -1587,10 +1585,6 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val preview = stylePreviewing && text.isEmpty() && !otherShowing && player?.playWhenReady != true
         screenSubtitles.setCues(if (preview) styler.sample() else text)
         frameSubtitles.setCues(styler.pictures(shownPictureCues))
-        // What reached the screen of each new line, to tell where lines that never show go
-        if (lastTextCues.isNotEmpty()) Log.i(SUBS_TAG, "lines ${lastTextCues.size} shown ${text.size} held $held " +
-            "alpha ${screenSubtitles.alpha} y ${screenSubtitles.translationY} visible ${screenSubtitles.isShown} " +
-            "item ${player?.currentMediaItemIndex} at ${player?.currentPosition}")
     }
 
     /**
@@ -2018,6 +2012,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             // Subtitles from where the film is now would sit under a picture of somewhere else; they step aside.
             onShowing = { showing ->
                 val alpha = if (showing) 0f else 1f
+                subtitlesAlpha = alpha
                 screenSubtitles.animate().alpha(alpha).setDuration(150).start()
                 frameSubtitles.animate().alpha(alpha).setDuration(150).start()
             },
@@ -3237,6 +3232,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
      */
     private fun glide(view: View, toY: Float, animate: Boolean) {
         view.animate().cancel()
+        // The cancel stops a fade too: it is finished at once. Left half way, the subtitles stayed see-through after
+        // the episodes sheet (alpha 0 for a whole episode, measured on the Fire TV Stick 4K Max)
+        view.alpha = subtitlesAlpha
         if (!animate) {
             view.translationY = toY
             return
@@ -3922,29 +3920,6 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
      * Another episode's tracks are in: the same kind of sound and subtitles as picked by hand before, by language and
      * then name ("English (Full)" over "English (Signs)"), then kind, then channels.
      */
-    /**
-     * Another episode in the same player: the subtitles are started afresh, as turning them off and on again does.
-     * Carried on from the episode before, the subtitles stopped showing for the rest of the new one (Fire TV Stick 4K
-     * Max: the lines came in, none was drawn; off and on, they showed at once).
-     */
-    private fun restartSubtitles() {
-        val p = player ?: return
-        val params = p.trackSelectionParameters
-        if (params.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)) return   // subtitles off: nothing to restart
-        // Off, and on again a moment later: set back to back, the player only saw the second and changed nothing
-        p.trackSelectionParameters = params.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build()
-        handler.removeCallbacks(subtitlesBackOn)
-        handler.postDelayed(subtitlesBackOn, SUBTITLES_RESTART_MS)
-    }
-
-    private val subtitlesBackOn = Runnable {
-        val p = player ?: return@Runnable
-        val params = p.trackSelectionParameters
-        if (params.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)) {
-            p.trackSelectionParameters = params.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false).build()
-        }
-    }
-
     private fun reapplyChoices() {
         if (player?.currentTracks?.groups.isNullOrEmpty()) return
         reapplyWishes = false
@@ -4469,8 +4444,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     /** Subtitles would show through the episode cards; they step aside while the sheet is up. */
+    /** How see-through the subtitles should be: 0 while the episodes sheet or a skip's preview is over them. */
+    private var subtitlesAlpha = 1f
+
     private fun fadeSubtitles(shown: Boolean) {
         val alpha = if (shown) 1f else 0f
+        subtitlesAlpha = alpha
         screenSubtitles.animate().alpha(alpha).setDuration(150).start()
         frameSubtitles.animate().alpha(alpha).setDuration(150).start()
     }
@@ -5826,9 +5805,6 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     // ---------------------------------------------------------------------
 
     companion object {
-        private const val SUBS_TAG = "FirePlayerSubs"
-        /** Off this long when the subtitles are started afresh for another episode (see restartSubtitles). */
-        private const val SUBTITLES_RESTART_MS = 400L
         // How far above the controls' info chips the subtitles rest while the controls are up (dp), and how long they
         // take to glide there.
         private const val SUBTITLE_CLEAR_DP = 5f
