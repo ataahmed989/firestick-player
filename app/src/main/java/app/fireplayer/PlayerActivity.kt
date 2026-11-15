@@ -1294,6 +1294,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // instead, all of that came with the release a second later, in the middle of the app's first moments back
         // (on the Fire TV Stick 4K Max, 2 s of work while Glass Home was coming back). The player itself is released
         // only after the app is back on screen. Nothing more is heard from it: the screen is closing.
+        // The TV back to its usual refresh rate now, while the app behind comes up: left to the window's going (once the
+        // app behind had drawn), the switch came 1.4 s after Home on the Fire TV Stick 4K Plus, and everything coming up
+        // meanwhile ran at the film's 24 frames a second, then waited for the switch.
+        if (shown?.get() === this) frameRateMatcher.reset()
         p?.let {
             it.removeListener(this)
             it.stop()
