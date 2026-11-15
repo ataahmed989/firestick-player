@@ -2278,12 +2278,16 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             (lookupInFlight || nextLookedUpFor != current.key)
         // Exit is for a film, or a show's very last episode (its final season's finale, by TMDB); any other episode
         // never gets it, even when nothing comes after it on the provider yet.
-        val exitAt = if (!nextOk && next == null && !nextUnknown && prefs.skipIntro && current != null &&
-            (!isEpisode(current) || isSeriesFinale(current) == true)) inCredits(parts?.exitAt) else null
+        // Without credits info the card comes the countdown's seconds before the end (20 s for "Until the end").
+        val leadMs = if (prefs.autoCountdownSec > 0) prefs.autoCountdownSec * 1000L else POST_PLAY_LEAD_MS
+        val fallbackAt = if (known) (duration - leadMs).coerceAtLeast(duration / 2) else null
+        val exitAt = if (!nextOk && next == null && !nextUnknown && current != null &&
+            (!isEpisode(current) || isSeriesFinale(current) == true))
+            (if (prefs.skipIntro) inCredits(parts?.exitAt) else null) ?: fallbackAt.takeIf { parts?.exitAt == null } else null
         val exit = !nextOk && exitAt != null
         // Counts the chosen seconds, then goes on by itself; "Until the end" fills up to the episode's real end.
         val auto = (nextOk || exit) && prefs.autoCountdownSec > 0
-        val showAt = if (exit) exitAt!! else credits ?: Long.MAX_VALUE
+        val showAt = if (exit) exitAt!! else credits ?: fallbackAt ?: Long.MAX_VALUE
         // Going back out of the credits brings the card back when they come again.
         if (known && showAt != Long.MAX_VALUE && postPlayDismissedFor == index && position < showAt - 5_000) postPlayDismissedFor = -1
         val due = p != null && (nextOk || exit) && !sleepAtEnd && known &&
