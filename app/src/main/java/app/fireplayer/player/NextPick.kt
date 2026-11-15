@@ -53,4 +53,17 @@ object NextPick {
         val seen = (0..current).mapNotNullTo(HashSet()) { known(it) }
         return following.firstOrNull { known(it).let { r -> r == null || (r !in seen && r !in watched) } }
     }
+
+    /**
+     * Where the provider lists an episode more than once (two versions of each), the next episode in the same version
+     * as the one playing: playing the second copy of S1 E3 goes on to the second copy of S1 E4, when there is one.
+     * [picked] is what [after] chose; it stays when the versions can't be matched.
+     */
+    fun sameVersion(current: Int, picked: Int, reals: List<Real?>): Int {
+        val now = reals.getOrNull(current) ?: return picked
+        val next = reals.getOrNull(picked) ?: return picked
+        val version = reals.indices.filter { reals[it] == now }.indexOf(current)
+        if (version <= 0) return picked
+        return reals.indices.filter { reals[it] == next }.getOrNull(version) ?: picked
+    }
 }

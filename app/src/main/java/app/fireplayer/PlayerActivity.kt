@@ -67,6 +67,7 @@ import app.fireplayer.player.DecoderCheck
 import app.fireplayer.player.Delays
 import app.fireplayer.player.DisplaySwitch
 import app.fireplayer.player.FpsMeter
+import app.fireplayer.player.JumpFrameCheck
 import app.fireplayer.player.FrameRateMatcher
 import app.fireplayer.player.FreezeWatch
 import app.fireplayer.player.IdleCloseDataSource
@@ -992,7 +993,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         p.addListener(this)
         p.addAnalyticsListener(filmLoadErrors)
         p.addAnalyticsListener(droppedFrames)
-        p.setVideoFrameMetadataListener(fpsMeter)
+        p.setVideoFrameMetadataListener(JumpFrameCheck(fpsMeter, ::checkFrameAfterJump))
         fpsMeter.reset()
         p.pauseAtEndOfMediaItems = sleepAtEnd
         p.trackSelectionParameters = savedTrackParams ?: defaultTrackParams(p.trackSelectionParameters)
@@ -1502,6 +1503,35 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         backdrop?.frameChanged()
     }
 
+    // When the picture was last brought back in step with the sound, so a file that keeps landing ahead can't loop.
+    private var lastFrameFixAt = 0L
+    // Set by a jump the viewer made, used up by the first frame after it.
+    private var frameCheckArmed = false
+
+    /**
+     * The first frame after a jump came from later than where the film is (the jump landed on an index point that isn't
+     * a keyframe; see [JumpFrameCheck]): the picture would hold there while the sound plays up to it. Jumping exactly to
+     * that frame instead starts the sound there too, from what's already loaded.
+     */
+    private fun checkFrameAfterJump(frameMs: Long) {
+        val p = player ?: return
+        if (seeking || p.isPlayingAd) return
+        val now = SystemClock.elapsedRealtime()
+        // Only the first frame after a jump the viewer made, once: never in the middle of playing, where another jump
+        // would only take the subtitle on screen away.
+        if (!frameCheckArmed || now - jumpedAt > FRAME_CHECK_WINDOW_MS) return
+        frameCheckArmed = false
+        if (now - lastFrameFixAt < FRAME_FIX_GAP_MS) return
+        val ahead = frameMs - p.currentPosition
+        if (ahead !in FRAME_AHEAD_MIN_MS..FRAME_AHEAD_MAX_MS) return
+        if (frameMs > p.bufferedPosition) return
+        lastFrameFixAt = now
+        android.util.Log.w(TAG, "Picture landed ${ahead} ms ahead of the sound after a jump: jumping to its frame at $frameMs")
+        p.setSeekParameters(SeekParameters.EXACT)
+        p.seekTo(frameMs)
+        p.setSeekParameters(PlayerFactory.FILM_SEEK)
+    }
+
     override fun onRenderedFirstFrame() {
         // The first picture of a new player or video, or after a jump: the glass copies it.
         backdrop?.frameChanged()
@@ -1526,6 +1556,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         freezeWatch.jumped()
         // The wait after a jump is the jump's, not the copy's.
         if (reason == Player.DISCONTINUITY_REASON_SEEK) jumpedAt = SystemClock.elapsedRealtime()
+        // A jump of FirePlayer's own back into step isn't checked again.
+        if (reason == Player.DISCONTINUITY_REASON_SEEK) frameCheckArmed = SystemClock.elapsedRealtime() - lastFrameFixAt > 1_000L
         // A jump while already waiting is a new wait (the state doesn't change), so the percentage starts again.
         if (reason == Player.DISCONTINUITY_REASON_SEEK) {
             restartPostPlayCount(newPosition.positionMs)
@@ -2134,9 +2166,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (entries.lastOrNull() !== last || p.mediaItemCount != entries.size || p.currentMediaItemIndex != entries.lastIndex) return false
         val g = guide ?: return false
         val here = guideEpisode(last) ?: return false
-        val next = g.episodes
+        val after = g.episodes
             .filter { it.id != here.id && (it.season > here.season || (it.season == here.season && it.number > here.number)) }
-            .minWithOrNull(compareBy({ it.season }, { it.number })) ?: return false
+        val first = after.minWithOrNull(compareBy({ it.season }, { it.number })) ?: return false
+        // The provider can list an episode more than once (two versions): playing the second one goes on to the
+        // next episode's second one, when it has one too, else its first.
+        val version = g.episodes.filter { it.season == here.season && it.number == here.number }.indexOfFirst { it.id == here.id }
+        val next = after.filter { it.season == first.season && it.number == first.number }.getOrNull(version) ?: first
         val raw = ShowEpisodes.title(g.searchName.ifEmpty { last.info.title }, next)
         val entry = Entry(NextEpisode.episodeUri(last.uri, next.id, next.extension), raw, null, nextEpisode = true)
         attachSaved(entry, chooseOn = false)
@@ -2254,12 +2290,16 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             (lookupInFlight || nextLookedUpFor != current.key)
         // Exit is for a film, or a show's very last episode (its final season's finale, by TMDB); any other episode
         // never gets it, even when nothing comes after it on the provider yet.
-        val exitAt = if (!nextOk && next == null && !nextUnknown && prefs.skipIntro && current != null &&
-            (!isEpisode(current) || isSeriesFinale(current) == true)) inCredits(parts?.exitAt) else null
+        // Without credits info the card comes the countdown's seconds before the end (20 s for "Until the end").
+        val leadMs = if (prefs.autoCountdownSec > 0) prefs.autoCountdownSec * 1000L else POST_PLAY_LEAD_MS
+        val fallbackAt = if (known) (duration - leadMs).coerceAtLeast(duration / 2) else null
+        val exitAt = if (!nextOk && next == null && !nextUnknown && current != null &&
+            (!isEpisode(current) || isSeriesFinale(current) == true))
+            (if (prefs.skipIntro) inCredits(parts?.exitAt) else null) ?: fallbackAt.takeIf { parts?.exitAt == null } else null
         val exit = !nextOk && exitAt != null
         // Counts the chosen seconds, then goes on by itself; "Until the end" fills up to the episode's real end.
         val auto = (nextOk || exit) && prefs.autoCountdownSec > 0
-        val showAt = if (exit) exitAt!! else credits ?: Long.MAX_VALUE
+        val showAt = if (exit) exitAt!! else credits ?: fallbackAt ?: Long.MAX_VALUE
         // Going back out of the credits brings the card back when they come again.
         if (known && showAt != Long.MAX_VALUE && postPlayDismissedFor == index && position < showAt - 5_000) postPlayDismissedFor = -1
         val due = p != null && (nextOk || exit) && !sleepAtEnd && known &&
@@ -5848,6 +5888,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         const val KEEP_QUALITY_TICKS = 150
         /** A wait to load this soon after a jump is the jump's. */
         const val JUMP_WAIT_MS = 3_000L
+        // A first frame after a jump this far ahead of the sound is brought back in step; more is another film or a bad time.
+        const val FRAME_AHEAD_MIN_MS = 400L
+        const val FRAME_AHEAD_MAX_MS = 20_000L
+        const val FRAME_FIX_GAP_MS = 4_000L
+        const val FRAME_CHECK_WINDOW_MS = 8_000L
         /** Copies' measurements kept at most; past it they start again. */
         const val MAX_QUALITY_SEEN = 400
         const val SKIP_NOTE_FADE_MS = 250L
