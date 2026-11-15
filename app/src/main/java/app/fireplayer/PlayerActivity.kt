@@ -3926,8 +3926,18 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val p = player ?: return
         val params = p.trackSelectionParameters
         if (params.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)) return   // subtitles off: nothing to restart
+        // Off, and on again a moment later: set back to back, the player only saw the second and changed nothing
         p.trackSelectionParameters = params.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build()
-        p.trackSelectionParameters = params
+        handler.removeCallbacks(subtitlesBackOn)
+        handler.postDelayed(subtitlesBackOn, SUBTITLES_RESTART_MS)
+    }
+
+    private val subtitlesBackOn = Runnable {
+        val p = player ?: return@Runnable
+        val params = p.trackSelectionParameters
+        if (params.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)) {
+            p.trackSelectionParameters = params.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false).build()
+        }
     }
 
     private fun reapplyChoices() {
@@ -5811,6 +5821,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     // ---------------------------------------------------------------------
 
     companion object {
+        /** Off this long when the subtitles are started afresh for another episode (see restartSubtitles). */
+        private const val SUBTITLES_RESTART_MS = 400L
         // How far above the controls' info chips the subtitles rest while the controls are up (dp), and how long they
         // take to glide there.
         private const val SUBTITLE_CLEAR_DP = 5f
