@@ -67,6 +67,7 @@ import app.fireplayer.player.DecoderCheck
 import app.fireplayer.player.Delays
 import app.fireplayer.player.DisplaySwitch
 import app.fireplayer.player.FpsMeter
+import app.fireplayer.player.JumpFrameCheck
 import app.fireplayer.player.FrameRateMatcher
 import app.fireplayer.player.FreezeWatch
 import app.fireplayer.player.IdleCloseDataSource
@@ -992,7 +993,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         p.addListener(this)
         p.addAnalyticsListener(filmLoadErrors)
         p.addAnalyticsListener(droppedFrames)
-        p.setVideoFrameMetadataListener(fpsMeter)
+        p.setVideoFrameMetadataListener(JumpFrameCheck(fpsMeter, ::checkFrameAfterJump))
         fpsMeter.reset()
         p.pauseAtEndOfMediaItems = sleepAtEnd
         p.trackSelectionParameters = savedTrackParams ?: defaultTrackParams(p.trackSelectionParameters)
@@ -1500,6 +1501,29 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         applyDisplayMode()
         updateChips()
         backdrop?.frameChanged()
+    }
+
+    // When the picture was last brought back in step with the sound, so a file that keeps landing ahead can't loop.
+    private var lastFrameFixAt = 0L
+
+    /**
+     * The first frame after a jump came from later than where the film is (the jump landed on an index point that isn't
+     * a keyframe; see [JumpFrameCheck]): the picture would hold there while the sound plays up to it. Jumping exactly to
+     * that frame instead starts the sound there too, from what's already loaded.
+     */
+    private fun checkFrameAfterJump(frameMs: Long) {
+        val p = player ?: return
+        if (seeking || p.isPlayingAd) return
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastFrameFixAt < FRAME_FIX_GAP_MS) return
+        val ahead = frameMs - p.currentPosition
+        if (ahead !in FRAME_AHEAD_MIN_MS..FRAME_AHEAD_MAX_MS) return
+        if (frameMs > p.bufferedPosition) return
+        lastFrameFixAt = now
+        android.util.Log.w(TAG, "Picture landed ${ahead} ms ahead of the sound after a jump: jumping to its frame at $frameMs")
+        p.setSeekParameters(SeekParameters.EXACT)
+        p.seekTo(frameMs)
+        p.setSeekParameters(PlayerFactory.FILM_SEEK)
     }
 
     override fun onRenderedFirstFrame() {
@@ -5848,6 +5872,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         const val KEEP_QUALITY_TICKS = 150
         /** A wait to load this soon after a jump is the jump's. */
         const val JUMP_WAIT_MS = 3_000L
+        // A first frame after a jump this far ahead of the sound is brought back in step; more is another film or a bad time.
+        const val FRAME_AHEAD_MIN_MS = 400L
+        const val FRAME_AHEAD_MAX_MS = 20_000L
+        const val FRAME_FIX_GAP_MS = 4_000L
         /** Copies' measurements kept at most; past it they start again. */
         const val MAX_QUALITY_SEEN = 400
         const val SKIP_NOTE_FADE_MS = 250L
