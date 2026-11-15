@@ -1307,7 +1307,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // Glass Home, if a film had it let go of the GPU, puts its screen back on it while this closes, not in its
         // first frame (over 2 s on the Fire TV Stick 4K Max, the remote not answering meanwhile)
         try {
-            sendBroadcast(Intent(GLASS_HOME_WARM).setPackage(GLASS_HOME))
+            // At once (the foreground queue): with Home pressed, Glass Home starts its trip back on it
+            sendBroadcast(Intent(GLASS_HOME_WARM).setPackage(GLASS_HOME).addFlags(Intent.FLAG_RECEIVER_FOREGROUND))
         } catch (_: RuntimeException) {
         }
         // Straight back to the app that opened us, without a lingering empty task. Opened by another app, the whole
