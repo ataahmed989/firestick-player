@@ -3925,8 +3925,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (keep != null && !keep.selected) selectTrack(keep)
         for ((type, wish) in trackWishes) {
             if (type == C.TRACK_TYPE_TEXT && keep != null) continue
-            val same = trackOptions(type).filter { it.group.getTrackFormat(it.trackIndex).language == wish.language }
+            val language = trackOptions(type).filter { it.group.getTrackFormat(it.trackIndex).language == wish.language }
             fun format(o: TrackOption) = o.group.getTrackFormat(o.trackIndex)
+            // Subtitles: full ones stay full and forced stay forced whatever else differs (SDH, names). Falling back to
+            // the first of the language picked another episode's forced track, listed first, and the subtitles seemed gone.
+            val same = if (type != C.TRACK_TYPE_TEXT) language
+            else language.filter { forcedish(format(it)) == wish.forced }.ifEmpty { language }
             // The same kind (forced or full subtitles, commentary or main sound) matters more than the name, which
             // tracks often don't have or share.
             fun kind(o: TrackOption) = format(o).roleFlags == wish.roleFlags && forcedish(format(o)) == wish.forced
