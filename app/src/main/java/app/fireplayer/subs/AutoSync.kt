@@ -310,6 +310,10 @@ class AutoSync(
         baseUs?.let { if (delayUs() == putUs) setDelayUs(it) }
         baseUs = null
         putUs = null
+        // Another film or episode: a delay made for the last one (by hand, or by sync with its ad breaks) isn't this
+        // one's, and shifted its subtitles out of time (changing episodes, they seemed gone). Its own, saved by hand or
+        // found before, is put back below.
+        if (filmKey != key && delayUs() != 0L) setDelayUs(0L)
         jumpAt = 0L
         resyncRelearn = false
         stopListening()
