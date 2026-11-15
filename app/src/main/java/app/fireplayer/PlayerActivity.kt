@@ -21,6 +21,7 @@ import android.text.TextPaint
 import android.text.format.DateFormat
 import android.text.style.ForegroundColorSpan
 import android.view.Gravity
+import android.util.Log
 import android.view.KeyEvent
 import android.view.LayoutInflater
 import android.view.SurfaceView
@@ -1586,6 +1587,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val preview = stylePreviewing && text.isEmpty() && !otherShowing && player?.playWhenReady != true
         screenSubtitles.setCues(if (preview) styler.sample() else text)
         frameSubtitles.setCues(styler.pictures(shownPictureCues))
+        // What reached the screen of each new line, to tell where lines that never show go
+        if (lastTextCues.isNotEmpty()) Log.i(SUBS_TAG, "lines ${lastTextCues.size} shown ${text.size} held $held " +
+            "alpha ${screenSubtitles.alpha} y ${screenSubtitles.translationY} visible ${screenSubtitles.isShown} " +
+            "item ${player?.currentMediaItemIndex} at ${player?.currentPosition}")
     }
 
     /**
@@ -5821,6 +5826,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     // ---------------------------------------------------------------------
 
     companion object {
+        private const val SUBS_TAG = "FirePlayerSubs"
         /** Off this long when the subtitles are started afresh for another episode (see restartSubtitles). */
         private const val SUBTITLES_RESTART_MS = 400L
         // How far above the controls' info chips the subtitles rest while the controls are up (dp), and how long they
