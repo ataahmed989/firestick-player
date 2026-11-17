@@ -584,7 +584,7 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
         root.getLocationOnScreen(location)
         val ox = location[0]
         val oy = location[1]
-        // Where the film is on screen: Zoom scales video_frame, so every scale on the way up counts.
+        // Where the film is on screen: every scale on the way up counts.
         var sx = 1f
         var sy = 1f
         var v: View? = surfaceView

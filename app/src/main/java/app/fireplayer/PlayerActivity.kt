@@ -76,6 +76,7 @@ import app.fireplayer.player.MatchFixes
 import app.fireplayer.player.NextPick
 import app.fireplayer.player.ShowGuide
 import app.fireplayer.player.SpeechTap
+import app.fireplayer.player.PictureFit
 import app.fireplayer.player.PlayerFactory
 import app.fireplayer.player.ServerSwitch
 import app.fireplayer.player.ThreadBeat
@@ -105,6 +106,7 @@ import app.fireplayer.subs.ReferenceCues
 import app.fireplayer.subs.SubtitlePresets
 import app.fireplayer.subs.SubtitleStyler
 import app.fireplayer.subs.placedLikePicture
+import app.fireplayer.ui.BarWatch
 import app.fireplayer.ui.CountdownPill
 import app.fireplayer.player.SkipTimes
 import app.fireplayer.player.MkvChapters
@@ -405,6 +407,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private var refusedForIndex = -1
     private var rematches = 0
     private var displayMode = 0
+    private var barWatch: BarWatch? = null
+    // The film and the picture shape black bars were last looked for in: found afresh only when one of them changes
+    // (not for the same film loaded again with a subtitle added, or a stream moving to another quality).
+    private var barsShape = 0f
+    private var barsFilm: String? = null
 
     // Seeking
     private var seeking = false
@@ -585,6 +592,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         videoFrame.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
             if (left != oldLeft || top != oldTop || right != oldRight || bottom != oldBottom) backdrop?.frameChanged()
         }
+        // The frame is given its size outright (applyDisplayMode), never the film's shape to work out by itself.
+        videoFrame.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FILL
+        barWatch = BarWatch(surfaceView, { player?.isPlaying == true }) { applyDisplayMode() }
+        root.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+            if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) applyDisplayMode()
+        }
         panel = SidePanel(this)
         buildMoreRow()
         applyLook()
@@ -754,6 +767,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     override fun onDestroy() {
         super.onDestroy()
+        barWatch?.release()
         if (stale) return
         io.execute { titleBook?.close() }
         // One replaced by a newer player leaves the screen's mode to that one.
@@ -1421,6 +1435,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+        // Another episode: its black bars, if any, are found afresh.
+        val film = mediaItem?.localConfiguration?.uri?.toString()
+        if (film != barsFilm) {
+            barsFilm = film
+            barWatch?.reset()
+            applyDisplayMode()
+        }
         // The next episode's preloaded start is playing now: nothing more to load ahead.
         preloadNext(false)
         val now = player?.currentMediaItemIndex ?: playingIndex
@@ -1498,6 +1519,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     override fun onVideoSizeChanged(videoSize: VideoSize) {
+        if (videoSize.width > 0 && videoSize.height > 0) {
+            val shape = videoSize.width * videoSize.pixelWidthHeightRatio / videoSize.height
+            if (abs(shape - barsShape) > 0.01f) {
+                barsShape = shape
+                barWatch?.reset()
+            }
+        }
         applyDisplayMode()
         updateChips()
         backdrop?.frameChanged()
@@ -3273,16 +3301,18 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (bottom > limit && top < floor) bottom - limit else 0f
 
     /**
-     * How far picture subtitles must move up to clear the controls, in the picture's own units (Zoom scales it).
+     * How far picture subtitles must move up to clear the controls, in the picture's own units.
      * Only the ones that would collide count, and nothing is pushed off the top of the screen.
      */
     private fun pictureLift(limit: Float, floor: Float): Float {
-        val w = videoFrame.width.toFloat()
-        val h = videoFrame.height.toFloat()
-        if (shownPictureCues.isEmpty() || w == 0f || h == 0f) return 0f
+        // They're drawn in the part of the film's frame that's on screen (applyDisplayMode keeps the rest out of it).
+        val w = (frameSubtitles.width - frameSubtitles.paddingLeft - frameSubtitles.paddingRight).toFloat()
+        val h = (frameSubtitles.height - frameSubtitles.paddingTop - frameSubtitles.paddingBottom).toFloat()
+        if (shownPictureCues.isEmpty() || w <= 0f || h <= 0f) return 0f
         val scale = videoFrame.scaleY
         val pivot = videoFrame.pivotY
-        fun onScreen(y: Float) = videoFrame.top + pivot + (y - pivot) * scale
+        val offset = frameSubtitles.paddingTop
+        fun onScreen(y: Float) = videoFrame.top + pivot + (offset + y - pivot) * scale
         var lift = 0f
         var highest = Float.MAX_VALUE
         for (cue in shownPictureCues) {
@@ -5773,29 +5803,31 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         pictureText.showTrack(if (styler.keepEmbedded) null else readablePictureTrack()?.id)
     }
 
+    /**
+     * Lays the film out for the display size chosen ([PictureFit]): its frame gets the size outright, centred, so each
+     * choice shows the same on every Fire TV (Zoom once scaled the view, which not every TV does for a video surface).
+     */
     private fun applyDisplayMode() {
-        val p = player
-        val size = p?.videoSize
+        val size = player?.videoSize
         val aspect = if (size == null || size.height == 0) 0f else size.width * size.pixelWidthHeightRatio / size.height
-        val scale = videoFrame.scaleX
-        videoFrame.scaleX = 1f
-        videoFrame.scaleY = 1f
-        when (displayMode) {
-            0 -> { videoFrame.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT; videoFrame.setAspectRatio(aspect) }
-            1 -> { videoFrame.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM; videoFrame.setAspectRatio(aspect) }
-            2 -> {
-                videoFrame.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-                videoFrame.setAspectRatio(aspect)
-                videoFrame.scaleX = 1.15f
-                videoFrame.scaleY = 1.15f
-            }
-            3 -> { videoFrame.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FILL; videoFrame.setAspectRatio(aspect) }
-            4 -> { videoFrame.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT; videoFrame.setAspectRatio(16f / 9f) }
-            5 -> { videoFrame.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT; videoFrame.setAspectRatio(4f / 3f) }
-            6 -> { videoFrame.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT; videoFrame.setAspectRatio(21f / 9f) }
+        val watch = barWatch
+        // Fill screen and Stretch go by the picture inside any black bars saved in the file.
+        watch?.wanted = PictureFit.usesBars(displayMode) && aspect > 0f
+        val fit = PictureFit.size(displayMode, aspect, root.width, root.height, watch?.vertical ?: 0f, watch?.horizontal ?: 0f)
+        val w = fit?.first ?: ViewGroup.LayoutParams.MATCH_PARENT
+        val h = fit?.second ?: ViewGroup.LayoutParams.MATCH_PARENT
+        val lp = videoFrame.layoutParams
+        if (lp.width != w || lp.height != h) {
+            lp.width = w
+            lp.height = h
+            videoFrame.layoutParams = lp
         }
-        // Zoom grows the picture without a new layout, which the layout listener wouldn't see.
-        if (videoFrame.scaleX != scale) backdrop?.frameChanged()
+        // Subtitles drawn on the film (picture ones, styled ASS) stay on the screen when the film is bigger than it.
+        val overW = if (fit == null) 0 else ((fit.first - root.width) / 2).coerceAtLeast(0)
+        val overH = if (fit == null) 0 else ((fit.second - root.height) / 2).coerceAtLeast(0)
+        if (frameSubtitles.paddingLeft != overW || frameSubtitles.paddingTop != overH) {
+            frameSubtitles.setPadding(overW, overH, overW, overH)
+        }
     }
 
     // ---------------------------------------------------------------------
