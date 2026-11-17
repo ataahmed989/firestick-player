@@ -162,9 +162,19 @@ class ShowGuide(
 
         /**
          * Pairs every episode the provider has for a show with TMDB's. Blocks on TMDB; run it off the main thread. Without
-         * a TMDB key, or when TMDB doesn't know the show, the provider's own names and numbers are used.
+         * a TMDB key, or when TMDB doesn't know the show, the provider's own names and numbers are used. [knownTmdb]: the
+         * show's TMDB id as FirePlayer's title server confirmed it when it gave the show its English name in TiviMate (0
+         * for none): taken as it is, so a show renamed there is the same show here and isn't matched by name a second time.
          */
-        fun build(context: Context, key: String, portal: String, found: NextEpisode.Found, tmdb: Tmdb, fixes: MatchFixes): ShowGuide {
+        fun build(
+            context: Context,
+            key: String,
+            portal: String,
+            found: NextEpisode.Found,
+            tmdb: Tmdb,
+            fixes: MatchFixes,
+            knownTmdb: Int = 0,
+        ): ShowGuide {
             val series = found.series
             val fix = fixes.show(key)
             val providerShow = TitleInfo.parse(found.showName, null)
@@ -173,7 +183,7 @@ class ShowGuide(
             var tmdbId = 0
             if (tmdb.isConfigured) {
                 runCatching {
-                    tmdbId = fix?.tmdbId?.takeIf { it > 0 }
+                    tmdbId = fix?.tmdbId?.takeIf { it > 0 } ?: knownTmdb.takeIf { it > 0 }
                         ?: TitleMatcher(tmdb).englishName(found.showName, series.tmdb, series.year, true, null)?.tmdb ?: 0
                     if (tmdbId > 0) {
                         val details = tmdb.details(tmdbId, true, allNames = false)
@@ -243,6 +253,12 @@ class ShowGuide(
             fun find(season: Int, number: Int) = seasons[season]?.firstOrNull { it.number == number }
                 ?: if (seasons.containsKey(season)) null else load(season).firstOrNull { it.number == number }
             val ordered = provider.sortedWith(compareBy({ it.season }, { it.number }))
+            fun titledOf(title: String) = simple(title).takeIf { it.length >= 3 }?.let { byName[it]?.singleOrNull() }
+            // Numbered straight through, every episode there once and in order, as many as TMDB has, and no name saying
+            // otherwise: the pairing by order is as sure as one by numbers.
+            val wholeInOrder = straight != null && ordered.size == straight.size &&
+                ordered.map { it.number } == (1..ordered.size).toList() &&
+                ordered.withIndex().none { (k, e) -> titledOf(episodeName(e.title, showNames))?.let { it !== straight[k] } == true }
             return provider.map { e ->
                 val title = episodeName(e.title, showNames)
                 joined[e.id]?.let { (parts, sure) ->
@@ -261,7 +277,7 @@ class ShowGuide(
                         parts = parts.map { Part(it.season, it.number, it.name) },
                     )
                 }
-                val titled = simple(title).takeIf { it.length >= 3 }?.let { byName[it]?.singleOrNull() }
+                val titled = titledOf(title)
                 val place = fix?.place(e.id, e.season, e.number)
                 val picked: Tmdb.TvEpisode?
                 var match: Match
@@ -274,7 +290,7 @@ class ShowGuide(
                     straight != null -> {
                         val k = ordered.indexOf(e)
                         picked = straight.getOrNull(k)
-                        match = if (picked != null && titled === picked) Match.SURE else Match.UNSURE
+                        match = if (picked != null && (titled === picked || wholeInOrder)) Match.SURE else Match.UNSURE
                         if (match == Match.UNSURE) why = if (picked != null) {
                             "Your provider numbers this show straight through: this is its episode ${k + 1}, " +
                                 "which is ${picked.label()} on TMDB."

@@ -223,24 +223,82 @@ class QualityTest {
     // --- How copies have played
 
     @Test
-    fun aCopyThatKeepsBufferingOrFailedIsTroubled() {
-        assertTrue(CopyHealth(watchedMs = 20 * 60_000L, stalls = 7, stallMs = 30_000).troubled)
-        assertEquals("buffered 7× in 20 min", CopyHealth(watchedMs = 20 * 60_000L, stalls = 7, stallMs = 30_000).summary())
-        assertTrue(CopyHealth(failures = 1).troubled)
+    fun onlyACopyThatKeepsBufferingIsTroubled() {
+        assertTrue(CopyHealth(watchedMs = 6 * 60_000L, stalls = 7, stallMs = 30_000).troubled)
+        assertEquals("buffered 7× in 6 min", CopyHealth(watchedMs = 6 * 60_000L, stalls = 7, stallMs = 30_000).summary())
+        // Every few seconds: given up on within the minute, and still told.
+        assertTrue(CopyHealth(watchedMs = 20_000L, stalls = 5, stallMs = 25_000).troubled)
+        assertEquals("buffered 5× in the first minute", CopyHealth(watchedMs = 20_000L, stalls = 5, stallMs = 25_000).summary())
+        // Failing to play is said, but isn't held against the copy.
+        assertTrue(!CopyHealth(failures = 1).troubled)
         assertEquals("failed to play", CopyHealth(failures = 1).summary())
-        // One wait in two minutes says little; a failure long since played past is forgiven.
-        assertTrue(!CopyHealth(watchedMs = 2 * 60_000L, stalls = 1, stallMs = 3_000).troubled)
-        assertTrue(!CopyHealth(watchedMs = 40 * 60_000L, failures = 1).troubled)
+        // A wait now and then over a long film says little; so do one or two at the start.
+        assertTrue(!CopyHealth(watchedMs = 100 * 60_000L, stalls = 7, stallMs = 30_000).troubled)
+        assertTrue(!CopyHealth(watchedMs = 2 * 60_000L, stalls = 2, stallMs = 6_000).troubled)
         assertEquals("smooth over 40 min", CopyHealth(watchedMs = 40 * 60_000L).summary())
+    }
+
+    @Test
+    fun aCopyThatFailedToPlayCanStillBeTheBest() {
+        val copies = listOf(copy("HEVC", 9.0), copy("HEVC", 20.0))
+        val v = CopyRank.rank(copies, 0, false, listOf(CopyHealth(watchedMs = 30 * 60_000L), CopyHealth(failures = 2)))
+        assertEquals(1, v.best)
+        assertTrue(v.tradeOffs.joinToString(), v.tradeOffs.none { it.contains("failed") })
+    }
+
+    // --- Data for the frame it has to fill
+
+    @Test
+    fun aStarved4kLosesToA1080pOfTheSameSize() {
+        // A two-hour film in 6 GB is 6.7 Mb/s: thin for 4K, plenty for 1080p.
+        val v = CopyRank.rank(listOf(copy("HEVC", 6.6), copy("HEVC", 6.6, w = 1920, h = 1080)), 0, false)
+        assertEquals(1, v.best)
+        assertTrue(v.reasons.first(), v.reasons.first().startsWith("the other's 4K picture is starved of data (6.6 Mb/s, 0.033 bits a pixel)"))
+        // Also when the 1080p has somewhat less, but not when it has next to nothing.
+        assertEquals(1, CopyRank.rank(listOf(copy("HEVC", 6.6), copy("HEVC", 4.5, w = 1920, h = 1080)), 0, false).best)
+        assertEquals(0, CopyRank.rank(listOf(copy("HEVC", 6.6), copy("HEVC", 1.5, w = 1280, h = 720)), 1, false).best)
+    }
+
+    @Test
+    fun aWellFed4kIsNotBeatenByABigger1080pFile() {
+        // 13 Mb/s is good for 4K (0.065 bits a pixel); a 1080p frame can't show 20 Mb/s of HEVC.
+        val v = CopyRank.rank(listOf(copy("HEVC", 20.0, w = 1920, h = 1080), copy("HEVC", 13.0)), 0, false)
+        assertEquals(1, v.best)
+        assertTrue(v.reasons.first(), v.reasons.first().startsWith("the other's 1920-wide picture has more data than it can show"))
+        assertTrue(v.reasons.joinToString(), v.reasons.contains("3840 wide instead of 1920"))
+    }
+
+    @Test
+    fun bitsAPixelCountAsHevcWouldNeedThem() {
+        // 12 Mb/s of HEVC over a full 4K frame at 24 frames a second.
+        assertEquals(0.060, CopyRank.perPixel(copy("HEVC", 12.0))!!, 0.001)
+        // The same bits of H.264 draw less.
+        assertEquals(0.0377, CopyRank.perPixel(copy("H.264", 12.0))!!, 0.001)
+        assertTrue(CopyRank.starved(copy("H.264", 12.0)))
+        assertTrue(!CopyRank.starved(copy("HEVC", 12.0)))
+        // Black bars left out of the frame leave more for each pixel.
+        assertTrue(CopyRank.perPixel(copy("HEVC", 6.6, h = 1600))!! > CopyRank.STARVED)
+        // A frame nobody stated: only a copy its playlist calls 4K, under 6 GB for two hours.
+        val unframed = MediaSpec(overallBps = 5_000_000)
+        assertTrue(CopyRank.starved(unframed, Copies.groupRank("4K")))
+        assertTrue(!CopyRank.starved(unframed, Copies.groupRank("1080p")))
+        assertTrue(!CopyRank.starved(MediaSpec(overallBps = 14_000_000), Copies.groupRank("4K HDR")))
+    }
+
+    @Test
+    fun aStarvedCopyIsStillBestWhenNothingBetterIsKnown() {
+        val v = CopyRank.rank(listOf(copy("HEVC", 5.0), copy("HEVC", 4.0)), 1, false)
+        assertEquals(0, v.best)
+        assertTrue(v.tradeOffs.joinToString(), v.tradeOffs.first().startsWith("little data for its frame (0.025 bits a pixel)"))
     }
 
     @Test
     fun aCopyThatPlaysBeatsABetterOneThatBuffers() {
         val copies = listOf(copy("HEVC", 20.0), copy("HEVC", 9.0))
-        val health = listOf(CopyHealth(watchedMs = 20 * 60_000L, stalls = 8, stallMs = 60_000), CopyHealth(watchedMs = 30 * 60_000L))
+        val health = listOf(CopyHealth(watchedMs = 20 * 60_000L, stalls = 25, stallMs = 180_000), CopyHealth(watchedMs = 30 * 60_000L))
         val v = CopyRank.rank(copies, 0, false, health)
         assertEquals(1, v.best)
-        assertEquals("the other buffered 8× in 20 min", v.reasons.first())
+        assertEquals("the other buffered 25× in 20 min", v.reasons.first())
         assertTrue(v.reasons.contains("smooth over 30 min"))
         assertTrue(v.tradeOffs.joinToString(), v.tradeOffs.any { it.startsWith("less picture data") })
     }
@@ -248,10 +306,10 @@ class QualityTest {
     @Test
     fun whenEveryCopyBuffersQualityDecidesAndSaysSo() {
         val copies = listOf(copy("HEVC", 20.0), copy("HEVC", 9.0))
-        val bad = CopyHealth(watchedMs = 20 * 60_000L, stalls = 8, stallMs = 60_000)
+        val bad = CopyHealth(watchedMs = 20 * 60_000L, stalls = 25, stallMs = 180_000)
         val v = CopyRank.rank(copies, 1, false, listOf(bad, bad))
         assertEquals(0, v.best)
-        assertEquals("buffered 8× in 20 min", v.tradeOffs.first())
+        assertEquals("buffered 25× in 20 min", v.tradeOffs.first())
     }
 
     @Test

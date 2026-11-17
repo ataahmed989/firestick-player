@@ -11,10 +11,13 @@ import org.json.JSONObject
 /**
  * The other copies listed of the film or episode playing, on every playlist TiviMate reaches through FirePlayer, each
  * as the provider's probe of its file describes it (picture, sound, data rate) when the provider says, so they can be
- * compared without playing them. Copies are found in the title book, by TMDB id (or English name and year); only links
- * that come through FirePlayer's title server can be looked up, and another playlist's copies only once TiviMate has
- * used it through FirePlayer (its login is needed for the link). Blocks: run it off the main thread. One small request
- * per copy (a show's episode list per copy of the show), only when asked.
+ * compared without playing them. Copies are found in the title book, by the TMDB id the title was matched with and by
+ * the English name and year that match gave it, whatever playlist or quality group they're in; another playlist's
+ * copies only once TiviMate has used it through FirePlayer (its login is needed for the link). Blocks: run it off the
+ * main thread. One small request per copy (a show's episode list per copy of the show), only when asked.
+ *
+ * What plays needn't be a playlist's own: for a link from elsewhere (see [Source]) the playlists' copies of the same
+ * TMDB title are found all the same, and anything else that has copies of a title joins the list through [sources].
  */
 class Copies(
     private val book: TitleBook,
@@ -34,28 +37,54 @@ class Copies(
         val current: Boolean,
         val playlist: String = "",
         val group: String? = null,
+        /** Where it comes from when that isn't a playlist ("Stremio"): said beside it in the list. */
+        val source: String? = null,
+        /**
+         * What it's remembered by between plays (how it played, what was measured of it), for a copy whose link can't
+         * say or changes from one day to the next: something lasting, such as "stremio|tt0133093|<file hash>". Null
+         * for a playlist's copy, which goes by its provider and id.
+         */
+        val key: String? = null,
     )
+
+    /** The title copies are wanted of: its TMDB id (0 when not known), name and year (0), and for an episode its numbers. */
+    class Wanted(val tmdb: Int, val name: String, val year: Int, val season: Int? = null, val episode: Int? = null)
+
+    /**
+     * Somewhere else copies of a title come from, besides TiviMate's playlists (a Stremio add-on, say). Its copies
+     * are listed, measured and ranked with the playlists' by the same rules ([CopyRank]): give each what the source
+     * says of it as a [MediaSpec] (frame size, the whole file's rate from its size and the film's length), a [Copy.source]
+     * and a lasting [Copy.key]. Called off the main thread, once each time the list is made; may block.
+     */
+    fun interface Source {
+        fun copies(of: Wanted): List<Copy>
+    }
 
     private val account = XtreamAccount(headers)
 
     /**
-     * The film at [uri] and its other copies; empty when they can't be looked up. [tmdbFallback]: its TMDB id as found by
-     * name, for a film the title book doesn't know (one whose playlist doesn't go through the title server).
+     * The film at [uri] and its other copies on every playlist; empty when none can be looked up. [tmdb]: the film's
+     * TMDB id as the player has it matched (by hand, by the title server, or by a name TMDB confirmed; 0 for none),
+     * which the title book's own stands in for. [title]: its English name with its year ("The Matrix (1999)"), as
+     * matched. [uri] may be a link from elsewhere than a playlist: then it's listed as it is, with the playlists' copies.
      */
-    fun ofFilm(uri: Uri, tmdbFallback: Int = 0): List<Copy> {
-        val server = serverOf(uri) ?: return emptyList()
-        val id = idIn(uri) ?: return emptyList()
-        val known = book.about(server, TitleBook.Kind.MOVIE, id)
-        val tmdb = known?.tmdb?.takeIf { it > 0 } ?: tmdbFallback
+    fun ofFilm(uri: Uri, tmdb: Int = 0, title: String? = null): List<Copy> {
+        val server = serverOf(uri)
+        val id = idIn(uri).takeIf { server != null }
+        val known = if (server != null && id != null) book.about(server, TitleBook.Kind.MOVIE, id) else null
+        val wanted = tmdb.takeIf { it > 0 } ?: known?.tmdb ?: 0
         // By TMDB id, and by the English name and year TMDB gave: a copy matched to another id is still found.
-        val byTitle = known?.title?.let { book.copiesByTitle(TitleBook.Kind.MOVIE, it, known.year) }.orEmpty()
-        val listed = (book.copies(TitleBook.Kind.MOVIE, tmdb) + byTitle).distinctBy { it.server to it.id }
+        val byTitle = listOfNotNull(known?.title, title).distinct().flatMap { book.copiesByTitle(TitleBook.Kind.MOVIE, it) }
+        val listed = (book.copies(TitleBook.Kind.MOVIE, wanted) + byTitle).distinctBy { it.server to it.id }
         // The copy playing first, always (with its listed name), then the others, those of a better quality group first.
-        val self = listed.firstOrNull { it.server == server && it.id == id } ?: TitleBook.Copy(server, id, "")
-        val others = listed.filter { !(it.server == server && it.id == id) }
+        val self = listed.firstOrNull { it.server == server && it.id == id }
+            ?: if (server != null && id != null) TitleBook.Copy(server, id, "") else null
+        val others = listed.filter { it !== self }
             .sortedByDescending { groupRank(Quality.of(it.raw, it.category)) }.take(MAX_COPIES - 1)
-        Log.i(TAG, "film: tmdb ${tmdb > 0}, ${listed.size} listed on ${listed.map { it.server }.distinct().size} playlists (${byTitle.size} by name)")
-        return (listOf(self) + others).mapNotNull { copy ->
+        Log.i(TAG, "film: tmdb ${wanted > 0}, ${listed.size} listed on ${listed.map { it.server }.distinct().size} playlists (${byTitle.size} by name)")
+        // Not a playlist's: the link itself, with what was measured of it.
+        val foreign = if (self == null && others.isNotEmpty()) listOf(Copy("", uri, measured(uri), true)) else emptyList()
+        return foreign + (listOfNotNull(self) + others).mapNotNull { copy ->
             val base = onPlaylist(uri, copy.server, "movie") ?: return@mapNotNull null
             val info = account.api(base, "get_vod_info", "vod_id" to copy.id.toString())
             val about = info?.optJSONObject("info")
@@ -67,24 +96,33 @@ class Copies(
         }.also { log("film", it) }
     }
 
-    /** The episode at [uri] of show [seriesId], and the same episode in the other copies of the show, on every playlist. */
-    fun ofEpisode(uri: Uri, seriesId: String, tmdbFallback: Int = 0): List<Copy> {
-        val server = serverOf(uri) ?: return emptyList()
-        val episodeId = idIn(uri)?.toString() ?: return emptyList()
-        val show = seriesId.toIntOrNull() ?: return emptyList()
-        val tmdb = book.about(server, TitleBook.Kind.SHOW, show)?.tmdb?.takeIf { it > 0 } ?: tmdbFallback
-        val here = episodes(uri, seriesId) ?: return emptyList()
-        val mine = here.firstOrNull { it.id == episodeId } ?: return emptyList()
-        val listed = book.copies(TitleBook.Kind.SHOW, tmdb)
+    /**
+     * The episode at [uri] of show [seriesId], and the same episode in the other copies of the show, on every playlist.
+     * [tmdb]: the show's TMDB id as the player has it matched (0 for none), which the title book's own stands in for.
+     * For a link from elsewhere than a playlist, [seriesId] is null and [at] says which episode it is (season, number).
+     */
+    fun ofEpisode(uri: Uri, seriesId: String?, tmdb: Int = 0, at: Pair<Int, Int>? = null): List<Copy> {
+        val server = serverOf(uri).takeIf { seriesId != null }
+        val show = seriesId?.toIntOrNull()
+        val episodeId = idIn(uri)?.toString()
+        val mine = if (server != null && seriesId != null && show != null) {
+            (episodes(uri, seriesId) ?: return emptyList()).firstOrNull { it.id == episodeId } ?: return emptyList()
+        } else null
+        val (season, number) = mine?.let { it.season to it.number } ?: at ?: return emptyList()
+        val known = if (server != null && show != null) book.about(server, TitleBook.Kind.SHOW, show) else null
+        val wanted = tmdb.takeIf { it > 0 } ?: known?.tmdb ?: 0
+        val byTitle = known?.title?.let { book.copiesByTitle(TitleBook.Kind.SHOW, it) }.orEmpty()
+        val listed = (book.copies(TitleBook.Kind.SHOW, wanted) + byTitle).distinctBy { it.server to it.id }
         val selfListing = listed.firstOrNull { it.server == server && it.id == show }
-        val others = listed.filter { !(it.server == server && it.id == show) }
+        val others = listed.filter { it !== selfListing }
             .sortedByDescending { groupRank(Quality.of(it.raw, it.category)) }.take(MAX_COPIES - 1)
         val out = ArrayList<Copy>()
-        out += Copy(mine.name, uri, best(mine.spec, measured(uri)), true, server, selfListing?.let { Quality.of(it.raw, it.category) })
+        out += if (mine != null) Copy(mine.name, uri, best(mine.spec, measured(uri)), true, server.orEmpty(), selfListing?.let { Quality.of(it.raw, it.category) })
+            else Copy("", uri, measured(uri), true)
         for (other in others) {
             val base = onPlaylist(uri, other.server, "series") ?: continue
             val list = episodes(base, other.id.toString()) ?: continue
-            val same = list.firstOrNull { it.season == mine.season && it.number == mine.number } ?: continue
+            val same = list.firstOrNull { it.season == season && it.number == number } ?: continue
             val link = linkFor(base, same.id, same.extension)
             out += Copy(other.raw.ifEmpty { same.name }, link, best(same.spec, measured(link)), false, other.server,
                 Quality.of(other.raw, other.category))
@@ -161,6 +199,12 @@ class Copies(
     }
 
     companion object {
+        /**
+         * Other places copies come from, asked each time a title's copies are listed (see [Source]). Add one when its
+         * add-on or service is set up; nothing else in the comparison needs to know of it.
+         */
+        val sources = java.util.concurrent.CopyOnWriteArrayList<Source>()
+
         private const val TAG = "FirePlayerCopies"
         private const val MAX_COPIES = 16
 
