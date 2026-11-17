@@ -99,6 +99,7 @@ import app.fireplayer.subs.OpenSubtitles
 import app.fireplayer.subs.SubtitleRanker
 import app.fireplayer.subs.Tmdb
 import app.fireplayer.titles.TitleBook
+import app.fireplayer.titles.TitleMatcher
 import app.fireplayer.titles.TitleProxy
 import app.fireplayer.titles.TitleService
 import app.fireplayer.subs.PictureText
@@ -2764,10 +2765,17 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
      */
     private fun lookUpEnglishName(entry: Entry) {
         if (entry.englishAsked || entry.english != null) return
-        val server = TitleProxy.serverIn(entry.uri) ?: return
+        val server = TitleProxy.serverIn(entry.uri)
+        // A film on a playlist that doesn't go through the title server: TMDB is asked about its name here, as the
+        // title server would, and only a name it confirms is taken.
+        val direct = if (server == null && isDirectFilm(entry)) entry.info else null
+        if (server == null && direct == null) return
         entry.englishAsked = true
-        io.execute {
-            val found = runCatching { englishName(server, entry.uri) }.getOrNull() ?: return@execute
+        // TMDB may be asked (a title new to its list, a direct film): on a thread of its own, not to hold up [io].
+        thread(name = "FirePlayerTitle", isDaemon = true, priority = Thread.MIN_PRIORITY) {
+            val found = runCatching {
+                if (server != null) englishName(server, entry.uri) else direct?.let { verifiedFilm(it) }
+            }.getOrNull() ?: return@thread
             handler.post {
                 if (isFinishing) return@post
                 val before = entry.info.searchQuery
@@ -2786,14 +2794,56 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val id = parts[3].substringBeforeLast('.').toIntOrNull() ?: return null
         val book = book()
         return when (parts[0].lowercase()) {
-            "movie" -> book.title(server, TitleBook.Kind.MOVIE, id)?.let { TitleInfo.parse(it, null) }
+            "movie" -> (book.title(server, TitleBook.Kind.MOVIE, id) ?: matchNow(book, server, TitleBook.Kind.MOVIE, id))
+                ?.let { TitleInfo.parse(it, null) }
             "series" -> {
                 val episode = book.episode(server, id) ?: return null
-                val show = book.title(server, TitleBook.Kind.SHOW, episode.series) ?: return null
+                val show = book.title(server, TitleBook.Kind.SHOW, episode.series)
+                    ?: matchNow(book, server, TitleBook.Kind.SHOW, episode.series) ?: return null
                 TitleInfo.parse(show, null).withEpisode(episode.season, episode.number)
             }
             else -> null
         }
+    }
+
+    /**
+     * A title the title server has listed but not asked TMDB about yet (a big playlist takes it a while): asked about
+     * now, by the same rules, and its answer kept in the title book, so what plays is matched without waiting its turn.
+     * The English name TMDB confirms, or null. Blocks on TMDB.
+     */
+    private fun matchNow(book: TitleBook, server: String, kind: TitleBook.Kind, id: Int): String? {
+        if (!tmdb.isConfigured) return null
+        val waiting = book.unanswered(server, kind, id) ?: return null
+        val matcher = TitleMatcher(Tmdb({ prefs.tmdbApiKey }, book.tmdbMemory))
+        // TMDB not reached: left waiting, for the title server to ask.
+        val named = runCatching { matcher.englishName(waiting.raw, waiting.tmdb, waiting.year, kind == TitleBook.Kind.SHOW, waiting.category) }
+            .getOrElse { return null }
+        book.answered(waiting, named?.title, System.currentTimeMillis() / 1000, named?.tmdb ?: 0)
+        return named?.title
+    }
+
+    /** A provider's film ("…/movie/…") handed over by its own link, not matched by hand, with a TMDB key to ask with. */
+    private fun isDirectFilm(entry: Entry): Boolean = tmdb.isConfigured && entry.info.episode == null &&
+        entry.uri.pathSegments.any { it.equals("movie", true) } && NextEpisode.portal(entry.uri) != null && filmFix(entry) == null
+
+    /** The film TMDB confirms for this name (see [Tmdb.verify]), under TMDB's name and year; null when it isn't sure. Blocks. */
+    private fun verifiedFilm(info: TitleInfo): TitleInfo? {
+        val year = YEAR_IN_NAME.find(info.title)?.groupValues?.get(1)?.toIntOrNull()
+        return tmdb.verify(info.searchQuery, year, false)?.let { TitleInfo.parse(it.label, null) }
+    }
+
+    /**
+     * The TMDB id the title server confirmed for the show of an episode that comes through it, asking TMDB now if it
+     * hasn't yet; 0 when it has none. Blocks.
+     */
+    private fun bookShowTmdb(uri: Uri, seriesId: String): Int {
+        val server = TitleProxy.serverIn(uri) ?: return 0
+        val id = seriesId.toIntOrNull() ?: return 0
+        return runCatching {
+            val book = book()
+            book.about(server, TitleBook.Kind.SHOW, id)?.tmdb?.takeIf { it > 0 }
+                ?: matchNow(book, server, TitleBook.Kind.SHOW, id)?.let { book.about(server, TitleBook.Kind.SHOW, id)?.tmdb }
+        }.getOrNull() ?: 0
     }
 
     /** Blocks; on [io]. */
@@ -4439,7 +4489,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val portal = NextEpisode.portal(uri) ?: return
         val app = applicationContext
         thread(name = "FirePlayerGuide", isDaemon = true, priority = Thread.MIN_PRIORITY) {
-            val made = runCatching { ShowGuide.build(app, key, portal, found, tmdb, matchFixes) }
+            val made = runCatching { ShowGuide.build(app, key, portal, found, tmdb, matchFixes, bookShowTmdb(uri, found.seriesId)) }
                 .onFailure { android.util.Log.w("FirePlayerGuide", "Couldn't make the show's guide", it) }
                 .getOrNull()
             handler.post {
@@ -4760,7 +4810,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     // What was measured of each copy played, kept so copies can be compared later: by provider and id, no login.
     private val qualitySeen by lazy { getSharedPreferences("quality_seen", MODE_PRIVATE) }
 
+    // Copies from elsewhere than a playlist (see Copies.Source), by link: what each is remembered by.
+    private val copyKeys = java.util.concurrent.ConcurrentHashMap<String, String>()
+
     private fun qualityKey(uri: Uri): String? {
+        copyKeys[uri.toString()]?.let { return it }
         val portal = NextEpisode.portal(uri) ?: return null
         val id = Copies.idIn(uri) ?: return null
         return "$portal|${if (NextEpisode.isEpisodeLink(uri)) "s" else "m"}|$id"
@@ -4913,23 +4967,32 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         copiesFor = key
         copiesStatus = LOADING
+        val title = entry.english?.title ?: filmFix(entry) ?: entry.info.title
         copiesIo.execute {
             val found = runCatching {
                 val finder = Copies(book(), headersFromIntent()) { measuredQuality(it) }
-                // A playlist that doesn't go through the title server isn't in its book: the title's TMDB id by name.
-                val direct = TitleProxy.serverIn(uri) == null
-                val titleTmdb = if (show) showTmdb else if (tmdb.isConfigured) runCatching { filmTmdbId(entry) }.getOrDefault(0) else 0
-                val listed = if (show) seriesId?.let { finder.ofEpisode(uri, it, if (direct) showTmdb else 0) }.orEmpty()
-                else finder.ofFilm(uri, if (direct) titleTmdb else 0)
+                // The title as it's matched here: by hand (Fix match), by the title server, or by a name TMDB confirms.
+                // Its copies are every listing with that match, on every playlist, whichever playlist this one is on.
+                val titleTmdb = if (show) showTmdb else runCatching { sureFilmTmdb(entry) }.getOrDefault(0)
+                val listed = if (show) seriesId?.let { finder.ofEpisode(uri, it, showTmdb) }.orEmpty()
+                else finder.ofFilm(uri, titleTmdb, title)
+                // Copies from elsewhere than the playlists (see Copies.Source), of the same title.
+                val wanted = Copies.Wanted(titleTmdb, nameOnly(title), YEAR_IN_NAME.find(title)?.groupValues?.get(1)?.toIntOrNull() ?: 0,
+                    entry.info.season.takeIf { show }, entry.info.episode.takeIf { show })
+                val elsewhere = Copies.sources.flatMap { source ->
+                    runCatching { source.copies(wanted) }.onFailure { android.util.Log.i("FirePlayerCopies", "A source didn't answer: ${it.javaClass.simpleName}") }
+                        .getOrDefault(emptyList())
+                }.filter { c -> c.uri != uri && listed.none { it.uri == c.uri } }
+                elsewhere.forEach { c -> c.key?.let { copyKeys[c.uri.toString()] = it } }
                 // Copies played before, from any playlist, that the lists didn't bring.
                 val here = qualityKey(uri)
-                val listedKeys = listed.mapNotNull { qualityKey(it.uri) }.toSet()
+                val listedKeys = (listed + elsewhere).mapNotNull { qualityKey(it.uri) }.toSet()
                 val played = playedCopies(entry, if (show) 0 else titleTmdb)
                     .filter { c -> qualityKey(c.uri).let { it != null && it != here && it !in listedKeys } }
                     .distinctBy { qualityKey(it.uri) }
-                if (listed.isEmpty() && played.isEmpty()) emptyList()
+                if (listed.isEmpty() && played.isEmpty() && elsewhere.isEmpty()) emptyList()
                 else (listed.ifEmpty { listOf(Copies.Copy(entry.rawTitle.orEmpty(), uri, measuredQuality(uri), true,
-                    NextEpisode.portal(uri).orEmpty())) }) + played
+                    NextEpisode.portal(uri).orEmpty())) }) + elsewhere + played
             }
             val original = if (!tmdb.isConfigured) null else runCatching {
                 val id = if (show) showTmdb else filmTmdbId(entry)
@@ -4941,7 +5004,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 copiesOriginal = original
                 copiesStatus = when {
                     found.isFailure -> "Couldn't ask the provider just now."
-                    copyList.isNullOrEmpty() -> "Copies are found on playlists TiviMate reaches through FirePlayer's title server."
+                    copyList.isNullOrEmpty() -> "No other copy of this title on your playlists yet. Copies are found once a title is matched on TMDB, on playlists TiviMate reaches through FirePlayer's title server."
                     else -> null
                 }
                 // Asked again next time, rather than kept as it went.
@@ -5051,6 +5114,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 sp.bitDepth.takeIf { it > 8 }?.let { "$it-bit" },
                 sp.hdr?.takeIf { it != "SDR" },
                 if (sp.width > 0 && sp.height > 0) "${sp.width}×${sp.height}" else null,
+                // Too little data for its frame (see CopyRank): said, with the figure.
+                if (CopyRank.starved(sp, v.groups[i])) "Starved of data" + (CopyRank.perPixel(sp)?.let { " (${CopyRank.each(it)})" } ?: "") else null,
             ).joinToString(" · ")
             val langs = sp.audioLangs.split(',').mapNotNull { CopyLanguage.code(it) }.distinct()
             val sound = listOfNotNull(
@@ -5060,7 +5125,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             ).joinToString(" · ")
             val where = listOfNotNull(
                 c.group?.let { "$it group" },
-                if (playlists.size > 1) shortNames[c.playlist] else null,
+                c.source ?: if (playlists.size > 1) shortNames[c.playlist] else null,
             ).joinToString(" · ")
             val notes = listOf(where, picture, sound).filter { it.isNotEmpty() }.joinToString(" · ").ifEmpty { "Nothing known yet" }
             val rate = when {
@@ -5162,6 +5227,26 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             }
         }
     }
+
+    /**
+     * A film's TMDB id where FirePlayer is sure of it: as put right by hand, as the title server matched it, or as TMDB
+     * confirms its name (never its nearest guess, which could bring another film's copies). 0 for none. Blocks.
+     */
+    private fun sureFilmTmdb(entry: Entry): Int {
+        matchFor(entry)?.tmdbId?.takeIf { it > 0 }?.let { return it }
+        val server = TitleProxy.serverIn(entry.uri)
+        val id = entry.uri.lastPathSegment?.substringBeforeLast('.')?.toIntOrNull()
+        if (server != null && id != null) {
+            runCatching { book().about(server, TitleBook.Kind.MOVIE, id)?.tmdb }.getOrNull()?.takeIf { it > 0 }?.let { return it }
+        }
+        if (!tmdb.isConfigured) return 0
+        val info = entry.info
+        val year = YEAR_IN_NAME.find(info.title)?.groupValues?.get(1)?.toIntOrNull()
+        return (tmdb.cached(info.searchQuery, year, false) ?: tmdb.verify(info.searchQuery, year, false))?.id ?: 0
+    }
+
+    /** A title without its year: "The Matrix" of "The Matrix (1999)". */
+    private fun nameOnly(title: String): String = title.replace(YEAR_IN_NAME, "").trim()
 
     /** Blocks; on [io]. A film's TMDB id: as the title server matched it, else as TMDB finds its name. 0 for none. */
     private fun filmTmdbId(entry: Entry): Int {

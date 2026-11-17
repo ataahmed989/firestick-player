@@ -206,21 +206,37 @@ class TitleBook(context: Context) : SQLiteOpenHelper(context, "titles.db", null,
 
     /**
      * Every listing of the film or show with TMDB id [tmdb] on every playlist, this one included: providers often list
-     * a title several times (4K, 1080p, another language). At most [limit].
+     * a title several times (4K, 1080p, another language). The id is the one its English name was confirmed with; for a
+     * title TMDB hasn't been asked about yet, the provider's own. At most [limit].
      */
-    fun copies(kind: Kind, tmdb: Int, limit: Int = 40): List<Copy> {
+    fun copies(kind: Kind, tmdb: Int, limit: Int = 60): List<Copy> {
         if (tmdb <= 0) return emptyList()
         // The number written in: bound as text it would never equal the CASE, which has no type to convert it to.
-        return copyQuery("(CASE WHEN i.found > 0 THEN i.found WHEN i.state = $RENAMED THEN i.tmdb ELSE 0 END) = $tmdb LIMIT $limit",
+        return copyQuery("(CASE WHEN i.found > 0 THEN i.found WHEN i.state IN ($RENAMED, $WAITING) THEN i.tmdb ELSE 0 END) = $tmdb LIMIT $limit",
             arrayOf(kind.code.toString()))
     }
 
-    /** Every listing with the English [title] and [year] TMDB gave it, on every playlist: copies whose TMDB id differs or wasn't kept. */
-    fun copiesByTitle(kind: Kind, title: String, year: Int, limit: Int = 40): List<Copy> {
-        // A name alone could be another film ("Home"): only with its year.
-        if (year <= 0) return emptyList()
-        return copyQuery("i.title = ? AND i.year = $year LIMIT $limit", arrayOf(kind.code.toString(), title))
+    /**
+     * Every listing under the English name TMDB gave [title] ("The Matrix (1999) [4K]"), on every playlist, whatever
+     * quality tag follows the name: copies whose TMDB id differs or wasn't kept.
+     */
+    fun copiesByTitle(kind: Kind, title: String, limit: Int = 60): List<Copy> {
+        val name = nameAndYear(title) ?: return emptyList()
+        val like = name.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + " [%"
+        return copyQuery("(i.title = ? OR i.title LIKE ? ESCAPE '\\') LIMIT $limit", arrayOf(kind.code.toString(), name, like))
     }
+
+    /** A title in the book that TMDB hasn't been asked about yet (new to its list), to ask about right away; else null. */
+    fun unanswered(server: String, kind: Kind, id: Int): Waiting? =
+        readableDatabase.rawQuery(
+            """SELECT i.raw, i.tmdb, c.name, i.year FROM item i
+               LEFT JOIN category c ON c.server = i.server AND c.kind = i.kind AND c.id = i.category
+               WHERE i.server = ? AND i.kind = ? AND i.id = ? AND i.state = $WAITING""",
+            arrayOf(server, kind.code.toString(), id.toString()),
+        ).use { c ->
+            if (c.moveToFirst()) Waiting(server, kind, id, c.getString(0), c.getInt(1), if (c.isNull(2)) null else c.getString(2), c.getInt(3))
+            else null
+        }
 
     private fun copyQuery(where: String, args: Array<String>): List<Copy> {
         val out = ArrayList<Copy>()
@@ -374,18 +390,28 @@ class TitleBook(context: Context) : SQLiteOpenHelper(context, "titles.db", null,
         }
     }
 
-    private companion object {
+    companion object {
+        private val TAG_AT_END = Regex("""\s*\[[^\]]*]\s*$""")
+        private val YEAR_AT_END = Regex("""\((?:19|20)\d{2}\)$""")
+
+        /**
+         * An English name without its quality tag, when it ends in its year: "The Matrix (1999)" of "The Matrix (1999)
+         * [4K]". Null without a year: a name alone could be another film ("Home").
+         */
+        fun nameAndYear(title: String): String? =
+            title.replace(TAG_AT_END, "").trim().takeIf { YEAR_AT_END.containsMatchIn(it) }
+
         // 2: TitleMatcher's better rules; 3: episodes and their shows; 4: episodes' file types, and TMDB ids found.
         // 6: when TiviMate last asked about each provider, so a playlist taken out of TiviMate is forgotten here too.
-        const val VERSION = 7
-        const val WAITING = 0
-        const val RENAMED = 1
-        const val KEPT = 2
+        private const val VERSION = 7
+        private const val WAITING = 0
+        private const val RENAMED = 1
+        private const val KEPT = 2
         // A failed try (TMDB unreachable) is tried again after this; a title TMDB wasn't sure of, after a month.
-        const val RETRY_FAILED_S = 10 * 60L
-        const val RETRY_KEPT_S = 30 * 24 * 3600L
+        private const val RETRY_FAILED_S = 10 * 60L
+        private const val RETRY_KEPT_S = 30 * 24 * 3600L
         // TiviMate refreshes a playlist's lists at least daily while it's used.
-        const val GONE_AFTER_S = 7 * 24 * 3600L
-        const val IN_USE_S = 2 * 24 * 3600L
+        private const val GONE_AFTER_S = 7 * 24 * 3600L
+        private const val IN_USE_S = 2 * 24 * 3600L
     }
 }

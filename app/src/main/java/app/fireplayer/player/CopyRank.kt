@@ -12,9 +12,15 @@ import kotlin.math.abs
  * first when the screen shows it and the HDR copy isn't starved of data. Copies close in picture data (within
  * [CLOSE]) are told apart by width, bit depth, then sound. A copy nobody measured is listed but never recommended.
  *
- * Before any of that, a copy that plays: one that failed to play or keeps stopping to load ([CopyHealth.troubled]) is
- * only recommended when every copy known does the same. Then the sound wanted ([CopyLanguage.fit]): a copy known to
- * lack it only when no copy is known to have it. Subtitles in the viewer's language only break a tie.
+ * The data is weighed against the frame it has to fill ([perPixel], bits for each pixel of each frame): a copy with
+ * too little for its frame ([STARVED]; a 4K film under about 6 GB) loses to a smaller-framed copy that has enough and
+ * about as much data, since a well-fed 1080p looks cleaner than a starved 4K. And data past what a frame can use
+ * ([FULL]) doesn't count: a well-fed 4K copy isn't beaten by a 1080p one for the 1080p's bigger file.
+ *
+ * Before any of that, a copy that plays: one that keeps stopping to load ([CopyHealth.troubled]) is only recommended
+ * when every copy known does the same. Failing to play isn't held against a copy. Then the sound wanted
+ * ([CopyLanguage.fit]): a copy known to lack it only when no copy is known to have it. Subtitles in the viewer's
+ * language only break a tie.
  */
 object CopyRank {
 
@@ -26,6 +32,46 @@ object CopyRank {
 
     /** An HDR copy wins on a screen that shows HDR when it has at least this share of the best copy's picture data. */
     const val HDR_FLOOR = 0.7
+
+    /**
+     * Bits for each pixel of each frame, as HEVC would need them ([perPixel]): under [STARVED] the picture breaks into
+     * blocks when it moves; [GOOD] and up is clean; past [FULL] more data shows no more.
+     */
+    const val STARVED = 0.040
+    const val GOOD = 0.080
+    const val FULL = 0.120
+
+    /** A 4K copy whose frame isn't known is starved under this: 6 GB over a two-hour film, in bits a second. */
+    const val STARVED_4K_BPS = 6_700_000L
+
+    /** A starved copy loses to one that isn't when that one has at least this share of its data. */
+    const val FED_SHARE = 0.6
+
+    private const val HEVC = 1.6
+    private const val FILM_FPS = 24.0
+    private const val WIDE_4K = 3000
+
+    /** [Copies.groupRank] of "4K" and "4K HDR": what a playlist calls 4K. */
+    private const val GROUP_4K = 12
+
+    /**
+     * How many bits each pixel of each frame gets from [bits] a second of picture, counted as HEVC would need them (so
+     * H.264's count for less, AV1's for more): the figure to hold against [STARVED] and [GOOD]. A film's 24 frames a
+     * second when the copy doesn't say. Null when the frame's size or the data rate isn't known.
+     */
+    fun perPixel(s: MediaSpec, bits: Long = if (s.videoBps > 0) s.videoBps else s.overallBps): Double? {
+        if (bits <= 0 || s.width <= 0 || s.height <= 0) return null
+        val fps = if (s.fps > 0) s.fps.toDouble() else FILM_FPS
+        val efficiency = EFFICIENCY[s.videoCodec] ?: if (s.width >= WIDE_4K) HEVC else 1.0
+        return bits * (efficiency / HEVC) / (s.width.toDouble() * s.height * fps)
+    }
+
+    /** Too little data for its frame; for a 4K copy whose frame isn't known ([group]: its playlist's word for it), for a 4K film. */
+    fun starved(s: MediaSpec, group: Int = 0, bits: Long = if (s.videoBps > 0) s.videoBps else s.overallBps): Boolean {
+        perPixel(s, bits)?.let { return it < STARVED }
+        val is4k = s.width >= WIDE_4K || (s.width == 0 && group >= GROUP_4K)
+        return is4k && bits > 0 && bits * ((EFFICIENCY[s.videoCodec] ?: HEVC) / HEVC) < STARVED_4K_BPS
+    }
 
     class Verdict(
         /** The copy recommended, or null when none can be (nothing measured, or too close to call). */
@@ -67,13 +113,22 @@ object CopyRank {
         // Copies that play come first: the others only when nothing else is known. Then the sound wanted.
         val playing = all.filterNot { troubled(it) }.ifEmpty { all }
         val bestFit = playing.maxOf { fit(it) }
-        val measured = playing.filter { fit(it) == bestFit }
+        val fitting = playing.filter { fit(it) == bestFit }
         fun bits(i: Int) = if (usePicture) copies[i].videoBps else whole(copies[i])
-        val codecs = measured.mapNotNull { copies[it].videoCodec }.toSet()
+        val codecs = fitting.mapNotNull { copies[it].videoCodec }.toSet()
         val mixed = codecs.size > 1
-        fun effective(i: Int): Double = bits(i) * (if (mixed) EFFICIENCY[copies[i].videoCodec] ?: 1.0 else 1.0)
+        fun raw(i: Int): Double = bits(i) * (if (mixed) EFFICIENCY[copies[i].videoCodec] ?: 1.0 else 1.0)
+        // Too little data for its frame: out when a copy that has enough has about as much data (or more).
+        fun starved(i: Int) = starved(copies[i], groups.getOrNull(i) ?: 0, bits(i))
+        val fed = fitting.filterNot { starved(it) }
+        val measured = fitting.filter { s -> !starved(s) || fed.none { raw(it) >= raw(s) * FED_SHARE } }
+        // Data past what the frame can use shows no more, so it doesn't count.
+        fun effective(i: Int): Double {
+            val each = perPixel(copies[i], bits(i)) ?: return raw(i)
+            return if (each > FULL) raw(i) * FULL / each else raw(i)
+        }
 
-        val byData = measured.sortedByDescending { effective(it) }
+        val byData = measured.sortedWith(compareByDescending<Int> { effective(it) }.thenByDescending { raw(it) })
         var best = byData.first()
         // Close in data: width, bit depth and sound decide.
         val close = byData.filter { effective(it) >= effective(best) * (1 - CLOSE) }
@@ -85,7 +140,8 @@ object CopyRank {
                     .thenByDescending { soundRank(copies[it]) }
                     .thenByDescending { copies[it].channels }
                     .thenByDescending { sub(it) }
-                    .thenByDescending { effective(it) },
+                    .thenByDescending { effective(it) }
+                    .thenByDescending { raw(it) },
             ).first()
         }
         if (hdrScreen && !isHdr(copies[best])) {
@@ -99,6 +155,15 @@ object CopyRank {
             return Verdict(best, null, listOfNotNull("the only copy with its data rate known", health.getOrNull(best)?.summary()), emptyList())
         }
         val (reasons, costs) = compare(copies[best], copies[against], bits(best), bits(against), usePicture, mixed)
+        // The frame each has to fill: said when it decided, ahead of the data's own figures unless those already say it.
+        val lessData = raw(best) < raw(against) * (1 + CLOSE)
+        val framed = when {
+            starved(against) && !starved(best) -> starvedNote(copies[against], bits(against))
+            lessData && effective(best) > effective(against) -> fullNote(copies[against], bits(against))
+            else -> null
+        }
+        if (framed != null) reasons.add(if (lessData) 0 else minOf(1, reasons.size), framed)
+        if (starved(best)) costs.add(0, "little data for its frame" + (perPixel(copies[best], bits(best))?.let { " (${each(it)})" } ?: ""))
         // How they played outweighs what they're made of, so it's said first.
         val mine = health.getOrNull(best)
         val theirs = health.getOrNull(against)
@@ -170,6 +235,20 @@ object CopyRank {
         }
         return reasons to costs
     }
+
+    /** "0.031 bits a pixel". */
+    fun each(perPixel: Double): String = String.format(Locale.US, "%.3f bits a pixel", perPixel)
+
+    private fun frame(s: MediaSpec) = if (s.width >= WIDE_4K) "4K" else if (s.width > 0) "${s.width}-wide" else "4K"
+
+    /** "the other's 4K picture is starved of data (6.0 Mb/s, 0.030 bits a pixel)". */
+    private fun starvedNote(s: MediaSpec, bits: Long): String =
+        "the other's ${frame(s)} picture is starved of data (" +
+            listOfNotNull(MediaSpec.mbps(bits), perPixel(s, bits)?.let { each(it) }).joinToString(", ") + ")"
+
+    /** "the other's 1920-wide picture can't use all its data". */
+    private fun fullNote(s: MediaSpec, bits: Long): String? =
+        perPixel(s, bits)?.takeIf { it > FULL }?.let { "the other's ${frame(s)} picture has more data than it can show (${each(it)})" }
 
     private fun codecNote(a: String?, b: String?): String? {
         val ea = EFFICIENCY[a] ?: return null

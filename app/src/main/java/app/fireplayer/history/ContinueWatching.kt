@@ -307,8 +307,15 @@ object ContinueWatching {
         }.getOrNull() ?: return saved
         val foundKey = NextEpisode.showKey(uri, found.seriesId) ?: return saved
         val portal = NextEpisode.portal(uri) ?: return saved
-        val tmdb = Tmdb({ tmdbKey(context) }, memoryOf(titleBook(context)))
-        return runCatching { ShowGuide.build(context, foundKey, portal, found, tmdb, MatchFixes(context)) }
+        val book = titleBook(context)
+        val tmdb = Tmdb({ tmdbKey(context) }, memoryOf(book))
+        // The show as the title server confirmed it when it gave it its English name, if it did.
+        val known = runCatching {
+            val id = found.seriesId.toIntOrNull()
+            val proxied = app.fireplayer.titles.TitleProxy.serverIn(uri)
+            if (book == null || proxied == null || id == null) 0 else book.about(proxied, TitleBook.Kind.SHOW, id)?.tmdb ?: 0
+        }.getOrDefault(0)
+        return runCatching { ShowGuide.build(context, foundKey, portal, found, tmdb, MatchFixes(context), known) }
             .onFailure { Log.w(TAG, "Couldn't pair the show's episodes: ${it.javaClass.simpleName}") }
             .getOrNull()?.takeIf { it.episode(episodeId) != null } ?: saved
     }
