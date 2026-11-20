@@ -2192,7 +2192,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
                     return true
                 }
                 KeyEvent.KEYCODE_DPAD_UP -> if (controls.moreShown) {
-                    if (down) controls.showMainRow()
+                    if (down && event.repeatCount == 0) controls.showMainRow()
                     return true
                 }
                 // Along the extra row, left from its first button goes round to the last and right from the last to
