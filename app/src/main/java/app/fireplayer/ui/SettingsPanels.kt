@@ -17,8 +17,12 @@ import android.widget.TextView
 import androidx.core.content.ContextCompat
 import androidx.core.content.res.ResourcesCompat
 import app.fireplayer.R
+import app.fireplayer.data.CredentialChecks
 import app.fireplayer.data.KeyStore
 import app.fireplayer.data.Prefs
+import app.fireplayer.live.ui.PipRules
+import app.fireplayer.live.ui.channelButtonsRow
+import app.fireplayer.live.ui.liveBufferRow
 import app.fireplayer.player.NextEpisode
 import app.fireplayer.subs.FontImport
 import app.fireplayer.subs.ShadowStrength
@@ -35,7 +39,6 @@ import app.fireplayer.update.Updater
 import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
-import kotlin.concurrent.thread
 import kotlin.math.roundToInt
 
 /**
@@ -51,9 +54,8 @@ class SettingsPanels(
 
     private val updater = Updater(activity)
     private var updateStatus: String? = null
-    // How the last TMDB key check went: the row's value, and what TMDB said when it said no.
-    private var tmdbStatus: String? = null
-    private var tmdbProblem: String? = null
+    /** Whether the OpenSubtitles and TMDB keys work (saved results, shared by every window). */
+    private val checks = CredentialChecks(prefs)
 
     // TiviMate titles, for one opening of the window: whether the set-up details are shown (hidden at first), and
     // what "Check playlists now" said.
@@ -63,9 +65,7 @@ class SettingsPanels(
     private var arrowTurned = false
     // The same for the playlists' note and for the skip buttons' details.
     private var playlistArrowTurned = false
-    private var skipDetailsShown = false
     private var skipArrowTurned = false
-    private var skipSession = -1
     private var checkValue: String? = null
     private var checkNote: String? = null
 
@@ -92,15 +92,40 @@ class SettingsPanels(
     var onLookChanged: () -> Unit = {}
     /** Which info pods show above the time bar was changed. */
     var onChipsChanged: () -> Unit = {}
-    // Whether the list of info pods is open (closed each time the window opens).
-    private var chipsOpen = false
-    private var chipsSession = -1
 
     /** Called after a font arrives from the phone (or is removed), so the subtitles can switch to it. */
     var onFontChanged: () -> Unit = {}
 
     /** Subtitle auto sync was turned on or off. */
     var onAutoSyncChanged: () -> Unit = {}
+
+    /**
+     * Subtitle style, opened from Subtitles & audio: [onSubtitleStyleChanged] repaints the subtitles and
+     * [onAssStylingChanged] follows "Keep embedded styling" (as [renderSubtitleStyle]'s own callbacks).
+     */
+    var onSubtitleStyleChanged: () -> Unit = {}
+    var onAssStylingChanged: () -> Unit = {}
+
+    /**
+     * Whether that Subtitle style window is the one on screen (true as it's drawn, false as Subtitles & audio is drawn
+     * again on Back), so a paused film can show example lines that follow each change, as the player's own window does.
+     */
+    var onStylePreview: (Boolean) -> Unit = {}
+
+    /**
+     * Opens Playlists & EPG or Live TV (Live TV's own windows) over the window that's open, from App settings' list;
+     * null leaves them out of the list.
+     */
+    var liveWindows: ((SettingsCategory) -> Unit)? = null
+
+    /**
+     * The Search bubble's action ("Search and App Settings", Live TV's settings window): Search opens in the kind the
+     * screen calls for; null leaves the bubble out.
+     */
+    var onSearch: (() -> Unit)? = null
+
+    /** Settings › Picture-in-picture's first row was changed (the screen stops a picture playing when it's now off). */
+    var onPipChanged: (() -> Unit)? = null
 
     /** Languages offered as defaults; English first. */
     private val languages = listOf("en", "ar", "es", "fr", "de", "it", "pt", "hi", "ur", "tr", "ja", "ko", "zh")
@@ -118,22 +143,165 @@ class SettingsPanels(
     private val importedFontName: String?
         get() = if (FontImport.customFontFile(activity).exists()) prefs.customFontName.ifEmpty { "Font from your phone" } else null
 
-    fun renderSettings(panel: SidePanel) = with(panel) {
-        header("Remote")
-        choice("Menu button opens", listOf("Settings", "Subtitle style"), if (prefs.menuOpensStyle) 1 else 0) {
-            prefs.menuOpensStyle = it == 1
-        }
+    // ---- The windows ------------------------------------------------------------------------------------------------
 
+    /**
+     * App settings: every setting the app has, in its categories ([SettingsCategory]), each opening its own window
+     * over this one (Back comes back here). From Menu, and from App › App settings in a player's window, so the
+     * settings those windows leave out (skip steps, Hold to speed up, TiviMate titles, the subtitle font, keys) are
+     * there too. The Settings tab lists the categories itself.
+     */
+    fun renderCategories(panel: SidePanel): Unit = with(panel) {
+        onSearch?.let { searchBubble(it) }
+        val live = liveWindows
+        // With the icons the Settings tab shows beside them.
+        for (category in SettingsCategory.entries) {
+            if (!category.isLive) iconRow(category.title, category.icon) { openSub(category.title) { renderCategory(this, category) } }
+            else if (live != null) iconRow(category.title, category.icon) { live(category) }
+        }
+    }
+
+    /**
+     * One category's window, built from the sections below. Playlists & EPG and Live TV are Live TV's own windows
+     * ([liveWindows]), so nothing is drawn for them here.
+     */
+    fun renderCategory(panel: SidePanel, category: SettingsCategory): Unit = with(panel) {
+        when (category) {
+            SettingsCategory.PLAYLISTS_EPG, SettingsCategory.LIVE_TV -> Unit
+            SettingsCategory.PICTURE_IN_PICTURE -> pipSection(this)
+            SettingsCategory.PLAYBACK -> {
+                header("Playback")
+                playNextRow(this)
+                resumeRow(this)
+                matchFrameRateRow(this)
+                passthroughRow(this)
+                whenBufferingRow(this)
+                // Live TV's own setting, here too (user): the same row and saved value as in the Live TV window.
+                liveBufferRow(this, activity)
+                skipIntroSection(this)
+            }
+            SettingsCategory.REMOTE -> {
+                // Channel ▲▼ belongs to Live TV, but it's a remote setting too: under Menu button opens here as well.
+                remoteSection(this) { channelButtonsRow(this, activity) }
+                skippingSection(this, full = true)
+            }
+            SettingsCategory.SUBTITLES_AUDIO -> {
+                // Drawn again on Back from Subtitle style: its example lines go.
+                onStylePreview(false)
+                defaultsSection(this, autoSync = true, resume = false)
+                // Its own window over this one, under its own heading (it isn't a default); the preset in use shows
+                // beside it.
+                header("Subtitle style")
+                row("Subtitle style", presets.active().name) {
+                    openSub("Subtitle style") {
+                        onStylePreview(true)
+                        renderSubtitleStyle(
+                            this,
+                            onStyleChanged = { onSubtitleStyleChanged() },
+                            onAssChanged = { onAssStylingChanged() },
+                        )
+                    }
+                }
+                fontSection(this)
+            }
+            SettingsCategory.LOOK -> lookSection(this)
+            SettingsCategory.ACCOUNTS -> credentialsSection(this)
+            SettingsCategory.ROWS -> app.fireplayer.vod.ui.RowsSettings.render(this, activity)
+            SettingsCategory.HOME_HEADER -> homeHeaderSection(this)
+            SettingsCategory.ADDONS -> app.fireplayer.vod.ui.AddonsSettings.render(this, activity, app.fireplayer.vod.Sources.get(activity).addons)
+            SettingsCategory.THIS_TV -> app.fireplayer.vod.ui.ThisTvSettings.render(this, app.fireplayer.vod.Sources.get(activity).thisTv)
+            SettingsCategory.TITLES -> renderTitles(this)
+            SettingsCategory.APP -> appSection(this, allSettings = false)
+        }
+    }
+
+    /**
+     * VOD FirePlayer Settings, after "This episode / This film" (user spec): Remote, Look, Skip intro and credits,
+     * Skipping, Defaults, Playback, Statuses, App.
+     */
+    fun renderPlayerVod(panel: SidePanel): Unit = with(panel) {
+        remoteSection(this)
+        lookSection(this)
+        skipIntroSection(this)
+        skippingSection(this, full = false)
+        defaultsSection(this, autoSync = true, resume = true)
+        playbackSection(this)
+        statusesSection(this)
+        appSection(this, allSettings = true)
+    }
+
+    /**
+     * The shared part of Live FirePlayer Settings, after its Playlists & EPG (user spec): Remote ([remoteMore]: the
+     * channel changing buttons), Look, Defaults (no auto sync: live channels don't support it), Playback (Live TV
+     * buffer; where the VOD window has its Playback), Statuses, App.
+     */
+    fun renderPlayerLive(panel: SidePanel, remoteMore: SidePanel.() -> Unit): Unit = with(panel) {
+        remoteSection(this, remoteMore)
+        lookSection(this)
+        defaultsSection(this, autoSync = false, resume = false)
+        header("Playback")
+        liveBufferRow(this, activity)
+        statusesSection(this)
+        appSection(this, allSettings = true)
+    }
+
+    // ---- Sections: each setting is drawn by one function, so it reads and writes one saved value wherever it is ----
+
+    fun remoteSection(panel: SidePanel, more: SidePanel.() -> Unit = {}): Unit = with(panel) {
+        header("Remote")
+        menuButtonRow(this, activity)
+        more()
+    }
+
+    /**
+     * Settings › Home Header: whether Home's banner shows the Continue Watching title that has focus (on, as Movies' and
+     * TV Shows' do) or always goes through its own titles while it shows. Read by Home each time focus moves, so it
+     * applies at once. Under it, how long every tab's banner shows each title while idle, taken from its next wait.
+     */
+    private fun homeHeaderSection(panel: SidePanel): Unit = with(panel) {
+        header(SettingsCategory.HOME_HEADER.title, SettingsCategory.HOME_HEADER.icon)
+        row(SettingsCategory.HOME_HEADER_MATCH, onOff(prefs.homeHeaderMatchesContinue), twoLines = true) {
+            prefs.homeHeaderMatchesContinue = !prefs.homeHeaderMatchesContinue
+            refresh()
+        }
+        val times = app.fireplayer.vod.ui.VodSizes.HEADER_IDLE_SECONDS
+        val time = times.indexOf(prefs.headerIdleSec).let { if (it < 0) times.indexOf(app.fireplayer.vod.ui.VodSizes.HEADER_IDLE_DEFAULT_SEC) else it }
+        choice(SettingsCategory.HOME_HEADER_TIME, times.map { "$it seconds" }, time) {
+            prefs.headerIdleSec = times[it]
+        }
+        message("Off: Home's banner keeps going through its titles while it shows, wherever focus is. " +
+            "Time on each title: how long every banner, on Home, Movies and TV Shows alike, shows a title before the next.")
+    }
+
+    /**
+     * Settings › Picture-in-picture: whether leaving a playing channel for Home or Search keeps it playing there (top
+     * right), and whether it starts with its sound. Read each time Live TV is left, so a change applies from the next
+     * time; switched off while the picture plays, it stops now ([onPipChanged]).
+     */
+    private fun pipSection(panel: SidePanel): Unit = with(panel) {
+        header(SettingsCategory.PICTURE_IN_PICTURE.title, SettingsCategory.PICTURE_IN_PICTURE.icon)
+        row(PipRules.KEEP_LABEL, onOff(prefs.pipKeep), twoLines = true) {
+            prefs.pipKeep = !prefs.pipKeep
+            refresh()
+            onPipChanged?.invoke()
+        }
+        row(PipRules.SOUND_LABEL, onOff(prefs.pipSound)) {
+            prefs.pipSound = !prefs.pipSound
+            refresh()
+        }
+        message("The channel playing on Live TV carries on in the top right of Home and Search. Select it for its " +
+            "sound, Full screen and Close; hold Back to watch it full screen. Movies, TV Shows, My List and Settings " +
+            "stop it. Off: leaving Live TV stops the channel.")
+    }
+
+    fun lookSection(panel: SidePanel): Unit = with(panel) {
         header("Look")
         // A small list behind an arrow: which pods show above the time bar.
-        if (chipsSession != session) {
-            chipsSession = session
-            chipsOpen = false
-        }
+        val chipsOpen = isPartOpen("chips")
         val hidden = prefs.hiddenChips
         val shownCount = CHIPS.count { it.first !in hidden }
-        dropdownRow("Info pods", "$shownCount of ${CHIPS.size}", Rows.Badge.INACTIVE, chipsOpen) {
-            chipsOpen = !chipsOpen
+        dropdownRow("Info pods", "$shownCount of ${CHIPS.size} shown", Rows.countBadge(shownCount, CHIPS.size), chipsOpen) {
+            togglePart("chips")
             refresh()
         }
         if (chipsOpen) {
@@ -149,59 +317,120 @@ class SettingsPanels(
             prefs.glassLook = !prefs.glassLook
             Glass.on = prefs.glassLook
             onLookChanged()
-            Glass.background(root, Glass.Kind.PANEL)
+            Glass.overlay(root, Glass.Kind.PANEL)
             refresh()
         }
         if (prefs.glassLook) {
             // How often the glass copies the film: faster follows it more closely, slower is lighter on older sticks.
             val rates = listOf(2, 4, 8)
-            choice("Glass refresh", rates.map { "$it times a second" }, rates.indexOf(prefs.glassRefreshPerSec).let { if (it < 0) 1 else it }) {
+            // Over a 4K film on a TV short of memory the glass copies less often (GlassLoad): the row says so, as
+            // "8 a second · 2 in 4K", while the setting itself stays as chosen.
+            val heavy = (activity as? GlassBackdrop.Host)?.glassBackdrop?.heavyVideo == true
+            choice(
+                "Glass refresh",
+                rates.map { "$it times a second" },
+                rates.indexOf(prefs.glassRefreshPerSec).let { if (it < 0) 1 else it },
+                valueText = GlassLoad.refreshLabel(prefs.glassRefreshPerSec, heavy),
+            ) {
                 prefs.glassRefreshPerSec = rates[it]
             }.asSubRow()
         }
+    }
 
+    /**
+     * Skipping: [full] adds the step lengths and Hold to speed up (Remote & skipping); the player shows the preview
+     * only.
+     */
+    fun skippingSection(panel: SidePanel, full: Boolean): Unit = with(panel) {
         header("Skipping")
-        val dpadSteps = listOf(5, 10, 15, 20, 30, 60)
-        choice("D-pad left / right", dpadSteps.map { formatStep(it) }, dpadSteps.indexOf(prefs.dpadStepSec)) {
-            prefs.dpadStepSec = dpadSteps[it]
-        }
-        val ffSteps = listOf(15, 30, 60, 120, 300, 600)
-        choice("Rewind / fast-forward", ffSteps.map { formatStep(it) }, ffSteps.indexOf(prefs.ffStepSec)) {
-            prefs.ffStepSec = ffSteps[it]
-        }
-        row("Hold to speed up", onOff(prefs.holdSpeedUp)) {
-            prefs.holdSpeedUp = !prefs.holdSpeedUp; refresh()
+        if (full) {
+            val dpadSteps = listOf(5, 10, 15, 20, 30, 60)
+            choice("D-pad left / right", dpadSteps.map { formatStep(it) }, dpadSteps.indexOf(prefs.dpadStepSec)) {
+                prefs.dpadStepSec = dpadSteps[it]
+            }
+            val ffSteps = listOf(15, 30, 60, 120, 300, 600)
+            choice("Rewind / fast-forward", ffSteps.map { formatStep(it) }, ffSteps.indexOf(prefs.ffStepSec)) {
+                prefs.ffStepSec = ffSteps[it]
+            }
+            row("Hold to speed up", onOff(prefs.holdSpeedUp)) {
+                prefs.holdSpeedUp = !prefs.holdSpeedUp; refresh()
+            }
         }
         row("Preview while skipping", onOff(prefs.seekPreviews)) {
             prefs.seekPreviews = !prefs.seekPreviews; refresh()
         }
+    }
 
+    fun defaultsSection(panel: SidePanel, autoSync: Boolean, resume: Boolean): Unit = with(panel) {
         header("Defaults")
-        val subLanguages = languages + ""
+        // Off first, as Never is in every other list of choices.
+        val subLanguages = listOf("") + languages
         choice("Subtitle language", subLanguages.map { languageName(it) }, subLanguages.indexOf(prefs.subtitleLanguage)) {
             prefs.subtitleLanguage = subLanguages[it]
         }
         choice("Audio language", languages.map { languageName(it) }, languages.indexOf(prefs.audioLanguage)) {
             prefs.audioLanguage = languages[it]
         }
+        if (autoSync) autoSyncRow(this)
+        if (resume) resumeRow(this)
+    }
+
+    /** Resume where I left off: under Defaults in the VOD window, under Playback in its category. */
+    private fun resumeRow(panel: SidePanel): Unit = with(panel) {
         val resumes = Prefs.Resume.entries
         choice("Resume where I left off", resumes.map { it.label }, resumes.indexOf(prefs.resume)) {
             prefs.resume = resumes[it]
         }
+    }
 
+    private fun autoSyncRow(panel: SidePanel): Unit = with(panel) {
+        row("Auto sync subtitles", onOff(prefs.autoSync)) {
+            prefs.autoSync = !prefs.autoSync
+            onAutoSyncChanged()
+            refresh()
+        }
+    }
+
+    fun playbackSection(panel: SidePanel): Unit = with(panel) {
         header("Playback")
+        playNextRow(this)
+        matchFrameRateRow(this)
+        passthroughRow(this)
+    }
+
+    // Playback's rows one by one: its category puts Resume where I left off among them.
+    private fun playNextRow(panel: SidePanel): Unit = with(panel) {
         row("Play next episode", onOff(prefs.playNextEpisode)) {
             prefs.playNextEpisode = !prefs.playNextEpisode; refresh()
         }
+    }
+
+    private fun matchFrameRateRow(panel: SidePanel): Unit = with(panel) {
         row("Match frame rate", onOff(prefs.matchFrameRate)) {
             prefs.matchFrameRate = !prefs.matchFrameRate; refresh()
         }
+    }
+
+    private fun passthroughRow(panel: SidePanel): Unit = with(panel) {
         row("Surround passthrough", onOff(prefs.passthrough)) {
             prefs.passthrough = !prefs.passthrough; refresh()
         }
+    }
 
-        renderTitles(this)
+    /**
+     * What a film from the add-ons does when it keeps stopping to load ([app.fireplayer.vod.play.WhenBuffering]):
+     * asks once (the answer is kept for that film), switches to the best source this connection keeps up with, or
+     * stays on the source chosen. Read by the player each time the stall rules call for a switch.
+     */
+    private fun whenBufferingRow(panel: SidePanel): Unit = with(panel) {
+        val modes = app.fireplayer.vod.play.WhenBuffering.entries
+        val now = app.fireplayer.vod.play.WhenBuffering.named(prefs.whenBuffering)
+        choice(SettingsCategory.WHEN_BUFFERING, modes.map { it.label }, modes.indexOf(now)) {
+            prefs.whenBuffering = modes[it].name
+        }
+    }
 
+    fun fontSection(panel: SidePanel): Unit = with(panel) {
         header("Subtitle font")
         val fontSet = importedFontName != null
         badgeRow("Font from your phone", activeOrNot(fontSet), if (fontSet) Rows.Badge.ACTIVE else Rows.Badge.INACTIVE) {
@@ -218,57 +447,59 @@ class SettingsPanels(
                 refresh()
             }.asSubRow()
         }
+    }
 
+    /**
+     * The OpenSubtitles and TMDB keys (Accounts & services). Each key's badge says whether it works, not just whether
+     * it's saved: "Set · not checked", "Working", "Not accepted" ([CredentialChecks]). A saved key is never shown.
+     * Auto sync subtitles, once at the top here, is under Subtitles & audio.
+     */
+    fun credentialsSection(panel: SidePanel): Unit = with(panel) {
         header("Online subtitles and TMDB API")
-        row("Auto sync subtitles", onOff(prefs.autoSync)) {
-            prefs.autoSync = !prefs.autoSync
-            onAutoSyncChanged()
-            refresh()
+        val os = checks.status(CredentialChecks.Service.OPENSUBTITLES)
+        keyRow("OpenSubtitles API key", KeyStore.Key.OPENSUBTITLES, whereFrom = "From opensubtitles.com › API consumers", badge = badgeFor(os.state)) {
+            checks.check(CredentialChecks.Service.OPENSUBTITLES) { if (isOpen) refresh() }
         }
-        keyRow("OpenSubtitles API key", KeyStore.Key.OPENSUBTITLES, whereFrom = "From opensubtitles.com › API consumers")
         // Optional: signing in raises how many subtitles can be downloaded a day.
-        keyRow("OpenSubtitles username", KeyStore.Key.OPENSUBTITLES_USER, whereFrom = OPTIONAL_HINT)
-        keyRow("OpenSubtitles password", KeyStore.Key.OPENSUBTITLES_PASSWORD, whereFrom = OPTIONAL_HINT, password = true)
-        val tmdbBadge = when (tmdbStatus) {
-            CHECKING -> CHECKING to Rows.Badge.BUSY
-            NOT_ACCEPTED -> NOT_ACCEPTED to Rows.Badge.PROBLEM
-            else -> activeOrNot(prefs.keys.isSet(KeyStore.Key.TMDB)).let { it to if (it == ACTIVE) Rows.Badge.ACTIVE else Rows.Badge.INACTIVE }
+        keyRow("OpenSubtitles username", KeyStore.Key.OPENSUBTITLES_USER, whereFrom = OPTIONAL_HINT) {
+            checks.check(CredentialChecks.Service.OPENSUBTITLES) { if (isOpen) refresh() }
         }
+        keyRow("OpenSubtitles password", KeyStore.Key.OPENSUBTITLES_PASSWORD, whereFrom = OPTIONAL_HINT, password = true) {
+            checks.check(CredentialChecks.Service.OPENSUBTITLES) { if (isOpen) refresh() }
+        }
+        val tmdb = checks.status(CredentialChecks.Service.TMDB)
         keyRow(
             "TMDB API key",
             KeyStore.Key.TMDB,
             whereFrom = "From themoviedb.org › Settings › API",
             title = "TMDB API key or read access token",
-            badge = tmdbBadge,
+            badge = badgeFor(tmdb.state),
         ) {
             // TiviMate's titles start being looked up with it.
             TitleService.start(activity)
-            tmdbProblem = null
-            tmdbStatus = CHECKING
-            thread(name = "FirePlayerTmdb", isDaemon = true) {
-                val problem = Tmdb(prefs).check()
-                activity.runOnUiThread {
-                    tmdbStatus = if (problem == null) ACTIVE else NOT_ACCEPTED
-                    tmdbProblem = problem
-                    if (isOpen) refresh()
-                }
+            checks.check(CredentialChecks.Service.TMDB) { if (isOpen) refresh() }
+        }
+        // What's wrong with a key, after the keys, so their card stays whole.
+        problemOf(os)?.let { message("OpenSubtitles: $it.") }
+        problemOf(tmdb)?.let { message("TMDB: $it.") }
+        if (os.state != CredentialChecks.State.NOT_SET || tmdb.state != CredentialChecks.State.NOT_SET) {
+            // While it checks, dimmed and doing nothing, as the Update buttons while they update.
+            val row = row("Check the keys now", if (keysChecking()) CHECKING else null) {
+                if (keysChecking()) return@row
+                for (s in CredentialChecks.Service.entries) checks.check(s) { if (isOpen) refresh() }
+                refresh()
             }
+            if (keysChecking()) dim(row)
         }
-        tmdbProblem?.let { message("$it.") }
         // TMDB asks apps that use its API to say so.
-        view(TextView(activity).apply {
-            text = TMDB_NOTICE
-            setTextColor(color(R.color.text_muted))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
-            setLineSpacing(2f * density, 1f)
-            alpha = 0.8f
-        }, top = 3, bottom = 4)
+        message(TMDB_NOTICE)
+    }
 
+    private fun keysChecking(): Boolean = CredentialChecks.Service.entries.any { checks.status(it).state == CredentialChecks.State.CHECKING }
+
+    fun skipIntroSection(panel: SidePanel): Unit = with(panel) {
         header("Skip intro and credits")
-        if (session != skipSession) {
-            skipSession = session
-            skipDetailsShown = false
-        }
+        val skipDetailsShown = isPartOpen("skipDetails")
         val skipTurned = skipArrowTurned
         skipArrowTurned = false
         rowWithArrow(
@@ -277,33 +508,98 @@ class SettingsPanels(
             expanded = skipDetailsShown,
             turned = skipTurned,
             onClick = { prefs.skipIntro = !prefs.skipIntro; refresh() },
-            onArrow = { skipDetailsShown = !skipDetailsShown; skipArrowTurned = true; refresh() },
+            onArrow = { togglePart("skipDetails"); skipArrowTurned = true; refresh() },
         )
         if (skipDetailsShown) {
             message("Skip intro and Skip recap, Next episode at the credits and Exit after a film's credits. " +
-                "Times from the file's chapters, else SkipDB and IntroDB, with the TMDB key above.")
+                "Times from the file's chapters, else SkipDB and IntroDB, with a TMDB key.")
         }
         val counts = COUNTDOWNS
-        choice("Next episode / Exit countdown", counts.map { if (it == 0) "Until the end" else "$it s" }, counts.indexOf(prefs.autoCountdownSec).let { if (it < 0) 1 else it }) {
+        choice("Next episode / Exit countdown", counts.map { if (it == 0) "Until the end" else "$it seconds" }, counts.indexOf(prefs.autoCountdownSec).let { if (it < 0) 1 else it }) {
             prefs.autoCountdownSec = counts[it]
         }
+    }
 
+    /**
+     * Statuses ▾ (the player windows): OpenSubtitles, TMDB API and the font sent from the phone. Each opens the
+     * window where it's managed (Accounts & services, Subtitle font). Opening the list checks keys that haven't been
+     * checked yet.
+     */
+    fun statusesSection(panel: SidePanel): Unit = with(panel) {
+        header("Statuses")
+        val statusesOpen = isPartOpen("statuses")
+        val os = checks.status(CredentialChecks.Service.OPENSUBTITLES)
+        val tmdb = checks.status(CredentialChecks.Service.TMDB)
+        val states = listOf(os.state, tmdb.state)
+        val (summary, style) = when {
+            states.any { it == CredentialChecks.State.NOT_ACCEPTED } -> "Needs a look" to Rows.Badge.PROBLEM
+            states.any { it == CredentialChecks.State.CHECKING } -> "Checking…" to Rows.Badge.BUSY
+            states.all { it == CredentialChecks.State.WORKING } -> "All working" to Rows.Badge.ACTIVE
+            states.all { it == CredentialChecks.State.NOT_SET } -> "Not set up" to Rows.Badge.INACTIVE
+            else -> states.count { it == CredentialChecks.State.WORKING }.let { n -> "$n of ${states.size} working" to Rows.countBadge(n, states.size) }
+        }
+        dropdownRow("Services and font", summary, style, statusesOpen) {
+            togglePart("statuses")
+            if (isPartOpen("statuses")) checks.checkUnchecked { if (isOpen) refresh() }
+            refresh()
+        }
+        if (statusesOpen) {
+            for ((service, st) in listOf(CredentialChecks.Service.OPENSUBTITLES to os, CredentialChecks.Service.TMDB to tmdb)) {
+                val (text, badge) = badgeFor(st.state)
+                badgeRow(service.label, text, badge) {
+                    openSub(SettingsCategory.ACCOUNTS.title) { credentialsSection(this) }
+                }.asSubRow()
+            }
+            val font = importedFontName
+            // Said as in Subtitle font, the window it opens.
+            badgeRow("Font from your phone", activeOrNot(font != null), if (font != null) Rows.Badge.ACTIVE else Rows.Badge.INACTIVE) {
+                openSub("Subtitle font") { fontSection(this) }
+            }.asSubRow()
+        }
+    }
+
+    /** App: Check for updates; in a player's window also "App settings" (every setting, in its categories). */
+    fun appSection(panel: SidePanel, allSettings: Boolean): Unit = with(panel) {
         header("App")
-        row("Check for updates", updateStatus ?: "Version ${updater.installedName}") {
-            updateStatus = "Checking…"; refresh()
+        val row = row("Check for updates", updateStatus ?: "Version ${updater.installedName}") {
+            // Already checking: dimmed, and a second press does nothing.
+            if (updateStatus == CHECKING) return@row
+            if (!updater.offered) {
+                updateStatus = "Not in test builds"; refresh(); return@row
+            }
+            updateStatus = CHECKING; refresh()
             updater.check(onFailed = { updateStatus = "Couldn't check"; if (isOpen) refresh() }) { release ->
                 updateStatus = if (release == null) "Up to date" else null
                 if (isOpen) refresh()
                 release?.let { updater.offer(it) }
             }
         }
+        if (updateStatus == CHECKING) dim(row)
+        // The settings these windows leave out stay here (user: preserved, not removed).
+        if (allSettings) {
+            row(SettingsCategory.LIST_TITLE) { openSub(SettingsCategory.LIST_TITLE) { renderCategories(this) } }
+        }
+    }
+
+    private fun badgeFor(state: CredentialChecks.State): Pair<String, Rows.Badge> = state.label to when (state) {
+        CredentialChecks.State.NOT_SET -> Rows.Badge.INACTIVE
+        CredentialChecks.State.NOT_CHECKED -> Rows.Badge.LIGHT
+        CredentialChecks.State.CHECKING -> Rows.Badge.BUSY
+        CredentialChecks.State.WORKING -> Rows.Badge.ACTIVE
+        CredentialChecks.State.NOT_ACCEPTED -> Rows.Badge.PROBLEM
+        CredentialChecks.State.UNREACHABLE -> Rows.Badge.INACTIVE
+    }
+
+    private fun problemOf(st: CredentialChecks.Status): String? = when (st.state) {
+        CredentialChecks.State.NOT_ACCEPTED, CredentialChecks.State.UNREACHABLE -> st.problem
+        else -> null
     }
 
     /**
      * TiviMate's English titles: the switch, with an arrow beside it for the set-up details (hidden each time the
      * window opens); under it, while on, how far the titles are and a button that sets the server to work now.
      */
-    private fun renderTitles(panel: SidePanel) = with(panel) {
+    private fun renderTitles(panel: SidePanel): Unit = with(panel) {
         titlesPanel = panel
         header("TiviMate titles")
         if (session != titlesSession) {
@@ -349,7 +645,7 @@ class SettingsPanels(
             },
             onArrow = { playlistNoteShown = !playlistNoteShown; playlistArrowTurned = true; refresh() })
         when {
-            !prefs.keys.isSet(KeyStore.Key.TMDB) -> message("Needs a TMDB API key (Online subtitles and TMDB API).")
+            !prefs.keys.isSet(KeyStore.Key.TMDB) -> message("Needs a TMDB API key (Accounts & services).")
             checkNote != null -> message(checkNote!!)
         }
         if (playlistNoteShown) message("Removed a playlist from TiviMate? Its English names are deleted here a week after TiviMate last used it, or now from this list.")
@@ -369,7 +665,7 @@ class SettingsPanels(
                         }
                     }
                 }
-                compactRow(p.server, "${TitleStatus.count(p.renamed)} renamed", if (p.waiting == 0) tickPill() else null) { onClick() }
+                rowWithPill(p.server, "${TitleStatus.count(p.renamed)} renamed", if (p.waiting == 0) tickPill() else null) { onClick() }
             }
         }
     }
@@ -454,9 +750,10 @@ class SettingsPanels(
     }
 
     /**
-     * A key or sign-in row: "Active" in blue once saved, "Inactive" in gray before ([badge] in its place, such as
-     * the TMDB check's). Its box starts empty, so a saved key is never shown, and says where to get one (or that one
-     * is saved); confirmed empty, it leaves a saved key as it is. [onSaved] follows a new one.
+     * A key or sign-in row: "Set" in blue once saved, "Not set" in gray before, the words the keys' own checks use
+     * ([badge] in their place, such as the TMDB check's). Its box starts empty, so a saved key is never shown, and
+     * says where to get one (or that one is saved); confirmed empty, it leaves a saved key as it is. [onSaved] follows
+     * a new one.
      */
     private fun SidePanel.keyRow(
         label: String,
@@ -468,7 +765,7 @@ class SettingsPanels(
         onSaved: () -> Unit = {},
     ) {
         val set = prefs.keys.isSet(key)
-        val (text, style) = badge ?: (activeOrNot(set) to if (set) Rows.Badge.ACTIVE else Rows.Badge.INACTIVE)
+        val (text, style) = badge ?: (if (set) SET to Rows.Badge.ACTIVE else NOT_SET to Rows.Badge.INACTIVE)
         badgeRow(label, text, style) {
             SidePanel.prompt(activity, title, "", password = password, hint = if (set) SAVED_HINT else whereFrom) { typed ->
                 if (prefs.keys.save(key, typed)) onSaved()
@@ -491,6 +788,7 @@ class SettingsPanels(
         val style = presets.active()
         val all = presets.all()
 
+        header("Subtitle style")
         choice("Preset", all.map { it.name }, all.indexOfFirst { it.name == style.name }) {
             presets.setActive(all[it].name); onStyleChanged()
         }
@@ -555,9 +853,10 @@ class SettingsPanels(
             prefs.keepAssStyling = !prefs.keepAssStyling; onAssChanged(); refresh()
         }
 
-        spacer(6)
-        // Saving only makes sense once something has been changed.
-        row("Save as preset", enabled = style.name == SubtitleStyle.CUSTOM_NAME && presets.customIsNew()) {
+        header("Presets")
+        // Saving only makes sense once something has been changed; then it's blue and says so, as Save custom does.
+        val unsaved = style.name == SubtitleStyle.CUSTOM_NAME && presets.customIsNew()
+        row("Save as preset", if (unsaved) "Unsaved" else null, enabled = unsaved) {
             fun askName(title: String) {
                 SidePanel.prompt(activity, title, "") { name ->
                     val clean = name.trim()
@@ -573,7 +872,7 @@ class SettingsPanels(
                 }
             }
             askName("Preset name")
-        }
+        }.isSelected = unsaved
         if (presets.isSaved(style.name)) {
             row("Delete \"${style.name}\"") {
                 FireDialog.ask(
@@ -623,17 +922,34 @@ class SettingsPanels(
 
         private const val ACTIVE = "Active"
         private const val INACTIVE = "Inactive"
+        private const val SET = "Set"
+        private const val NOT_SET = "Not set"
         private const val CHECKING = "Checking…"
-        private const val NOT_ACCEPTED = "Not accepted"
         private const val SAVED_HINT = "Saved · type a new one to replace it"
         private const val OPTIONAL_HINT = "Optional · more downloads a day"
         private const val TMDB_NOTICE = "This product uses the TMDB API but is not endorsed or certified by TMDB."
         private const val STATUS_EVERY_MS = 2_500L
 
-        fun formatStep(sec: Int): String =
-            if (sec < 60) "$sec s" else "${sec / 60}:${"%02d".format(sec % 60)}"
+        /** A skip step in words, as the other choices of a time are: "5 seconds", "1 minute", "10 minutes". */
+        fun formatStep(sec: Int): String = when {
+            sec < 60 -> "$sec seconds"
+            sec == 60 -> "1 minute"
+            sec % 60 == 0 -> "${sec / 60} minutes"
+            else -> "${sec / 60} min ${sec % 60} s"
+        }
 
         fun nearest(options: List<Float>, value: Float): Float =
             options.minByOrNull { kotlin.math.abs(it - value) } ?: value
+    }
+}
+
+/**
+ * Remote › Menu button opens: Settings or Subtitle style. One row and one saved value ([Prefs.menuOpensStyle]), first under
+ * every Remote header (the player windows, Live FirePlayer Settings, the Settings tab's Live TV and Remote & skipping).
+ */
+fun menuButtonRow(panel: SidePanel, context: android.content.Context): Unit = with(panel) {
+    val prefs = Prefs(context)
+    choice("Menu button opens", listOf("Settings", "Subtitle style"), if (prefs.menuOpensStyle) 1 else 0) {
+        prefs.menuOpensStyle = it == 1
     }
 }

@@ -1,41 +1,60 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+    The app shell. From back to front: the live video surface (behind the window: everything above it must leave a
+    hole where video shows), the stationary wallpaper (added in code; it leaves that hole), live captions, the live
+    screen dimmer (full screen only), the pages, the tab rail
+    (drawn over the page when it widens), and the settings window.
+-->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/home_root"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:background="#FF0E1013">
+    android:layout_height="match_parent">
 
-    <LinearLayout
-        android:id="@+id/home_column"
-        android:layout_width="360dp"
-        android:layout_height="wrap_content"
-        android:layout_gravity="center_vertical"
-        android:layout_marginStart="64dp"
-        android:orientation="vertical">
+    <SurfaceView
+        android:id="@+id/live_surface"
+        android:layout_width="1dp"
+        android:layout_height="1dp" />
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:fontFamily="@font/figtree_700"
-            android:text="@string/app_name"
-            android:textColor="@color/text"
-            android:textSize="30sp" />
+    <!-- The wallpaper and the pages are what glass windows over the page show, blurred (PageGlass): each tells it when
+         something in it changes. -->
+    <app.fireplayer.ui.GlassLayer
+        android:id="@+id/wallpaper_host"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:layout_marginBottom="18dp"
-            android:lineSpacingExtra="3dp"
-            android:text="Open videos from TiviMate: Settings, Playback, External player, then pick FirePlayer."
-            android:textColor="@color/text_muted"
-            android:textSize="13sp" />
+    <!-- Live closed captions, over the full-screen picture (under the live controls). -->
+    <androidx.media3.ui.SubtitleView
+        android:id="@+id/live_captions"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone" />
 
-        <LinearLayout
-            android:id="@+id/home_list"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical" />
-    </LinearLayout>
+    <!-- Screen dimmer over the full-screen live picture and its captions, never the controls or windows above (as the
+         VOD player's). -->
+    <View
+        android:id="@+id/live_dimmer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:alpha="0"
+        android:background="@color/black"
+        android:visibility="gone" />
+
+    <!-- Pages start right of the rail (NavRail.WIDTH_DP); Live TV lays out its own left side (HomeActivity.pageInset). -->
+    <app.fireplayer.ui.GlassLayer
+        android:id="@+id/page_container"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_marginStart="58dp" />
+
+    <!-- The rail (NavRail): a narrow floating window inset from the left, top and bottom on every tab but Live TV,
+         where it is a strip flush with the screen's left edge. Its view is always full height and as wide as the
+         widened rail with its shadow: it draws its window inside that, over the page, which never moves. Nothing of
+         it is drawn outside its view, so its children are clipped here (the default): a frame of its motion then
+         redraws the rail's part of the screen, not all of it. -->
+    <FrameLayout
+        android:id="@+id/rail_host"
+        android:layout_width="wrap_content"
+        android:layout_height="match_parent" />
 
     <include
         android:id="@+id/panel"

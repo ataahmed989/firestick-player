@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FirePlayer's one brand mark: a hollow blue play triangle with rounded corners, the ring the same thickness all
+     round (one stroke along the triangle's centre line). Colour #0068FC sampled from the Home references. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="32dp"
+    android:height="32dp"
+    android:viewportWidth="32"
+    android:viewportHeight="32">
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M8.75,8.80 L8.75,23.20 Q8.75,24.40 9.79,23.80 L22.26,16.60 Q23.30,16.00 22.26,15.40 L9.79,8.20 Q8.75,7.60 8.75,8.80 Z"
+        android:strokeColor="#FF0068FC"
+        android:strokeLineJoin="round"
+        android:strokeWidth="5.6" />
+</vector>

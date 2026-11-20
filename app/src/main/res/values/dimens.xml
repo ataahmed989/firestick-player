@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Look values that both resources and code read, so each lives in one place. -->
+<resources>
+    <!-- A round button's name (ButtonLabel): its gap under the button, and its side margins (negative: it hangs out
+         over both sides of the button by half the widest name). Round buttons made in code read them too. -->
+    <dimen name="button_label_gap">4dp</dimen>
+    <dimen name="button_label_side">-48dp</dimen>
+
+    <!-- Player controls. The main round control (the VOD player's Play; Live TV's TV Guide and Channel History) and the
+         icon's room inside it; the least width of a pill that shows a value (the VOD player's Subtitles showing a
+         language; Live TV's Captions keeps it while it says "Off"); the height of the channel logo's plate in Live
+         TV's full-screen controls (LogoBadge; the rest of its look is in Tokens). -->
+    <dimen name="player_main_button">51dp</dimen>
+    <dimen name="player_main_button_pad">13dp</dimen>
+    <dimen name="player_pill_min_width">94dp</dimen>
+    <dimen name="logo_badge_height">46dp</dimen>
+
+    <!-- The classic look's corners (res/drawable/bg_*.xml), also read by Glass.cornerRadius for a picture drawn to
+         follow a surface's corners. -->
+    <dimen name="radius_panel">15dp</dimen>
+    <dimen name="radius_popup">15dp</dimen>
+    <dimen name="radius_pill">20dp</dimen>
+    <dimen name="radius_chip">5dp</dimen>
+    <dimen name="radius_row">9dp</dimen>
+</resources>

@@ -29,6 +29,13 @@ class Updater(private val activity: Activity) {
         get() = activity.packageManager.getPackageInfo(activity.packageName, 0).versionName ?: ""
 
     /**
+     * Whether updates can be offered: a test build is signed differently from the releases, so a release couldn't
+     * install over it.
+     */
+    val offered: Boolean
+        get() = (activity.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) == 0
+
+    /**
      * Looks for a newer release off the main thread; [onResult] gets it, or null if there's none.
      * [onFailed] runs when GitHub couldn't be reached.
      */

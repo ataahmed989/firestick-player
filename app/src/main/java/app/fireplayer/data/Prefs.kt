@@ -9,11 +9,27 @@ class Prefs(context: Context) {
     private val sp: SharedPreferences =
         context.applicationContext.getSharedPreferences(KeyStore.OLD_FILE, Context.MODE_PRIVATE)
 
+    /** The file itself, for small records kept beside the settings (key check results, [CredentialChecks]). */
+    internal val raw: SharedPreferences get() = sp
+
     init {
         forgetPlayerMatches()
     }
 
     enum class Resume(val label: String) { ASK("Ask"), ALWAYS("Always"), NEVER("Never") }
+
+    /**
+     * Settings › Picture-in-picture: leaving a playing channel on Live TV for Home or Search keeps it playing there, top
+     * right ([app.fireplayer.live.ui.PipRules]); off, leaving Live TV stops the channel, as it always did.
+     */
+    var pipKeep: Boolean
+        get() = sp.getBoolean("pip_keep", app.fireplayer.live.ui.PipRules.KEEP_DEFAULT)
+        set(v) = sp.edit().putBoolean("pip_keep", v).apply()
+
+    /** Settings › Picture-in-picture: the picture starts with its sound (off: muted until Volume is pressed). */
+    var pipSound: Boolean
+        get() = sp.getBoolean("pip_sound", app.fireplayer.live.ui.PipRules.SOUND_DEFAULT)
+        set(v) = sp.edit().putBoolean("pip_sound", v).apply()
 
     var dpadStepSec: Int
         get() = sp.getInt("dpad_step", 10)
@@ -71,6 +87,14 @@ class Prefs(context: Context) {
         get() = sp.getInt("auto_countdown", 10)
         set(v) = sp.edit().putInt("auto_countdown", v).apply()
 
+    /**
+     * Settings › Playback › When a film keeps buffering: the name of a [app.fireplayer.vod.play.WhenBuffering]
+     * ("ASK" until it's set).
+     */
+    var whenBuffering: String
+        get() = sp.getString("when_buffering", null) ?: "ASK"
+        set(v) = sp.edit().putString("when_buffering", v).apply()
+
     var matchFrameRate: Boolean
         get() = sp.getBoolean("match_frame_rate", true)
         set(v) = sp.edit().putBoolean("match_frame_rate", v).apply()
@@ -84,6 +108,22 @@ class Prefs(context: Context) {
     var glassRefreshPerSec: Int
         get() = sp.getInt("glass_refresh", 4)
         set(v) = sp.edit().putInt("glass_refresh", v).apply()
+
+    /**
+     * Settings › Home Header: Home's banner shows the focused Continue Watching title (on), or always goes through its
+     * own titles while it shows (off). Movies and TV Shows always match.
+     */
+    var homeHeaderMatchesContinue: Boolean
+        get() = sp.getBoolean("home_header_match_continue", true)
+        set(v) = sp.edit().putBoolean("home_header_match_continue", v).apply()
+
+    /**
+     * Settings › Home Header › Time on each title: seconds every tab's banner shows a title while idle (one of
+     * [app.fireplayer.vod.ui.VodSizes.HEADER_IDLE_SECONDS]).
+     */
+    var headerIdleSec: Int
+        get() = sp.getInt("header_idle_sec", app.fireplayer.vod.ui.VodSizes.HEADER_IDLE_DEFAULT_SEC)
+        set(v) = sp.edit().putInt("header_idle_sec", v).apply()
 
     var passthrough: Boolean
         get() = sp.getBoolean("passthrough", true)

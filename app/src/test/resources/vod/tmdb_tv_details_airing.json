@@ -1,0 +1,211 @@
+{
+ "adult": false,
+ "backdrop_path": "/fixture_b103540.jpg",
+ "created_by": [
+  {
+   "id": 1,
+   "credit_id": "p1",
+   "name": "Rick Riordan",
+   "original_name": "Rick Riordan",
+   "gender": 2,
+   "profile_path": null
+  },
+  {
+   "id": 2,
+   "credit_id": "p2",
+   "name": "Jonathan E. Steinberg",
+   "original_name": "Jonathan E. Steinberg",
+   "gender": 2,
+   "profile_path": null
+  }
+ ],
+ "episode_run_time": [],
+ "first_air_date": "2023-12-19",
+ "genres": [
+  {
+   "id": 10759,
+   "name": "Action & Adventure"
+  }
+ ],
+ "homepage": "",
+ "id": 103540,
+ "in_production": true,
+ "languages": [
+  "en"
+ ],
+ "last_air_date": "2026-01-21",
+ "last_episode_to_air": {
+  "id": 9001,
+  "name": "Finale",
+  "overview": "",
+  "vote_average": 7.5,
+  "vote_count": 10,
+  "air_date": "2026-01-21",
+  "episode_number": 8,
+  "episode_type": "finale",
+  "production_code": "",
+  "runtime": 45,
+  "season_number": 2,
+  "show_id": 103540,
+  "still_path": null
+ },
+ "name": "Percy Jackson and the Olympians",
+ "next_episode_to_air": {
+  "id": 9002,
+  "name": "My Rescue Operation Goes Very Wrong",
+  "overview": "",
+  "vote_average": 0.0,
+  "vote_count": 0,
+  "air_date": "2026-11-20",
+  "episode_number": 1,
+  "episode_type": "standard",
+  "production_code": "",
+  "runtime": null,
+  "season_number": 3,
+  "show_id": 103540,
+  "still_path": null
+ },
+ "networks": [
+  {
+   "id": 2739,
+   "logo_path": null,
+   "name": "Disney+",
+   "origin_country": ""
+  }
+ ],
+ "number_of_episodes": 24,
+ "number_of_seasons": 3,
+ "origin_country": [
+  "US"
+ ],
+ "original_language": "en",
+ "original_name": "Percy Jackson and the Olympians",
+ "overview": "",
+ "popularity": 33.3,
+ "poster_path": "/fixture_p103540.jpg",
+ "production_companies": [],
+ "production_countries": [],
+ "seasons": [
+  {
+   "air_date": "2023-12-01",
+   "episode_count": 2,
+   "id": 50000,
+   "name": "Specials",
+   "overview": "",
+   "poster_path": "/fixture_s0.jpg",
+   "season_number": 0,
+   "vote_average": 8.0
+  },
+  {
+   "air_date": "2023-12-19",
+   "episode_count": 8,
+   "id": 50001,
+   "name": "Season 1",
+   "overview": "",
+   "poster_path": "/fixture_s1.jpg",
+   "season_number": 1,
+   "vote_average": 8.0
+  },
+  {
+   "air_date": "2025-12-10",
+   "episode_count": 8,
+   "id": 50002,
+   "name": "Season 2",
+   "overview": "",
+   "poster_path": "/fixture_s2.jpg",
+   "season_number": 2,
+   "vote_average": 8.0
+  },
+  {
+   "air_date": "2026-11-20",
+   "episode_count": 8,
+   "id": 50003,
+   "name": "Season 3",
+   "overview": "",
+   "poster_path": "/fixture_s3.jpg",
+   "season_number": 3,
+   "vote_average": 8.0
+  }
+ ],
+ "spoken_languages": [],
+ "status": "Returning Series",
+ "tagline": "",
+ "type": "Scripted",
+ "vote_average": 7.6,
+ "vote_count": 900,
+ "content_ratings": {
+  "results": [
+   {
+    "descriptors": [],
+    "iso_3166_1": "BR",
+    "rating": "12"
+   }
+  ]
+ },
+ "external_ids": {
+  "imdb_id": "tt12324366",
+  "freebase_mid": null,
+  "freebase_id": null,
+  "tvdb_id": 422303,
+  "tvrage_id": null,
+  "wikidata_id": null,
+  "facebook_id": null,
+  "instagram_id": null,
+  "twitter_id": null
+ },
+ "recommendations": {
+  "page": 1,
+  "results": [],
+  "total_pages": 0,
+  "total_results": 0
+ },
+ "similar": {
+  "page": 1,
+  "results": [
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b66732.jpg",
+    "id": 66732,
+    "name": "Stranger Things",
+    "original_language": "en",
+    "original_name": "Stranger Things",
+    "overview": "",
+    "poster_path": "/fixture_p66732.jpg",
+    "genre_ids": [
+     18,
+     9648,
+     10765
+    ],
+    "popularity": 190.0,
+    "first_air_date": "2016-07-15",
+    "vote_average": 8.6,
+    "vote_count": 19000,
+    "origin_country": [
+     "US"
+    ]
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b999999905.jpg",
+    "id": 999999905,
+    "name": "Few Votes Fantasy",
+    "original_language": "en",
+    "original_name": "Few Votes Fantasy",
+    "overview": "",
+    "poster_path": "/fixture_p999999905.jpg",
+    "genre_ids": [
+     16
+    ],
+    "popularity": 1.0,
+    "first_air_date": "2022-01-01",
+    "vote_average": 7.0,
+    "vote_count": 30,
+    "origin_country": [
+     "US"
+    ]
+   }
+  ],
+  "total_pages": 1,
+  "total_results": 2
+ }
+}

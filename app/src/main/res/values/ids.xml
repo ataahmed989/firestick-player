@@ -4,4 +4,7 @@
     <item name="group_row" type="id" />
     <!-- A row nested under the setting that turns it on: indented, with a dot (RowGroups). -->
     <item name="sub_row" type="id" />
+    <!-- The picture an image view waits for, and its loader target (ImageLoader). -->
+    <item name="image_key" type="id" />
+    <item name="image_target" type="id" />
 </resources>

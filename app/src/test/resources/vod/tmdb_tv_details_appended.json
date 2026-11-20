@@ -1,0 +1,707 @@
+{
+ "adult": false,
+ "backdrop_path": "/fixture_b33880.jpg",
+ "created_by": [
+  {
+   "id": 1215640,
+   "credit_id": "z1",
+   "name": "Michael Dante DiMartino",
+   "original_name": "Michael Dante DiMartino",
+   "gender": 2,
+   "profile_path": null
+  },
+  {
+   "id": 1215641,
+   "credit_id": "z2",
+   "name": "Bryan Konietzko",
+   "original_name": "Bryan Konietzko",
+   "gender": 2,
+   "profile_path": null
+  }
+ ],
+ "episode_run_time": [],
+ "first_air_date": "2012-04-14",
+ "genres": [
+  {
+   "id": 16,
+   "name": "Animation"
+  },
+  {
+   "id": 10759,
+   "name": "Action & Adventure"
+  },
+  {
+   "id": 10765,
+   "name": "Sci-Fi & Fantasy"
+  }
+ ],
+ "homepage": "",
+ "id": 33880,
+ "in_production": false,
+ "languages": [
+  "en"
+ ],
+ "last_air_date": "2014-12-19",
+ "last_episode_to_air": {
+  "id": 1053651,
+  "name": "The Last Stand",
+  "overview": "",
+  "vote_average": 8.6,
+  "vote_count": 40,
+  "air_date": "2014-12-19",
+  "episode_number": 13,
+  "episode_type": "finale",
+  "production_code": "",
+  "runtime": 24,
+  "season_number": 4,
+  "show_id": 33880,
+  "still_path": "/fixture_st4_13.jpg"
+ },
+ "name": "The Legend of Korra",
+ "next_episode_to_air": null,
+ "networks": [
+  {
+   "id": 13,
+   "logo_path": null,
+   "name": "Nickelodeon",
+   "origin_country": "US"
+  }
+ ],
+ "number_of_episodes": 52,
+ "number_of_seasons": 4,
+ "origin_country": [
+  "US"
+ ],
+ "original_language": "en",
+ "original_name": "The Legend of Korra",
+ "overview": "Avatar Korra fights to keep Republic City safe from the evil forces of both the physical and spiritual worlds.",
+ "popularity": 150.2,
+ "poster_path": "/fixture_p33880.jpg",
+ "production_companies": [],
+ "production_countries": [
+  {
+   "iso_3166_1": "US",
+   "name": "United States of America"
+  }
+ ],
+ "seasons": [
+  {
+   "air_date": "2012-03-24",
+   "episode_count": 47,
+   "id": 50000,
+   "name": "Specials",
+   "overview": "",
+   "poster_path": "/fixture_s0.jpg",
+   "season_number": 0,
+   "vote_average": 8.0
+  },
+  {
+   "air_date": "2012-04-14",
+   "episode_count": 12,
+   "id": 50001,
+   "name": "Book 1",
+   "overview": "",
+   "poster_path": "/fixture_s1.jpg",
+   "season_number": 1,
+   "vote_average": 8.0
+  },
+  {
+   "air_date": "2013-09-13",
+   "episode_count": 14,
+   "id": 50002,
+   "name": "Book 2",
+   "overview": "",
+   "poster_path": "/fixture_s2.jpg",
+   "season_number": 2,
+   "vote_average": 8.0
+  },
+  {
+   "air_date": "2014-06-27",
+   "episode_count": 13,
+   "id": 50003,
+   "name": "Book 3",
+   "overview": "",
+   "poster_path": "/fixture_s3.jpg",
+   "season_number": 3,
+   "vote_average": 8.0
+  },
+  {
+   "air_date": "2014-10-03",
+   "episode_count": 13,
+   "id": 50004,
+   "name": "Book 4",
+   "overview": "",
+   "poster_path": "/fixture_s4.jpg",
+   "season_number": 4,
+   "vote_average": 8.0
+  }
+ ],
+ "spoken_languages": [
+  {
+   "english_name": "English",
+   "iso_639_1": "en",
+   "name": "English"
+  }
+ ],
+ "status": "Ended",
+ "tagline": "",
+ "type": "Scripted",
+ "vote_average": 8.3,
+ "vote_count": 2400,
+ "content_ratings": {
+  "results": [
+   {
+    "descriptors": [],
+    "iso_3166_1": "GB",
+    "rating": "PG"
+   },
+   {
+    "descriptors": [],
+    "iso_3166_1": "US",
+    "rating": "TV-Y7"
+   },
+   {
+    "descriptors": [],
+    "iso_3166_1": "DE",
+    "rating": "12"
+   }
+  ]
+ },
+ "external_ids": {
+  "imdb_id": "tt1695360",
+  "freebase_mid": null,
+  "freebase_id": null,
+  "tvdb_id": 251085,
+  "tvrage_id": null,
+  "wikidata_id": null,
+  "facebook_id": null,
+  "instagram_id": null,
+  "twitter_id": null
+ },
+ "recommendations": {
+  "page": 1,
+  "results": [
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b246.jpg",
+    "id": 246,
+    "name": "Avatar: The Last Airbender",
+    "original_language": "en",
+    "original_name": "Avatar: The Last Airbender",
+    "overview": "",
+    "poster_path": "/fixture_p246.jpg",
+    "genre_ids": [
+     16,
+     10759
+    ],
+    "popularity": 43.0,
+    "first_air_date": "2005-02-21",
+    "vote_average": 8.7,
+    "vote_count": 4300,
+    "origin_country": [
+     "US"
+    ],
+    "media_type": "tv"
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b94605.jpg",
+    "id": 94605,
+    "name": "Arcane",
+    "original_language": "en",
+    "original_name": "Arcane",
+    "overview": "",
+    "poster_path": "/fixture_p94605.jpg",
+    "genre_ids": [
+     16,
+     10759
+    ],
+    "popularity": 48.0,
+    "first_air_date": "2021-11-06",
+    "vote_average": 8.7,
+    "vote_count": 4800,
+    "origin_country": [
+     "US"
+    ],
+    "media_type": "tv"
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b999999901.jpg",
+    "id": 999999901,
+    "name": "Unmapped Show",
+    "original_language": "en",
+    "original_name": "Unmapped Show",
+    "overview": "",
+    "poster_path": "/fixture_p999999901.jpg",
+    "genre_ids": [
+     16
+    ],
+    "popularity": 1.0,
+    "first_air_date": "2018-09-14",
+    "vote_average": 7.0,
+    "vote_count": 640,
+    "origin_country": [
+     "US"
+    ],
+    "media_type": "tv"
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b1429.jpg",
+    "id": 1429,
+    "name": "Attack on Titan",
+    "original_language": "en",
+    "original_name": "Attack on Titan",
+    "overview": "",
+    "poster_path": "/fixture_p1429.jpg",
+    "genre_ids": [
+     16,
+     10759
+    ],
+    "popularity": 69.0,
+    "first_air_date": "2013-04-07",
+    "vote_average": 8.7,
+    "vote_count": 6900,
+    "origin_country": [
+     "US"
+    ],
+    "media_type": "tv"
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b95479.jpg",
+    "id": 95479,
+    "name": "Jujutsu Kaisen",
+    "original_language": "en",
+    "original_name": "Jujutsu Kaisen",
+    "overview": "",
+    "poster_path": "/fixture_p95479.jpg",
+    "genre_ids": [
+     16,
+     10759
+    ],
+    "popularity": 39.0,
+    "first_air_date": "2020-10-03",
+    "vote_average": 8.6,
+    "vote_count": 3900,
+    "origin_country": [
+     "US"
+    ],
+    "media_type": "tv"
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b999999902.jpg",
+    "id": 999999902,
+    "name": "No Poster Show",
+    "original_language": "en",
+    "original_name": "No Poster Show",
+    "overview": "",
+    "poster_path": null,
+    "genre_ids": [
+     16
+    ],
+    "popularity": 1.0,
+    "first_air_date": "2015-01-01",
+    "vote_average": 7.0,
+    "vote_count": 120,
+    "origin_country": [
+     "US"
+    ],
+    "media_type": "tv"
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b95557.jpg",
+    "id": 95557,
+    "name": "Invincible",
+    "original_language": "en",
+    "original_name": "Invincible",
+    "overview": "",
+    "poster_path": "/fixture_p95557.jpg",
+    "genre_ids": [
+     16,
+     10759
+    ],
+    "popularity": 51.0,
+    "first_air_date": "2021-03-26",
+    "vote_average": 8.7,
+    "vote_count": 5100,
+    "origin_country": [
+     "US"
+    ],
+    "media_type": "tv"
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b37854.jpg",
+    "id": 37854,
+    "name": "One Piece",
+    "original_language": "en",
+    "original_name": "One Piece",
+    "overview": "",
+    "poster_path": "/fixture_p37854.jpg",
+    "genre_ids": [
+     16,
+     10759
+    ],
+    "popularity": 49.0,
+    "first_air_date": "1999-10-20",
+    "vote_average": 8.7,
+    "vote_count": 4900,
+    "origin_country": [
+     "US"
+    ],
+    "media_type": "tv"
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b73223.jpg",
+    "id": 73223,
+    "name": "Black Clover",
+    "original_language": "en",
+    "original_name": "Black Clover",
+    "overview": "",
+    "poster_path": "/fixture_p73223.jpg",
+    "genre_ids": [
+     16,
+     10759
+    ],
+    "popularity": 15.0,
+    "first_air_date": "2017-10-03",
+    "vote_average": 8.2,
+    "vote_count": 1500,
+    "origin_country": [
+     "US"
+    ],
+    "media_type": "tv"
+   }
+  ],
+  "total_pages": 1,
+  "total_results": 9
+ },
+ "similar": {
+  "page": 1,
+  "results": [
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b246.jpg",
+    "id": 246,
+    "name": "Avatar: The Last Airbender",
+    "original_language": "en",
+    "original_name": "Avatar: The Last Airbender",
+    "overview": "",
+    "poster_path": "/fixture_p246.jpg",
+    "genre_ids": [
+     16,
+     10759
+    ],
+    "popularity": 43.0,
+    "first_air_date": "2005-02-21",
+    "vote_average": 8.7,
+    "vote_count": 4300,
+    "origin_country": [
+     "US"
+    ]
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b33880.jpg",
+    "id": 33880,
+    "name": "The Legend of Korra",
+    "original_language": "en",
+    "original_name": "The Legend of Korra",
+    "overview": "",
+    "poster_path": "/fixture_p33880.jpg",
+    "genre_ids": [
+     16,
+     10759
+    ],
+    "popularity": 24.0,
+    "first_air_date": "2012-04-14",
+    "vote_average": 8.3,
+    "vote_count": 2400,
+    "origin_country": [
+     "US"
+    ]
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b999999903.jpg",
+    "id": 999999903,
+    "name": "Few Votes Similar",
+    "original_language": "en",
+    "original_name": "Few Votes Similar",
+    "overview": "",
+    "poster_path": "/fixture_p999999903.jpg",
+    "genre_ids": [
+     16
+    ],
+    "popularity": 1.0,
+    "first_air_date": "2019-01-01",
+    "vote_average": 7.0,
+    "vote_count": 12,
+    "origin_country": [
+     "US"
+    ]
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b65930.jpg",
+    "id": 65930,
+    "name": "My Hero Academia",
+    "original_language": "en",
+    "original_name": "My Hero Academia",
+    "overview": "",
+    "poster_path": "/fixture_p65930.jpg",
+    "genre_ids": [
+     16,
+     10759
+    ],
+    "popularity": 29.0,
+    "first_air_date": "2016-04-03",
+    "vote_average": 8.6,
+    "vote_count": 2900,
+    "origin_country": [
+     "US"
+    ]
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b45790.jpg",
+    "id": 45790,
+    "name": "JoJo's Bizarre Adventure",
+    "original_language": "en",
+    "original_name": "JoJo's Bizarre Adventure",
+    "overview": "",
+    "poster_path": "/fixture_p45790.jpg",
+    "genre_ids": [
+     16,
+     10759
+    ],
+    "popularity": 13.0,
+    "first_air_date": "2012-10-06",
+    "vote_average": 8.5,
+    "vote_count": 1300,
+    "origin_country": [
+     "US"
+    ]
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b31911.jpg",
+    "id": 31911,
+    "name": "Fullmetal Alchemist: Brotherhood",
+    "original_language": "en",
+    "original_name": "Fullmetal Alchemist: Brotherhood",
+    "overview": "",
+    "poster_path": "/fixture_p31911.jpg",
+    "genre_ids": [
+     16,
+     10759
+    ],
+    "popularity": 22.0,
+    "first_air_date": "2009-04-05",
+    "vote_average": 8.7,
+    "vote_count": 2200,
+    "origin_country": [
+     "US"
+    ]
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b13916.jpg",
+    "id": 13916,
+    "name": "Death Note",
+    "original_language": "en",
+    "original_name": "Death Note",
+    "overview": "",
+    "poster_path": "/fixture_p13916.jpg",
+    "genre_ids": [
+     16,
+     18
+    ],
+    "popularity": 39.0,
+    "first_air_date": "2006-10-04",
+    "vote_average": 8.6,
+    "vote_count": 3900,
+    "origin_country": [
+     "US"
+    ]
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b85937.jpg",
+    "id": 85937,
+    "name": "Demon Slayer: Kimetsu no Yaiba",
+    "original_language": "en",
+    "original_name": "Demon Slayer: Kimetsu no Yaiba",
+    "overview": "",
+    "poster_path": "/fixture_p85937.jpg",
+    "genre_ids": [
+     16,
+     10759
+    ],
+    "popularity": 64.0,
+    "first_air_date": "2019-04-06",
+    "vote_average": 8.7,
+    "vote_count": 6400,
+    "origin_country": [
+     "US"
+    ]
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b999999904.jpg",
+    "id": 999999904,
+    "name": "Upcoming Similar",
+    "original_language": "en",
+    "original_name": "Upcoming Similar",
+    "overview": "",
+    "poster_path": "/fixture_p999999904.jpg",
+    "genre_ids": [
+     16
+    ],
+    "popularity": 1.0,
+    "first_air_date": "2027-02-01",
+    "vote_average": 7.0,
+    "vote_count": 80,
+    "origin_country": [
+     "US"
+    ]
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b46298.jpg",
+    "id": 46298,
+    "name": "Hunter X Hunter",
+    "original_language": "en",
+    "original_name": "Hunter X Hunter",
+    "overview": "",
+    "poster_path": "/fixture_p46298.jpg",
+    "genre_ids": [
+     16,
+     10759
+    ],
+    "popularity": 17.0,
+    "first_air_date": "2011-10-02",
+    "vote_average": 8.8,
+    "vote_count": 1700,
+    "origin_country": [
+     "US"
+    ]
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b88803.jpg",
+    "id": 88803,
+    "name": "Vinland Saga",
+    "original_language": "en",
+    "original_name": "Vinland Saga",
+    "overview": "",
+    "poster_path": "/fixture_p88803.jpg",
+    "genre_ids": [
+     16,
+     10759
+    ],
+    "popularity": 9.0,
+    "first_air_date": "2019-07-08",
+    "vote_average": 8.7,
+    "vote_count": 900,
+    "origin_country": [
+     "US"
+    ]
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b61617.jpg",
+    "id": 61617,
+    "name": "Over the Garden Wall",
+    "original_language": "en",
+    "original_name": "Over the Garden Wall",
+    "overview": "",
+    "poster_path": "/fixture_p61617.jpg",
+    "genre_ids": [
+     16,
+     18,
+     10759
+    ],
+    "popularity": 0.49,
+    "first_air_date": "2014-11-03",
+    "vote_average": 8.5,
+    "vote_count": 49,
+    "origin_country": [
+     "US"
+    ]
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b31910.jpg",
+    "id": 31910,
+    "name": "Naruto: Shippuden",
+    "original_language": "en",
+    "original_name": "Naruto: Shippuden",
+    "overview": "",
+    "poster_path": "/fixture_p31910.jpg",
+    "genre_ids": [
+     16,
+     10759
+    ],
+    "popularity": 22.0,
+    "first_air_date": "2007-02-15",
+    "vote_average": 8.5,
+    "vote_count": 2200,
+    "origin_country": [
+     "US"
+    ]
+   }
+  ],
+  "total_pages": 1,
+  "total_results": 600
+ },
+ "credits": {
+  "cast": [
+   {
+    "adult": false,
+    "gender": 1,
+    "id": 74302,
+    "known_for_department": "Acting",
+    "name": "Janet Varney",
+    "original_name": "Janet Varney",
+    "popularity": 3.0,
+    "profile_path": null,
+    "character": "Korra (voice)",
+    "credit_id": "k1",
+    "order": 0
+   },
+   {
+    "adult": false,
+    "gender": 2,
+    "id": 74303,
+    "known_for_department": "Acting",
+    "name": "P.J. Byrne",
+    "original_name": "P.J. Byrne",
+    "popularity": 3.0,
+    "profile_path": null,
+    "character": "Bolin (voice)",
+    "credit_id": "k2",
+    "order": 1
+   },
+   {
+    "adult": false,
+    "gender": 2,
+    "id": 74304,
+    "known_for_department": "Acting",
+    "name": "David Faustino",
+    "original_name": "David Faustino",
+    "popularity": 3.0,
+    "profile_path": null,
+    "character": "Mako (voice)",
+    "credit_id": "k3",
+    "order": 2
+   }
+  ],
+  "crew": []
+ }
+}

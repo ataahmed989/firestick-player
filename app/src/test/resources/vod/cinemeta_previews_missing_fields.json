@@ -1,0 +1,259 @@
+{
+ "metas": [
+  {
+   "imdb_id": "tt39943756",
+   "name": "Campus Drivers",
+   "popularities": {
+    "trakt": 426,
+    "moviedb": 124.4999,
+    "stremio": 4.149996666666667,
+    "stremio_lib": 0
+   },
+   "type": "series",
+   "genre": [
+    "Drama",
+    "Romance"
+   ],
+   "imdbRating": "",
+   "released": null,
+   "slug": "series/campus-drivers-39943756",
+   "year": "2026–",
+   "runtime": "40 min",
+   "status": "Continuing",
+   "tvdb_id": 468646,
+   "moviedb_id": 303044,
+   "poster": "https://images.metahub.space/poster/small/tt39943756/img",
+   "trailers": [
+    {
+     "source": "xybsbjGt1KA",
+     "type": "Trailer"
+    }
+   ],
+   "cast": [],
+   "director": [],
+   "writer": [],
+   "background": "https://images.metahub.space/background/medium/tt39943756/img",
+   "logo": "https://images.metahub.space/logo/medium/tt39943756/img",
+   "popularity": 4.149996666666667,
+   "id": "tt39943756",
+   "videos": [
+    {
+     "name": "Heartbreak",
+     "season": 1,
+     "number": 1,
+     "firstAired": "2026-11-06T04:00:00.000Z",
+     "tvdb_id": 11364452,
+     "rating": 0,
+     "overview": "No sooner had she arrived in Belrose than Loïs lost everything: her boyfriend and her flat. With nowhere else to go, she ends up moving in with Lane O'Neill, a popular yet enigmatic student. Along with his best mates, he's launched Campus Drivers, a student ride-hailing app. But Loïs's arrival, combined with Aaron's return to campus, soon threatens to shake up the calm.",
+     "thumbnail": "https://episodes.metahub.space/tt39943756/1/1/w780.jpg",
+     "id": "tt39943756:1:1",
+     "released": "2026-11-06T04:00:00.000Z",
+     "episode": 1,
+     "description": "No sooner had she arrived in Belrose than Loïs lost everything: her boyfriend and her flat. With nowhere else to go, she ends up moving in with Lane O'Neill, a popular yet enigmatic student. Along with his best mates, he's launched Campus Drivers, a student ride-hailing app. But Loïs's arrival, combined with Aaron's return to campus, soon threatens to shake up the calm."
+    }
+   ],
+   "genres": [
+    "Drama",
+    "Romance"
+   ],
+   "releaseInfo": "2026–",
+   "trailerStreams": [
+    {
+     "title": "Campus Drivers",
+     "ytId": "xybsbjGt1KA"
+    }
+   ],
+   "links": [
+    {
+     "name": "Campus Drivers",
+     "category": "share",
+     "url": "https://www.strem.io/s/series/campus-drivers-39943756"
+    },
+    {
+     "name": "Drama",
+     "category": "Genres",
+     "url": "stremio:///discover/https%3A%2F%2Fv3-cinemeta.strem.io%2Fmanifest.json/series/top?genre=Drama"
+    },
+    {
+     "name": "Romance",
+     "category": "Genres",
+     "url": "stremio:///discover/https%3A%2F%2Fv3-cinemeta.strem.io%2Fmanifest.json/series/top?genre=Romance"
+    }
+   ],
+   "behaviorHints": {
+    "defaultVideoId": null,
+    "hasScheduledVideos": true
+   }
+  },
+  {
+   "imdb_id": "tt39453578",
+   "name": "L'Avocat",
+   "popularities": {
+    "trakt": 53,
+    "moviedb": 43.0043,
+    "stremio": 1.4334766666666667,
+    "stremio_lib": 0
+   },
+   "type": "movie",
+   "cast": [
+    "Vincent Cassel",
+    "Carole Bouquet",
+    "Mélanie Thierry"
+   ],
+   "country": "France",
+   "director": [
+    "Tristan Séguéla"
+   ],
+   "imdbRating": "",
+   "released": null,
+   "slug": "movie/lavocat-39453578",
+   "year": "2027",
+   "moviedb_id": 1616419,
+   "poster": "https://images.metahub.space/poster/small/tt39453578/img",
+   "runtime": "121 min",
+   "trailers": [
+    {
+     "source": "3Ep7Rq24jDA",
+     "type": "Trailer"
+    }
+   ],
+   "genre": [],
+   "writer": [],
+   "popularity": 1.4334766666666667,
+   "logo": "https://images.metahub.space/logo/medium/tt39453578/img",
+   "background": "https://images.metahub.space/background/medium/tt39453578/img",
+   "id": "tt39453578",
+   "genres": [],
+   "releaseInfo": "2027",
+   "trailerStreams": [
+    {
+     "title": "L'Avocat",
+     "ytId": "3Ep7Rq24jDA"
+    }
+   ],
+   "links": [
+    {
+     "name": "L'Avocat",
+     "category": "share",
+     "url": "https://www.strem.io/s/movie/lavocat-39453578"
+    },
+    {
+     "name": "Vincent Cassel",
+     "category": "Cast",
+     "url": "stremio:///search?search=Vincent%20Cassel"
+    },
+    {
+     "name": "Carole Bouquet",
+     "category": "Cast",
+     "url": "stremio:///search?search=Carole%20Bouquet"
+    },
+    {
+     "name": "Mélanie Thierry",
+     "category": "Cast",
+     "url": "stremio:///search?search=M%C3%A9lanie%20Thierry"
+    },
+    {
+     "name": "Tristan Séguéla",
+     "category": "Directors",
+     "url": "stremio:///search?search=Tristan%20S%C3%A9gu%C3%A9la"
+    }
+   ],
+   "behaviorHints": {
+    "defaultVideoId": "tt39453578",
+    "hasScheduledVideos": false
+   }
+  },
+  {
+   "id": "tt36935784",
+   "imdb_id": "tt36935784",
+   "type": "series",
+   "poster": "https://live.metahub.space/poster/small/tt36935784/img",
+   "logo": "https://live.metahub.space/logo/medium/tt36935784/img",
+   "background": "https://live.metahub.space/background/medium/tt36935784/img",
+   "moviedb_id": 291361,
+   "name": "Knife Edge: Chasing Michelin Stars",
+   "description": "Experience thrilling highs and crushing lows as the world's best chefs pursue the ultimate accolade: a Michelin Star. These anonymous inspectors have never let anyone in on their mysterious ways, until now.",
+   "genres": [
+    "Documentary"
+   ],
+   "releaseInfo": "2025–",
+   "status": "Continuing",
+   "trailers": [
+    {
+     "source": "X23W_8uJHjk",
+     "type": "Trailer"
+    }
+   ],
+   "cast": [
+    "Jesse Burgess"
+   ],
+   "credits_cast": [
+    {
+     "character": "Self - Host",
+     "name": "Jesse Burgess",
+     "profile_path": "/a6i2evOrFIHjinR6lhp1BtOvMhZ.jpg",
+     "id": 5370506
+    }
+   ],
+   "credits_crew": [],
+   "director": [],
+   "videos": [
+    {
+     "id": "tt36935784:1:1",
+     "title": "“Some would say he's a genius”",
+     "season": 1,
+     "episode": 1,
+     "number": 1,
+     "released": "2025-10-10T00:00:00.000Z",
+     "overview": "A fried chicken joint with big ambitions and a new restaurant in a subway station aim to impress the secret inspectors.",
+     "thumbnail": "https://episodes.metahub.space/tt36935784/1/1/w780.jpg",
+     "moviedb_id": 6550574
+    }
+   ],
+   "imdbRating": "7.5",
+   "country": "United Kingdom",
+   "awards": "Nominated for 1 BAFTA Award. 1 nomination total",
+   "slug": "series/knife-edge-chasing-michelin-stars-36935784",
+   "behaviorHints": {
+    "defaultVideoId": null,
+    "hasScheduledVideos": true
+   }
+  },
+  {
+   "id": "tt0000001",
+   "type": "movie",
+   "name": "Synthetic Minimal"
+  },
+  {
+   "id": "tt0000002",
+   "imdb_id": "tt0000002",
+   "type": "movie",
+   "name": "Synthetic Old Fields",
+   "genre": [
+    "Drama"
+   ],
+   "year": "1999",
+   "runtime": null,
+   "imdbRating": "",
+   "description": "",
+   "poster": null,
+   "background": "https://images.metahub.space/background/medium/tt0000002/img"
+  },
+  {
+   "id": "tt0000003",
+   "type": "series",
+   "name": "Synthetic Ongoing",
+   "releaseInfo": "2024–",
+   "imdbRating": "7.9",
+   "genres": [],
+   "moviedb_id": 123456,
+   "poster": "https://live.metahub.space/poster/small/tt0000003/img"
+  },
+  {
+   "id": "kitsu:12345",
+   "type": "series",
+   "name": "Synthetic Non-IMDb Id"
+  }
+ ],
+ "hasMore": true
+}

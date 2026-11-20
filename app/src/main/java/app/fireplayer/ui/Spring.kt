@@ -26,6 +26,9 @@ class Spring(
     private var running = false
     private var lastNanos = 0L
 
+    /** Whether it's still on its way. */
+    val moving: Boolean get() = running
+
     /** Straight there, no motion. */
     fun snap(to: Float) {
         stop()

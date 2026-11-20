@@ -1,5 +1,7 @@
 package app.fireplayer.history
 
+import app.fireplayer.BuildConfig
+
 import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
@@ -41,7 +43,8 @@ import java.util.concurrent.TimeUnit
  * TMDB id for is asked about here once it's noted ([tmdbOf]), so Glass Home has its artwork too.
  */
 object ContinueWatching {
-    const val AUTHORITY = "app.fireplayer.continue"
+    /** "app.fireplayer.continue" in the release (Glass Home's address); the test build has its own. */
+    const val AUTHORITY = "${BuildConfig.APPLICATION_ID}.continue"
     val ITEMS: Uri = Uri.parse("content://$AUTHORITY/items")
     const val ACTION_RESUME = "app.fireplayer.action.RESUME"
     /** Another episode of a row's show, by the provider's id for it ([EXTRA_EPISODE_ID], from [episodes]). */

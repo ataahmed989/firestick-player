@@ -3,6 +3,8 @@ package app.fireplayer.ui
 import android.app.Activity
 import android.content.Context
 import android.content.res.ColorStateList
+import android.graphics.RectF
+import android.os.Build
 import android.text.InputType
 import android.util.TypedValue
 import android.view.Gravity
@@ -21,6 +23,9 @@ import android.widget.TextView
 import androidx.core.content.ContextCompat
 import androidx.core.content.res.ResourcesCompat
 import app.fireplayer.R
+import app.fireplayer.live.ui.HoldPlace
+import app.fireplayer.live.ui.HoldShape
+import app.fireplayer.shell.Tokens
 
 /**
  * Small pop-up windows in the player's style: pick one of several values,
@@ -77,9 +82,11 @@ object FireDialog {
         val width = (screenWidth * 0.22f).toInt().coerceAtLeast(rows.dp(190))
         show(activity, dialog, box, width, menuPassesOn = true) { params ->
             if (besidePanel) {
-                // Just left of the settings window (31% of the screen plus its margin).
+                // Just left of the settings window (31% of the screen, or a wide window's 44%, plus its margin).
+                val panelWidth = activity.findViewById<View>(R.id.panel)?.takeIf { it.isShown }?.layoutParams?.width?.takeIf { it > 0 }
+                    ?: (screenWidth * 0.31f).toInt()
                 params.gravity = Gravity.END or Gravity.CENTER_VERTICAL
-                params.marginEnd = (screenWidth * 0.31f).toInt() + rows.dp(30)
+                params.marginEnd = panelWidth + rows.dp(30)
                 params.rightMargin = params.marginEnd
             }
         }
@@ -138,6 +145,77 @@ object FireDialog {
         return dialog
     }
 
+    /**
+     * A held row's small window in the app's one hold window shape ([HoldShape], as Live TV's and Films & Shows'
+     * [app.fireplayer.live.ui.HoldPopup]): [title] on its line, then [answers] one per line, beside [anchor] (the row
+     * held: what's selected now, unless given), as wide as its widest line, kept on screen. Keys, Back and the menu
+     * button ([fromPanel]) as [ask].
+     */
+    fun hold(
+        activity: Activity,
+        title: String,
+        answers: List<Pair<String, () -> Unit>>,
+        fromPanel: Boolean = false,
+        anchor: View? = activity.currentFocus,
+    ): Popup? {
+        if (gone(activity) || answers.isEmpty()) return null
+        val content = activity.findViewById<View>(android.R.id.content) ?: return null
+        val t = Tokens(activity)
+        val rows = Rows(activity)
+        val dialog = newDialog(activity)
+        val box = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
+        HoldShape.pad(box, t)
+        Glass.overlay(box, Glass.Kind.DIALOG_POPUP)
+        box.addView(HoldShape.title(activity, t).apply {
+            text = title
+            if (title.isBlank()) visibility = View.GONE
+        })
+        var first: View? = null
+        answers.forEachIndexed { i, (label, action) ->
+            val row = HoldShape.option(rows, t)
+            HoldShape.words(row).text = label
+            row.setOnClickListener {
+                dialog.dismiss()
+                action()
+            }
+            row.setOnKeyListener { v, keyCode, event -> Rows.verticalNav(box, v, keyCode, event) }
+            box.addView(row, HoldShape.optionParams(t, first = i == 0))
+            if (i == 0) first = row
+        }
+        // Sized to its words and put beside the row held, inside the screen, before it's shown.
+        val edge = t.dpf(Tokens.HOLD_EDGE_DP)
+        val area = RectF(edge, edge, content.width - edge, content.height - edge)
+        val w = HoldShape.width(box, t, area.width())
+        box.measure(
+            View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+        )
+        val held = anchor?.takeIf { it.isAttachedToWindow && it.isShown }?.let { inContent(it, content) }
+            ?: RectF(area.centerX(), area.centerY(), area.centerX(), area.centerY())
+        val width = w.toFloat()
+        val x = HoldPlace.x(held.left, held.right, width, t.dpf(Tokens.HOLD_GAP_DP), area.left, area.right)
+        val y = HoldPlace.y(held.centerY(), box.measuredHeight.toFloat(), area.top, area.bottom)
+        dialog.slideFrom = -HoldPlace.side(x, width, held.left, held.right) * t.dpf(Tokens.HOLD_SLIDE_DP)
+        show(activity, dialog, box, w, menuPassesOn = fromPanel) { params ->
+            params.gravity = Gravity.TOP or Gravity.LEFT
+            params.leftMargin = x.toInt()
+            params.topMargin = y.toInt()
+        }
+        first?.requestFocus()
+        return dialog
+    }
+
+    /** [v]'s rectangle as drawn, in [content]'s coordinates (the small windows' layer). */
+    private fun inContent(v: View, content: View): RectF {
+        val a = IntArray(2)
+        v.getLocationInWindow(a)
+        val b = IntArray(2)
+        content.getLocationInWindow(b)
+        val left = (a[0] - b[0]).toFloat()
+        val top = (a[1] - b[1]).toFloat()
+        return RectF(left, top, left + v.width * v.scaleX, top + v.height * v.scaleY)
+    }
+
     /** Type a value, such as a preset name. [hint] shows in the empty box, as where to find a key. */
     fun prompt(
         activity: Activity,
@@ -146,13 +224,17 @@ object FireDialog {
         password: Boolean = false,
         inputType: Int = InputType.TYPE_CLASS_TEXT,
         hint: String? = null,
+        /** The keyboard neither suggests nor learns what is typed (a link carrying a key, kept only encrypted). */
+        unlearned: Boolean = false,
         onDone: (String) -> Unit,
     ) {
         if (gone(activity)) return
         val rows = Rows(activity)
         val dialog = newDialog(activity)
         val box = box(activity, title)
-        val keyboard = if (password) InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD else inputType
+        val keyboard = (if (password) InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD else inputType) or
+            (if (unlearned) InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS else 0)
+        val noLearning = if (unlearned && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING else 0
         val input = EditText(activity).apply {
             setText(initial)
             setSelection(initial.length)
@@ -164,7 +246,7 @@ object FireDialog {
             setHintTextColor(ContextCompat.getColor(activity, R.color.text_muted))
             typeface = ResourcesCompat.getFont(activity, R.font.figtree_600)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-            imeOptions = EditorInfo.IME_ACTION_DONE
+            imeOptions = EditorInfo.IME_ACTION_DONE or noLearning
             this.inputType = keyboard
         }
         box.addView(input, rows.listParams(top = 2, bottom = 8))
@@ -209,8 +291,8 @@ object FireDialog {
         val rows = Rows(activity)
         return LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
-            // Glass shows the film dimmed, as the window dims what's behind it.
-            Glass.background(this, Glass.Kind.DIALOG_POPUP)
+            // Glass shows the film (or, over the app's own pages, the page) dimmed, as the window dims what's behind it.
+            Glass.overlay(this, Glass.Kind.DIALOG_POPUP)
             setPadding(rows.dp(14), rows.dp(14), rows.dp(14), rows.dp(12))
             addView(TextView(activity).apply {
                 text = title
@@ -283,6 +365,8 @@ object FireDialog {
         }
         var onDismiss: (() -> Unit)? = null
         internal var menuPassesOn = false
+        /** A hold window ([hold]): it slides in from this far (px, towards the row held) instead of growing; else null. */
+        internal var slideFrom: Float? = null
         var isShowing = false
             private set
         private var before: View? = null
@@ -338,9 +422,16 @@ object FireDialog {
             shade.viewTreeObserver.addOnGlobalFocusChangeListener(keepFocus)
             shade.alpha = 0f
             shade.animate().alpha(1f).setDuration(140).start()
-            box.scaleX = 0.96f
-            box.scaleY = 0.96f
-            box.animate().scaleX(1f).scaleY(1f).setDuration(140).start()
+            val slide = slideFrom
+            if (slide != null) {
+                // A hold window: out of the row's side as the shade fades in (a move, nothing grown).
+                box.translationX = slide
+                box.animate().translationX(0f).setDuration(Tokens.HOLD_OPEN_MS).start()
+            } else {
+                box.scaleX = 0.96f
+                box.scaleY = 0.96f
+                box.animate().scaleX(1f).scaleY(1f).setDuration(140).start()
+            }
             // The caller puts the selection on its row next; until then, the first one inside.
             focusInside()
         }
@@ -349,6 +440,12 @@ object FireDialog {
             if (!isShowing) return
             isShowing = false
             open[activity]?.remove(this)
+            // Whatever closes the window (Save, Cancel, Back, Done), its keyboard closes with it: a keyboard left
+            // thinking it's still up can keep the D-pad from the screen underneath.
+            if (shade.findFocus() is android.widget.EditText) {
+                (activity.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)
+                    ?.hideSoftInputFromWindow(shade.windowToken, 0)
+            }
             shade.viewTreeObserver.takeIf { it.isAlive }?.removeOnGlobalFocusChangeListener(keepFocus)
             shade.animate().cancel()
             (shade.parent as? ViewGroup)?.removeView(shade)

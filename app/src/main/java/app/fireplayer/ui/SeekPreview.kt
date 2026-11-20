@@ -8,22 +8,25 @@ import android.view.View
 import android.widget.TextView
 import androidx.annotation.OptIn
 import androidx.media3.common.C
+import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.common.util.Util
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
+import app.fireplayer.player.PlayerFactory
 import app.fireplayer.player.RedirectMemoryDataSource
 
 /**
  * The picture above the time bar while skipping: a still from where the jump will land.
  *
  * A second, video-only player seeks to the keyframe nearest each new target and shows it. It starts
- * on the first press and is released a little after the last; its connection closes as soon as each
+ * on the first press and is released a little after the last ([holdMs]); its connection closes as soon as each
  * picture is loaded. If it can't play the video, previews stop for that video with a short note saying
  * why, and skipping works as before. A server that refuses the second connection (many IPTV accounts
  * allow one at a time) turns previews off until the player is closed, so the film keeps its connection.
@@ -42,6 +45,16 @@ class SeekPreview(
     private val onShowing: (Boolean) -> Unit,
     /** Called once when previews stop, with a short note saying why. */
     private val onFailed: (String) -> Unit,
+    /**
+     * How long the preview's player is kept after skipping stops, in case it starts again: 15 s, or 3 s on a TV short
+     * of memory (see [app.fireplayer.player.RamTier.previewHoldMs]), where its decoder and pictures are missed most.
+     */
+    private val holdMs: Long = 15_000L,
+    /**
+     * The preview's player decodes no picture bigger than 1080p (a TV short of memory, see
+     * [app.fireplayer.player.PlayerFactory.buildPreview]), so a video with only bigger ones gets no preview.
+     */
+    private val upTo1080pOnly: Boolean = false,
 ) : Player.Listener {
 
     private val handler = Handler(Looper.getMainLooper())
@@ -140,7 +153,7 @@ class SeekPreview(
         card.animate().alpha(0f).setDuration(140).start()
         setShown(false)
         handler.removeCallbacks(releaseRunnable)
-        handler.postDelayed(releaseRunnable, 15_000)
+        handler.postDelayed(releaseRunnable, holdMs)
     }
 
     /**
@@ -289,6 +302,20 @@ class SeekPreview(
             error.errorCode in 4000..4999 -> "No skip preview for this video: the TV can't decode it twice at once"
             else -> "No skip preview for this video (error ${error.errorCode})"
         }
+        fail(note)
+    }
+
+    override fun onTracksChanged(tracks: Tracks) {
+        // A video whose picture the preview won't decode: bigger than 1080p on a TV short of memory (see
+        // PlayerFactory.buildPreview), which leaves the preview with no picture at all. No preview for this video then,
+        // said once, rather than an empty card on every press; skipping goes on as without previews.
+        if (upTo1080pOnly && tooBigToPreview(tracks, PlayerFactory.PREVIEW_MAX_WIDTH, PlayerFactory.PREVIEW_MAX_HEIGHT)) {
+            fail(TOO_BIG_NOTE)
+        }
+    }
+
+    /** Previews stop for this video, and [note] says why once; skipping goes on as without them. */
+    private fun fail(note: String) {
         failedKey = itemKey
         hide()
         release()
@@ -340,12 +367,34 @@ class SeekPreview(
 
     companion object {
         private const val SERVER_NOTE = "Skip preview off: the server refused a second connection"
+        private const val TOO_BIG_NOTE = "No skip preview for this video: its picture is too big to decode twice on this TV"
 
         // What IPTV servers answer when an account already has its connections in use.
         private val REFUSAL_CODES = setOf(401, 403, 429, 456, 458, 503, 509)
 
         /** How soon after the other player opened a connection a dropped one counts as cut off for it. */
         const val CUT_OFF_MS = 3_000L
+
+        /**
+         * Whether [tracks] left the preview without a picture because every one is bigger than [maxWidth] x
+         * [maxHeight]. A picture whose size isn't given counts as fitting, as it does for Media3's track choice; one
+         * that fits but wasn't chosen (no decoder for it) isn't this, and is left as it was.
+         */
+        fun tooBigToPreview(tracks: Tracks, maxWidth: Int, maxHeight: Int): Boolean {
+            var any = false
+            for (group in tracks.groups) {
+                if (group.type != C.TRACK_TYPE_VIDEO) continue
+                if (group.isSelected) return false
+                for (i in 0 until group.length) {
+                    any = true
+                    val f = group.getTrackFormat(i)
+                    val fits = (f.width == Format.NO_VALUE || f.width <= maxWidth) &&
+                        (f.height == Format.NO_VALUE || f.height <= maxHeight)
+                    if (fits) return false
+                }
+            }
+            return any
+        }
 
         /** Whether [error] is the server saying no to a connection, rather than a slow or broken one. */
         fun isRefusal(error: Throwable?): Boolean = when (error) {

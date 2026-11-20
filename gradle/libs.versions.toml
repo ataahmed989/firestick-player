@@ -9,6 +9,9 @@ coreKtx = "1.16.0"
 appcompat = "1.7.1"
 mlkitText = "16.0.1"
 junit = "4.13.2"
+recyclerview = "1.3.0"
+orgJson = "20231013"
+kxml2 = "2.3.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -24,6 +27,10 @@ ffmpeg-decoder = { group = "org.jellyfin.media3", name = "media3-ffmpeg-decoder"
 mlkit-text-recognition = { group = "com.google.mlkit", name = "text-recognition", version.ref = "mlkitText" }
 
 junit = { group = "junit", name = "junit", version.ref = "junit" }
+androidx-recyclerview = { group = "androidx.recyclerview", name = "recyclerview", version.ref = "recyclerview" }
+# Real org.json and an XML pull parser for JVM unit tests (android.jar only has stubs there).
+org-json = { group = "org.json", name = "json", version.ref = "orgJson" }
+kxml2 = { group = "net.sf.kxml", name = "kxml2", version.ref = "kxml2" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

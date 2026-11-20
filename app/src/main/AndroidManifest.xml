@@ -31,10 +31,13 @@
         android:theme="@style/Theme.FirePlayer"
         android:usesCleartextTraffic="true">
 
+        <!-- adjustPan, stated: left unstated, Android picks it again whenever a scrolling list shows or hides (Live TV's
+             groups column), and each change rebuilds the window (a stall of tens to hundreds of ms on a Fire TV). -->
         <activity
             android:name=".HomeActivity"
             android:exported="true"
-            android:screenOrientation="landscape">
+            android:screenOrientation="landscape"
+            android:windowSoftInputMode="adjustPan">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -172,7 +175,7 @@
         -->
         <provider
             android:name=".history.ContinueProvider"
-            android:authorities="app.fireplayer.continue"
+            android:authorities="${applicationId}.continue"
             android:exported="true" />
 
         <provider

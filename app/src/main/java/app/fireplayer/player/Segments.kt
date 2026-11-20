@@ -80,12 +80,15 @@ object MkvChapters {
 
     class Chapter(val startMs: Long, val endMs: Long?, val name: String)
 
-    /** Blocks. Null when the file has no such chapters, isn't an MKV, or can't be read. */
+    /**
+     * Blocks. Null when the file has no such chapters, isn't an MKV, or can't be read. A failure is logged by its kind
+     * only: an exception's text can hold the file's link, which for a source from the add-ons is private.
+     */
     fun segments(uri: Uri, headers: Map<String, String>, durationMs: Long): Segments? = runCatching {
         val chapters = read(uri, headers) ?: return null
         if (chapters.isNotEmpty()) Log.i(TAG, "Chapters: " + chapters.joinToString { "${it.name}@${it.startMs / 1000}s" })
         classify(chapters, durationMs)
-    }.onFailure { Log.w(TAG, "Couldn't read chapters", it) }.getOrNull()
+    }.onFailure { Log.w(TAG, "Couldn't read chapters: ${it.javaClass.simpleName}") }.getOrNull()
 
     fun classify(chapters: List<Chapter>, durationMs: Long): Segments? {
         val sorted = chapters.sortedBy { it.startMs }

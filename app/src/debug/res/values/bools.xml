@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The test build never runs the TiviMate title server: the user's FirePlayer already has port 8000. -->
+    <bool name="title_proxy">false</bool>
+</resources>
