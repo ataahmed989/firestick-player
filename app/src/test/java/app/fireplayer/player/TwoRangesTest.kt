@@ -258,7 +258,8 @@ class TwoRangesTest {
         }
         assertEquals(3_000, got)
         stream.close()
-        assertEquals("1(small file)", rig.film.mode())
+        // Nothing of the film yet.
+        assertEquals("2(not started)", rig.film.mode())
         // The film itself still gets two.
         rig.stream.open(0, "film")
         assertArrayEquals(expected(0, 10_500), rig.readAll(0))
@@ -329,6 +330,58 @@ class TwoRangesTest {
             // The segments' memory is let go.
             waitFor { rig.film.heldBytes == 0L }
         }
+    }
+
+    @Test
+    fun givingUpIsForThatFilmOnly() {
+        val rig = Rig()
+        rig.onHelper = { it.statusFor = { 429 } }
+        rig.stream.open(0, "one")
+        assertArrayEquals(expected(0, 10_500), rig.readAll(0))
+        rig.stream.close()
+        assertEquals("http 429 on the second request", rig.film.fallback)
+        // The same film at the address its provider sent it to: one request, though its ranges are checked anew.
+        rig.log.clear()
+        rig.stream.open(0, "one, where it landed")
+        assertArrayEquals(expected(0, 10_500), rig.readAll(0))
+        rig.stream.close()
+        assertEquals(listOf("first 0+-1 fresh probe"), rig.log.toList())
+        // Another film in the same player (the next episode, another source) gets its two.
+        val next = Fake(20_000, rig.log, "first")
+        val seconds = ArrayList<Fake>()
+        val stream = TwoRangeStream(rig.film, next) { Fake(20_000, rig.log, "second").also { seconds.add(it) } }
+        assertEquals(20_000L, stream.open(0, "two"))
+        val out = ByteArray(20_000)
+        var got = 0
+        while (true) {
+            val n = stream.read(out, got, minOf(700, out.size - got))
+            if (n <= 0) break
+            got += n
+        }
+        stream.close()
+        assertArrayEquals(expected(0, 20_000), out)
+        assertEquals("2", rig.film.mode())
+        assertNull(rig.film.fallback)
+        assertEquals(1, seconds.size)
+        assertEquals("http 429 on the second request", rig.film.fallbackFor(10_500))
+    }
+
+    @Test
+    fun turnedOffWhileAFilmPlaysItsNextConnectionIsOneRequest() {
+        val rig = Rig()
+        rig.stream.open(0, "k")
+        rig.stream.close()
+        rig.film.enabled = false
+        rig.log.clear()
+        rig.stream.open(2_000, "k")
+        assertArrayEquals(expected(2_000, 10_500), rig.readAll(2_000))
+        rig.stream.close()
+        assertEquals(listOf("first 2000+-1 fresh"), rig.log.toList())
+        assertEquals("1(turned off)", rig.film.mode())
+        // And a film first met while it's off isn't even asked for a range.
+        rig.stream.open(0, "other")
+        assertEquals("first 0+-1 fresh", rig.log.last())
+        rig.stream.close()
     }
 
     @Test

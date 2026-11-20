@@ -1125,6 +1125,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     // ---------------------------------------------------------------------
     // Player
 
+    // This player's two requests ("Faster downloads"), to turn them off when the setting is; null without them.
+    private var filmRanges: TwoRanges? = null
+
     private fun initPlayer() {
         // Every way of building a player comes here: none is built until the decoder list is in, or it would wait on
         // a stuck decoder service forever.
@@ -1146,6 +1149,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val hdr10Plus = Hdr10PlusGate(this)
         // "Faster downloads (2 connections)", as set when this film or source starts; null is one request, as ever.
         val twoRanges = if (prefs.fasterDownloads) TwoRanges() else null
+        filmRanges = twoRanges
         val built = PlayerFactory.build(
             context = this,
             delays = delays,
@@ -4832,6 +4836,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         openPanel("Settings", from, onClosed = {
             settingsOpen = false
             if (prefs.passthrough != passthrough) rebuildPlayer()
+            // No rebuild for this one: off, the film's next connection is one request; on, the next film's player has two.
+            filmRanges?.enabled = prefs.fasterDownloads
             if (prefs.playNextEpisode != playNext) nextEpisodeSwitched()
             // Only when the setting itself changed: matching again would pause the film for nothing.
             if (prefs.matchFrameRate != matchFps) {

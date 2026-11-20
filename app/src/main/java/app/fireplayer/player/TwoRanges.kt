@@ -7,6 +7,7 @@ import java.io.InterruptedIOException
 import java.net.SocketTimeoutException
 import java.util.ArrayDeque
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -25,9 +26,12 @@ import java.util.concurrent.atomic.AtomicLong
  *   and used again; a segment is given back the moment its last byte is handed on, and all of them when two requests
  *   are given up.
  * - A jump or a close cuts the second request off at once and drops what it had fetched.
- * - One request for the rest of the film ([fallback]) when the server answers 429, 503, 403 or 509 to either request,
+ * - One request for the rest of the film ([fallbackFor]) when the server answers 429, 503, 403 or 509 to either request,
  *   stops honouring a range, the second request fails, ends early or goes quiet, or the first request spends more time
  *   waiting for the second than reading ([HelperPace]): two must never be worse than one.
+ *
+ * A film is told by its size in bytes, so what is decided for it holds whichever of its addresses is asked (the link, or
+ * where the provider sent it); another film in the same player (the next episode, another source) starts afresh.
  *
  * This object is one player's: its data sources share it. The log (tag [TAG]) never has a link, a host or a header:
  * only the status, sizes and reasons made here.
@@ -80,9 +84,20 @@ class TwoRanges(val config: Config = Config(), private val log: (String) -> Unit
     /** What is known of a link: whether it's read with two requests, its size, and why not. */
     class Link(val two: Boolean, val total: Long, val why: String)
 
-    /** Why this player's films are on one request from here on; null while two are allowed. */
-    @Volatile var fallback: String? = null
-        private set
+    /** "Faster downloads" as it is set now: turned off while a film plays, its next connection is one request again. */
+    @Volatile var enabled = true
+
+    // Why a film (by its size) is on one request for good. Read anywhere; changed under poolLock.
+    private val gaveUp = ConcurrentHashMap<Long, String>()
+
+    // The film last opened (not a small file beside it): what the log's mode is about.
+    @Volatile private var current: Link? = null
+
+    /** Why the film of [total] bytes is on one request from here on; null while two are allowed. */
+    fun fallbackFor(total: Long): String? = gaveUp[total]
+
+    /** The same for the film last opened. */
+    val fallback: String? get() = current?.let { fallbackFor(it.total) }
 
     /** Told of every byte the second request brings, for the download speed ([ByteMeter]); on its thread. */
     @Volatile var onHelperBytes: ((Int) -> Unit)? = null
@@ -102,11 +117,16 @@ class TwoRanges(val config: Config = Config(), private val log: (String) -> Unit
 
     internal fun link(key: String): Link? = synchronized(links) { links[key] }
 
+    /** A connection to [link] opens. */
+    internal fun opened(link: Link) {
+        if (link.why != SMALL_FILE) current = link
+    }
+
     /** The first answer from [key]: logged, and kept. */
     internal fun probed(key: String, status: Int, verdict: RangeCheck.Verdict): Link {
         val link = when {
             !verdict.honoured -> Link(false, verdict.total, "ranges ignored (${verdict.reason})")
-            verdict.total < config.minFileBytes -> Link(false, verdict.total, "small file")
+            verdict.total < config.minFileBytes -> Link(false, verdict.total, SMALL_FILE)
             else -> Link(true, verdict.total, "")
         }
         synchronized(links) {
@@ -118,11 +138,11 @@ class TwoRanges(val config: Config = Config(), private val log: (String) -> Unit
         return link
     }
 
-    /** One request from here on, for [reason]: the first reason stays. The segments' memory is let go. */
-    internal fun fallBack(reason: String) {
+    /** One request from here on for the film of [total] bytes, for [reason]: the first reason stays. The segments' memory is let go. */
+    internal fun fallBack(total: Long, reason: String) {
         synchronized(poolLock) {
-            if (fallback != null) return
-            fallback = reason
+            if (gaveUp.containsKey(total)) return
+            gaveUp[total] = reason
             made -= free.size
             free.clear()
             poolLock.notifyAll()
@@ -134,7 +154,7 @@ class TwoRanges(val config: Config = Config(), private val log: (String) -> Unit
     @Throws(InterruptedException::class)
     internal fun take(run: HelperRun): ByteArray? {
         synchronized(poolLock) {
-            while (!run.cancelled && fallback == null) {
+            while (!run.cancelled && !gaveUp.containsKey(run.total)) {
                 if (free.isNotEmpty()) return free.removeAt(free.size - 1)
                 if (made < config.buffers) {
                     val buffer = ByteArray(config.segmentBytes)
@@ -147,9 +167,9 @@ class TwoRanges(val config: Config = Config(), private val log: (String) -> Unit
         return null
     }
 
-    internal fun put(buffer: ByteArray) = synchronized(poolLock) {
+    internal fun put(buffer: ByteArray, total: Long) = synchronized(poolLock) {
         // Given up: nothing is kept for a second request that won't come.
-        if (fallback != null) made-- else free.add(buffer)
+        if (gaveUp.containsKey(total)) made-- else free.add(buffer)
         poolLock.notifyAll()
     }
 
@@ -180,14 +200,15 @@ class TwoRanges(val config: Config = Config(), private val log: (String) -> Unit
         waitNs.addAndGet(ns)
     }
 
-    /** "2", "1(fallback: http 429)", "1(ranges ignored (status 200))", or "2(not started)" before a film's first answer. */
+    /**
+     * For the film last opened: "2", "1(fallback: http 429)", "1(ranges ignored (status 200))", "1(turned off)", or
+     * "2(not started)" before its first answer.
+     */
     fun mode(): String {
-        fallback?.let { return "1(fallback: $it)" }
-        val known = synchronized(links) { links.values.toList() }
-        if (known.any { it.two }) return "2"
-        // Subtitle files are small files too: only a refusal says something of the film.
-        known.firstOrNull { it.why != "small file" }?.let { return "1(${it.why})" }
-        return if (known.isEmpty()) "2(not started)" else "1(small file)"
+        if (!enabled) return "1(turned off)"
+        val film = current ?: return "2(not started)"
+        fallbackFor(film.total)?.let { return "1(fallback: $it)" }
+        return if (film.two) "2" else "1(${film.why})"
     }
 
     /**
@@ -214,6 +235,7 @@ class TwoRanges(val config: Config = Config(), private val log: (String) -> Unit
         /** The statuses a server turns a request away with when there are too many, or the link's allowance is spent. */
         val LIMIT_STATUSES = setOf(429, 503, 403, 509)
         private const val MAX_LINKS = 16
+        private const val SMALL_FILE = "small file"
 
         /** Whether [e] is a read cut short on purpose (a jump, a close), not a failure. */
         fun cancelled(e: IOException): Boolean {
@@ -326,14 +348,15 @@ class TwoRangeStream(
         plain = true
         primaryOpen = false
         delivered = 0L
-        if (film.fallback != null) return primary.open(position, -1L, fresh = true, probe = false).length
+        if (!film.enabled) return primary.open(position, -1L, fresh = true, probe = false).length
         val link = film.link(key)
         if (link == null) {
             // The first answer says whether the server gives ranges, and the file's size.
             val answer = primary.open(position, -1L, fresh = true, probe = true)
             val verdict = RangeCheck.check(answer.status, answer.contentRange, position, -1L)
             val known = film.probed(key, answer.status, verdict)
-            if (known.two && worth(position, known.total) && answer.length == known.total - position) {
+            film.opened(known)
+            if (usable(known, position) && answer.length == known.total - position) {
                 // This request reads on as the first segment; it's ended there (it asked for the whole rest).
                 two(position, known.total)
                 primaryOpen = true
@@ -341,14 +364,20 @@ class TwoRangeStream(
             }
             return answer.length
         }
-        if (!link.two || !worth(position, link.total)) return primary.open(position, -1L, fresh = true, probe = false).length
+        film.opened(link)
+        if (!usable(link, position)) return primary.open(position, -1L, fresh = true, probe = false).length
         two(position, link.total)
         openSegment(first = true)
         return if (plain) plainLength else link.total - position
     }
 
-    // Two requests need a segment for each.
-    private fun worth(position: Long, total: Long): Boolean = position >= 0L && total - position > segment
+    // The server gives ranges, the film hasn't been put back on one request, and there's a segment for each.
+    private fun usable(link: TwoRanges.Link, position: Long): Boolean =
+        link.two && film.fallbackFor(link.total) == null && position >= 0L && link.total - position > segment
+
+    private fun gaveUp(): Boolean = film.fallbackFor(plan.end) != null
+
+    private fun fallBack(reason: String) = film.fallBack(plan.end, reason)
 
     private fun two(base: Long, end: Long) {
         plain = false
@@ -366,7 +395,7 @@ class TwoRangeStream(
 
     private fun readPrimary(buffer: ByteArray, offset: Int, length: Int): Int {
         if (!primaryOpen) {
-            if (film.fallback != null) goPlain() else openSegment(first = false)
+            if (gaveUp()) goPlain() else openSegment(first = false)
             if (plain) return primary.read(buffer, offset, length)
         }
         val started = System.nanoTime()
@@ -383,23 +412,23 @@ class TwoRangeStream(
             primaryOpen = false
             primary.close()
         }
-        if (run == null && delivered >= film.config.startAfterBytes && film.fallback == null && plan.count > 1) startHelper()
+        if (run == null && delivered >= film.config.startAfterBytes && !gaveUp() && plan.count > 1) startHelper()
         return n
     }
 
     private fun readHelper(seg: Int, buffer: ByteArray, offset: Int, length: Int): Int {
-        val r = if (film.fallback != null) null else run ?: startHelper()
+        val r = if (gaveUp()) null else run ?: startHelper()
         val n = try {
             r?.read(seg, position, buffer, offset, length) ?: -1
         } catch (e: HelperGone) {
-            film.fallBack(e.reason)
+            fallBack(e.reason)
             -1
         }
         if (r != null) {
             film.waited(r.lastWaitNs)
             if (n > 0 && pace.waited(r.lastWaitNs)) {
                 // It goes on with one request from the next segment; the second stops fetching now.
-                film.fallBack("second request too slow")
+                fallBack("second request too slow")
                 r.cancel()
                 run = null
             }
@@ -431,14 +460,14 @@ class TwoRangeStream(
             // handle, as with one request. In the middle of one, the film goes on with one request instead.
             if (first && status !in TwoRanges.LIMIT_STATUSES) throw e
             closeQuietly()
-            film.fallBack(if (status > 0) "http $status" else "request for the next segment failed")
+            fallBack(if (status > 0) "http $status" else "request for the next segment failed")
             goPlain()
             return
         }
         val verdict = RangeCheck.check(answer.status, answer.contentRange, position, to - 1)
         if (!verdict.honoured || verdict.total != plan.end) {
             closeQuietly()
-            film.fallBack("range not given" + if (verdict.honoured) "" else " (${verdict.reason})")
+            fallBack("range not given" + if (verdict.honoured) "" else " (${verdict.reason})")
             goPlain()
             return
         }
@@ -502,6 +531,9 @@ internal class HelperRun(private val film: TwoRanges, private val request: TwoRa
     private var failed: String? = null
     private var ended = false
     private val thread = Thread(this, "FilmSecondRequest").apply { isDaemon = true }
+
+    /** The film's size: what tells it from another. */
+    val total: Long get() = plan.end
 
     /** How long the last [read] waited for bytes, in ns. */
     var lastWaitNs = 0L
@@ -574,13 +606,13 @@ internal class HelperRun(private val film: TwoRanges, private val request: TwoRa
             if (failed == null) failed = reason
             lock.notifyAll()
         }
-        if (!cancelled) film.fallBack(reason)
+        if (!cancelled) film.fallBack(plan.end, reason)
         return false
     }
 
     // Under the lock, with the thread ended: nothing writes to these any more.
     private fun drain() {
-        for (slot in slots) film.put(slot.buffer)
+        for (slot in slots) film.put(slot.buffer, plan.end)
         slots.clear()
     }
 
@@ -611,7 +643,7 @@ internal class HelperRun(private val film: TwoRanges, private val request: TwoRa
                     if (at + n == slot.length) {
                         // Whole and handed on: its memory is free for the segment after next.
                         slots.removeFirst()
-                        film.put(slot.buffer)
+                        film.put(slot.buffer, plan.end)
                     }
                     if (waitFrom != 0L) lastWaitNs = System.nanoTime() - waitFrom
                     return n
