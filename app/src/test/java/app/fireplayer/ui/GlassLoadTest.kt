@@ -6,11 +6,10 @@ import androidx.media3.common.Format
 import androidx.media3.common.MimeTypes
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** The glass's lighter load while a film of 70 Mb/s or more plays on a TV short of memory. */
+/** The glass's pace (the same for every film) and what counts as heavy video. */
 class GlassLoadTest {
 
     private fun video(
@@ -30,45 +29,30 @@ class GlassLoadTest {
         return b.build()
     }
 
-    @Test fun refreshIsCappedAtTwoWithHeavyVideo() {
-        assertEquals(8, GlassLoad.refreshPerSec(8, heavy = false))
-        assertEquals(4, GlassLoad.refreshPerSec(4, heavy = false))
-        assertEquals(2, GlassLoad.refreshPerSec(8, heavy = true))
-        assertEquals(2, GlassLoad.refreshPerSec(4, heavy = true))
-        // A lower setting stays lower.
-        assertEquals(2, GlassLoad.refreshPerSec(2, heavy = true))
-        assertEquals(1, GlassLoad.refreshPerSec(1, heavy = true))
+    @Test fun refreshIsTheSettingWhateverTheFilm() {
+        // 4K films included: no cap below the setting (the user's choice, replacing the old 2 a second in 4K).
+        assertEquals(8, GlassLoad.refreshPerSec(8))
+        assertEquals(4, GlassLoad.refreshPerSec(4))
+        assertEquals(2, GlassLoad.refreshPerSec(2))
         // Out of range, as before: 1 to 8.
-        assertEquals(1, GlassLoad.refreshPerSec(0, heavy = false))
-        assertEquals(8, GlassLoad.refreshPerSec(20, heavy = false))
+        assertEquals(1, GlassLoad.refreshPerSec(0))
+        assertEquals(8, GlassLoad.refreshPerSec(20))
     }
 
-    @Test fun probesEveryHalfSecondWithHeavyVideo() {
-        assertEquals(100L, GlassLoad.probeMs(heavy = false))
-        assertEquals(500L, GlassLoad.probeMs(heavy = true))
-    }
-
-    @Test fun theRowSaysWhenTheSettingIsLowered() {
-        assertEquals("8 a second · 2 at 70+ Mb/s", GlassLoad.refreshLabel(8, heavy = true))
-        assertEquals("4 a second · 2 at 70+ Mb/s", GlassLoad.refreshLabel(4, heavy = true))
-        // Not lowered: the row shows the setting's own name.
-        assertNull(GlassLoad.refreshLabel(2, heavy = true))
-        assertNull(GlassLoad.refreshLabel(8, heavy = false))
+    @Test fun probesEveryTenthOfASecond() {
+        assertEquals(100L, GlassLoad.PROBE_MS)
     }
 
     @Test fun fadesAreDrawnAtTheTvsRefreshNotAtFireOsSixtyFrames() {
         // A TV switched to a film's 23.976 Hz: one drawing a refresh, asked for a little early.
-        assertEquals(37L, GlassLoad.fadeStepMs(23.976f, heavy = false))
-        assertEquals(37L, GlassLoad.fadeStepMs(23.976f, heavy = true))
-        assertEquals(36L, GlassLoad.fadeStepMs(25f, heavy = false))
-        // At 50 or 60 Hz every frame, as before; heavy video never oftener than 30 a second.
-        assertEquals(16L, GlassLoad.fadeStepMs(50f, heavy = false))
-        assertEquals(0L, GlassLoad.fadeStepMs(59.94f, heavy = false))
-        assertEquals(33L, GlassLoad.fadeStepMs(59.94f, heavy = true))
-        assertEquals(33L, GlassLoad.fadeStepMs(50f, heavy = true))
+        assertEquals(37L, GlassLoad.fadeStepMs(23.976f))
+        assertEquals(36L, GlassLoad.fadeStepMs(25f))
+        // At 50 or 60 Hz every frame, as before, 4K films included.
+        assertEquals(16L, GlassLoad.fadeStepMs(50f))
+        assertEquals(0L, GlassLoad.fadeStepMs(59.94f))
         // A refresh the TV doesn't report counts as 60.
-        assertEquals(0L, GlassLoad.fadeStepMs(0f, heavy = false))
-        assertEquals(0L, GlassLoad.fadeStepMs(Float.NaN, heavy = false))
+        assertEquals(0L, GlassLoad.fadeStepMs(0f))
+        assertEquals(0L, GlassLoad.fadeStepMs(Float.NaN))
     }
 
     @Test fun smallRamIsUnder1point8GiB() {
@@ -93,19 +77,6 @@ class GlassLoadTest {
         assertFalse(GlassLoad.uhdHdr(3840, 2160, Format.NO_VALUE, MimeTypes.VIDEO_H265, "hvc1.2.4.L153.B0"))
         assertFalse(GlassLoad.uhdHdr(1920, 1080, C.COLOR_TRANSFER_ST2084, MimeTypes.VIDEO_H265, null))
         assertFalse(GlassLoad.uhdHdr(1920, 1080, Format.NO_VALUE, MimeTypes.VIDEO_DOLBY_VISION, "dvhe.05.06"))
-    }
-
-    @Test fun heavyForTheGlassIs70MbpsOrMoreOnASmallTv() {
-        // The user's line: 70 Mb/s and up (its size over its running time), whatever the picture.
-        assertTrue(GlassLoad.heavyGlass(70_000_000L, smallRam = true))
-        assertTrue(GlassLoad.heavyGlass(95_000_000L, smallRam = true))
-        // Under it, 4K included, the glass follows the setting.
-        assertFalse(GlassLoad.heavyGlass(69_999_999L, smallRam = true))
-        assertFalse(GlassLoad.heavyGlass(25_000_000L, smallRam = true))
-        // Not known yet: not heavy.
-        assertFalse(GlassLoad.heavyGlass(0L, smallRam = true))
-        // A TV with memory to spare: never.
-        assertFalse(GlassLoad.heavyGlass(120_000_000L, smallRam = false))
     }
 
     @Test fun heavyIs4kOnASmallTv() {

@@ -1634,7 +1634,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             launchMark(LaunchLog.LOADED)
             pictureText.go()
             noteEpisodeLength()
-            // The film's size and running time are known by now: how hard the glass may work on it.
+            // The film's picture is known by now: how often the black-bar watch looks.
             updateGlassLoad()
             if (glassAfterSeek) {
                 glassAfterSeek = false
@@ -1813,14 +1813,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     /**
-     * Tells the glass and the black-bar watch how heavy the film is on a TV short of memory: the glass copies less often
-     * for a film of 70 Mb/s or more ([GlassLoad.heavyGlass]), the black-bar watch looks less often for any 4K film
-     * ([GlassLoad.heavy]). Asked again whenever the video's format or size changes and when the film is ready (by then
-     * its size and running time are known).
+     * Tells the black-bar watch whether the film is 4K on a TV short of memory ([GlassLoad.heavy]): it looks less often
+     * then. The glass copies every film as the Glass refresh setting says, whatever its size or data rate (the user's
+     * choice). Asked again whenever the video's format or size changes and when the film is ready.
      */
     private fun updateGlassLoad() {
         val smallRam = GlassLoad.smallRam(this)
-        backdrop?.heavyVideo = GlassLoad.heavyGlass(filmAverageBps(), smallRam)
         barWatch?.heavyVideo = GlassLoad.heavy(
             selectedFormat(C.TRACK_TYPE_VIDEO),
             player?.videoSize?.width ?: 0,
