@@ -106,6 +106,7 @@ import app.fireplayer.player.PlayerFactory
 import app.fireplayer.player.ServerSwitch
 import app.fireplayer.player.ThreadBeat
 import app.fireplayer.player.TitleInfo
+import app.fireplayer.player.TwoRanges
 import app.fireplayer.player.VsyncFix
 import app.fireplayer.player.Hdr10PlusGate
 import app.fireplayer.player.XtreamAccount
@@ -1143,6 +1144,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         val vsync = VsyncFix(this)
         val hdr10Plus = Hdr10PlusGate(this)
+        // "Faster downloads (2 connections)", as set when this film or source starts; null is one request, as ever.
+        val twoRanges = if (prefs.fasterDownloads) TwoRanges() else null
         val built = PlayerFactory.build(
             context = this,
             delays = delays,
@@ -1161,6 +1164,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             byteMeter = diag.meter,
             freshLinks = source != null,
             keepBudgetBytes = keepBudgetBytes,
+            twoRanges = twoRanges,
         )
         keepBudgetBytes = 0
         builtAt = SystemClock.elapsedRealtime()
@@ -1186,7 +1190,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         p.addListener(this)
         p.addAnalyticsListener(filmLoadErrors)
         p.addAnalyticsListener(droppedFrames)
-        diag.newPlayer()
+        diag.newPlayer(twoRanges)
         diag.filmBytes = built.filmBytes
         diag.fillBytes = built.fillBytes
         diag.note = ::diagNote

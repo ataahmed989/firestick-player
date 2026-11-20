@@ -130,6 +130,14 @@ class Prefs(context: Context) {
         set(v) = sp.edit().putBoolean("passthrough", v).apply()
 
     /**
+     * "Faster downloads (2 connections)": a film is read with up to two requests at a time
+     * ([app.fireplayer.player.TwoRanges]). Off unless the viewer turns it on; read as each film's player is built.
+     */
+    var fasterDownloads: Boolean
+        get() = sp.getBoolean("faster_downloads", false)
+        set(v) = sp.edit().putBoolean("faster_downloads", v).apply()
+
+    /**
      * "Keep embedded styling": ASS/SSA is drawn with libass (positions, fonts, effects) and other
      * subtitles keep their own colours. Off, the chosen preset always wins.
      */
