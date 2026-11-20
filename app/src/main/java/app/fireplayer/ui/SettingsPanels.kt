@@ -323,15 +323,12 @@ class SettingsPanels(
         }
         if (prefs.glassLook) {
             // How often the glass copies the film: faster follows it more closely, slower is lighter on older sticks.
+            // It applies to every film, 4K and 70 Mb/s and up included.
             val rates = listOf(2, 4, 8)
-            // Over a film of 70 Mb/s or more on a TV short of memory the glass copies less often (GlassLoad): the row
-            // says so, as "8 a second · 2 at 70+ Mb/s", while the setting itself stays as chosen.
-            val heavy = (activity as? GlassBackdrop.Host)?.glassBackdrop?.heavyVideo == true
             choice(
                 "Glass refresh",
                 rates.map { "$it times a second" },
                 rates.indexOf(prefs.glassRefreshPerSec).let { if (it < 0) 1 else it },
-                valueText = GlassLoad.refreshLabel(prefs.glassRefreshPerSec, heavy),
             ) {
                 prefs.glassRefreshPerSec = rates[it]
             }.asSubRow()
