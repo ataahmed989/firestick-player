@@ -90,6 +90,7 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
     private val goLiveGroup: View = findViewById(R.id.live_go_live_group)
     private val btnGoLive: ImageButton = findViewById(R.id.live_btn_go_live)
     val guideButton: ImageButton = findViewById(R.id.live_btn_guide)
+    private val guideLabel: View = findViewById(R.id.live_guide_label)
     private val btnHistory: ImageButton = findViewById(R.id.live_btn_history)
     private val btnCaptions: View = findViewById(R.id.live_btn_cc)
     private val captionsValue: TextView = findViewById(R.id.live_cc_value)
@@ -129,7 +130,7 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
         // As the VOD player: circles grow 1.08, pills 1.04, and the name fades in under the selected one.
         focusEffect(btnPlay, Tokens.GROW_CIRCLE, null)
         focusEffect(btnGoLive, Tokens.GROW_CIRCLE, findViewById(R.id.live_go_live_label))
-        focusEffect(guideButton, Tokens.GROW_CIRCLE, findViewById(R.id.live_guide_label))
+        focusEffect(guideButton, Tokens.GROW_CIRCLE, guideLabel)
         focusEffect(btnHistory, Tokens.GROW_CIRCLE, findViewById(R.id.live_history_label))
         focusEffect(btnCaptions, Tokens.GROW_PILL, findViewById(R.id.live_cc_label))
         focusEffect(btnFavorite, Tokens.GROW_CIRCLE, favoriteLabel)
@@ -142,6 +143,11 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
         // Left stops at the first button rather than wandering off the controls; right at the last.
         listOf(btnPlay, btnGoLive, guideButton, btnHistory, btnCaptions, btnFavorite).forEach { if (it.id == View.NO_ID) it.id = generateViewId() }
         buildMoreRow()
+        // Each of the two rows that swap holds all its selected button draws (glow, shadow, growth): fading as a whole,
+        // a row would otherwise cut them off flat at its edge until the fade ends.
+        val button = resources.getDimensionPixelSize(R.dimen.player_main_button)
+        Glass.roomForFocus(mainRow, button, Tokens.GROW_CIRCLE, sides = true)
+        Glass.roomForFocus(moreRow, button, Tokens.GROW_CIRCLE, sides = false)
         applyLook()
     }
 
@@ -393,7 +399,10 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
         val changed = !moreShown
         moreShown = true
         swapRows(show = moreRow, hide = mainRow, showArrow = arrowUp, hideArrow = arrowDown, up = true, animate = animate && changed)
-        (focus ?: moreItems.values.firstOrNull { it.view.isFocusable }?.view)?.requestFocus()
+        val target = focus ?: moreItems.values.firstOrNull { it.view.isFocusable }?.view ?: return
+        target.requestFocus()
+        // The row glides in with its button already selected (no second change inside the fade).
+        if (animate && changed && target.isFocused) Tokens.settleFocus(target, MORE_GROW, null)
     }
 
     /** The buttons again; [focusRow] puts focus on the first of them. */
@@ -401,7 +410,11 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
         val changed = moreShown
         moreShown = false
         swapRows(show = mainRow, hide = moreRow, showArrow = arrowDown, hideArrow = arrowUp, up = false, animate = animate && changed)
-        if (focusRow) firstButton().requestFocus()
+        if (!focusRow) return
+        val first = firstButton()
+        first.requestFocus()
+        // The row glides in with its button already selected: white, grown and named, not turning so on the way.
+        if (animate && changed && first.isFocused) Tokens.settleFocus(first, Tokens.GROW_CIRCLE, if (first === guideButton) guideLabel else null)
     }
 
     /**

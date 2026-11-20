@@ -46,7 +46,12 @@ class FilmMode(private val activity: Activity, private val hooks: Hooks) {
     private var released = false
     /** When the film now starting was asked for (elapsedRealtime), for the log; 0 when none is. */
     private var filmAskedAt = 0L
-    private val backgroundRelease = Runnable { releaseNow() }
+    /** In the background with the release still waiting for its time ([BACKGROUND_RELEASE_MS]). */
+    private var waiting = false
+    private val backgroundRelease = Runnable {
+        waiting = false
+        releaseNow()
+    }
 
     /**
      * A film starts from a page: Live TV's decoder is freed, the snapshot is asked for, and [go] runs at once (the
@@ -69,17 +74,32 @@ class FilmMode(private val activity: Activity, private val hooks: Hooks) {
     /** The shell is covered or in the background: released now for a film, later otherwise. */
     fun onStop() {
         main.removeCallbacks(backgroundRelease)
+        waiting = false
         if (filmStarting) {
             filmStarting = false
             releaseNow()
         } else {
+            waiting = true
             main.postDelayed(backgroundRelease, BACKGROUND_RELEASE_MS)
         }
+    }
+
+    /**
+     * Fire OS asks the apps in the background for memory: the release waiting for its time runs now. Without that
+     * request it still waits, so a quick return (from Glass Home, a link) finds the pages as they were. True when it ran.
+     */
+    fun releaseIfAway(): Boolean {
+        if (!waiting) return false
+        main.removeCallbacks(backgroundRelease)
+        waiting = false
+        releaseNow()
+        return true
     }
 
     /** Back: the release that hadn't run yet doesn't; after one, the snapshot covers the page while it fills again. */
     fun onStart(over: FrameLayout) {
         main.removeCallbacks(backgroundRelease)
+        waiting = false
         main.removeCallbacks(trimStale)
         filmStarting = false
         filmAskedAt = 0L
@@ -90,6 +110,7 @@ class FilmMode(private val activity: Activity, private val hooks: Hooks) {
 
     fun release() {
         main.removeCallbacks(backgroundRelease)
+        waiting = false
         main.removeCallbacks(trimStale)
         overlay?.let { (it.parent as? ViewGroup)?.removeView(it) }
         overlay = null

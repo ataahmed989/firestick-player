@@ -1,6 +1,7 @@
 package app.fireplayer.live.ui
 
 import app.fireplayer.shell.NavRail
+import app.fireplayer.ui.GlassStyle
 
 /**
  * The Live TV page's widths across the screen (dp on the 960 x 540 dp screen), kept together so they're unit-tested
@@ -109,25 +110,30 @@ internal object LiveWidths {
     /**
      * Its columns, left to right: the playing playlist's groups (as wide as the guide's groups column), the channels
      * (number, logo, name over the programme on now, its progress line), the focused channel's programmes. Beside the
-     * groups, the channels column ends at 524 dp: clear of Multiview's ready picture at the top right (580 dp on).
+     * groups, the channels column ends at 534 dp: clear of Multiview's ready picture at the top right (580 dp on).
      */
     const val OV_GROUPS_W = COLUMN
-    const val OV_CHANNELS_W = 300
+    const val OV_CHANNELS_W = 310
     const val OV_PROGRAMMES_W = 250
-    /** A column's header line (the playlist, its group, or the focused channel) and the room above it. */
+    /**
+     * A column's header (the playlist, its group, or the focused channel: its logo beside its number and name over its
+     * playlist) and the room above it. One height for every column, so the rules under them line up; the same room is
+     * left under the last whole row.
+     */
     const val OV_TOP = 10
-    const val OV_HEAD_H = 40
-    /** The channel header over the programmes: the channel's logo beside its number and name over its playlist. */
-    const val OV_CHANNEL_HEAD_H = 52
+    const val OV_HEAD_H = 52
     /** Channel rows: this many fill the column under its header (TiviMate shows eight or nine). */
     const val OV_CHANNEL_ROWS = 9
+    /** A channel row's name line and programme line, as shares of its height (with the progress line, centred in it). */
+    const val OV_NAME_AT = 0.27f
+    const val OV_SUB_AT = 0.57f
     /** A group's row (the guide's groups column's) and a programme's. */
     const val OV_GROUP_ROW = 39
     const val OV_PROGRAMME_ROW = 36
     /** Inside a column: its sides, and a row's content inside the white pill. */
     const val OV_PAD_X = 10
     const val OV_ROW_PAD_X = 10
-    /** A channel row: its number (right-aligned in this width), the logo (the guide's), the gaps. */
+    /** A channel row: its number (centred in this width, or in what the list's longest number needs), the logo (the guide's), the gaps. */
     const val OV_NUMBER_W = 30
     const val OV_LOGO_W = 50
     const val OV_LOGO_H = 28
@@ -138,7 +144,7 @@ internal object LiveWidths {
     /** The header over the programmes: the channel's logo on its plate. */
     const val OV_HEAD_LOGO_W = 64
     const val OV_HEAD_LOGO_H = 34
-    /** The programme column: the start time's width before the title. */
+    /** The programme column: the start time's width before the title (more when the times need it). */
     const val OV_TIME_W = 74
     /** Text: names and groups as the guide's, the programme lines a little smaller. */
     const val OV_NAME_SP = 15.5f
@@ -149,12 +155,13 @@ internal object LiveWidths {
     /** The white pill's corners (the groups column's). */
     const val OV_PILL_RADIUS = 11f
     /**
-     * The see-through glass over the picture, darkest at the screen's edge (groups) and lightest beside the picture
-     * (programmes); Classic: solid dark.
+     * The glass over the picture, darkest at the screen's edge (groups) and lightest beside the picture (programmes):
+     * dark enough that the picture only hints through, so a column is one surface from top to bottom over a film's
+     * bright picture and its black bars alike. Classic: solid dark.
      */
-    const val OV_TINT_GROUPS = 0xE60C0E12.toInt()
-    const val OV_TINT_CHANNELS = 0xCC0C0E12.toInt()
-    const val OV_TINT_PROGRAMMES = 0x990C0E12.toInt()
+    const val OV_TINT_GROUPS = 0xF50C0E12.toInt()
+    const val OV_TINT_CHANNELS = 0xF20C0E12.toInt()
+    const val OV_TINT_PROGRAMMES = 0xF20C0E12.toInt()
     const val OV_CLASSIC_GROUPS = 0xFF0F1216.toInt()
     const val OV_CLASSIC_CHANNELS = 0xFF161A1F.toInt()
     const val OV_CLASSIC_PROGRAMMES = 0xFF1B2026.toInt()
@@ -165,12 +172,12 @@ internal object LiveWidths {
     const val OV_DETAILS_SP = 14.5f
     const val OV_DETAILS_LINES = 4
     /** Its time line: the times, the progress line, the minutes left. */
-    const val OV_DETAILS_TIME_W = 140
+    const val OV_DETAILS_TIME_W = 152
     const val OV_DETAILS_BAR_W = 80
     const val OV_DETAILS_BAR_H = 10
     const val OV_DETAILS_LINE_GAP = 6
-    const val OV_DETAILS_RADIUS = 15f
-    const val OV_DETAILS_TINT = 0xB30C0E12.toInt()
+    const val OV_DETAILS_RADIUS = GlassStyle.RADIUS_POPUP
+    const val OV_DETAILS_TINT = 0xF20C0E12.toInt()
     const val OV_DETAILS_CLASSIC = 0xFF161A1F.toInt()
     /** The columns sliding and fading as Left and Right step between them (translation and alpha only). */
     const val OV_SLIDE_MS = 180L

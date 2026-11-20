@@ -149,10 +149,29 @@ class OverlayRulesTest {
     @Test fun fullScreensColumnsAndDetailsFitTheScreen() {
         val details = LiveWidths.SCREEN - LiveWidths.OV_CHANNELS_W - LiveWidths.OV_PROGRAMMES_W - LiveWidths.OV_DETAILS_GAP - LiveWidths.GAP
         assertTrue("details $details dp", details >= 300)
-        // The channel row: number, logo and a name of about 125 dp beside them.
-        val name = LiveWidths.OV_CHANNELS_W - 2 * (LiveWidths.OV_PAD_X + LiveWidths.OV_ROW_PAD_X) - LiveWidths.OV_NUMBER_W -
+        // The channel row: a five-digit number (about 8 dp a digit at its size), logo and a name of 125 dp or more
+        // beside them.
+        val number = maxOf(LiveWidths.OV_NUMBER_W, 5 * 8)
+        val name = LiveWidths.OV_CHANNELS_W - 2 * (LiveWidths.OV_PAD_X + LiveWidths.OV_ROW_PAD_X) - number -
             LiveWidths.OV_LOGO_W - 2 * LiveWidths.OV_GAP
         assertTrue("name $name dp", name >= 125)
+        // The details' time line: the times, the bar and the minutes left fit the card.
+        val inner = details - 2 * LiveWidths.OV_DETAILS_PAD
+        assertTrue(LiveWidths.OV_DETAILS_TIME_W + LiveWidths.OV_DETAILS_BAR_W + LiveWidths.OV_GAP + 60 <= inner)
+    }
+
+    @Test fun everyColumnEndsOnAWholeRowTheSameRoomFromTheBottom() {
+        val rows = LiveWidths.SCREEN_H - LiveWidths.OV_TOP - LiveWidths.OV_HEAD_H
+        // Channels: nine whole rows, the header's top room left under them.
+        val channelRow = (LiveWidths.SCREEN_H - 2 * LiveWidths.OV_TOP - LiveWidths.OV_HEAD_H) / LiveWidths.OV_CHANNEL_ROWS
+        assertEquals(LiveWidths.OV_TOP, rows - channelRow * LiveWidths.OV_CHANNEL_ROWS)
+        // Groups and programmes: whole rows, with room left under the last (never a cut row at the screen's edge).
+        for (row in listOf(LiveWidths.OV_GROUP_ROW, LiveWidths.OV_PROGRAMME_ROW)) {
+            val left = rows - rows / row * row
+            assertTrue("$left dp under $row dp rows", left >= 8)
+        }
+        // A channel row's lines sit inside it, the name over the programme.
+        assertTrue(LiveWidths.OV_NAME_AT > 0.2f && LiveWidths.OV_NAME_AT < LiveWidths.OV_SUB_AT && LiveWidths.OV_SUB_AT < 0.7f)
     }
 
     @Test fun theSearchPageShowsHistoryFirstAndTheBarNeedsOk() {

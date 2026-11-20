@@ -164,7 +164,7 @@ object PlayerFactory {
         // With "Faster downloads" on, a film file is read with up to two range requests at a time (TwoRanges); the
         // timing goes around both, so the loader's speed is what the two bring together.
         val film: DataSource.Factory = if (twoRanges == null) httpFactory else {
-            if (meter != null) twoRanges.onHelperBytes = meter::add
+            if (meter != null) twoRanges.onHelperBytes = TwoRanges.ByteSink(meter::add)
             val all = headers.filterKeys { !it.equals("User-Agent", true) } +
                 ("User-Agent" to (userAgent ?: FILM_USER_AGENT))
             TwoRangeDataSource.Factory(httpFactory, twoRanges, all, CONNECT_TIMEOUT_MS, readTimeoutMs)
