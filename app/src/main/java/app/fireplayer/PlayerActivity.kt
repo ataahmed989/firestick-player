@@ -5413,10 +5413,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
      * speed was the moment's, and is replaced ([app.fireplayer.vod.sources.LineRate.seen]).
      */
     private fun noteLineSpeed() {
-        if (source == null || !diagMade.isInitialized() || twoRequestsNow()) return
+        if (source == null || !diagMade.isInitialized()) return
         val d = diag.download
         if (d.sustainedSeconds < app.fireplayer.vod.play.FilmSupply.MIN_SECONDS) return
-        app.fireplayer.vod.sources.LineRate.of(sourcePrefs).seen(d.sustainedMbps)
+        app.fireplayer.vod.sources.LineRate.of(sourcePrefs, two = twoRequestsNow()).seen(d.sustainedMbps)
     }
 
     /** Whether the film is being read with two range requests now ("Faster downloads"). */
@@ -6023,9 +6023,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
 
         override fun lineShort(mbps: Double) {
-            // Two connections' combined speed isn't this line's speed for one: it's never kept as the line's.
-            if (twoRequestsNow()) return
-            app.fireplayer.vod.sources.LineRate.of(sourcePrefs).short(mbps)
+            // Two connections' combined speed is kept apart from one connection's: each ranks the lists with its own.
+            app.fireplayer.vod.sources.LineRate.of(sourcePrefs, two = twoRequestsNow()).short(mbps)
             // The lists in memory rank again: the Sources panel says at once which files this connection can't keep up with.
             (Sources.get(this@PlayerActivity) as? app.fireplayer.vod.sources.DefaultSourcesRepository)?.rerank()
         }
@@ -6062,6 +6061,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         sp.open(title, s.session.list, s.session.attempts, s.current?.key, sub = true) { picked, beginning ->
             panel.close()
             hideControls()
+            // The copy playing (its row at the top): it plays on, unless asked to start from the beginning.
+            if (picked.key == s.current?.key && !beginning) return@open
             s.pick(picked, beginning)
         }
         s.session.setListener { sp.update(s.session.list, s.session.attempts, s.current?.key) }

@@ -513,7 +513,8 @@ class DefaultSourcesRepository(
                 elapsed = SystemClock::elapsedRealtime,
                 wall = System::currentTimeMillis,
                 online = online,
-                lineMbps = LineRate.of(budgetPrefs)::current,
+                // With Faster downloads on, what two connections were measured to bring; one connection's otherwise.
+                lineMbps = { LineRate.of(budgetPrefs, two = app.fireplayer.data.Prefs(app).fasterDownloads).current() },
             )
             engine = made
             // A new plan for this TV (Settings › This TV): the lists kept in memory rank again.

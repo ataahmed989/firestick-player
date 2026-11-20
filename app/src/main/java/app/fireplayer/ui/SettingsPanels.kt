@@ -426,6 +426,8 @@ class SettingsPanels(
     private fun fasterDownloadsRow(panel: SidePanel): Unit = with(panel) {
         row("Faster downloads (2 connections)", onOff(prefs.fasterDownloads)) {
             prefs.fasterDownloads = !prefs.fasterDownloads; refresh()
+            // The lists in memory rank again with the line speed measured for that many connections.
+            (app.fireplayer.vod.Sources.get(activity) as? app.fireplayer.vod.sources.DefaultSourcesRepository)?.rerank()
         }
         textBlock("Loads a film over two connections when the server allows it. From the next film or source started.")
     }

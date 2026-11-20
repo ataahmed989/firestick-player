@@ -126,6 +126,22 @@ class SourcesModelTest {
     }
 
     @Test
+    fun inThePlayerTheCopyPlayingComesFirstWithItsDetailsThenTheBest() {
+        val items = SourcesModel.items(list, 0, emptySet(), playingKey = "k3")
+        val keys = keys(items)
+        val at = keys.indexOf(SourcesModel.PLAYING_KEY)
+        assertTrue(at >= 0)
+        assertEquals(at + 1, keys.indexOf(SourcesModel.BEST_KEY))
+        val row = items.at(SourcesModel.PLAYING_KEY)
+        assertEquals("k3", row.source?.key)
+        assertEquals(SourcesModel.PLAYING_NOW, row.value)
+        assertTrue(row.chosen)
+        assertEquals(items.at("src:UHD:k3").label, row.label)
+        // Nothing playing (the title page): no such row.
+        assertFalse(keys(SourcesModel.items(list, 0, emptySet())).contains(SourcesModel.PLAYING_KEY))
+    }
+
+    @Test
     fun whileLookingTheBestIsSoFarAndTheStatusSaysWho() {
         val soFar = list.copy(states = mapOf(Addon.TORRENTIO to AddonState.Answered(13), Addon.MEDIAFUSION to AddonState.Asking(0, 25_000)))
         val items = SourcesModel.items(soFar, 9_000, emptySet())

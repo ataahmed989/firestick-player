@@ -60,16 +60,20 @@ class LineRate(private val store: Store, private val wall: () -> Long) {
         /** The preference file and key it's kept under ("fireplayer_sources", beside the add-ons' budget). */
         const val FILE = "fireplayer_sources"
         const val KEY = "line_mbps"
+        /** The same over two connections ("Faster downloads"): a line that keeps two going brings more than one. */
+        const val KEY_TWO = "line_mbps_2"
 
         /** Whether a file of [sourceMbps] is more than this line ([lineMbps]) keeps up with; false when either isn't known. */
         fun tooFast(sourceMbps: Double?, lineMbps: Double?): Boolean =
             sourceMbps != null && lineMbps != null && lineMbps > 0.0 && sourceMbps > lineMbps * SHORT_SHARE
 
-        fun of(prefs: SharedPreferences, wall: () -> Long = System::currentTimeMillis): LineRate = LineRate(
+        /** The speed kept for one connection, or for two when [two] (each measured with that many, never mixed). */
+        fun of(prefs: SharedPreferences, two: Boolean = false, wall: () -> Long = System::currentTimeMillis): LineRate = LineRate(
             object : Store {
-                override fun read(): String? = prefs.getString(KEY, null)
+                private val key = if (two) KEY_TWO else KEY
+                override fun read(): String? = prefs.getString(key, null)
                 override fun write(text: String?) {
-                    if (text == null) prefs.edit().remove(KEY).apply() else prefs.edit().putString(KEY, text).apply()
+                    if (text == null) prefs.edit().remove(key).apply() else prefs.edit().putString(key, text).apply()
                 }
             },
             wall,
