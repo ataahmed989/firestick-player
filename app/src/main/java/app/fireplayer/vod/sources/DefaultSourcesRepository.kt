@@ -1,5 +1,6 @@
 package app.fireplayer.vod.sources
 
+import app.fireplayer.data.Prefs
 import android.annotation.SuppressLint
 import android.content.Context
 import android.net.ConnectivityManager
@@ -514,7 +515,7 @@ class DefaultSourcesRepository(
                 wall = System::currentTimeMillis,
                 online = online,
                 // With Faster downloads on, what two connections were measured to bring; one connection's otherwise.
-                lineMbps = { LineRate.of(budgetPrefs, two = app.fireplayer.data.Prefs(app).fasterDownloads).current() },
+                lineMbps = { LineRate.of(budgetPrefs, two = Prefs(app).fasterDownloads).current() },
             )
             engine = made
             // A new plan for this TV (Settings › This TV): the lists kept in memory rank again.
