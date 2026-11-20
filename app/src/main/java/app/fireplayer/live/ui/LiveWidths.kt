@@ -108,7 +108,7 @@ internal object LiveWidths {
     // ---- The channel list over full screen and Multiview ([LiveOverlay]) ---------------------------------------------
 
     /**
-     * Its columns, left to right: the playing playlist's groups (as wide as the guide's groups column), the channels
+     * Its columns, left to right: the playlists and their groups (as wide as the guide's groups column), the channels
      * (number, logo, name over the programme on now, its progress line), the focused channel's programmes. Beside the
      * groups, the channels column ends at 534 dp: clear of Multiview's ready picture at the top right (580 dp on).
      */
@@ -130,6 +130,13 @@ internal object LiveWidths {
     /** A group's row (the guide's groups column's) and a programme's. */
     const val OV_GROUP_ROW = 39
     const val OV_PROGRAMME_ROW = 36
+    /**
+     * A playlist's heading in the groups: the arrow before its name (right while folded, down while open: its box, its
+     * line, the gap after it). The lists under a playlist start under its name.
+     */
+    const val OV_CHEVRON = 12
+    const val OV_CHEVRON_STROKE = 1.8f
+    const val OV_CHEVRON_GAP = 7
     /** Inside a column: its sides, and a row's content inside the white pill. */
     const val OV_PAD_X = 10
     const val OV_ROW_PAD_X = 10

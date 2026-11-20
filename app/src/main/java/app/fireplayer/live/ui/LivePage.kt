@@ -261,10 +261,16 @@ class LivePage(private val activity: Activity, private val host: Host) {
             main.post { if (!released) then(list) }
         }
 
-        override fun groups(playlistId: String, then: (List<ChannelGroup>) -> Unit) = bg {
-            val groups = runCatching { db.groups(playlistId) }.getOrDefault(emptyList())
-            main.post { if (!released) then(groups) }
+        // The guide's own read for its groups column ([reload]): every playlist, each one's shown groups in order.
+        override fun column(then: (List<Playlist>, Map<String, List<ChannelGroup>>) -> Unit) = bg {
+            val pls = runCatching { db.playlists() }.getOrDefault(emptyList())
+            val groups = runCatching { pls.associate { it.id to db.groups(it.id) } }.getOrDefault(emptyMap())
+            main.post { if (!released) then(pls, groups) }
         }
+
+        override fun folds(): GroupColumn.Folds = sidebar.folds
+
+        override fun foldsChanged() = sidebar.foldsChanged()
 
         override fun programmes(channels: List<Channel>, from: Long, to: Long, then: (Map<ChannelKey, List<Programme>>) -> Unit) = bg {
             val map = runCatching { db.programmes(channels, from, to) }.getOrDefault(emptyMap())
