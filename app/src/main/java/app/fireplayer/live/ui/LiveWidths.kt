@@ -159,9 +159,9 @@ internal object LiveWidths {
      * dark enough that the picture only hints through, so a column is one surface from top to bottom over a film's
      * bright picture and its black bars alike. Classic: solid dark.
      */
-    const val OV_TINT_GROUPS = 0xF20C0E12.toInt()
-    const val OV_TINT_CHANNELS = 0xEB0C0E12.toInt()
-    const val OV_TINT_PROGRAMMES = 0xD90C0E12.toInt()
+    const val OV_TINT_GROUPS = 0xF50C0E12.toInt()
+    const val OV_TINT_CHANNELS = 0xF20C0E12.toInt()
+    const val OV_TINT_PROGRAMMES = 0xF20C0E12.toInt()
     const val OV_CLASSIC_GROUPS = 0xFF0F1216.toInt()
     const val OV_CLASSIC_CHANNELS = 0xFF161A1F.toInt()
     const val OV_CLASSIC_PROGRAMMES = 0xFF1B2026.toInt()
@@ -177,7 +177,7 @@ internal object LiveWidths {
     const val OV_DETAILS_BAR_H = 10
     const val OV_DETAILS_LINE_GAP = 6
     const val OV_DETAILS_RADIUS = GlassStyle.RADIUS_POPUP
-    const val OV_DETAILS_TINT = 0xE00C0E12.toInt()
+    const val OV_DETAILS_TINT = 0xF20C0E12.toInt()
     const val OV_DETAILS_CLASSIC = 0xFF161A1F.toInt()
     /** The columns sliding and fading as Left and Right step between them (translation and alpha only). */
     const val OV_SLIDE_MS = 180L
