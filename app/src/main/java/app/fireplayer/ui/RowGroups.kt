@@ -74,13 +74,31 @@ object RowGroups {
     private fun isMember(view: View): Boolean = view.getTag(R.id.group_row) == true && view.visibility == View.VISIBLE
 
     private fun style(view: View, pos: Pos, density: Float, prev: View?) {
-        val context = view.context
         val pair = view.tag == ROW_PAIR && view is ViewGroup && view.childCount > 0
         val sub = view.getTag(R.id.sub_row) == true || (pair && (view as ViewGroup).getChildAt(0).getTag(R.id.sub_row) == true)
+        dress(view, pos, sub, density) { prev?.hasFocus() == true }
+        cardMargins(view, pos, density)
+    }
+
+    /**
+     * A long list's row ([SidePanel.longList]) as its slice of a card, at [pos] in it, nested ([sub]) or not. The list
+     * shows its rows again for other entries as it scrolls, so a row styled before keeps its slice and is only told
+     * where it is now. [aboveFocused] says whether the row above it is selected (its line then hides).
+     */
+    fun styleListRow(view: View, pos: Pos, sub: Boolean, aboveFocused: () -> Boolean) {
+        val density = view.resources.displayMetrics.density
+        val current = view.background as? Segment
+        if (current != null && current.glass == Glass.on) current.place(pos, sub) else dress(view, pos, sub, density, aboveFocused)
+        cardMargins(view, pos, density)
+    }
+
+    /** Gives [view] its slice of the card ([Segment]) and its selected look. */
+    private fun dress(view: View, pos: Pos, sub: Boolean, density: Float, aboveFocused: () -> Boolean) {
+        val context = view.context
         if (view.tag == ROW_PAIR && view is ViewGroup && view.childCount > 0) {
             // A row with a small button beside it: the card goes behind both, the row only lights up when selected,
             // and the button keeps its own small glass shape a little inside the card.
-            keepPadding(view) { view.background = Segment(context, Glass.on, pos, sub, null, prev) }
+            keepPadding(view) { view.background = Segment(context, Glass.on, pos, sub, null, aboveFocused) }
             val row = view.getChildAt(0)
             keepPadding(row) { row.background = focusOnly(context) }
             for (c in 1 until view.childCount) {
@@ -95,13 +113,21 @@ object RowGroups {
                 }
             }
         } else {
-            keepPadding(view) { view.background = Segment(context, Glass.on, pos, sub, focusOnly(context), prev) }
+            keepPadding(view) { view.background = Segment(context, Glass.on, pos, sub, focusOnly(context), aboveFocused) }
         }
+    }
+
+    /** The card's ends stand a little apart from what's around it; the rows inside it touch. */
+    private fun cardMargins(view: View, pos: Pos, density: Float) {
         (view.layoutParams as? ViewGroup.MarginLayoutParams)?.let {
             val edge = (2 * density).toInt()
-            it.topMargin = if (pos == Pos.FIRST || pos == Pos.SINGLE) edge else 0
-            it.bottomMargin = if (pos == Pos.LAST || pos == Pos.SINGLE) edge else 0
-            view.layoutParams = it
+            val top = if (pos == Pos.FIRST || pos == Pos.SINGLE) edge else 0
+            val bottom = if (pos == Pos.LAST || pos == Pos.SINGLE) edge else 0
+            if (it.topMargin != top || it.bottomMargin != bottom) {
+                it.topMargin = top
+                it.bottomMargin = bottom
+                view.layoutParams = it
+            }
         }
     }
 
@@ -114,8 +140,8 @@ object RowGroups {
         view.setPadding(l, t, r, b)
     }
 
-    /** The selected look alone, glass or classic: the card draws the rest. */
-    private fun focusOnly(context: Context): Drawable =
+    /** The selected look alone, glass or classic: the card (or a hold window, HoldShape) draws the rest. */
+    internal fun focusOnly(context: Context): Drawable =
         if (Glass.on) {
             (Glass.drawable(context, Glass.Kind.ROW) as GlassDrawable).apply { focusOnly = true }
         } else {
@@ -132,12 +158,12 @@ object RowGroups {
     /** One row's slice of the card, with the row's own selected look ([inner]) drawn over it. */
     private class Segment(
         context: Context,
-        private val glass: Boolean,
-        private val pos: Pos,
-        private val sub: Boolean,
+        val glass: Boolean,
+        private var pos: Pos,
+        private var sub: Boolean,
         private val inner: Drawable?,
-        /** The row above in the same card, whose selection hides the line between them. */
-        private val above: View?,
+        /** Whether the row above in the same card is selected: its selection hides the line between them. */
+        private val aboveFocused: () -> Boolean,
     ) : Drawable(), Drawable.Callback {
 
         private val density = context.resources.displayMetrics.density
@@ -159,6 +185,15 @@ object RowGroups {
 
         init {
             inner?.callback = this
+        }
+
+        /** Now at [pos] in its card ([styleListRow]): its corners and lines follow. */
+        fun place(pos: Pos, sub: Boolean) {
+            if (pos == this.pos && sub == this.sub) return
+            this.pos = pos
+            this.sub = sub
+            if (!bounds.isEmpty) onBoundsChange(bounds)
+            invalidateSelf()
         }
 
         override fun onBoundsChange(bounds: Rect) {
@@ -194,7 +229,7 @@ object RowGroups {
                 canvas.drawPath(shape, shade)
                 if (!focused) canvas.drawCircle(b.left + 16f * density, b.exactCenterY(), 2f * density, dot)
             }
-            if (!focused && above?.hasFocus() != true && (pos == Pos.MIDDLE || pos == Pos.LAST)) {
+            if (!focused && (pos == Pos.MIDDLE || pos == Pos.LAST) && !aboveFocused()) {
                 val inset = 12f * density
                 canvas.drawRect(b.left + inset, b.top.toFloat(), b.right - inset, b.top + density.coerceAtLeast(1f), divider)
             }

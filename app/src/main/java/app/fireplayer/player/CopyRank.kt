@@ -9,16 +9,19 @@ import kotlin.math.abs
  * The picture decides first, by how much data it gets: for the same codec, more data for the same picture is a
  * cleaner picture, whatever the frame size says (the frame often includes black bars). Between codecs, newer ones
  * need less data for the same picture: a rule of thumb ([EFFICIENCY]) is used then, and the reason says so. HDR comes
- * first when the screen shows it and the HDR copy isn't starved of data. Copies close in picture data (within
- * [CLOSE]) are told apart by width, bit depth, then sound. A copy nobody measured is listed but never recommended.
+ * first when the screen shows it and the HDR copy isn't starved of data. On a screen without HDR it's the other way
+ * round: the Fire TV turns HDR into SDR itself (and its decoder works harder for HDR10+), so an SDR copy comes first
+ * when it has [HDR_FLOOR] of the best copy's data, and HDR or 10-bit aren't given as reasons there. Copies close in
+ * picture data (within [CLOSE]) are told apart by width, bit depth, then sound. A copy nobody measured is listed but
+ * never recommended.
  *
  * The data is weighed against the frame it has to fill ([perPixel], bits for each pixel of each frame): a copy with
  * too little for its frame ([STARVED]; a 4K film under about 6 GB) loses to a smaller-framed copy that has enough and
  * about as much data, since a well-fed 1080p looks cleaner than a starved 4K. And data past what a frame can use
  * ([FULL]) doesn't count: a well-fed 4K copy isn't beaten by a 1080p one for the 1080p's bigger file.
  *
- * Before any of that, a copy that plays: one that keeps stopping to load ([CopyHealth.troubled]) is only recommended
- * when every copy known does the same. Failing to play isn't held against a copy. Then the sound wanted
+ * Before any of that, a copy that plays: one that keeps stopping to load, or loses frames ([CopyHealth.troubled]), is
+ * only recommended when every copy known does the same. Failing to play isn't held against a copy. Then the sound wanted
  * ([CopyLanguage.fit]): a copy known to lack it only when no copy is known to have it. Subtitles in the viewer's
  * language only break a tie.
  */
@@ -30,7 +33,10 @@ object CopyRank {
     /** Picture data within this share of each other counts as the same. */
     const val CLOSE = 0.15
 
-    /** An HDR copy wins on a screen that shows HDR when it has at least this share of the best copy's picture data. */
+    /**
+     * An HDR copy wins on a screen that shows HDR when it has at least this share of the best copy's picture data; on a
+     * screen that doesn't, an SDR copy wins over an HDR one the same way.
+     */
     const val HDR_FLOOR = 0.7
 
     /**
@@ -148,13 +154,19 @@ object CopyRank {
             measured.filter { isHdr(copies[it]) && effective(it) >= effective(best) * HDR_FLOOR }
                 .maxByOrNull { effective(it) }?.let { best = it }
         }
+        // The mirror of that on a screen without HDR: the Fire TV would turn the HDR copy into SDR. Only a copy known to
+        // be SDR: one whose file doesn't say may be HDR too.
+        if (!hdrScreen && isHdr(copies[best])) {
+            measured.filter { copies[it].hdr == "SDR" && effective(it) >= effective(best) * HDR_FLOOR }
+                .maxByOrNull { effective(it) }?.let { best = it }
+        }
         val others = all.sortedByDescending { effective(it) }
         val against = if (best != current && current in copies.indices) current
             else others.firstOrNull { it != best }
         if (against == null) {
             return Verdict(best, null, listOfNotNull("the only copy with its data rate known", health.getOrNull(best)?.summary()), emptyList())
         }
-        val (reasons, costs) = compare(copies[best], copies[against], bits(best), bits(against), usePicture, mixed)
+        val (reasons, costs) = compare(copies[best], copies[against], bits(best), bits(against), usePicture, mixed, hdrScreen)
         // The frame each has to fill: said when it decided, ahead of the data's own figures unless those already say it.
         val lessData = raw(best) < raw(against) * (1 + CLOSE)
         val framed = when {
@@ -199,6 +211,7 @@ object CopyRank {
         bBits: Long,
         picture: Boolean,
         mixed: Boolean,
+        hdrScreen: Boolean,
     ): Pair<MutableList<String>, MutableList<String>> {
         val reasons = ArrayList<String>()
         val costs = ArrayList<String>()
@@ -217,13 +230,20 @@ object CopyRank {
                 reasons += "about the same $what ($numbers)"
             }
         }
-        // Only what's known on both sides: a file that doesn't say isn't taken for SDR.
-        if (isHdr(a) && b.hdr == "SDR") reasons += "${a.hdr} instead of SDR"
-        if (isHdr(a) && b.hdr == null) reasons += "${a.hdr} (the other doesn't say)"
-        if (a.hdr == "SDR" && isHdr(b)) costs += "SDR instead of ${b.hdr}"
-        if (a.hdr == null && isHdr(b)) costs += "no HDR stated, where the other is ${b.hdr}"
-        if (a.bitDepth > b.bitDepth && b.bitDepth > 0) reasons += "${a.bitDepth}-bit instead of ${b.bitDepth}-bit"
-        if (a.bitDepth in 1 until b.bitDepth) costs += "${a.bitDepth}-bit instead of ${b.bitDepth}-bit"
+        if (hdrScreen) {
+            // Only what's known on both sides: a file that doesn't say isn't taken for SDR.
+            if (isHdr(a) && b.hdr == "SDR") reasons += "${a.hdr} instead of SDR"
+            if (isHdr(a) && b.hdr == null) reasons += "${a.hdr} (the other doesn't say)"
+            if (a.hdr == "SDR" && isHdr(b)) costs += "SDR instead of ${b.hdr}"
+            if (a.hdr == null && isHdr(b)) costs += "no HDR stated, where the other is ${b.hdr}"
+            if (a.bitDepth > b.bitDepth && b.bitDepth > 0) reasons += "${a.bitDepth}-bit instead of ${b.bitDepth}-bit"
+            if (a.bitDepth in 1 until b.bitDepth) costs += "${a.bitDepth}-bit instead of ${b.bitDepth}-bit"
+        } else {
+            // The TV reports no HDR: HDR (and the 10 bits it comes in) is turned into SDR on the Fire TV, so neither is a
+            // reason to pick a copy. What's said instead is which one the TV shows as it was made.
+            if (a.hdr == "SDR" && isHdr(b)) reasons += "SDR, as this TV shows it (the other's ${b.hdr} is turned into SDR)"
+            if (isHdr(a) && !isHdr(b)) costs += "${a.hdr} shown as SDR on this TV"
+        }
         if (a.width > 0 && b.width > 0 && abs(a.width - b.width) >= 320) {
             if (a.width > b.width) reasons += "${a.width} wide instead of ${b.width}" else costs += "${a.width} wide instead of ${b.width}"
         }

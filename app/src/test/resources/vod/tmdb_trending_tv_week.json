@@ -1,0 +1,278 @@
+{
+ "page": 1,
+ "results": [
+  {
+   "adult": false,
+   "backdrop_path": "/synthTvBackdrop00.jpg",
+   "id": 84773,
+   "name": "The Lord of the Rings: The Rings of Power",
+   "original_language": "en",
+   "original_name": "The Lord of the Rings: The Rings of Power",
+   "overview": "Epic drama set thousands of years before the events of J.R.R. Tolkien's 'The Hobbit' and 'The Lord of the Rings' follows an ensemble cast of characters, both fa",
+   "poster_path": "/synthTvPoster00.jpg",
+   "media_type": "tv",
+   "genre_ids": [
+    18
+   ],
+   "popularity": 500.0,
+   "first_air_date": "2022-09-01",
+   "vote_average": 7.6,
+   "vote_count": 120,
+   "origin_country": [
+    "US"
+   ]
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/synthTvBackdrop01.jpg",
+   "id": 291507,
+   "name": "The Body",
+   "original_language": "en",
+   "original_name": "The Body",
+   "overview": "A group of misbehaving Catholic school girls experience prophetic visions after a dance-team initiation goes wrong, triggering mass hysteria throughout their to",
+   "poster_path": "/synthTvPoster01.jpg",
+   "media_type": "tv",
+   "genre_ids": [
+    18
+   ],
+   "popularity": 478.75,
+   "first_air_date": "2026-11-11",
+   "vote_average": 7.6,
+   "vote_count": 121,
+   "origin_country": [
+    "US"
+   ]
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/synthTvBackdrop02.jpg",
+   "id": 247718,
+   "name": "MobLand",
+   "original_language": "en",
+   "original_name": "MobLand",
+   "overview": "Power is up for grabs as two warring crime families clash in a battle that threatens to topple empires. In the crossfire stands Harry Da Souza, a street-smart '",
+   "poster_path": "/synthTvPoster02.jpg",
+   "media_type": "tv",
+   "genre_ids": [
+    18
+   ],
+   "popularity": 457.5,
+   "first_air_date": "2025-03-30",
+   "vote_average": 7.6,
+   "vote_count": 122,
+   "origin_country": [
+    "US"
+   ]
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/synthTvBackdrop03.jpg",
+   "id": 213375,
+   "name": "VisionQuest",
+   "original_language": "en",
+   "original_name": "VisionQuest",
+   "overview": "Vision is faced with many challenges while trying to regain his memory and humanity.",
+   "poster_path": "/synthTvPoster03.jpg",
+   "media_type": "tv",
+   "genre_ids": [
+    18
+   ],
+   "popularity": 436.25,
+   "first_air_date": "2026-10-13",
+   "vote_average": 7.6,
+   "vote_count": 123,
+   "origin_country": [
+    "US"
+   ]
+  },
+  {
+   "adult": false,
+   "backdrop_path": null,
+   "id": 999999902,
+   "name": "Synthetic Show Without IMDb Id",
+   "original_language": "ko",
+   "original_name": "Synthetic",
+   "overview": "",
+   "poster_path": null,
+   "media_type": "tv",
+   "genre_ids": [],
+   "popularity": 400.0,
+   "first_air_date": "2026-11-01",
+   "vote_average": 0,
+   "vote_count": 0,
+   "origin_country": [
+    "KR"
+   ]
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/synthTvBackdrop04.jpg",
+   "id": 225385,
+   "name": "Black Doves",
+   "original_language": "en",
+   "original_name": "Black Doves",
+   "overview": "After her lover is murdered by members of London's underworld, a spy - who is publicly the wife of the British Defence Secretary - is protected by an old friend",
+   "poster_path": "/synthTvPoster04.jpg",
+   "media_type": "tv",
+   "genre_ids": [
+    18
+   ],
+   "popularity": 415.0,
+   "first_air_date": "2024-12-05",
+   "vote_average": 7.6,
+   "vote_count": 124,
+   "origin_country": [
+    "US"
+   ]
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/synthTvBackdrop05.jpg",
+   "id": 259909,
+   "name": "Dexter: Resurrection",
+   "original_language": "en",
+   "original_name": "Dexter: Resurrection",
+   "overview": "Dexter Morgan awakens from a coma and sets out for New York City, determined to find Harrison and make things right. But when Miami Metro's Angel Batista arrive",
+   "poster_path": "/synthTvPoster05.jpg",
+   "media_type": "tv",
+   "genre_ids": [
+    18
+   ],
+   "popularity": 393.75,
+   "first_air_date": "2025-07-11",
+   "vote_average": 7.6,
+   "vote_count": 125,
+   "origin_country": [
+    "US"
+   ]
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/synthTvBackdrop06.jpg",
+   "id": 292741,
+   "name": "Nocturne",
+   "original_language": "en",
+   "original_name": "Nocturne",
+   "overview": "Ex-soldier Jonah Lynn leaves Philadelphia for a quiet life. When serial killer Jurek Walter threatens his new home and family, Jonah must protect them, even as ",
+   "poster_path": "/synthTvPoster06.jpg",
+   "media_type": "tv",
+   "genre_ids": [
+    18
+   ],
+   "popularity": 372.5,
+   "first_air_date": "2026-10-30",
+   "vote_average": 7.6,
+   "vote_count": 126,
+   "origin_country": [
+    "US"
+   ]
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/synthTvBackdrop07.jpg",
+   "id": 249565,
+   "name": "The Good Daughter",
+   "original_language": "en",
+   "original_name": "The Good Daughter",
+   "overview": "The Quinn sisters, Samantha and Charlotte, have spent the last twenty-eight years trying to piece together the lives that were fractured by a single night of vi",
+   "poster_path": "/synthTvPoster07.jpg",
+   "media_type": "tv",
+   "genre_ids": [
+    18
+   ],
+   "popularity": 351.25,
+   "first_air_date": "2026-11-12",
+   "vote_average": 7.6,
+   "vote_count": 127,
+   "origin_country": [
+    "US"
+   ]
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/synthTvBackdrop08.jpg",
+   "id": 124364,
+   "name": "From",
+   "original_language": "en",
+   "original_name": "From",
+   "overview": "A town with a hidden secret experiences strange occurrences that intensify at night. Mysterious forces disrupt everyday routines as residents try to preserve st",
+   "poster_path": "/synthTvPoster08.jpg",
+   "media_type": "tv",
+   "genre_ids": [
+    18
+   ],
+   "popularity": 330.0,
+   "first_air_date": "2022-02-20",
+   "vote_average": 7.6,
+   "vote_count": 128,
+   "origin_country": [
+    "US"
+   ]
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/synthTvBackdrop09.jpg",
+   "id": 298852,
+   "name": "War",
+   "original_language": "en",
+   "original_name": "War",
+   "overview": "",
+   "poster_path": "/synthTvPoster09.jpg",
+   "media_type": "tv",
+   "genre_ids": [
+    18
+   ],
+   "popularity": 308.75,
+   "first_air_date": "2026-01-01",
+   "vote_average": 7.6,
+   "vote_count": 129,
+   "origin_country": [
+    "US"
+   ]
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/synthTvBackdrop10.jpg",
+   "id": 73223,
+   "name": "Black Clover",
+   "original_language": "en",
+   "original_name": "Black Clover",
+   "overview": "Asta and Yuno were abandoned together at the same church and have been inseparable since. As children, they promised that they would compete against each other ",
+   "poster_path": "/synthTvPoster10.jpg",
+   "media_type": "tv",
+   "genre_ids": [
+    18
+   ],
+   "popularity": 287.5,
+   "first_air_date": "2017-10-03",
+   "vote_average": 7.6,
+   "vote_count": 130,
+   "origin_country": [
+    "US"
+   ]
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/synthTvBackdrop11.jpg",
+   "id": 208921,
+   "name": "Rivals",
+   "original_language": "en",
+   "original_name": "Rivals",
+   "overview": "Follows Rupert Campbell-Black and Tony Baddingham as they have a longstanding rivalry that comes to a head.",
+   "poster_path": "/synthTvPoster11.jpg",
+   "media_type": "tv",
+   "genre_ids": [
+    18
+   ],
+   "popularity": 266.25,
+   "first_air_date": "2024-10-18",
+   "vote_average": 7.6,
+   "vote_count": 131,
+   "origin_country": [
+    "US"
+   ]
+  }
+ ],
+ "total_pages": 500,
+ "total_results": 10000
+}

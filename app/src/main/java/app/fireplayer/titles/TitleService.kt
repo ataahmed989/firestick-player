@@ -233,7 +233,8 @@ class TitleService : Service() {
 
         /** Starts it when it's turned on in Settings (it is unless turned off), stops it otherwise. */
         fun start(context: Context) {
-            val on = isOn(context)
+            // A build that may not run it (the side-by-side test build) never starts it.
+            val on = isOn(context) && context.resources.getBoolean(app.fireplayer.R.bool.title_proxy)
             val intent = Intent(context, TitleService::class.java)
             runCatching {
                 if (!on) context.stopService(intent)

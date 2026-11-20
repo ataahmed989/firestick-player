@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- TV Guide: channel blocks and programme bars (the user's icon). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#FFFFFFFF" android:pathData="M3.60,6.80H5.25A0.5,0.5 0,0 1,5.75,7.30V9.00A0.5,0.5 0,0 1,5.25,9.50H3.60A0.5,0.5 0,0 1,3.10,9.00V7.30A0.5,0.5 0,0 1,3.60,6.80Z" />
+    <path android:fillColor="#FFFFFFFF" android:pathData="M3.60,10.65H5.25A0.5,0.5 0,0 1,5.75,11.15V12.85A0.5,0.5 0,0 1,5.25,13.35H3.60A0.5,0.5 0,0 1,3.10,12.85V11.15A0.5,0.5 0,0 1,3.60,10.65Z" />
+    <path android:fillColor="#FFFFFFFF" android:pathData="M3.60,14.50H5.25A0.5,0.5 0,0 1,5.75,15.00V16.70A0.5,0.5 0,0 1,5.25,17.20H3.60A0.5,0.5 0,0 1,3.10,16.70V15.00A0.5,0.5 0,0 1,3.60,14.50Z" />
+    <path android:fillColor="#FFFFFFFF" android:pathData="M7.35,6.80H15.95A0.5,0.5 0,0 1,16.45,7.30V9.00A0.5,0.5 0,0 1,15.95,9.50H7.35A0.5,0.5 0,0 1,6.85,9.00V7.30A0.5,0.5 0,0 1,7.35,6.80Z" />
+    <path android:fillColor="#FFFFFFFF" android:pathData="M17.50,6.80H20.40A0.5,0.5 0,0 1,20.90,7.30V9.00A0.5,0.5 0,0 1,20.40,9.50H17.50A0.5,0.5 0,0 1,17.00,9.00V7.30A0.5,0.5 0,0 1,17.50,6.80Z" />
+    <path android:fillColor="#FFFFFFFF" android:pathData="M7.35,10.65H11.35A0.5,0.5 0,0 1,11.85,11.15V12.85A0.5,0.5 0,0 1,11.35,13.35H7.35A0.5,0.5 0,0 1,6.85,12.85V11.15A0.5,0.5 0,0 1,7.35,10.65Z" />
+    <path android:fillColor="#FFFFFFFF" android:pathData="M12.90,10.65H20.40A0.5,0.5 0,0 1,20.90,11.15V12.85A0.5,0.5 0,0 1,20.40,13.35H12.90A0.5,0.5 0,0 1,12.40,12.85V11.15A0.5,0.5 0,0 1,12.90,10.65Z" />
+    <path android:fillColor="#FFFFFFFF" android:pathData="M7.35,14.50H20.40A0.5,0.5 0,0 1,20.90,15.00V16.70A0.5,0.5 0,0 1,20.40,17.20H7.35A0.5,0.5 0,0 1,6.85,16.70V15.00A0.5,0.5 0,0 1,7.35,14.50Z" />
+</vector>

@@ -71,6 +71,16 @@ data class MediaSpec(
         videoBps.takeIf { it > 0 }?.let { mbps(it) },
     ).joinToString(" · ").ifEmpty { null }
 
+    /**
+     * Picture & sound's "Range": "HDR10", "SDR", or, on a TV that reports no HDR ([hdrScreen] false), "HDR10 · shown as
+     * SDR (TV reports no HDR)": the Fire TV turns the picture into SDR for it, so its HDR isn't what's seen.
+     */
+    fun rangeLine(hdrScreen: Boolean): String = when {
+        hdr == null -> "Not stated by the file"
+        hdr != "SDR" && !hdrScreen -> "$hdr · shown as SDR (TV reports no HDR)"
+        else -> hdr
+    }
+
     /** "TrueHD Atmos 7.1", "DD+ 5.1", "Stereo": the sound pod. */
     fun soundLine(): String? {
         val layout = channelsLabel(channels)

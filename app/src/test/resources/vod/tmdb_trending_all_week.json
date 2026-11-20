@@ -1,0 +1,281 @@
+{
+ "page": 1,
+ "results": [
+  {
+   "adult": false,
+   "backdrop_path": "/synthMovieBackdrop00.jpg",
+   "id": 1368337,
+   "title": "The Odyssey",
+   "original_language": "en",
+   "original_title": "The Odyssey",
+   "overview": "After the Trojan War, Odysseus faces a dangerous voyage back to Ithaca, meeting creatures like the Cyclops Polyphemus, Sirens, and Calypso along the way.",
+   "poster_path": "/synthMoviePoster00.jpg",
+   "media_type": "movie",
+   "genre_ids": [
+    28,
+    12
+   ],
+   "popularity": 900.0,
+   "release_date": "2026-07-17",
+   "video": false,
+   "vote_average": 7.1,
+   "vote_count": 400
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/synthTvBackdrop00.jpg",
+   "id": 84773,
+   "name": "The Lord of the Rings: The Rings of Power",
+   "original_language": "en",
+   "original_name": "The Lord of the Rings: The Rings of Power",
+   "overview": "Epic drama set thousands of years before the events of J.R.R. Tolkien's 'The Hobbit' and 'The Lord of the Rings' follows an ensemble cast of characters, both fa",
+   "poster_path": "/synthTvPoster00.jpg",
+   "media_type": "tv",
+   "genre_ids": [
+    18
+   ],
+   "popularity": 500.0,
+   "first_air_date": "2022-09-01",
+   "vote_average": 7.6,
+   "vote_count": 120,
+   "origin_country": [
+    "US"
+   ]
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/synthMovieBackdrop01.jpg",
+   "id": 1101383,
+   "title": "The End of Oak Street",
+   "original_language": "en",
+   "original_title": "The End of Oak Street",
+   "overview": "The Platt family bands together to navigate their new surroundings after a cosmic event transports their suburban neighborhood to someplace unknown.",
+   "poster_path": "/synthMoviePoster01.jpg",
+   "media_type": "movie",
+   "genre_ids": [
+    28,
+    12
+   ],
+   "popularity": 862.5,
+   "release_date": "2026-08-14",
+   "video": false,
+   "vote_average": 7.1,
+   "vote_count": 401
+  },
+  {
+   "adult": false,
+   "id": 224513,
+   "name": "Ana de Armas",
+   "original_name": "Ana de Armas",
+   "media_type": "person",
+   "popularity": 349.766,
+   "gender": 1,
+   "known_for_department": "Acting",
+   "profile_path": "/3vxvsmYLTf4jnr163SUlBIw51ee.jpg",
+   "known_for": [
+    {
+     "adult": false,
+     "backdrop_path": "/synthMovieBackdrop00.jpg",
+     "id": 1368337,
+     "title": "The Odyssey",
+     "original_language": "en",
+     "original_title": "The Odyssey",
+     "overview": "After the Trojan War, Odysseus faces a dangerous voyage back to Ithaca, meeting creatures like the Cyclops Polyphemus, Sirens, and Calypso along the way.",
+     "poster_path": "/synthMoviePoster00.jpg",
+     "media_type": "movie",
+     "genre_ids": [
+      28,
+      12
+     ],
+     "popularity": 900.0,
+     "release_date": "2026-07-17",
+     "video": false,
+     "vote_average": 7.1,
+     "vote_count": 400
+    }
+   ]
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/synthTvBackdrop01.jpg",
+   "id": 291507,
+   "name": "The Body",
+   "original_language": "en",
+   "original_name": "The Body",
+   "overview": "A group of misbehaving Catholic school girls experience prophetic visions after a dance-team initiation goes wrong, triggering mass hysteria throughout their to",
+   "poster_path": "/synthTvPoster01.jpg",
+   "media_type": "tv",
+   "genre_ids": [
+    18
+   ],
+   "popularity": 478.75,
+   "first_air_date": "2026-11-11",
+   "vote_average": 7.6,
+   "vote_count": 121,
+   "origin_country": [
+    "US"
+   ]
+  },
+  {
+   "adult": false,
+   "backdrop_path": null,
+   "id": 999999901,
+   "title": "Synthetic Film Without IMDb Id",
+   "original_language": "fr",
+   "original_title": "Film sans IMDb",
+   "overview": "",
+   "poster_path": null,
+   "media_type": "movie",
+   "genre_ids": [],
+   "popularity": 850.0,
+   "release_date": "",
+   "video": false,
+   "vote_average": 0,
+   "vote_count": 0
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/synthTvBackdrop02.jpg",
+   "id": 247718,
+   "name": "MobLand",
+   "original_language": "en",
+   "original_name": "MobLand",
+   "overview": "Power is up for grabs as two warring crime families clash in a battle that threatens to topple empires. In the crossfire stands Harry Da Souza, a street-smart '",
+   "poster_path": "/synthTvPoster02.jpg",
+   "media_type": "tv",
+   "genre_ids": [
+    18
+   ],
+   "popularity": 457.5,
+   "first_air_date": "2025-03-30",
+   "vote_average": 7.6,
+   "vote_count": 122,
+   "origin_country": [
+    "US"
+   ]
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/synthMovieBackdrop02.jpg",
+   "id": 1263337,
+   "title": "Heart of the Beast",
+   "original_language": "en",
+   "original_title": "Heart of the Beast",
+   "overview": "After a harrowing plane crash, Special Forces veteran James Belmont and his combat dog, Odin, find themselves stranded deep in the Alaskan wilderness. Together,",
+   "poster_path": "/synthMoviePoster02.jpg",
+   "media_type": "movie",
+   "genre_ids": [
+    28,
+    12
+   ],
+   "popularity": 825.0,
+   "release_date": "2026-09-25",
+   "video": false,
+   "vote_average": 7.1,
+   "vote_count": 402
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/synthTvBackdrop03.jpg",
+   "id": 213375,
+   "name": "VisionQuest",
+   "original_language": "en",
+   "original_name": "VisionQuest",
+   "overview": "Vision is faced with many challenges while trying to regain his memory and humanity.",
+   "poster_path": "/synthTvPoster03.jpg",
+   "media_type": "tv",
+   "genre_ids": [
+    18
+   ],
+   "popularity": 436.25,
+   "first_air_date": "2026-10-13",
+   "vote_average": 7.6,
+   "vote_count": 123,
+   "origin_country": [
+    "US"
+   ]
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/synthMovieBackdrop03.jpg",
+   "id": 1423191,
+   "title": "Resident Evil",
+   "original_language": "en",
+   "original_title": "Resident Evil",
+   "overview": "Follows a hapless courier tasked with delivering a package to a remote hospital. He soon finds himself caught in the middle of an outbreak and must fight throug",
+   "poster_path": "/synthMoviePoster03.jpg",
+   "media_type": "movie",
+   "genre_ids": [
+    28,
+    12
+   ],
+   "popularity": 787.5,
+   "release_date": "2026-09-18",
+   "video": false,
+   "vote_average": 7.1,
+   "vote_count": 403
+  },
+  {
+   "adult": false,
+   "backdrop_path": null,
+   "id": 999999902,
+   "name": "Synthetic Show Without IMDb Id",
+   "original_language": "ko",
+   "original_name": "Synthetic",
+   "overview": "",
+   "poster_path": null,
+   "media_type": "tv",
+   "genre_ids": [],
+   "popularity": 400.0,
+   "first_air_date": "2026-11-01",
+   "vote_average": 0,
+   "vote_count": 0,
+   "origin_country": [
+    "KR"
+   ]
+  },
+  {
+   "adult": false,
+   "backdrop_path": null,
+   "id": 1375441,
+   "title": "Primetime",
+   "original_language": "en",
+   "original_title": "Primetime",
+   "overview": "In 2006, To Catch a Predator host Chris Hansen sets out to make television history.",
+   "poster_path": "/synthMoviePoster04.jpg",
+   "media_type": "movie",
+   "genre_ids": [
+    28,
+    12
+   ],
+   "popularity": 750.0,
+   "release_date": "2026-09-25",
+   "video": false,
+   "vote_average": 7.1,
+   "vote_count": 404
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/synthTvBackdrop04.jpg",
+   "id": 225385,
+   "name": "Black Doves",
+   "original_language": "en",
+   "original_name": "Black Doves",
+   "overview": "After her lover is murdered by members of London's underworld, a spy - who is publicly the wife of the British Defence Secretary - is protected by an old friend",
+   "poster_path": "/synthTvPoster04.jpg",
+   "media_type": "tv",
+   "genre_ids": [
+    18
+   ],
+   "popularity": 415.0,
+   "first_air_date": "2024-12-05",
+   "vote_average": 7.6,
+   "vote_count": 124,
+   "origin_country": [
+    "US"
+   ]
+  }
+ ],
+ "total_pages": 500,
+ "total_results": 10000
+}

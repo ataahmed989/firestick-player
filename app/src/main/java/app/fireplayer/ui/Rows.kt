@@ -99,7 +99,7 @@ class CenterScrollView @JvmOverloads constructor(
  * The colours are set here rather than through duplicateParentState, which left the text of the
  * selected row light, and so invisible on its white background.
  */
-class RowLayout(context: Context, private val colors: ColorStateList?) : LinearLayout(context) {
+open class RowLayout(context: Context, private val colors: ColorStateList?) : LinearLayout(context) {
 
     override fun drawableStateChanged() {
         super.drawableStateChanged()
@@ -143,6 +143,12 @@ class Rows(private val context: Context) {
 
     fun dp(value: Int) = (value * density).toInt()
 
+    /**
+     * How wide a row's value may grow before it's shortened, in dp: wider in a wide window ([SidePanel]), which is
+     * wide so long names and values can be read.
+     */
+    var valueMaxDp = VALUE_MAX_DP
+
     fun base(): LinearLayout = RowLayout(context, textColors).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
@@ -185,6 +191,24 @@ class Rows(private val context: Context) {
         valueColors: ColorStateList? = null,
     ): LinearLayout {
         val row = base()
+        fill(row, label, value, trailingIcon, labelLines, asSwitch, valueColors)
+        return row
+    }
+
+    /**
+     * What [build] puts in a row, put into [row] (an empty row from [base]): a row whose words change
+     * ([SidePanel.updateRow], a long list's row shown for another entry) gets them without a new row being made.
+     * Returns the label.
+     */
+    fun fill(
+        row: LinearLayout,
+        label: String,
+        value: String?,
+        trailingIcon: Int?,
+        labelLines: Int = 1,
+        asSwitch: Boolean = true,
+        valueColors: ColorStateList? = null,
+    ): TextView {
         val labelView = text(label).apply {
             if (labelLines > 1) {
                 isSingleLine = false
@@ -223,13 +247,13 @@ class Rows(private val context: Context) {
                 // Before it's added, so the row passes its state changes on.
                 isDuplicateParentStateEnabled = true
                 setTextColor(valueColors)
-                maxWidth = dp(118)
+                maxWidth = dp(valueMaxDp)
             })
         } else if (value != null) {
-            row.addView(text(value).apply { alpha = 0.85f; maxWidth = dp(118) })
+            row.addView(text(value).apply { alpha = VALUE_ALPHA; maxWidth = dp(valueMaxDp) })
         }
         if (trailingIcon != null) row.addView(icon(trailingIcon, 15))
-        return row
+        return labelView
     }
 
     /** How a [badge] looks: set (blue), not set (faded gray), refused (soft red), or being checked (gray). */
@@ -294,6 +318,40 @@ class Rows(private val context: Context) {
     }
 
     companion object {
+        /** A value's widest in a usual window, and in a wide one ([valueMaxDp]). */
+        const val VALUE_MAX_DP = 118
+        const val WIDE_VALUE_MAX_DP = 200
+
+        /** How faint a row is drawn while it can't be used (not available, or busy). */
+        const val DIM = 0.4f
+
+        /** A row's value on the right: drawn this much fainter than its label. */
+        const val VALUE_ALPHA = 0.85f
+
+        /** A two-line row's second line (a copy's or a source's facts): its size, how faint, and its gap under the label. */
+        const val NOTE_SP = 10.5f
+        const val NOTE_ALPHA = 0.72f
+        const val NOTE_GAP_DP = 2
+
+        /** The gap between a two-line row's words and its value on the right. */
+        const val VALUE_GAP_DP = 10
+
+        /** Draws [row]'s words, icons and switch faint: its slice of the card stays as it is, so the card stays whole. */
+        fun dim(row: ViewGroup) {
+            for (i in 0 until row.childCount) row.getChildAt(i).alpha = DIM
+        }
+
+        /**
+         * The colour of an "[n] of [total]" badge, the same everywhere: blue when all are, gray when none are, the
+         * lighter blue in between, soft red for a [problem].
+         */
+        fun countBadge(n: Int, total: Int, problem: Boolean = false): Badge = when {
+            problem -> Badge.PROBLEM
+            total > 0 && n >= total -> Badge.ACTIVE
+            n <= 0 -> Badge.INACTIVE
+            else -> Badge.LIGHT
+        }
+
         /**
          * Up / down move between the focusable rows of [list] and wrap around at either end.
          * Returns true when the key was handled.

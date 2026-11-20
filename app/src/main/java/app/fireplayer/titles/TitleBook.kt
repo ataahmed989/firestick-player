@@ -120,7 +120,8 @@ class TitleBook(context: Context) : SQLiteOpenHelper(context, "titles.db", null,
             while (c.moveToNext()) all[c.getString(0)] = c.getLong(1)
         }
         readableDatabase.rawQuery("SELECT DISTINCT server FROM item", null).use { c ->
-            while (c.moveToNext()) all.putIfAbsent(c.getString(0), now)
+            // getOrPut, not HashMap.putIfAbsent: that one exists only from API 24 (minSdk is 22).
+            while (c.moveToNext()) all.getOrPut(c.getString(0)) { now }
         }
         if (all.values.none { now - it < activeS }) return emptyList()
         return all.filter { now - it.value >= idleS }.keys.toList()

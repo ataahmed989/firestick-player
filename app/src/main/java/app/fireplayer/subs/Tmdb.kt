@@ -16,8 +16,11 @@ import kotlin.math.abs
  */
 class Tmdb(private val key: () -> String, private val memory: Memory) {
 
-    /** The player's: its key from Settings, matches kept only while it runs. */
-    constructor(prefs: Prefs) : this({ prefs.tmdbApiKey }, Memory.inProcess())
+    /**
+     * The player's: its key from Settings, matches kept while the app runs, in one memory for every player screen (a
+     * film played again, or the next one of the same name, isn't matched again).
+     */
+    constructor(prefs: Prefs) : this({ prefs.tmdbApiKey }, Memory.shared)
 
     /** Where matches are kept, by what was asked. */
     interface Memory {
@@ -25,6 +28,9 @@ class Tmdb(private val key: () -> String, private val memory: Memory) {
         fun put(key: String, value: String)
 
         companion object {
+            /** One memory for the app's whole run. */
+            val shared: Memory by lazy { inProcess() }
+
             fun inProcess(): Memory = object : Memory {
                 private val map = java.util.concurrent.ConcurrentHashMap<String, String>()
                 override fun get(key: String) = map[key]
@@ -202,6 +208,8 @@ class Tmdb(private val key: () -> String, private val memory: Memory) {
         val ageRating: String = "",
         /** The language it was made in, ISO 639-1 ("en", "fr"); empty when TMDB doesn't say. */
         val originalLanguage: String = "",
+        /** Whose score [rating] is: TMDB's, or IMDb's for details handed over by Films & Shows. */
+        val ratingFrom: String = "TMDB",
     )
 
     /** A film or show's details by its TMDB id; null when TMDB has none. Blocks. */
@@ -266,6 +274,33 @@ class Tmdb(private val key: () -> String, private val memory: Memory) {
         memory.put(key, if (imdb == null) "" else "$imdb|$runtime")
         return imdb?.let { Ids(it, runtime) }
     }
+
+    /** This week's trending films or shows (page 1, 20 titles) as TMDB sends them, for Top 10 rows. Blocks. */
+    fun trendingThisWeek(show: Boolean): String =
+        request("trending/${if (show) "tv" else "movie"}/week", listOf("language" to "en-US"))
+
+    /**
+     * A film's or show's external ids (IMDb's among them) as TMDB sends them; null when TMDB has no such title. Not
+     * remembered here: Top 10 keeps what it finds itself, letting a missing IMDb id be asked again days later. Blocks.
+     */
+    fun externalIds(id: Int, show: Boolean): String? = try {
+        request("${if (show) "tv" else "movie"}/$id/external_ids", emptyList())
+    } catch (e: HttpError) {
+        if (e.code == 404) null else throw e
+    }
+
+    /**
+     * A film's or show's details with the parts in [append] (`append_to_response`, comma-separated) as TMDB sends them,
+     * in English; null when TMDB has no such title. For the title page (one call per title). Blocks.
+     */
+    fun titleDetails(id: Int, show: Boolean, append: String): String? = try {
+        request("${if (show) "tv" else "movie"}/$id", listOf("language" to "en-US", "append_to_response" to append))
+    } catch (e: HttpError) {
+        if (e.code == 404) null else throw e
+    }
+
+    /** What TMDB has under an IMDb id (`find/{tt}`), as it sends it: for a meta without a TMDB id. Blocks. */
+    fun findByImdb(imdbId: String): String = request("find/$imdbId", listOf("external_source" to "imdb_id"))
 
     /** One episode of a show as TMDB lists it. [still] is a picture from it, ready to load. */
     class TvEpisode(
@@ -506,9 +541,16 @@ class Tmdb(private val key: () -> String, private val memory: Memory) {
     fun check(): String? = runCatching { request("authentication", emptyList()) }.exceptionOrNull()
         ?.let { it.message ?: "Couldn't reach TMDB." }
 
+    /** [check], telling a refusal (true: TMDB answered no) from not reaching TMDB (false); null when it works. */
+    fun verify(): Pair<Boolean, String>? = runCatching { request("authentication", emptyList()) }.exceptionOrNull()
+        ?.let { (it is HttpError && (it.code == 401 || it.code == 403)) to (it.message ?: "Couldn't reach TMDB") }
+
+    /** TMDB's answer to a search, asked once: the same one again within [SEARCH_KEPT_MS] is the answer kept. */
     private fun search(path: String, query: String, extra: Pair<String, String>?): JSONArray {
         val params = listOfNotNull("query" to query, "include_adult" to "false", extra)
-        return JSONObject(request(path, params)).optJSONArray("results") ?: JSONArray()
+        return SEARCHES.getOrAsk("$path|$query|${extra?.first.orEmpty()}=${extra?.second.orEmpty()}") {
+            JSONObject(request(path, params)).optJSONArray("results") ?: JSONArray()
+        }
     }
 
     private fun request(path: String, params: List<Pair<String, String>>): String {
@@ -577,6 +619,9 @@ class Tmdb(private val key: () -> String, private val memory: Memory) {
         const val MISS_KEPT_S = 3 * 24 * 3600L
         // Words this short at the end of a name may be tags ("xyz", "vf2"); longer ones are taken as part of it.
         const val MAX_TAG_LENGTH = 4
+        // Searches answered lately, whichever screen asked (they're only read, never changed).
+        const val SEARCH_KEPT_MS = 30 * 60_000L
+        val SEARCHES = RecentAnswers<JSONArray>(max = 24, keptMs = SEARCH_KEPT_MS)
     }
 
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")

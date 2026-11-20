@@ -1,0 +1,432 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Full-screen Live TV controls. Sizes, styles and spacing are the VOD player's (activity_player.xml): 42dp margins,
+    the 21sp title and 15sp clock, Chip pods, the 4dp time line, 51dp main and 39dp round buttons 9dp apart, 39dp pills,
+    and names that show under a button only while it's selected (ButtonLabel). TV Guide and Channel History are main
+    controls, the size of the VOD player's Play (@dimen/player_main_button); Captions is never narrower than the VOD
+    player's Subtitles showing a language (@dimen/player_pill_min_width). Play/Pause and Go live appear at the
+    start of the row only while the channel is paused or behind live; TV Guide and Channel History move along.
+    Down swaps the buttons for the extra row under the chevron (the VOD player's icon row); Up brings them back.
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:clipChildren="false">
+
+    <View
+        android:id="@+id/live_scrim_top"
+        android:layout_width="match_parent"
+        android:layout_height="105dp"
+        android:layout_gravity="top"
+        android:background="@drawable/scrim_top" />
+
+    <View
+        android:id="@+id/live_scrim_bottom"
+        android:layout_width="match_parent"
+        android:layout_height="195dp"
+        android:layout_gravity="bottom"
+        android:background="@drawable/scrim_bottom" />
+
+    <LinearLayout
+        android:id="@+id/live_top"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top"
+        android:layout_marginStart="42dp"
+        android:layout_marginTop="27dp"
+        android:layout_marginEnd="42dp"
+        android:orientation="horizontal">
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="horizontal">
+
+            <!-- The channel's logo, large, on a plate sized to it (LogoBadge); gone when the channel has none. -->
+            <app.fireplayer.live.ui.LogoBadge
+                android:id="@+id/live_logo"
+                android:layout_width="wrap_content"
+                android:layout_height="@dimen/logo_badge_height"
+                android:layout_marginTop="1dp"
+                android:layout_marginEnd="13dp" />
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/live_channel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:ellipsize="end"
+                android:fontFamily="@font/figtree_600"
+                android:singleLine="true"
+                android:textColor="@color/text"
+                android:textSize="15sp"
+                tools:text="Metro 24" />
+
+            <TextView
+                android:id="@+id/live_title"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="3dp"
+                android:ellipsize="end"
+                android:fontFamily="@font/figtree_700"
+                android:maxLines="2"
+                android:textColor="@color/text"
+                android:textSize="21sp"
+                tools:text="World Today" />
+
+            <TextView
+                android:id="@+id/live_schedule"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:fontFamily="@font/figtree_500"
+                android:singleLine="true"
+                android:textColor="@color/text"
+                android:textSize="13sp"
+                tools:text="5:00 PM – 6:00 PM" />
+
+            <TextView
+                android:id="@+id/live_next"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:ellipsize="end"
+                android:fontFamily="@font/figtree_500"
+                android:singleLine="true"
+                android:textColor="@color/text_muted"
+                android:textSize="13sp"
+                tools:text="Next: Morning Briefing · 6:00 PM" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/live_clock"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="16dp"
+            android:fontFamily="@font/figtree_500"
+            android:textColor="#FFE2E5E7"
+            android:textSize="15sp"
+            tools:text="Tue, Nov 17 · 5:47 PM" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/live_bottom"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:layout_marginStart="42dp"
+        android:layout_marginEnd="42dp"
+        android:layout_marginBottom="20dp"
+        android:clipChildren="false"
+        android:clipToPadding="false"
+        android:orientation="vertical">
+
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="20dp"
+            android:clipChildren="false">
+
+            <LinearLayout
+                android:id="@+id/live_chips"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="bottom|start"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/live_chip_resolution"
+                    style="@style/Chip"
+                    tools:text="1920×1080" />
+
+                <TextView
+                    android:id="@+id/live_chip_fps"
+                    style="@style/Chip"
+                    tools:text="25 FPS" />
+
+                <TextView
+                    android:id="@+id/live_chip_format"
+                    style="@style/Chip"
+                    android:fontFeatureSettings="tnum"
+                    tools:text="H.264" />
+
+                <TextView
+                    android:id="@+id/live_chip_audio"
+                    style="@style/Chip"
+                    tools:text="AAC Stereo" />
+
+                <TextView
+                    android:id="@+id/live_chip_source"
+                    style="@style/Chip"
+                    android:drawableStart="@drawable/ic_server"
+                    android:drawablePadding="4dp"
+                    android:gravity="center_vertical"
+                    tools:text="Main playlist" />
+            </LinearLayout>
+        </FrameLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="7dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/live_start"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="@font/figtree_600"
+                android:fontFeatureSettings="tnum"
+                android:textColor="@color/text"
+                android:textSize="13sp"
+                tools:text="5:00 PM" />
+
+            <app.fireplayer.live.ui.ProgrammeLine
+                android:id="@+id/live_line"
+                android:layout_width="0dp"
+                android:layout_height="14dp"
+                android:layout_marginStart="12dp"
+                android:layout_marginEnd="12dp"
+                android:layout_weight="1" />
+
+            <TextView
+                android:id="@+id/live_end"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="@font/figtree_600"
+                android:fontFeatureSettings="tnum"
+                android:textColor="@color/text_muted"
+                android:textSize="13sp"
+                tools:text="6:00 PM · 12 min left" />
+        </LinearLayout>
+
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="84dp"
+            android:layout_marginTop="3dp"
+            android:clipChildren="false"
+            android:clipToPadding="false">
+
+            <LinearLayout
+                android:id="@+id/live_main_row"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:clipChildren="false"
+                android:clipToPadding="false"
+                android:orientation="horizontal"
+                android:paddingTop="3dp">
+
+                <ImageButton
+                    android:id="@+id/live_btn_play"
+                    android:layout_width="51dp"
+                    android:layout_height="51dp"
+                    android:layout_marginEnd="9dp"
+                    android:background="@drawable/bg_circle"
+                    android:contentDescription="Play or pause"
+                    android:padding="13dp"
+                    android:scaleType="fitCenter"
+                    android:src="@drawable/ic_play"
+                    android:tint="@color/sel_live_button"
+                    android:visibility="gone" />
+
+                <LinearLayout
+                    android:id="@+id/live_go_live_group"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:layout_marginEnd="9dp"
+                    android:clipChildren="false"
+                    android:gravity="center_horizontal"
+                    android:orientation="vertical"
+                    android:visibility="gone">
+
+                    <ImageButton
+                        android:id="@+id/live_btn_go_live"
+                        android:layout_width="39dp"
+                        android:layout_height="39dp"
+                        android:background="@drawable/bg_circle"
+                        android:contentDescription="Go live"
+                        android:padding="10dp"
+                        android:scaleType="fitCenter"
+                        android:src="@drawable/ic_go_live"
+                        android:tint="@color/sel_live_button" />
+
+                    <TextView
+                        android:id="@+id/live_go_live_label"
+                        style="@style/ButtonLabel"
+                        android:text="Go live" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:clipChildren="false"
+                    android:gravity="center_horizontal"
+                    android:orientation="vertical">
+
+                    <ImageButton
+                        android:id="@+id/live_btn_guide"
+                        android:layout_width="@dimen/player_main_button"
+                        android:layout_height="@dimen/player_main_button"
+                        android:background="@drawable/bg_circle"
+                        android:contentDescription="TV Guide"
+                        android:padding="@dimen/player_main_button_pad"
+                        android:scaleType="fitCenter"
+                        android:src="@drawable/ic_guide"
+                        android:tint="@color/sel_live_button" />
+
+                    <TextView
+                        android:id="@+id/live_guide_label"
+                        style="@style/ButtonLabel"
+                        android:text="TV Guide" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="9dp"
+                    android:clipChildren="false"
+                    android:gravity="center_horizontal"
+                    android:orientation="vertical">
+
+                    <ImageButton
+                        android:id="@+id/live_btn_history"
+                        android:layout_width="@dimen/player_main_button"
+                        android:layout_height="@dimen/player_main_button"
+                        android:background="@drawable/bg_circle"
+                        android:contentDescription="Channel History"
+                        android:padding="@dimen/player_main_button_pad"
+                        android:scaleType="fitCenter"
+                        android:src="@drawable/ic_history"
+                        android:tint="@color/sel_live_button" />
+
+                    <TextView
+                        android:id="@+id/live_history_label"
+                        style="@style/ButtonLabel"
+                        android:text="Channel History" />
+                </LinearLayout>
+
+                <View
+                    android:layout_width="0dp"
+                    android:layout_height="1dp"
+                    android:layout_weight="1" />
+
+                <LinearLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:clipChildren="false"
+                    android:gravity="center_horizontal"
+                    android:orientation="vertical">
+
+                    <LinearLayout
+                        android:id="@+id/live_btn_cc"
+                        android:layout_width="wrap_content"
+                        android:layout_height="39dp"
+                        android:background="@drawable/bg_pill"
+                        android:contentDescription="Captions"
+                        android:focusable="true"
+                        android:gravity="center"
+                        android:minWidth="@dimen/player_pill_min_width"
+                        android:orientation="horizontal"
+                        android:paddingStart="13dp"
+                        android:paddingEnd="14dp">
+
+                        <ImageView
+                            android:layout_width="17dp"
+                            android:layout_height="17dp"
+                            android:duplicateParentState="true"
+                            android:src="@drawable/ic_cc"
+                            android:tint="@color/sel_live_button" />
+
+                        <TextView
+                            android:id="@+id/live_cc_value"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="6dp"
+                            android:duplicateParentState="true"
+                            android:fontFamily="@font/figtree_600"
+                            android:textColor="@color/sel_live_button"
+                            android:textSize="13sp"
+                            tools:text="Off" />
+                    </LinearLayout>
+
+                    <TextView
+                        android:id="@+id/live_cc_label"
+                        style="@style/ButtonLabel"
+                        android:text="Captions" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="9dp"
+                    android:layout_marginTop="6dp"
+                    android:clipChildren="false"
+                    android:gravity="center_horizontal"
+                    android:orientation="vertical">
+
+                    <ImageButton
+                        android:id="@+id/live_btn_favorite"
+                        android:layout_width="39dp"
+                        android:layout_height="39dp"
+                        android:background="@drawable/bg_circle"
+                        android:contentDescription="Favorite"
+                        android:padding="10dp"
+                        android:scaleType="fitCenter"
+                        android:src="@drawable/ic_star"
+                        android:tint="@color/sel_live_button" />
+
+                    <TextView
+                        android:id="@+id/live_favorite_label"
+                        style="@style/ButtonLabel"
+                        android:text="Favorite" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- The extra row (Down from the buttons), as the VOD player's icon row: item_more items spread across the
+                 width, filled in by LiveControls. Multiview and External PiP are dimmed until they're built. -->
+            <LinearLayout
+                android:id="@+id/live_more_row"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:clipChildren="false"
+                android:clipToPadding="false"
+                android:orientation="horizontal"
+                android:paddingTop="3dp"
+                android:paddingBottom="3dp"
+                android:visibility="gone" />
+
+            <ImageView
+                android:id="@+id/live_arrow_down"
+                android:layout_width="20dp"
+                android:layout_height="14dp"
+                android:layout_gravity="bottom|center_horizontal"
+                android:importantForAccessibility="no"
+                android:scaleType="fitXY"
+                android:src="@drawable/ic_chevron_down"
+                android:tint="@color/text_muted" />
+
+            <ImageView
+                android:id="@+id/live_arrow_up"
+                android:layout_width="20dp"
+                android:layout_height="14dp"
+                android:layout_gravity="top|center_horizontal"
+                android:layout_marginTop="-4dp"
+                android:importantForAccessibility="no"
+                android:scaleType="fitXY"
+                android:src="@drawable/ic_chevron_up"
+                android:tint="@color/text_muted"
+                android:visibility="gone" />
+        </FrameLayout>
+    </LinearLayout>
+</FrameLayout>

@@ -64,6 +64,9 @@
     <color name="progress_track">#24FFFFFF</color>
     <color name="progress_track_glass">#33FFFFFF</color>
     <color name="progress_fill_end">#FF6AA8FF</color>
+    <!-- A button's progress line (Resume): its track on the button, and on the white selected button. -->
+    <color name="button_track">#47FFFFFF</color>
+    <color name="button_track_focused">#26111315</color>
     <!-- The box with TiviMate's set-up details. -->
     <color name="details_fill">#0FFFFFFF</color>
     <color name="details_fill_glass">#14FFFFFF</color>

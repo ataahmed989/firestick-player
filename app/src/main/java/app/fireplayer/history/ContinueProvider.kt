@@ -10,7 +10,8 @@ import android.util.Log
 
 /**
  * Glass Home's Continue Watching row reads what was watched here (content://app.fireplayer.continue/items), newest
- * first, and removes a title from it (…/items/ID). For a show it lists every episode (…/items/ID/episodes, see
+ * first: the films and shows played from Films & Shows (the VOD library, [VodContinue]) and the videos other apps
+ * opened here ([ContinueWatching]), and removes a title from it (…/items/ID). For a show it lists every episode (…/items/ID/episodes, see
  * [ShowEpisodes]): that read blocks and may ask the provider and TMDB, so Glass Home makes it off its main thread. Only
  * Glass Home and FirePlayer itself are answered; anyone else gets nothing, without an error. The rows say what each
  * title is and how far along, and the provider's address as FirePlayer's Source row shows it ("host:port"); never
@@ -35,7 +36,8 @@ class ContinueProvider : ContentProvider() {
         if (!allowed()) return cursor
         if (match == EPISODES) {
             val episodes = try {
-                ContinueWatching.episodes(context, uri.pathSegments[1])
+                val id = uri.pathSegments[1]
+                if (LibraryContinue.isLibraryId(id)) VodContinue.episodes(context, id) else ContinueWatching.episodes(context, id)
             } catch (e: Exception) {
                 Log.w(TAG, "Couldn't list the show's episodes: ${e.javaClass.simpleName}")
                 emptyList()
@@ -47,12 +49,14 @@ class ContinueProvider : ContentProvider() {
             return cursor
         }
         if (match != ITEMS) return cursor
-        val rows = try {
+        val others = try {
             ContinueWatching.rows(context)
         } catch (e: Exception) {
             Log.w(TAG, "Couldn't read the watch history: ${e.javaClass.simpleName}")
             emptyList()
         }
+        // Films & Shows' own Continue Watching (the VOD library) with them, the latest watched first.
+        val rows = LibraryContinue.merge(VodContinue.rows(context), others)
         for (r in rows) {
             val values = mapOf(
                 "id" to r.id,
@@ -80,7 +84,8 @@ class ContinueProvider : ContentProvider() {
         if (!allowed() || MATCHER.match(uri) != ITEM) return 0
         val id = uri.lastPathSegment ?: return 0
         return try {
-            if (ContinueWatching.remove(context, id)) 1 else 0
+            val removed = if (LibraryContinue.isLibraryId(id)) VodContinue.remove(context, id) else ContinueWatching.remove(context, id)
+            if (removed) 1 else 0
         } catch (e: Exception) {
             Log.w(TAG, "Couldn't remove from the watch history: ${e.javaClass.simpleName}")
             0

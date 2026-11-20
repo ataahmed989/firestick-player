@@ -1,0 +1,754 @@
+{
+ "adult": false,
+ "backdrop_path": "/fixture_b693134.jpg",
+ "belongs_to_collection": {
+  "id": 726871,
+  "name": "Dune Collection",
+  "poster_path": "/fixture_c726871.jpg",
+  "backdrop_path": "/fixture_cb726871.jpg"
+ },
+ "budget": 190000000,
+ "genres": [
+  {
+   "id": 878,
+   "name": "Science Fiction"
+  },
+  {
+   "id": 12,
+   "name": "Adventure"
+  }
+ ],
+ "homepage": "https://www.dunemovie.com",
+ "id": 693134,
+ "imdb_id": "tt15239678",
+ "origin_country": [
+  "US"
+ ],
+ "original_language": "en",
+ "original_title": "Dune: Part Two",
+ "overview": "Follow the mythic journey of Paul Atreides as he unites with Chani and the Fremen while on a path of revenge against the conspirators who destroyed his family. Facing a choice between the love of his life and the fate of the known universe, Paul endeavors to prevent a terrible future only he can foresee.",
+ "popularity": 46.26,
+ "poster_path": "/fixture_p693134.jpg",
+ "production_companies": [
+  {
+   "id": 923,
+   "logo_path": null,
+   "name": "Legendary Pictures",
+   "origin_country": "US"
+  }
+ ],
+ "production_countries": [
+  {
+   "iso_3166_1": "US",
+   "name": "United States of America"
+  }
+ ],
+ "release_date": "2024-02-27",
+ "revenue": 714844358,
+ "runtime": 167,
+ "spoken_languages": [
+  {
+   "english_name": "English",
+   "iso_639_1": "en",
+   "name": "English"
+  }
+ ],
+ "status": "Released",
+ "tagline": "Long live the fighters.",
+ "title": "Dune: Part Two",
+ "video": false,
+ "vote_average": 8.1,
+ "vote_count": 7400,
+ "release_dates": {
+  "results": [
+   {
+    "iso_3166_1": "GB",
+    "release_dates": [
+     {
+      "certification": "12A",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2024-03-01T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "US",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "Lincoln Center (Premiere)",
+      "release_date": "2024-02-15T00:00:00.000Z",
+      "type": 1
+     },
+     {
+      "certification": "PG-13",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2024-03-01T00:00:00.000Z",
+      "type": 3
+     },
+     {
+      "certification": "PG-13",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2024-04-16T00:00:00.000Z",
+      "type": 4
+     }
+    ]
+   },
+   {
+    "iso_3166_1": "DE",
+    "release_dates": [
+     {
+      "certification": "12",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2024-02-29T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   }
+  ]
+ },
+ "recommendations": {
+  "page": 1,
+  "results": [
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b438631.jpg",
+    "id": 438631,
+    "title": "Dune",
+    "original_language": "en",
+    "original_title": "Dune",
+    "overview": "",
+    "poster_path": "/fixture_p438631.jpg",
+    "genre_ids": [
+     12,
+     18,
+     28
+    ],
+    "popularity": 46.0,
+    "release_date": "2021-09-15",
+    "video": false,
+    "vote_average": 7.8,
+    "vote_count": 13800,
+    "media_type": "movie"
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b872585.jpg",
+    "id": 872585,
+    "title": "Oppenheimer",
+    "original_language": "en",
+    "original_title": "Oppenheimer",
+    "overview": "",
+    "poster_path": "/fixture_p872585.jpg",
+    "genre_ids": [
+     18,
+     36
+    ],
+    "popularity": 35.0,
+    "release_date": "2023-07-19",
+    "video": false,
+    "vote_average": 8.1,
+    "vote_count": 10500,
+    "media_type": "movie"
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b414906.jpg",
+    "id": 414906,
+    "title": "The Batman",
+    "original_language": "en",
+    "original_title": "The Batman",
+    "overview": "",
+    "poster_path": "/fixture_p414906.jpg",
+    "genre_ids": [
+     28,
+     80,
+     9648
+    ],
+    "popularity": 36.333,
+    "release_date": "2022-03-01",
+    "video": false,
+    "vote_average": 7.7,
+    "vote_count": 10900,
+    "media_type": "movie"
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b999999801.jpg",
+    "id": 999999801,
+    "title": "Unmapped Film",
+    "original_language": "en",
+    "original_title": "Unmapped Film",
+    "overview": "",
+    "poster_path": "/fixture_p999999801.jpg",
+    "genre_ids": [
+     18
+    ],
+    "popularity": 1.0,
+    "release_date": "2024-05-22",
+    "video": false,
+    "vote_average": 6.5,
+    "vote_count": 2300,
+    "media_type": "movie"
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b940721.jpg",
+    "id": 940721,
+    "title": "Godzilla Minus One",
+    "original_language": "en",
+    "original_title": "Godzilla Minus One",
+    "overview": "",
+    "poster_path": "/fixture_p940721.jpg",
+    "genre_ids": [
+     12,
+     18,
+     28
+    ],
+    "popularity": 7.0,
+    "release_date": "2023-11-03",
+    "video": false,
+    "vote_average": 7.6,
+    "vote_count": 2100,
+    "media_type": "movie"
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b999999802.jpg",
+    "id": 999999802,
+    "title": "No Poster Film",
+    "original_language": "en",
+    "original_title": "No Poster Film",
+    "overview": "",
+    "poster_path": null,
+    "genre_ids": [
+     18
+    ],
+    "popularity": 1.0,
+    "release_date": "2023-01-01",
+    "video": false,
+    "vote_average": 6.5,
+    "vote_count": 900,
+    "media_type": "movie"
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b335984.jpg",
+    "id": 335984,
+    "title": "Blade Runner 2049",
+    "original_language": "en",
+    "original_title": "Blade Runner 2049",
+    "overview": "",
+    "poster_path": "/fixture_p335984.jpg",
+    "genre_ids": [
+     18,
+     28,
+     9648
+    ],
+    "popularity": 46.333,
+    "release_date": "2017-10-04",
+    "video": false,
+    "vote_average": 7.5,
+    "vote_count": 13900,
+    "media_type": "movie"
+   },
+   {
+    "adult": true,
+    "backdrop_path": "/fixture_b999999803.jpg",
+    "id": 999999803,
+    "title": "Adult Film",
+    "original_language": "en",
+    "original_title": "Adult Film",
+    "overview": "",
+    "poster_path": "/fixture_p999999803.jpg",
+    "genre_ids": [
+     18
+    ],
+    "popularity": 1.0,
+    "release_date": "2022-01-01",
+    "video": false,
+    "vote_average": 6.5,
+    "vote_count": 400,
+    "media_type": "movie"
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b157336.jpg",
+    "id": 157336,
+    "title": "Interstellar",
+    "original_language": "en",
+    "original_title": "Interstellar",
+    "overview": "",
+    "poster_path": "/fixture_p157336.jpg",
+    "genre_ids": [
+     12,
+     878
+    ],
+    "popularity": 123.333,
+    "release_date": "2014-11-05",
+    "video": false,
+    "vote_average": 8.4,
+    "vote_count": 37000,
+    "media_type": "movie"
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b999999804.jpg",
+    "id": 999999804,
+    "title": "Few Votes Film",
+    "original_language": "en",
+    "original_title": "Few Votes Film",
+    "overview": "",
+    "poster_path": "/fixture_p999999804.jpg",
+    "genre_ids": [
+     18
+    ],
+    "popularity": 1.0,
+    "release_date": "2024-02-01",
+    "video": false,
+    "vote_average": 6.5,
+    "vote_count": 7,
+    "media_type": "movie"
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b27205.jpg",
+    "id": 27205,
+    "title": "Inception",
+    "original_language": "en",
+    "original_title": "Inception",
+    "overview": "",
+    "poster_path": "/fixture_p27205.jpg",
+    "genre_ids": [
+     12,
+     53,
+     878
+    ],
+    "popularity": 126.0,
+    "release_date": "2010-07-15",
+    "video": false,
+    "vote_average": 8.4,
+    "vote_count": 37800,
+    "media_type": "movie"
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b1368337.jpg",
+    "id": 1368337,
+    "title": "The Odyssey",
+    "original_language": "en",
+    "original_title": "The Odyssey",
+    "overview": "",
+    "poster_path": "/fixture_p1368337.jpg",
+    "genre_ids": [
+     12,
+     18,
+     28
+    ],
+    "popularity": 5.0,
+    "release_date": "2026-07-15",
+    "video": false,
+    "vote_average": 7.9,
+    "vote_count": 1500,
+    "media_type": "movie"
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b999999805.jpg",
+    "id": 999999805,
+    "title": "Future Film",
+    "original_language": "en",
+    "original_title": "Future Film",
+    "overview": "",
+    "poster_path": "/fixture_p999999805.jpg",
+    "genre_ids": [
+     18
+    ],
+    "popularity": 1.0,
+    "release_date": "2027-03-05",
+    "video": false,
+    "vote_average": 6.5,
+    "vote_count": 300,
+    "media_type": "movie"
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b577922.jpg",
+    "id": 577922,
+    "title": "Tenet",
+    "original_language": "en",
+    "original_title": "Tenet",
+    "overview": "",
+    "poster_path": "/fixture_p577922.jpg",
+    "genre_ids": [
+     28,
+     53,
+     878
+    ],
+    "popularity": 33.333,
+    "release_date": "2020-08-22",
+    "video": false,
+    "vote_average": 7.2,
+    "vote_count": 10000,
+    "media_type": "movie"
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b969681.jpg",
+    "id": 969681,
+    "title": "Spider-Man: Brand New Day",
+    "original_language": "en",
+    "original_title": "Spider-Man: Brand New Day",
+    "overview": "",
+    "poster_path": "/fixture_p969681.jpg",
+    "genre_ids": [
+     12,
+     28
+    ],
+    "popularity": 3.0,
+    "release_date": "2026-07-29",
+    "video": false,
+    "vote_average": 7.4,
+    "vote_count": 900,
+    "media_type": "movie"
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b374720.jpg",
+    "id": 374720,
+    "title": "Dunkirk",
+    "original_language": "en",
+    "original_title": "Dunkirk",
+    "overview": "",
+    "poster_path": "/fixture_p374720.jpg",
+    "genre_ids": [
+     18,
+     28,
+     36
+    ],
+    "popularity": 55.0,
+    "release_date": "2017-07-19",
+    "video": false,
+    "vote_average": 7.4,
+    "vote_count": 16500,
+    "media_type": "movie"
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b329865.jpg",
+    "id": 329865,
+    "title": "Arrival",
+    "original_language": "en",
+    "original_title": "Arrival",
+    "overview": "",
+    "poster_path": "/fixture_p329865.jpg",
+    "genre_ids": [
+     18,
+     878,
+     9648
+    ],
+    "popularity": 60.667,
+    "release_date": "2016-11-10",
+    "video": false,
+    "vote_average": 7.6,
+    "vote_count": 18200,
+    "media_type": "movie"
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b273481.jpg",
+    "id": 273481,
+    "title": "Sicario",
+    "original_language": "en",
+    "original_title": "Sicario",
+    "overview": "",
+    "poster_path": "/fixture_p273481.jpg",
+    "genre_ids": [
+     18,
+     28,
+     80
+    ],
+    "popularity": 32.667,
+    "release_date": "2015-09-17",
+    "video": false,
+    "vote_average": 7.4,
+    "vote_count": 9800,
+    "media_type": "movie"
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b155.jpg",
+    "id": 155,
+    "title": "The Dark Knight",
+    "original_language": "en",
+    "original_title": "The Dark Knight",
+    "overview": "",
+    "poster_path": "/fixture_p155.jpg",
+    "genre_ids": [
+     53,
+     80
+    ],
+    "popularity": 113.333,
+    "release_date": "2008-07-16",
+    "video": false,
+    "vote_average": 8.5,
+    "vote_count": 34000,
+    "media_type": "movie"
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b146233.jpg",
+    "id": 146233,
+    "title": "Prisoners",
+    "original_language": "en",
+    "original_title": "Prisoners",
+    "overview": "",
+    "poster_path": "/fixture_p146233.jpg",
+    "genre_ids": [
+     18,
+     80,
+     9648
+    ],
+    "popularity": 39.333,
+    "release_date": "2013-09-18",
+    "video": false,
+    "vote_average": 8.1,
+    "vote_count": 11800,
+    "media_type": "movie"
+   }
+  ],
+  "total_pages": 1,
+  "total_results": 40
+ },
+ "similar": {
+  "page": 1,
+  "results": [
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b438631.jpg",
+    "id": 438631,
+    "title": "Dune",
+    "original_language": "en",
+    "original_title": "Dune",
+    "overview": "",
+    "poster_path": "/fixture_p438631.jpg",
+    "genre_ids": [
+     12,
+     18,
+     28
+    ],
+    "popularity": 46.0,
+    "release_date": "2021-09-15",
+    "video": false,
+    "vote_average": 7.8,
+    "vote_count": 13800
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b693134.jpg",
+    "id": 693134,
+    "title": "Dune: Part Two",
+    "original_language": "en",
+    "original_title": "Dune: Part Two",
+    "overview": "",
+    "poster_path": "/fixture_p693134.jpg",
+    "genre_ids": [
+     12,
+     18,
+     28
+    ],
+    "popularity": 24.667,
+    "release_date": "2024-02-27",
+    "video": false,
+    "vote_average": 8.1,
+    "vote_count": 7400
+   },
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b999999806.jpg",
+    "id": 999999806,
+    "title": "Obscure Similar",
+    "original_language": "en",
+    "original_title": "Obscure Similar",
+    "overview": "",
+    "poster_path": "/fixture_p999999806.jpg",
+    "genre_ids": [
+     18
+    ],
+    "popularity": 1.0,
+    "release_date": "1988-01-01",
+    "video": false,
+    "vote_average": 6.5,
+    "vote_count": 3
+   }
+  ],
+  "total_pages": 1,
+  "total_results": 3
+ },
+ "credits": {
+  "cast": [
+   {
+    "adult": false,
+    "gender": 2,
+    "id": 1190668,
+    "known_for_department": "Acting",
+    "name": "Timothée Chalamet",
+    "original_name": "Timothée Chalamet",
+    "popularity": 30.0,
+    "profile_path": "/fixture_c1.jpg",
+    "cast_id": 1,
+    "character": "Paul Atreides",
+    "credit_id": "x1",
+    "order": 0
+   },
+   {
+    "adult": false,
+    "gender": 1,
+    "id": 505710,
+    "known_for_department": "Acting",
+    "name": "Zendaya",
+    "original_name": "Zendaya",
+    "popularity": 40.0,
+    "profile_path": "/fixture_c2.jpg",
+    "cast_id": 2,
+    "character": "Chani",
+    "credit_id": "x2",
+    "order": 1
+   },
+   {
+    "adult": false,
+    "gender": 1,
+    "id": 933238,
+    "known_for_department": "Acting",
+    "name": "Rebecca Ferguson",
+    "original_name": "Rebecca Ferguson",
+    "popularity": 20.0,
+    "profile_path": null,
+    "cast_id": 3,
+    "character": "Lady Jessica",
+    "credit_id": "x3",
+    "order": 2
+   },
+   {
+    "adult": false,
+    "gender": 2,
+    "id": 1640,
+    "known_for_department": "Acting",
+    "name": "Javier Bardem",
+    "original_name": "Javier Bardem",
+    "popularity": 15.0,
+    "profile_path": "/fixture_c4.jpg",
+    "cast_id": 4,
+    "character": "Stilgar",
+    "credit_id": "x4",
+    "order": 3
+   },
+   {
+    "adult": false,
+    "gender": 2,
+    "id": 16851,
+    "known_for_department": "Acting",
+    "name": "Josh Brolin",
+    "original_name": "Josh Brolin",
+    "popularity": 15.0,
+    "profile_path": "/fixture_c5.jpg",
+    "cast_id": 5,
+    "character": "Gurney Halleck",
+    "credit_id": "x5",
+    "order": 4
+   },
+   {
+    "adult": false,
+    "gender": 2,
+    "id": 1373737,
+    "known_for_department": "Acting",
+    "name": "Austin Butler",
+    "original_name": "Austin Butler",
+    "popularity": 25.0,
+    "profile_path": "/fixture_c6.jpg",
+    "cast_id": 6,
+    "character": "Feyd-Rautha Harkonnen",
+    "credit_id": "x6",
+    "order": 5
+   }
+  ],
+  "crew": [
+   {
+    "adult": false,
+    "gender": 2,
+    "id": 137427,
+    "known_for_department": "Directing",
+    "name": "Denis Villeneuve",
+    "original_name": "Denis Villeneuve",
+    "popularity": 5.0,
+    "profile_path": null,
+    "credit_id": "y1",
+    "department": "Directing",
+    "job": "Director"
+   },
+   {
+    "adult": false,
+    "gender": 2,
+    "id": 137427,
+    "known_for_department": "Directing",
+    "name": "Denis Villeneuve",
+    "original_name": "Denis Villeneuve",
+    "popularity": 5.0,
+    "profile_path": null,
+    "credit_id": "y2",
+    "department": "Writing",
+    "job": "Screenplay"
+   },
+   {
+    "adult": false,
+    "gender": 2,
+    "id": 1260057,
+    "known_for_department": "Writing",
+    "name": "Jon Spaihts",
+    "original_name": "Jon Spaihts",
+    "popularity": 2.0,
+    "profile_path": null,
+    "credit_id": "y3",
+    "department": "Writing",
+    "job": "Screenplay"
+   },
+   {
+    "adult": false,
+    "gender": 2,
+    "id": 6223,
+    "known_for_department": "Writing",
+    "name": "Frank Herbert",
+    "original_name": "Frank Herbert",
+    "popularity": 2.0,
+    "profile_path": null,
+    "credit_id": "y4",
+    "department": "Writing",
+    "job": "Novel"
+   },
+   {
+    "adult": false,
+    "gender": 2,
+    "id": 947,
+    "known_for_department": "Sound",
+    "name": "Hans Zimmer",
+    "original_name": "Hans Zimmer",
+    "popularity": 3.0,
+    "profile_path": null,
+    "credit_id": "y5",
+    "department": "Sound",
+    "job": "Original Music Composer"
+   }
+  ]
+ }
+}

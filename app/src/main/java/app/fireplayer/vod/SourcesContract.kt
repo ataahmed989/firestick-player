@@ -1,0 +1,859 @@
+package app.fireplayer.vod
+
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import app.fireplayer.PlayerActivity
+import app.fireplayer.player.CopyHealth
+import app.fireplayer.player.MediaSpec
+import app.fireplayer.vod.data.VodRepositories
+import java.util.UUID
+
+/*
+ * Films & Shows step 3: where a title plays from, and how FirePlayer's player gets it (design-brief.md §6.1, 6.2,
+ * 6.4, 6.5). Two engineers build against this file: the sources engine (vod/sources, vod/data) implements
+ * [SourcesRepository], [SourceSession], [ThisTv], [AddonSettings] and [PlaybackLibrary]; the pages and the player use
+ * them. Until the engine lands, [Sources.get] answers with a stub that knows no add-ons.
+ *
+ * Privacy (hard rule): an add-on's link carries the user's debrid key (Real-Debrid, TorBox…) or config, and a checked
+ * link is a debrid download. Both live only in memory, inside [SecretUrl], whose toString shows the host and nothing else.
+ * Neither is ever logged, printed, stored, put in an Intent or a test fixture, or shown in full; error text goes
+ * through [redactLinks]. What is stored about a release is its [ReleaseKey] (info hash + file index) and add-on name.
+ *
+ * Threading: as in VodContract.kt, callbacks arrive on the main thread, none after [Cancel.cancel]; the network runs on
+ * the engine's own background threads.
+ */
+
+// ---- Add-ons (Settings › Add-ons) -----------------------------------------------------------------------------------
+
+/**
+ * The playback add-ons (each with the user's debrid service: Real-Debrid, TorBox…), with stage 1's answer limit counted
+ * from the first ask (§6.5). StremThru Torz searches its own database and, for at most 10 s, its indexers, then asks
+ * the debrid service what it holds: 15 s.
+ */
+enum class Addon(val label: String, val answerLimitMs: Long) {
+    TORRENTIO("Torrentio", 10_000L),
+    MEDIAFUSION("MediaFusion", 25_000L),
+    TORZ("StremThru Torz", 15_000L),
+}
+
+/**
+ * A link holding a secret: an add-on's base link (debrid key or encrypted config in its path) or a checked
+ * playback link. [toString] shows only the host; [reveal] is for the one place that opens it (the HTTP call, the
+ * player's MediaItem) and its result must never reach a log, a preference, a database, an Intent or the screen.
+ */
+class SecretUrl private constructor(private val value: String) {
+    /** The full link, to open it. Never log, store or show what this returns. */
+    fun reveal(): String = value
+
+    /** Where it points ("torrentio.strem.fun"), safe to show; null when it has no host. */
+    val host: String? get() = parseLink(value)?.host?.removePrefix("www.")
+
+    override fun toString(): String = "SecretUrl(${host ?: "?"})"
+    override fun equals(other: Any?): Boolean = other is SecretUrl && other.value == value
+    override fun hashCode(): Int = value.hashCode()
+
+    companion object {
+        /** [url] as a secret when it is an http(s) link; null otherwise. */
+        fun of(url: String): SecretUrl? {
+            val clean = url.trim()
+            val ok = clean.startsWith("https://", ignoreCase = true) || clean.startsWith("http://", ignoreCase = true)
+            return if (ok && clean.length > 8) SecretUrl(clean) else null
+        }
+    }
+}
+
+/**
+ * Encodes the characters a strict URI parser refuses but add-on links carry: Torrentio's options are separated by
+ * "|" (e.g. "…/providers=yts|realdebrid=…/manifest.json"), and a pasted link may hold spaces or braces. Characters
+ * already percent-encoded stay as they are.
+ */
+fun encodeLinkChars(url: String): String {
+    val sb = StringBuilder(url.length + 8)
+    for (ch in url.trim()) {
+        when (ch) {
+            '|', ' ', '"', '<', '>', '\\', '^', '`', '{', '}' -> sb.append('%').append(String.format(java.util.Locale.ROOT, "%02X", ch.code))
+            else -> sb.append(ch)
+        }
+    }
+    return sb.toString()
+}
+
+/** [url] parsed leniently (see [encodeLinkChars]); null when it still isn't a link. */
+fun parseLink(url: String): java.net.URI? =
+    runCatching { java.net.URI(encodeLinkChars(url)) }.getOrNull()
+
+private val LINK = Regex("""(?i)\b(?:https?|stremio)://\S+""")
+
+/** [text] with every link replaced by "<link>": for any error text that might quote an add-on or a resolved link. */
+fun redactLinks(text: String?): String = text?.replace(LINK, "<link>").orEmpty()
+
+/** What saving an add-on's link did ([AddonSettings.save]). */
+enum class AddonSave {
+    SAVED,
+    /** Not an http(s) or stremio:// link. */
+    NOT_A_LINK,
+    /** A link, but not to this add-on (its manifest's id, when checked, or its shape). */
+    NOT_THIS_ADDON,
+    /** The encrypted store refused it (Android Keystore unavailable). */
+    COULD_NOT_STORE,
+}
+
+/**
+ * The add-ons' links as the user entered them in Settings › Add-ons: stored encrypted (Android Keystore), never
+ * logged, never shown in full. Main thread; writes are small and synchronous, as [app.fireplayer.data.KeyStore]'s.
+ */
+interface AddonSettings {
+    fun isSet(addon: Addon): Boolean
+
+    /**
+     * What Settings shows for a saved link: its host and the last 4 characters, "torrentio.strem.fun · …x7Qa"; null
+     * when none is saved. Never more of the link.
+     */
+    fun summary(addon: Addon): String?
+
+    /**
+     * Saves [link] for [addon]: "stremio://" becomes "https://", a trailing "/manifest.json" or "/configure" is
+     * dropped, and blank changes nothing (returns [AddonSave.NOT_A_LINK]). A change drops the sources kept in memory.
+     */
+    fun save(addon: Addon, link: String): AddonSave
+
+    /** Forgets [addon]'s link; its sources stop at once. */
+    fun remove(addon: Addon)
+}
+
+// ---- Sources: what the add-ons offer for a film or an episode -----------------------------------------------------
+
+/**
+ * A release file: torrent info hash (40 lowercase hex) and file index inside it (null: the add-on didn't say, a
+ * single-file torrent). The only thing stored about a source (last release used, measured facts, health).
+ */
+data class ReleaseKey(val infoHash: String, val fileIdx: Int?) {
+    /**
+     * The key of what FirePlayer measured about this file ("quality_seen", CopyHealth): "rd|<hash>|<idx or -1>". The
+     * "rd" is only a label (any debrid service): it stays, so what was measured before is still found.
+     */
+    val storeKey: String get() = "rd|$infoHash|${fileIdx ?: -1}"
+
+    companion object {
+        private val HEX40 = Regex("[0-9a-f]{40}")
+
+        /** A key from an info hash in any case; null unless it is 40 hex digits. A negative index counts as none. */
+        fun of(infoHash: String?, fileIdx: Int?): ReleaseKey? {
+            val hash = infoHash?.trim()?.lowercase() ?: return null
+            if (!HEX40.matches(hash)) return null
+            return ReleaseKey(hash, fileIdx?.takeIf { it >= 0 })
+        }
+
+        /** Reads a [storeKey] back; null when it isn't one. */
+        fun parse(storeKey: String?): ReleaseKey? {
+            val p = storeKey?.split('|') ?: return null
+            if (p.size != 3 || p[0] != "rd") return null
+            return of(p[1], p[2].toIntOrNull())
+        }
+    }
+}
+
+/** HDR kinds a source or a TV has. SDR is none of them. */
+enum class Hdr(val label: String) { DOLBY_VISION("DV"), HDR10_PLUS("HDR10+"), HDR10("HDR"), HLG("HLG") }
+
+/** Sound formats a TV or receiver can take as they are (passthrough). PCM and AAC always play. */
+enum class SoundFormat(val label: String) {
+    AC3("Dolby Digital"), EAC3("Dolby Digital Plus"), EAC3_JOC("Dolby Atmos (DD+)"),
+    TRUEHD("Dolby TrueHD"), DTS("DTS"), DTS_HD("DTS-HD"),
+}
+
+/**
+ * Whether the debrid service (Real-Debrid, TorBox…) probably has the file cached. The add-ons' marks are guesses
+ * (§6.5: "probably on Real-Debrid").
+ */
+enum class Readiness {
+    /** Torrentio `[RD+]` / `[TB+]` (any service's "+"), MediaFusion's and StremThru Torz's ⚡: probably cached. */
+    PROBABLY_READY,
+    /** Torrentio `[RD download]` / `[TB download]`, MediaFusion ⏳, Torz without ⚡, or "uncached" words: never picked automatically. */
+    NOT_READY,
+    UNKNOWN,
+}
+
+/** The Sources panel's groups after "Best for this TV", in order (§6.5); [startsOpen] false for the last four. */
+enum class SourceGroup(val label: String, val startsOpen: Boolean) {
+    UHD("4K", true),
+    FHD("1080p", true),
+    LOWER("720p and lower", false),
+    /** Resolution not stated, 3D. */
+    OTHER("Other", false),
+    /** CAM, TeleSync, TeleCine, screener: never picked automatically. */
+    CINEMA("Cinema recordings", false),
+    /** Not cached by the debrid service yet (the name stays: it is only an id). */
+    NOT_ON_RD("Not cached yet", false),
+}
+
+/** How likely a source plays well on this TV under its [TvPlan] (ranked first). */
+enum class TvFit { MEASURED_OK, LIKELY, UNKNOWN, LIKELY_NOT }
+
+/**
+ * What the add-ons say about a file, parsed from their text (r3_sources-organize §1.3). Missing facts are null or empty,
+ * never guessed. Labelled "from Torrentio/MediaFusion" until FirePlayer measures them ([PlaybackSource.measured]).
+ */
+data class SourceFacts(
+    /** 2160, 1080, 720, 576, 480; null when not stated. */
+    val height: Int? = null,
+    val hdr: Set<Hdr> = emptySet(),
+    /** Dolby Vision profile when stated or measured (5, 7, 8). */
+    val dvProfile: Int? = null,
+    /** "REMUX", "BluRay", "WEB-DL", "WEBRip", "HDTV", "CAM"… */
+    val origin: String? = null,
+    /** "HEVC", "H.264", "AV1". */
+    val codec: String? = null,
+    val bitDepth: Int? = null,
+    /** "DD+ Atmos", "TrueHD Atmos", "DTS-HD MA", "AAC". */
+    val audio: String? = null,
+    /** "5.1", "7.1", "2.0". */
+    val channels: String? = null,
+    val sizeBytes: Long? = null,
+    /** Average Mb/s from size × 8 ÷ runtime ("≈25 Mb/s"); null without both. */
+    val avgMbps: Double? = null,
+    /** Release group ("FLUX"). */
+    val group: String? = null,
+    /** Short language codes ("en", "ru"); empty when not stated. */
+    val languages: List<String> = emptyList(),
+    val seeders: Int? = null,
+    /** The file sits in a season pack or collection. */
+    val pack: Boolean = false,
+)
+
+/** What FirePlayer measured itself when this file played here before, keyed by [ReleaseKey.storeKey]. */
+data class Measured(val spec: MediaSpec?, val health: CopyHealth?, val at: Long?)
+
+/** One add-on's offer of a file: its own words (for Details, no links), its ready mark, and the link to check. */
+data class Offer(
+    val addon: Addon,
+    val readiness: Readiness,
+    /** The release name / description as the add-on wrote it (never a link). */
+    val text: String,
+    val filename: String? = null,
+    /** behaviorHints.bingeGroup: next episode prefers the same one (§6.5). */
+    val bingeGroup: String? = null,
+    /** The add-on's play link: memory only, opened only at Play (stage 2). */
+    val link: SecretUrl,
+    /** The file this offer opens (a merged row's offers can be different re-uploads); null: the row's [PlaybackSource.release]. */
+    val release: ReleaseKey? = null,
+)
+
+/**
+ * One row of the Sources panel: a file, merged across add-ons and re-uploads (same [release], or same normalised
+ * filename within 1 % size). [offers] are in the order to try: ready mark first, then Torrentio.
+ */
+data class PlaybackSource(
+    /** Stable within a [SourceList] (rows keep focus as answers arrive). */
+    val key: String,
+    val release: ReleaseKey?,
+    val facts: SourceFacts,
+    val offers: List<Offer>,
+    /** The same release under several hashes ("×3"). */
+    val copies: Int = 1,
+    val readiness: Readiness,
+    val group: SourceGroup,
+    val fit: TvFit = TvFit.UNKNOWN,
+    /** At most one amber warning ("Dolby Vision 7: may not play here"). */
+    val warning: String? = null,
+    val measured: Measured? = null,
+) {
+    val addons: List<Addon> get() = offers.map { it.addon }.distinct()
+    val bothAddons: Boolean get() = addons.size > 1
+
+    /** Never picked by itself: not cached by the debrid service yet, or a cinema recording (§6.5). */
+    val automatic: Boolean get() = readiness != Readiness.NOT_READY && group != SourceGroup.CINEMA
+}
+
+/** One add-on's part in a look-up. [final] states count as answered for the waiting rule (r3_prefetch §2.7). */
+sealed class AddonState {
+    abstract val final: Boolean
+
+    /** No link saved for it. */
+    data object NotSet : AddonState() { override val final = true }
+
+    /** Not asked (the page's wait hasn't passed, or its budget is spent for early look-ups). */
+    data object NotAsked : AddonState() { override val final = false }
+
+    /** Asked at [since]; the waiting rule gives up at [deadline] (both elapsedRealtime ms). */
+    data class Asking(val since: Long, val deadline: Long) : AddonState() { override val final = false }
+
+    data class Answered(val count: Int) : AddonState() { override val final = true }
+
+    /** Down, timed out, or refused; [why] is already redacted. */
+    data class Failed(val why: String) : AddonState() { override val final = true }
+
+    /** Said it is busy (ElfHosted 🐢 or HTTP 429): skipped until [until] (elapsedRealtime ms). */
+    data class Busy(val until: Long) : AddonState() { override val final = true }
+}
+
+/** What a look-up is for: a film, or one episode of a show. */
+data class SourceTarget(val title: Title, val episode: EpisodeRef? = null) {
+    /** The Stremio stream type: "movie" or "series". */
+    val streamType: String get() = if (episode == null && title.kind == Kind.MOVIE) "movie" else "series"
+
+    /** "tt0133093", or "tt1695360:2:5" for an episode. */
+    val streamId: String get() = episode?.let { Episode.idOf(title.id, it.season, it.episode) } ?: title.id
+
+    /** The memory cache's key, and the path after the add-on's base: "stream/series/tt1695360:2:5.json". */
+    val key: String get() = "stream/$streamType/$streamId.json"
+}
+
+/**
+ * The merged, ranked sources for one [target] so far, and each add-on's state. [sources] are best first ("Best for
+ * this TV" order, which every group keeps).
+ */
+data class SourceList(
+    val target: SourceTarget,
+    val states: Map<Addon, AddonState>,
+    val sources: List<PlaybackSource>,
+    /** The top automatic pick, or null (none ready). Shows as "Best so far" until [complete]. */
+    val best: PlaybackSource?,
+    /** The release used last time for this film or episode, when offered and different from [best]. */
+    val lastUsed: PlaybackSource? = null,
+) {
+    /** Every add-on is final: Play goes straight to checking the link. */
+    val complete: Boolean get() = states.values.all { it.final }
+
+    /** For the strip: who is still looking ("MediaFusion · still looking"). */
+    val stillLooking: List<Addon> get() = states.filterValues { !it.final }.keys.toList()
+
+    fun inGroup(group: SourceGroup): List<PlaybackSource> = sources.filter { it.group == group }
+}
+
+/** Why a look-up runs: it sets the wait, the budget and whether a newer one may cancel it (§6.4, r3_prefetch §2). */
+enum class LookupWhy(val automatic: Boolean) {
+    /** The title page's Play target, after 1.5 s on the page. Within MediaFusion's early budget only. */
+    PAGE(true),
+    /** The same after 0.5 s: a resume point, or opened from Next Episodes or a Continue card's hold menu. */
+    PAGE_SOON(true),
+    /** The next episode, once, in the last ~4 minutes of this one. */
+    NEXT_EPISODE(true),
+    /** Play, Resume, an episode's OK, OK on a Continue card: now, never blocked by a budget. */
+    PLAY(false),
+    /** The Sources button or panel: now, never blocked by a budget. */
+    SOURCES(false),
+}
+
+/**
+ * The sources engine. One per process ([Sources.get]). Lists are kept in memory only (10 min, 6 titles; an empty
+ * answer 60 s) and dropped on a network change, an add-on change or a debrid account stop. Links are never
+ * opened ahead of Play.
+ */
+interface SourcesRepository {
+    val addons: AddonSettings
+    val thisTv: ThisTv
+    val library: PlaybackLibrary
+
+    /** What is kept for [target] now, complete or not; null when nothing was asked or it expired. */
+    fun cached(target: SourceTarget): SourceList?
+
+    /**
+     * Sources for [target]. [onList] is called at once with what is known (kept answers, or every add-on [AddonState.
+     * NotAsked]/[AddonState.Asking]), then on each change; the last call has [SourceList.complete]. An automatic [why]
+     * waits first (PAGE 1.5 s, PAGE_SOON 0.5 s): cancelling during the wait sends nothing. A request already running
+     * for the same target is joined, never sent twice; a newer automatic look-up cancels an older automatic one on the
+     * same add-on; requests the user started are never cancelled by that. Cancelling stops the callbacks only: a sent
+     * request finishes and is kept. With [only], just that add-on is asked (a Continue card's same file).
+     */
+    fun lookUp(target: SourceTarget, why: LookupWhy, only: Addon? = null, onList: (SourceList) -> Unit): Cancel
+
+    /** The engine for one play of a film or episode (stages 1-4), handed to the player in [PlayRequest]. */
+    fun session(request: PlayRequest): SourceSession
+
+    /** Drops every kept list (the add-ons changed, a debrid account problem). */
+    fun forget()
+}
+
+// ---- Handing a play to the player ----------------------------------------------------------------------------------
+
+/** Where playback starts. Explicit either way: FirePlayer's own launches never ask "Resume from?". */
+sealed class StartAt {
+    data object Beginning : StartAt()
+    data class At(val positionMs: Long) : StartAt()
+}
+
+/** Where Play was pressed: the player's Back returns there, and Continue asks the same add-on first. */
+enum class PlayOrigin { TITLE_PAGE, SOURCES_PANEL, CONTINUE_CARD, NEXT_EPISODE }
+
+/**
+ * Everything the player needs to play a film or episode from the add-ons. Held in memory ([PlayHandoff]); the Intent
+ * carries only a token. Ids go to subtitles (OpenSubtitles by IMDb id), Skip Intro and history.
+ */
+data class PlayRequest(
+    val target: SourceTarget,
+    val start: StartAt,
+    val origin: PlayOrigin,
+    /**
+     * What stage 1 found before the player opened (the title page waited); null: the player looks it up. Not yet
+     * [SourceList.complete] when OK was pressed again while it waited: the player then plays the best in it without
+     * waiting for the add-on still looking.
+     */
+    val list: SourceList? = null,
+    /** A row chosen in Sources, or "OK again plays the best so far"; null: the session picks. */
+    val chosen: PlaybackSource? = null,
+    /** The release to play again (Resume, a Continue card): the same file first, from its add-on. */
+    val preferred: LastRelease? = null,
+    /** The source the previous episode played from: the next episode prefers the same kind (§6.5). */
+    val like: PlaybackSource? = null,
+    /** The episode after this one, when the page knows it (Next episode); null: the player finds it. */
+    val next: EpisodeRef? = null,
+    /** Room was made before the film started (film mode, §6.6): the page restores its snapshot on return. */
+    val filmMode: Boolean = false,
+    /** When OK was pressed for this play (elapsedRealtime ms; 0: not known), for the start's timing in the log. */
+    val pressedAt: Long = 0L,
+) {
+    val imdbId: String get() = target.title.id
+    val tmdbId: Int? get() = target.title.tmdbId
+    val season: Int? get() = target.episode?.season
+    val episode: Int? get() = target.episode?.episode
+}
+
+/**
+ * Hands a [PlayRequest] to PlayerActivity without any link in the Intent: [intent] puts the request here under a
+ * random token and starts the player with [ACTION] and a "fireplayer-vod:" data Uri holding only the token. The player
+ * reads it with [get] (again after a recreate) and drops it with [done]. At most [KEEP] are kept; a process restart
+ * loses them, and the player then closes as it does for an old run.
+ */
+object PlayHandoff {
+    const val ACTION = "app.fireplayer.action.PLAY_SOURCES"
+    const val EXTRA_TOKEN = "app.fireplayer.extra.HANDOFF_TOKEN"
+    const val SCHEME = "fireplayer-vod"
+    const val KEEP = 4
+
+    private val waiting = LinkedHashMap<String, PlayRequest>()
+    private val early = HashMap<String, EarlyOpen>()
+
+    @Synchronized
+    fun put(request: PlayRequest): String {
+        val token = UUID.randomUUID().toString()
+        waiting[token] = request
+        while (waiting.size > KEEP) {
+            val old = waiting.keys.first()
+            waiting.remove(old)
+            early.remove(old)?.drop()
+        }
+        return token
+    }
+
+    @Synchronized
+    fun get(token: String?): PlayRequest? = token?.let { waiting[it] }
+
+    @Synchronized
+    fun done(token: String?) {
+        if (token != null) {
+            waiting.remove(token)
+            early.remove(token)?.drop()
+        }
+    }
+
+    /**
+     * Starts [request]'s play now, before the player's screen exists: its session picks the source and checks its
+     * link (stage 2) while the page makes room and the player comes up, which is half a second or so on a Fire TV
+     * Stick. The player takes it over with [takeEarly]. Not for a row chosen in Sources that isn't cached
+     * (that one is fetched, which the player starts itself). Main thread.
+     */
+    fun startEarly(token: String, request: PlayRequest, sources: SourcesRepository, now: Long) {
+        val chosen = request.chosen
+        if (chosen != null && chosen.readiness == Readiness.NOT_READY && request.origin == PlayOrigin.SOURCES_PANEL) return
+        val open = runCatching { EarlyOpen(sources.session(request), chosen, now) }.getOrNull() ?: return
+        synchronized(this) {
+            if (waiting.containsKey(token)) early[token] = open else open.drop()
+        }
+    }
+
+    /** The play begun by [startEarly] for [token], once; null when there's none (or it was taken before). */
+    @Synchronized
+    fun takeEarly(token: String?): EarlyOpen? = token?.let { early.remove(it) }
+
+    /** The token of an Intent made by [intent]; null for any other. */
+    fun tokenOf(intent: Intent?): String? =
+        intent?.takeIf { it.action == ACTION }?.getStringExtra(EXTRA_TOKEN)
+
+    /**
+     * The Intent for PlayerActivity, explicit, in FirePlayer's own task. With [sources], the play's link check starts
+     * now ([startEarly]) rather than when the player's screen is up; [now] is elapsedRealtime.
+     */
+    fun intent(context: Context, request: PlayRequest, sources: SourcesRepository? = null, now: Long = 0L): Intent {
+        val token = put(request)
+        if (sources != null) startEarly(token, request, sources, now)
+        return Intent(ACTION, Uri.parse("$SCHEME:$token"), context, PlayerActivity::class.java)
+            .putExtra(EXTRA_TOKEN, token)
+            .putExtra("title", request.target.title.name)
+    }
+}
+
+/**
+ * A play's first open, begun at OK ([PlayHandoff.startEarly]) so the link is checked while the player's screen comes
+ * up. What the session answers before the player is there is kept and handed over, in order, when it [attach]es; after
+ * that the answers go straight to it. [drop] ends it when no player takes it. Main thread.
+ */
+class EarlyOpen(val session: SourceSession, chosen: PlaybackSource?, val startedAt: Long) {
+    private val kept = ArrayList<Opened>()
+    private var sink: ((Opened) -> Unit)? = null
+    private var dropped = false
+
+    /** Cancels the open (the player's own "opening"). */
+    val cancel: Cancel = session.open(chosen, OpenWhy.START) { o ->
+        val s = sink
+        if (s != null) s(o) else kept += o
+    }
+
+    /** The player takes over: what was answered so far, then the rest as it comes. */
+    fun attach(onOpened: (Opened) -> Unit) {
+        if (dropped) return
+        sink = onOpened
+        val so = kept.toList()
+        kept.clear()
+        so.forEach(onOpened)
+    }
+
+    /** Nobody took it (the player never came up): the open and its session end. */
+    fun drop() {
+        if (dropped) return
+        dropped = true
+        cancel.cancel()
+        if (sink == null) session.close()
+    }
+}
+
+// ---- One play: stages 2-4 (the player drives, the session decides) -------------------------------------------------
+
+/** Why the player asks for a source. */
+enum class OpenWhy {
+    /** The first start. */
+    START,
+    /** Stage 3: the first load passed its limit and the user chose "Try next source". */
+    FIRST_LOAD_SLOW,
+    /** Stage 4: [StallWatch.shouldSwitch]; counts against the 2 switches. */
+    STALLS,
+    /** A failure whose [Step] was [Step.TryNext]. */
+    FAILED,
+    /** The user's Next source (Picture & sound) or a Sources row: always allowed, at the current position. */
+    USER,
+}
+
+/** Progress and outcome of [SourceSession.open]; [Looking] and [Checking] come before one final answer. */
+sealed class Opened {
+    /** Stage 1, in the player (a Continue card): who is still looking. */
+    data class Looking(val list: SourceList) : Opened()
+
+    /** Stage 2: checking [source]'s link (≤ 20 s, redirects off). */
+    data class Checking(val source: PlaybackSource) : Opened()
+
+    /**
+     * Stage 2 passed: play [link] (memory only). [startMs] is where to start (null: [PlayRequest.start] or the current
+     * position); [resumedNear] when it isn't the same file, for "Resumed near 1:02:03".
+     */
+    data class Ready(
+        val source: PlaybackSource,
+        val offer: Offer,
+        val link: SecretUrl,
+        val startMs: Long?,
+        val resumedNear: Boolean,
+    ) : Opened()
+
+    /** No ready source worked: ask once whether the debrid service should fetch [source] ([SourceSession.fetch]). */
+    data class AskFetch(val source: PlaybackSource) : Opened()
+
+    /** Stop and tell the user ([message], plain words, no links). */
+    data class Stopped(val failure: Failure, val message: String) : Opened()
+
+    /** Nothing left to try within the limits; [message] points to Sources / Next source. */
+    data class NoneLeft(val message: String) : Opened()
+}
+
+/** The failure table's categories (§6.5, rev_source-failures §6). */
+enum class FailureKind {
+    /** About the file (dead, archive, too big, refused for copyright): skip it and its copies in both add-ons. */
+    FILE,
+    /** The debrid service is fetching it ("being downloaded" notice): skip, don't come back this session. */
+    NOT_READY,
+    /** This device can't decode it: another format. */
+    FORMAT,
+    /** The receiver/TV refused the sound: decode on the Stick, same source. */
+    AUDIO,
+    /** Link expired or bound to another connection: re-ask and re-check once. */
+    LINK_EXPIRED,
+    /** One add-on is down: use the other. */
+    ADDON_DOWN,
+    /** "Copyright" right after a new add: wait about 30 s, retry once. */
+    JUST_ADDED,
+    /** MediaFusion's config is invalid: stop MediaFusion, Torrentio still plays. */
+    CONFIG,
+    /** No answer in time (stage 2 or stage 3). */
+    SLOW,
+    /** Account, subscription, limits, rate limits, outage: stop and tell. */
+    ACCOUNT, LIMITS, RATE_LIMITED, OUTAGE,
+    /** No internet at all: stop and tell. */
+    NO_INTERNET,
+    /** Unknown, often transient: retry once. */
+    UNKNOWN,
+}
+
+/** A failure, by add-on when known; [detail] is already redacted, for the attempted list's Details. */
+data class Failure(val kind: FailureKind, val addon: Addon? = null, val detail: String? = null)
+
+/** What the player does after [SourceSession.failed]. */
+sealed class Step {
+    /** [SourceSession.open] with [OpenWhy.FAILED]. */
+    data object TryNext : Step()
+    /** The same source again after [afterMs]. */
+    data class Retry(val afterMs: Long) : Step()
+    /** The same source re-asked and re-checked ([SourceSession.open] with it), once. */
+    data object Refresh : Step()
+    /** Sound passthrough off for this play, same source. */
+    data object DecodeOnDevice : Step()
+    data class Stop(val message: String) : Step()
+}
+
+/** One try in the attempted list ("Tried 20:41 · didn't start"); [at] epoch ms. */
+data class Attempt(val source: PlaybackSource, val at: Long, val why: OpenWhy, val failure: Failure? = null)
+
+/**
+ * Stage 4's watch (§6.5), fed by the player's buffering events (elapsedRealtime ms). Counts only after 30 s of
+ * playing; a stall starting within 10 s of a jump (seek, source change, resume) doesn't count.
+ */
+interface StallWatch {
+    /** Playback started or carried on after a stall. */
+    fun playing(now: Long)
+    /** A seek, a source change or a resume. */
+    fun jumped(now: Long)
+    fun buffering(now: Long, on: Boolean)
+    /** 3 stalls in 2 minutes, one over 20 s, or over 25 % of 2 minutes buffering. */
+    fun shouldSwitch(now: Long): Boolean
+}
+
+/**
+ * The engine for one play of a film or episode. The player drives it: [open], then [started] at the first frame or
+ * [failed]; stage 3 uses [firstLoadLimitMs]; stage 4 uses [stalls] and [maySwitch]. Limits: 3 start tries and 2
+ * automatic switches per film or episode, switches at least 3 minutes apart; a source not cached is never
+ * opened without [fetch].
+ */
+interface SourceSession {
+    val request: PlayRequest
+
+    /** The latest list (late answers join it, for Sources and Next source); null before any answer. */
+    val list: SourceList?
+
+    /** Every try so far, oldest first. */
+    val attempts: List<Attempt>
+
+    val stalls: StallWatch
+
+    /** Called (main thread) when [list] or [attempts] change. */
+    fun setListener(listener: (() -> Unit)?)
+
+    /**
+     * Picks [source] (or the next one by the rules: the preferred release, then "Best for this TV", skipping attempted
+     * files and their copies) and checks its link. [onOpened] gets progress, then one final answer.
+     */
+    fun open(source: PlaybackSource? = null, why: OpenWhy = OpenWhy.START, onOpened: (Opened) -> Unit): Cancel
+
+    /** The user agreed the debrid service may fetch [source] (asked once): adds it, never plays it automatically. */
+    fun fetch(source: PlaybackSource, onOpened: (Opened) -> Unit): Cancel
+
+    /** Stage 3's limit for [source]: [firstLoadLimitMs] by its data rate. */
+    fun firstLoadLimitMs(source: PlaybackSource): Long = firstLoadLimitMs(source.facts.avgMbps)
+
+    /**
+     * [source]'s link expired: [addon] is asked again for the title and the same file's new link is checked, once. Not
+     * an automatic switch. Default: the same source opened again.
+     */
+    fun refresh(source: PlaybackSource, addon: Addon?, onOpened: (Opened) -> Unit): Cancel = open(source, OpenWhy.FAILED, onOpened)
+
+    /** The first frame of [source]: records it as the last release used and resets the stall watch. */
+    fun started(source: PlaybackSource, offer: Offer)
+
+    /** A failure of [source] (stage 2, 3 or a player error): adds it to the attempted list and says what to do. */
+    fun failed(source: PlaybackSource, failure: Failure): Step
+
+    /** A player error as a failure (PlaybackException code, HTTP status when the load error had one). */
+    fun failureOf(errorCode: Int, httpStatus: Int?): Failure
+
+    /** Whether the TV has a network now (asked while a play waits for it to come back). */
+    fun online(): Boolean = true
+
+    /** Whether an automatic switch is allowed at [now] (elapsedRealtime ms); after the last one, a note points to Next source. */
+    fun maySwitch(now: Long): Boolean
+
+    /**
+     * The best source, by "Best for this TV", that needs no more than [maxMbps] on average and isn't the one playing:
+     * what a film that keeps stalling for want of download speed is switched to ([app.fireplayer.vod.play.FilmSupply]).
+     * Only sources that may be picked by themselves, whose rate is known. Null when there is none.
+     */
+    fun lighter(maxMbps: Double): PlaybackSource? = null
+
+    /** The next episode's sources, once, in the last ~4 minutes ([LookupWhy.NEXT_EPISODE]); same-kind first. */
+    fun lookUpNext(next: EpisodeRef, onList: (SourceList) -> Unit): Cancel
+
+    /** The play is over: stops its requests. */
+    fun close()
+}
+
+/** Stage 3: 30 / 45 / 60 s for sources under 20, 20–50 and over 50 Mb/s; 45 s when the rate isn't known (proposed). */
+fun firstLoadLimitMs(avgMbps: Double?): Long = when {
+    avgMbps == null || avgMbps <= 0.0 -> 45_000L
+    avgMbps < 20.0 -> 30_000L
+    avgMbps <= 50.0 -> 45_000L
+    else -> 60_000L
+}
+
+// ---- This TV (Settings › This TV) ----------------------------------------------------------------------------------
+
+/** What this Stick read from its TV ([ThisTv.checkAgain]); [checkedAt] epoch ms. */
+data class TvCapabilities(
+    /** HDR kinds the TV reports now; empty for SDR or HDR off on its input (e.g. Samsung's Input Signal Plus). */
+    val hdr: Set<Hdr>,
+    /** The largest display mode. */
+    val maxWidth: Int,
+    val maxHeight: Int,
+    /** Sound the TV or receiver takes as it is. */
+    val passthrough: Set<SoundFormat>,
+    val checkedAt: Long,
+)
+
+/**
+ * How "Best for this TV" ranks: [automatic] from [TvCapabilities], or the user's own. [hdrOrder] is in tiers, best
+ * first, each tier equal (the user's Samsung: [[HDR10, HDR10_PLUS], [HLG]]; Dolby Vision profile 8 counts as its HDR10
+ * base on a TV without Dolby Vision, profiles 5 and 7 last; SDR first when the TV shows no HDR).
+ */
+data class TvPlan(
+    val automatic: Boolean,
+    val hdrOrder: List<Set<Hdr>>,
+    /** The tallest picture worth picking (2160, 1080). */
+    val topHeight: Int,
+    val sound: Set<SoundFormat>,
+    /** An optional data-rate cap (Mb/s), never a file size. */
+    val maxMbps: Int? = null,
+)
+
+/** Settings › This TV: the TV's capabilities, Check again, Automatic or a custom plan. Main thread. */
+interface ThisTv {
+    /** The last reading; null before the first. */
+    fun capabilities(): TvCapabilities?
+
+    /** Reads the TV again (display HDR types and modes, audio passthrough). */
+    fun checkAgain(onDone: (TvCapabilities) -> Unit)
+
+    fun plan(): TvPlan
+    fun setPlan(plan: TvPlan)
+    fun useAutomatic()
+}
+
+// ---- The library: what playback records (stored on this TV; no syncing) --------------------------------------------
+
+/** The release a film or episode last played from: info hash + file index + add-on, never a link. */
+data class LastRelease(val addon: Addon, val release: ReleaseKey, val at: Long)
+
+/**
+ * What the player writes (any thread). Positions and Continue Watching go through [VodRepository.recordProgress]'s
+ * rules; listeners are called, so rows and title pages refresh.
+ */
+interface PlaybackLibrary {
+    /** The release [title] (and [episode]) last played from; null when never. */
+    fun lastRelease(title: Title, episode: EpisodeRef?): LastRelease?
+
+    fun recordRelease(title: Title, episode: EpisodeRef?, release: LastRelease)
+
+    /**
+     * Where playback stopped, as [VodRepository.recordProgress]; also marks the film or episode watched when
+     * [countsAsWatched].
+     */
+    fun recordPlayback(title: Title, episode: EpisodeRef?, positionMs: Long, durationMs: Long, creditsAtMs: Long?)
+}
+
+/** Watched (§6.2): past 90 %, or into the credits when they're known, or the last 3 minutes ([Position.finished]). */
+fun countsAsWatched(positionMs: Long, durationMs: Long, creditsAtMs: Long?): Boolean {
+    if (durationMs <= 0) return false
+    if (positionMs * 10 >= durationMs * 9) return true
+    if (creditsAtMs != null && creditsAtMs > 0 && positionMs >= creditsAtMs) return true
+    return durationMs - positionMs <= Position.END_MS
+}
+
+// ---- The engine's door ----------------------------------------------------------------------------------------------
+
+/** The app's [SourcesRepository]. Until the engine lands it is [StubSources]: no add-ons, nothing to play. */
+object Sources {
+    @Volatile private var instance: SourcesRepository? = null
+
+    fun get(context: Context): SourcesRepository =
+        instance ?: synchronized(this) { instance ?: app.fireplayer.vod.sources.DefaultSourcesRepository.create(context.applicationContext).also { instance = it } }
+}
+
+/** Knows no add-ons: every look-up is complete and empty, and a play stops with "No add-ons yet". */
+private class StubSources(private val app: Context) : SourcesRepository {
+    private val saved = HashMap<Addon, SecretUrl>()
+
+    override val addons = object : AddonSettings {
+        override fun isSet(addon: Addon) = saved.containsKey(addon)
+        override fun summary(addon: Addon) = saved[addon]?.let { it.host ?: addon.label }
+        override fun save(addon: Addon, link: String): AddonSave {
+            val url = SecretUrl.of(link.trim().replaceFirst(Regex("^(?i)stremio://"), "https://")) ?: return AddonSave.NOT_A_LINK
+            saved[addon] = url
+            return AddonSave.SAVED
+        }
+        override fun remove(addon: Addon) { saved.remove(addon) }
+    }
+
+    override val thisTv = object : ThisTv {
+        private var plan = TvPlan(true, listOf(setOf(Hdr.HDR10, Hdr.HDR10_PLUS), setOf(Hdr.HLG)), 2160, emptySet())
+        override fun capabilities(): TvCapabilities? = null
+        override fun checkAgain(onDone: (TvCapabilities) -> Unit) =
+            onDone(TvCapabilities(emptySet(), 1920, 1080, emptySet(), System.currentTimeMillis()))
+        override fun plan() = plan
+        override fun setPlan(plan: TvPlan) { this.plan = plan.copy(automatic = false) }
+        override fun useAutomatic() { plan = plan.copy(automatic = true) }
+    }
+
+    override val library = object : PlaybackLibrary {
+        override fun lastRelease(title: Title, episode: EpisodeRef?): LastRelease? = null
+        override fun recordRelease(title: Title, episode: EpisodeRef?, release: LastRelease) = Unit
+        override fun recordPlayback(title: Title, episode: EpisodeRef?, positionMs: Long, durationMs: Long, creditsAtMs: Long?) =
+            VodRepositories.get(app).recordProgress(title, episode, positionMs, durationMs)
+    }
+
+    private fun empty(target: SourceTarget) =
+        SourceList(target, Addon.entries.associateWith { AddonState.NotSet }, emptyList(), null)
+
+    override fun cached(target: SourceTarget): SourceList? = null
+
+    override fun lookUp(target: SourceTarget, why: LookupWhy, only: Addon?, onList: (SourceList) -> Unit): Cancel {
+        onList(empty(target))
+        return Cancel { }
+    }
+
+    override fun session(request: PlayRequest): SourceSession = stubSession(request)
+
+    private fun stubSession(asked: PlayRequest): SourceSession = object : SourceSession {
+        override val request: PlayRequest = asked
+        override val list: SourceList? = empty(asked.target)
+        override val attempts: List<Attempt> = emptyList()
+        override val stalls = object : StallWatch {
+            override fun playing(now: Long) = Unit
+            override fun jumped(now: Long) = Unit
+            override fun buffering(now: Long, on: Boolean) = Unit
+            override fun shouldSwitch(now: Long) = false
+        }
+        override fun setListener(listener: (() -> Unit)?) = Unit
+        override fun open(source: PlaybackSource?, why: OpenWhy, onOpened: (Opened) -> Unit): Cancel {
+            onOpened(Opened.NoneLeft(NO_ADDONS))
+            return Cancel { }
+        }
+        override fun fetch(source: PlaybackSource, onOpened: (Opened) -> Unit): Cancel = open(source, OpenWhy.USER, onOpened)
+        override fun started(source: PlaybackSource, offer: Offer) = Unit
+        override fun failed(source: PlaybackSource, failure: Failure): Step = Step.Stop(NO_ADDONS)
+        override fun failureOf(errorCode: Int, httpStatus: Int?) = Failure(FailureKind.UNKNOWN)
+        override fun maySwitch(now: Long) = false
+        override fun lookUpNext(next: EpisodeRef, onList: (SourceList) -> Unit): Cancel =
+            lookUp(SourceTarget(request.target.title, next), LookupWhy.NEXT_EPISODE, null, onList)
+        override fun close() = Unit
+    }
+
+    override fun forget() = Unit
+
+    private companion object {
+        const val NO_ADDONS = "No add-ons yet: add Torrentio or MediaFusion in Settings › Add-ons."
+    }
+}

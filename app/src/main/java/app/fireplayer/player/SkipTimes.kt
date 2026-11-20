@@ -44,7 +44,7 @@ object SkipTimes {
         if (durationMs <= 0 || !imdbId.matches(IMDB)) return null
         val what = if (season != null && episode != null) "&season=$season&episode=$episode" else ""
         val seconds = Math.round(durationMs / 1000.0)
-        val skipDb = get(context, "$SKIPDB?imdb_id=$imdbId$what&duration=$seconds&adjust=conservative")
+        val skipDb = get(context, skipDbUrl(imdbId, what, durationMs))
             ?.let { runCatching { skipDbPicks(JSONObject(it), durationMs) }.getOrNull() }
             ?: emptyMap()
         var picks = skipDb
@@ -71,6 +71,28 @@ object SkipTimes {
         Log.i(TAG, "$imdbId$what at ${seconds}s ($from): " + describe(picks))
         return SkipRules.segments(picks, durationMs, from)
     }
+
+    /**
+     * Asks ahead of the film, so [find]'s answers are on disk by the time it starts and the Skip intro button is ready
+     * when the intro is (a cold open's recap starts at 0:00): IntroDB's answer, which doesn't depend on the file, and
+     * SkipDB's when the file's length is known already ([durationMs], from the last time it played; 0: not known).
+     * Called when a play from Films & Shows begins, while its sources are found and its link checked. By the IMDb id
+     * and the season and episode numbers only; a second ask for the same thing goes out once. Blocks.
+     */
+    fun warm(context: Context, imdbId: String, season: Int?, episode: Int?, durationMs: Long = 0L) {
+        if (!imdbId.matches(IMDB)) return
+        val what = if (season != null && episode != null) "&season=$season&episode=$episode" else ""
+        val movie = if (what.isEmpty()) "&is_movie=true" else ""
+        if (durationMs > 0) get(context, skipDbUrl(imdbId, what, durationMs))
+        get(context, "$INTRODB?imdb_id=$imdbId$what$movie")
+    }
+
+    /** Whether [id] is an IMDb id ("tt0903747"), the only kind SkipDB and IntroDB know a title by. */
+    fun isImdbId(id: String): Boolean = id.matches(IMDB)
+
+    /** SkipDB's address for a film or episode ([what]) in a file [durationMs] long: [find] and [warm] ask the same one. */
+    internal fun skipDbUrl(imdbId: String, what: String, durationMs: Long): String =
+        "$SKIPDB?imdb_id=$imdbId$what&duration=${Math.round(durationMs / 1000.0)}&adjust=conservative"
 
     /**
      * The parts on the subtitles' timeline, mapped to this file's ([SkipRules.mapped]); null when there's nothing to

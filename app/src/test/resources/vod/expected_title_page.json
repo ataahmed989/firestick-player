@@ -1,0 +1,855 @@
+{
+ "now": "2026-11-18T22:40:00+00:00",
+ "time_zone_for_dates": "episode dates in America/Los_Angeles (the US air date); film dates in UTC (Cinemeta gives them as midnight UTC)",
+ "rules": "vod2_api.md sections 2-5; this file is what the reference implementation in vod2scripts/make_vod2_fixtures.py gives",
+ "films": {
+  "cinemeta_meta_film.json + tmdb_movie_details_appended.json": {
+   "facts": "2024 · 2h 47m · ★ 8.4 · PG-13 · Action, Adventure, Drama",
+   "story_source": "TMDB",
+   "cast_line": "Starring Timothée Chalamet, Zendaya, Rebecca Ferguson · Director Denis Villeneuve",
+   "age_rating": "PG-13",
+   "oscar_callout": "Won 2 Oscars",
+   "coming": null
+  },
+  "cinemeta_meta_film.json without TMDB": {
+   "facts": "2024 · 2h 47m · ★ 8.4 · Action, Adventure, Drama",
+   "story_source": "Cinemeta",
+   "cast_line": "Starring Timothée Chalamet, Zendaya, Rebecca Ferguson · Director Denis Villeneuve",
+   "age_rating": null,
+   "oscar_callout": "Won 2 Oscars",
+   "coming": null
+  },
+  "cinemeta_meta_film_oscars.json": {
+   "facts": "2023 · 3h 1m · ★ 8.2 · Biography, Drama, History",
+   "story_source": "Cinemeta",
+   "cast_line": "Starring Cillian Murphy, Emily Blunt, Matt Damon · Director Christopher Nolan",
+   "age_rating": null,
+   "oscar_callout": "Won 7 Oscars",
+   "coming": null
+  },
+  "cinemeta_meta_film_upcoming.json + tmdb_movie_details_upcoming.json": {
+   "facts": "2026 · 2h 8m · R · Biography, Drama",
+   "story_source": "Cinemeta",
+   "cast_line": "Starring AnnaSophia Robb, Toby Kebbell, Matt Dillon · Director Peter Farrelly",
+   "age_rating": "R",
+   "oscar_callout": null,
+   "coming": "Coming Nov 20"
+  },
+  "cinemeta_meta_film_missing_fields.json": {
+   "facts": "2027 · 2h 1m",
+   "story_source": null,
+   "cast_line": "Starring Vincent Cassel, Carole Bouquet, Mélanie Thierry · Director Tristan Séguéla",
+   "age_rating": null,
+   "oscar_callout": null,
+   "coming": "Coming 2027"
+  }
+ },
+ "shows": {
+  "cinemeta_meta_show_ended_specials.json + tmdb_tv_details_appended.json": {
+   "facts": "2012–2014 · 4 seasons · Ended · ★ 8.3 · TV-Y7 · Animation, Action, Adventure",
+   "story_source": "TMDB",
+   "cast_line": "Starring Janet Varney, P.J. Byrne, David Faustino · Created by Michael Dante DiMartino, Bryan Konietzko",
+   "age_rating": "TV-Y7",
+   "season_pills": [
+    "Season 1",
+    "Season 2",
+    "Season 3",
+    "Season 4",
+    "Specials"
+   ],
+   "episodes_total": 99,
+   "episodes_aired": 99,
+   "first_three_in_order": [
+    "S1 E1",
+    "S1 E2",
+    "S1 E3"
+   ],
+   "last_three_in_order": [
+    "S0 E45",
+    "S0 E46",
+    "S0 E47"
+   ],
+   "next_unaired_regular": null,
+   "new_in_last_7_days": [],
+   "cards_sample": {
+    "S1 E1": [
+     "E1 · Welcome to Republic City",
+     "23m · Apr 14, 2012"
+    ]
+   },
+   "play_targets": [
+    {
+     "record": null,
+     "result": [
+      "Play S1 E1",
+      "1:1",
+      null
+     ]
+    },
+    {
+     "record": {
+      "season": 2,
+      "episode": 5,
+      "positionMs": 600000,
+      "durationMs": 1380000
+     },
+     "result": [
+      "Resume S2 E5 · 13m left",
+      "2:5",
+      null
+     ]
+    },
+    {
+     "record": {
+      "season": 1,
+      "episode": 12,
+      "positionMs": 1300000,
+      "durationMs": 1380000
+     },
+     "result": [
+      "Play S2 E1",
+      "2:1",
+      null
+     ]
+    },
+    {
+     "record": {
+      "season": 4,
+      "episode": 13,
+      "positionMs": 1370000,
+      "durationMs": 1380000
+     },
+     "result": [
+      "Watch again · S1 E1",
+      "1:1",
+      null
+     ]
+    },
+    {
+     "record": {
+      "season": 0,
+      "episode": 3,
+      "positionMs": 1370000,
+      "durationMs": 1380000
+     },
+     "result": [
+      "Play S1 E1",
+      "1:1",
+      null
+     ]
+    },
+    {
+     "record": {
+      "season": 3,
+      "episode": 2,
+      "positionMs": 20000,
+      "durationMs": 1380000
+     },
+     "result": [
+      "Play S3 E2",
+      "3:2",
+      null
+     ]
+    }
+   ]
+  },
+  "cinemeta_meta_show_long_airing_cut.json": {
+   "facts": "2005– · 3 seasons · ★ 7.6 · Drama, Romance",
+   "story_source": "Cinemeta",
+   "cast_line": "Starring Ellen Pompeo, Chandra Wilson, James Pickens Jr. · Created by Shonda Rhimes",
+   "age_rating": null,
+   "season_pills": [
+    "Season 1",
+    "Season 22",
+    "Season 23",
+    "Specials"
+   ],
+   "episodes_total": 27,
+   "episodes_aired": 25,
+   "first_three_in_order": [
+    "S1 E1",
+    "S1 E2",
+    "S1 E3"
+   ],
+   "last_three_in_order": [
+    "S0 E7",
+    "S0 E8",
+    "S0 E9"
+   ],
+   "next_unaired_regular": {
+    "episode": "S23 E6",
+    "name": "Till I Collapse",
+    "released": "2026-11-20T05:00:00+00:00",
+    "label_date_pacific": "Nov 19"
+   },
+   "new_in_last_7_days": [
+    "S23 E5"
+   ],
+   "cards_sample": {
+    "S1 E1": [
+     "E1 · A Hard Day's Night",
+     "43m · Mar 27, 2005"
+    ],
+    "S23 E6": [
+     "E6 · Till I Collapse",
+     "Airs Nov 19"
+    ]
+   },
+   "play_targets": [
+    {
+     "record": {
+      "season": 23,
+      "episode": 5,
+      "positionMs": 2500000,
+      "durationMs": 2580000
+     },
+     "result": [
+      "Watch again · S1 E1",
+      "1:1",
+      "Up to date · S23 E6 airs Nov 19"
+     ]
+    },
+    {
+     "record": {
+      "season": 23,
+      "episode": 4,
+      "positionMs": 2500000,
+      "durationMs": 2580000
+     },
+     "result": [
+      "Play S23 E5",
+      "23:5",
+      null
+     ]
+    },
+    {
+     "record": {
+      "season": 22,
+      "episode": 18,
+      "positionMs": 2500000,
+      "durationMs": 2580000
+     },
+     "result": [
+      "Play S23 E1",
+      "23:1",
+      null
+     ]
+    }
+   ]
+  },
+  "cinemeta_meta_show_airing_new.json": {
+   "facts": "2026– · 1 season · Crime, Drama, Thriller",
+   "story_source": "Cinemeta",
+   "cast_line": "Starring Liev Schreiber, Zazie Beetz, Stephen Graham",
+   "age_rating": null,
+   "season_pills": [],
+   "episodes_total": 10,
+   "episodes_aired": 4,
+   "first_three_in_order": [
+    "S1 E1",
+    "S1 E2",
+    "S1 E3"
+   ],
+   "last_three_in_order": [
+    "S1 E8",
+    "S1 E9",
+    "S1 E10"
+   ],
+   "next_unaired_regular": {
+    "episode": "S1 E5",
+    "name": "Solitude",
+    "released": "2026-11-20T08:00:00+00:00",
+    "label_date_pacific": "Nov 20"
+   },
+   "new_in_last_7_days": [
+    "S1 E4"
+   ],
+   "cards_sample": {
+    "S1 E1": [
+     "E1 · Lazarus, Come Forth!",
+     "52m · Oct 30, 2026"
+    ],
+    "S1 E5": [
+     "E5 · Solitude",
+     "Airs Nov 20"
+    ]
+   },
+   "play_targets": [
+    {
+     "record": null,
+     "result": [
+      "Play S1 E1",
+      "1:1",
+      null
+     ]
+    },
+    {
+     "record": {
+      "season": 1,
+      "episode": 4,
+      "positionMs": 3000000,
+      "durationMs": 3120000
+     },
+     "result": [
+      "Watch again · S1 E1",
+      "1:1",
+      "Up to date · S1 E5 airs Nov 20"
+     ]
+    }
+   ]
+  },
+  "cinemeta_meta_show_season_not_started.json + tmdb_tv_details_airing.json": {
+   "facts": "2023– · 3 seasons · ★ 7.0 · Action, Adventure, Family",
+   "story_source": "Cinemeta",
+   "cast_line": "Starring Walker Scobell, Leah Sava&apos; Jeffries, Aryan Simhadri · Created by Rick Riordan, Jonathan E. Steinberg",
+   "age_rating": null,
+   "season_pills": [
+    "Season 1",
+    "Season 2",
+    "Season 3",
+    "Specials"
+   ],
+   "episodes_total": 26,
+   "episodes_aired": 18,
+   "first_three_in_order": [
+    "S1 E1",
+    "S1 E2",
+    "S1 E3"
+   ],
+   "last_three_in_order": [
+    "S3 E8",
+    "S0 E1",
+    "S0 E2"
+   ],
+   "next_unaired_regular": {
+    "episode": "S3 E1",
+    "name": "My Rescue Operation Goes Very Wrong",
+    "released": "2026-11-20T20:00:00+00:00",
+    "label_date_pacific": "Nov 20"
+   },
+   "new_in_last_7_days": [],
+   "cards_sample": {
+    "S1 E1": [
+     "E1 · I Accidentally Vaporize My Pre-Algebra Teacher",
+     "40m · Dec 19, 2023"
+    ],
+    "S3 E1": [
+     "E1 · My Rescue Operation Goes Very Wrong",
+     "Airs Nov 20"
+    ]
+   },
+   "play_targets": [
+    {
+     "record": null,
+     "result": [
+      "Play S1 E1",
+      "1:1",
+      null
+     ]
+    },
+    {
+     "record": {
+      "season": 2,
+      "episode": 8,
+      "positionMs": 2700000,
+      "durationMs": 2760000
+     },
+     "result": [
+      "Watch again · S1 E1",
+      "1:1",
+      "Up to date · S3 E1 airs Nov 20"
+     ]
+    }
+   ]
+  },
+  "cinemeta_meta_show_unsorted.json": {
+   "facts": "2008–2013 · 5 seasons · Ended · ★ 9.5 · Crime, Drama, Thriller",
+   "story_source": "Cinemeta",
+   "cast_line": "Starring Bryan Cranston, Aaron Paul, Anna Gunn · Created by Vince Gilligan",
+   "age_rating": null,
+   "season_pills": [
+    "Season 1",
+    "Season 2",
+    "Season 3",
+    "Season 4",
+    "Season 5",
+    "Specials"
+   ],
+   "episodes_total": 67,
+   "episodes_aired": 67,
+   "first_three_in_order": [
+    "S1 E1",
+    "S1 E2",
+    "S1 E3"
+   ],
+   "last_three_in_order": [
+    "S0 E3",
+    "S0 E4",
+    "S0 E5"
+   ],
+   "next_unaired_regular": null,
+   "new_in_last_7_days": [],
+   "cards_sample": {
+    "S1 E1": [
+     "E1 · Pilot",
+     "49m · Jan 20, 2008"
+    ]
+   },
+   "play_targets": [
+    {
+     "record": {
+      "season": 1,
+      "episode": 7,
+      "positionMs": 2800000,
+      "durationMs": 2880000
+     },
+     "result": [
+      "Play S2 E1",
+      "2:1",
+      null
+     ]
+    }
+   ]
+  }
+ },
+ "more_like_this": {
+  "tmdb_movie_details_appended.json": [
+   {
+    "tmdb": 438631,
+    "tt": "tt1160419",
+    "name": "Dune",
+    "year": "2021",
+    "from": "recommendations",
+    "poster": "https://image.tmdb.org/t/p/w342/fixture_p438631.jpg"
+   },
+   {
+    "tmdb": 872585,
+    "tt": "tt15398776",
+    "name": "Oppenheimer",
+    "year": "2023",
+    "from": "recommendations",
+    "poster": "https://image.tmdb.org/t/p/w342/fixture_p872585.jpg"
+   },
+   {
+    "tmdb": 414906,
+    "tt": "tt1877830",
+    "name": "The Batman",
+    "year": "2022",
+    "from": "recommendations",
+    "poster": "https://image.tmdb.org/t/p/w342/fixture_p414906.jpg"
+   },
+   {
+    "tmdb": 999999801,
+    "tt": null,
+    "name": "Unmapped Film",
+    "year": "2024",
+    "from": "recommendations",
+    "poster": "https://image.tmdb.org/t/p/w342/fixture_p999999801.jpg"
+   },
+   {
+    "tmdb": 940721,
+    "tt": "tt23289160",
+    "name": "Godzilla Minus One",
+    "year": "2023",
+    "from": "recommendations",
+    "poster": "https://image.tmdb.org/t/p/w342/fixture_p940721.jpg"
+   },
+   {
+    "tmdb": 335984,
+    "tt": "tt1856101",
+    "name": "Blade Runner 2049",
+    "year": "2017",
+    "from": "recommendations",
+    "poster": "https://image.tmdb.org/t/p/w342/fixture_p335984.jpg"
+   },
+   {
+    "tmdb": 157336,
+    "tt": "tt0816692",
+    "name": "Interstellar",
+    "year": "2014",
+    "from": "recommendations",
+    "poster": "https://image.tmdb.org/t/p/w342/fixture_p157336.jpg"
+   },
+   {
+    "tmdb": 27205,
+    "tt": "tt1375666",
+    "name": "Inception",
+    "year": "2010",
+    "from": "recommendations",
+    "poster": "https://image.tmdb.org/t/p/w342/fixture_p27205.jpg"
+   },
+   {
+    "tmdb": 1368337,
+    "tt": "tt33764258",
+    "name": "The Odyssey",
+    "year": "2026",
+    "from": "recommendations",
+    "poster": "https://image.tmdb.org/t/p/w342/fixture_p1368337.jpg"
+   },
+   {
+    "tmdb": 577922,
+    "tt": "tt6723592",
+    "name": "Tenet",
+    "year": "2020",
+    "from": "recommendations",
+    "poster": "https://image.tmdb.org/t/p/w342/fixture_p577922.jpg"
+   },
+   {
+    "tmdb": 969681,
+    "tt": "tt22084616",
+    "name": "Spider-Man: Brand New Day",
+    "year": "2026",
+    "from": "recommendations",
+    "poster": "https://image.tmdb.org/t/p/w342/fixture_p969681.jpg"
+   },
+   {
+    "tmdb": 374720,
+    "tt": "tt5013056",
+    "name": "Dunkirk",
+    "year": "2017",
+    "from": "recommendations",
+    "poster": "https://image.tmdb.org/t/p/w342/fixture_p374720.jpg"
+   },
+   {
+    "tmdb": 329865,
+    "tt": "tt2543164",
+    "name": "Arrival",
+    "year": "2016",
+    "from": "recommendations",
+    "poster": "https://image.tmdb.org/t/p/w342/fixture_p329865.jpg"
+   },
+   {
+    "tmdb": 273481,
+    "tt": "tt3397884",
+    "name": "Sicario",
+    "year": "2015",
+    "from": "recommendations",
+    "poster": "https://image.tmdb.org/t/p/w342/fixture_p273481.jpg"
+   },
+   {
+    "tmdb": 155,
+    "tt": "tt0468569",
+    "name": "The Dark Knight",
+    "year": "2008",
+    "from": "recommendations",
+    "poster": "https://image.tmdb.org/t/p/w342/fixture_p155.jpg"
+   }
+  ],
+  "tmdb_tv_details_appended.json": [
+   {
+    "tmdb": 246,
+    "tt": "tt0417299",
+    "name": "Avatar: The Last Airbender",
+    "year": "2005",
+    "from": "recommendations",
+    "poster": "https://image.tmdb.org/t/p/w342/fixture_p246.jpg"
+   },
+   {
+    "tmdb": 94605,
+    "tt": "tt11126994",
+    "name": "Arcane",
+    "year": "2021",
+    "from": "recommendations",
+    "poster": "https://image.tmdb.org/t/p/w342/fixture_p94605.jpg"
+   },
+   {
+    "tmdb": 999999901,
+    "tt": null,
+    "name": "Unmapped Show",
+    "year": "2018",
+    "from": "recommendations",
+    "poster": "https://image.tmdb.org/t/p/w342/fixture_p999999901.jpg"
+   },
+   {
+    "tmdb": 1429,
+    "tt": "tt2560140",
+    "name": "Attack on Titan",
+    "year": "2013",
+    "from": "recommendations",
+    "poster": "https://image.tmdb.org/t/p/w342/fixture_p1429.jpg"
+   },
+   {
+    "tmdb": 95479,
+    "tt": "tt12343534",
+    "name": "Jujutsu Kaisen",
+    "year": "2020",
+    "from": "recommendations",
+    "poster": "https://image.tmdb.org/t/p/w342/fixture_p95479.jpg"
+   },
+   {
+    "tmdb": 95557,
+    "tt": "tt6741278",
+    "name": "Invincible",
+    "year": "2021",
+    "from": "recommendations",
+    "poster": "https://image.tmdb.org/t/p/w342/fixture_p95557.jpg"
+   },
+   {
+    "tmdb": 37854,
+    "tt": "tt0388629",
+    "name": "One Piece",
+    "year": "1999",
+    "from": "recommendations",
+    "poster": "https://image.tmdb.org/t/p/w342/fixture_p37854.jpg"
+   },
+   {
+    "tmdb": 73223,
+    "tt": "tt7441658",
+    "name": "Black Clover",
+    "year": "2017",
+    "from": "recommendations",
+    "poster": "https://image.tmdb.org/t/p/w342/fixture_p73223.jpg"
+   },
+   {
+    "tmdb": 65930,
+    "tt": "tt5626028",
+    "name": "My Hero Academia",
+    "year": "2016",
+    "from": "similar",
+    "poster": "https://image.tmdb.org/t/p/w342/fixture_p65930.jpg"
+   },
+   {
+    "tmdb": 45790,
+    "tt": "tt2359704",
+    "name": "JoJo's Bizarre Adventure",
+    "year": "2012",
+    "from": "similar",
+    "poster": "https://image.tmdb.org/t/p/w342/fixture_p45790.jpg"
+   },
+   {
+    "tmdb": 31911,
+    "tt": "tt1355642",
+    "name": "Fullmetal Alchemist: Brotherhood",
+    "year": "2009",
+    "from": "similar",
+    "poster": "https://image.tmdb.org/t/p/w342/fixture_p31911.jpg"
+   },
+   {
+    "tmdb": 13916,
+    "tt": "tt0877057",
+    "name": "Death Note",
+    "year": "2006",
+    "from": "similar",
+    "poster": "https://image.tmdb.org/t/p/w342/fixture_p13916.jpg"
+   },
+   {
+    "tmdb": 85937,
+    "tt": "tt9335498",
+    "name": "Demon Slayer: Kimetsu no Yaiba",
+    "year": "2019",
+    "from": "similar",
+    "poster": "https://image.tmdb.org/t/p/w342/fixture_p85937.jpg"
+   },
+   {
+    "tmdb": 46298,
+    "tt": "tt2098220",
+    "name": "Hunter X Hunter",
+    "year": "2011",
+    "from": "similar",
+    "poster": "https://image.tmdb.org/t/p/w342/fixture_p46298.jpg"
+   },
+   {
+    "tmdb": 88803,
+    "tt": "tt10233448",
+    "name": "Vinland Saga",
+    "year": "2019",
+    "from": "similar",
+    "poster": "https://image.tmdb.org/t/p/w342/fixture_p88803.jpg"
+   }
+  ],
+  "tmdb_tv_details_airing.json": [
+   {
+    "tmdb": 66732,
+    "tt": "tt4574334",
+    "name": "Stranger Things",
+    "year": "2016",
+    "from": "similar",
+    "poster": "https://image.tmdb.org/t/p/w342/fixture_p66732.jpg"
+   }
+  ],
+  "tmdb_movie_details_upcoming.json": [],
+  "no key, film Dune: Part Two: director part (cinemeta_search_director_villeneuve.json)": [
+   {
+    "tt": "tt1160419",
+    "name": "Dune",
+    "year": "2021"
+   },
+   {
+    "tt": "tt1392214",
+    "name": "Prisoners",
+    "year": "2013"
+   },
+   {
+    "tt": "tt2543164",
+    "name": "Arrival",
+    "year": "2016"
+   },
+   {
+    "tt": "tt1856101",
+    "name": "Blade Runner 2049",
+    "year": "2017"
+   },
+   {
+    "tt": "tt3397884",
+    "name": "Sicario",
+    "year": "2015"
+   }
+  ],
+  "no key, film Dune: Part Two: genre part (cinemeta_catalog_movie_genre_action_cut.json)": [
+   {
+    "tt": "tt33764258",
+    "name": "The Odyssey",
+    "shared_genres": 3
+   },
+   {
+    "tt": "tt7526136",
+    "name": "Heart of the Beast",
+    "shared_genres": 3
+   },
+   {
+    "tt": "tt23289160",
+    "name": "Godzilla Minus One",
+    "shared_genres": 3
+   },
+   {
+    "tt": "tt21285562",
+    "name": "The Dog Stars",
+    "shared_genres": 3
+   },
+   {
+    "tt": "tt32273171",
+    "name": "The Death of Robin Hood",
+    "shared_genres": 3
+   },
+   {
+    "tt": "tt27165187",
+    "name": "The End of Oak Street",
+    "shared_genres": 2
+   },
+   {
+    "tt": "tt22084616",
+    "name": "Spider-Man: Brand New Day",
+    "shared_genres": 2
+   },
+   {
+    "tt": "tt39370926",
+    "name": "Never Surrender",
+    "shared_genres": 2
+   },
+   {
+    "tt": "tt4154796",
+    "name": "Avengers: Endgame",
+    "shared_genres": 2
+   },
+   {
+    "tt": "tt1392170",
+    "name": "The Hunger Games",
+    "shared_genres": 2
+   }
+  ],
+  "no key, film Pulp Fiction: director part (cinemeta_search_director_tarantino.json)": [
+   {
+    "tt": "tt0266697",
+    "name": "Kill Bill: Vol. 1",
+    "year": "2003"
+   },
+   {
+    "tt": "tt4329810",
+    "name": "QT8: The First Eight",
+    "year": "2019"
+   },
+   {
+    "tt": "tt1028528",
+    "name": "Death Proof",
+    "year": "2007"
+   },
+   {
+    "tt": "tt0299977",
+    "name": "Hero",
+    "year": "2002"
+   },
+   {
+    "tt": "tt0165895",
+    "name": "Natural Selection",
+    "year": "1999"
+   }
+  ],
+  "no key, show Legend of Korra (cinemeta_catalog_series_genre_animation_cut.json)": [
+   {
+    "tt": "tt7441658",
+    "name": "Black Clover",
+    "shared_genres": 3
+   },
+   {
+    "tt": "tt2560140",
+    "name": "Attack on Titan",
+    "shared_genres": 3
+   },
+   {
+    "tt": "tt0388629",
+    "name": "One Piece",
+    "shared_genres": 3
+   },
+   {
+    "tt": "tt35854736",
+    "name": "Avatar: Seven Havens",
+    "shared_genres": 3
+   },
+   {
+    "tt": "tt12343534",
+    "name": "Jujutsu Kaisen",
+    "shared_genres": 3
+   },
+   {
+    "tt": "tt0417299",
+    "name": "Avatar: The Last Airbender",
+    "shared_genres": 3
+   },
+   {
+    "tt": "tt2359704",
+    "name": "JoJo's Bizarre Adventure",
+    "shared_genres": 3
+   },
+   {
+    "tt": "tt6741278",
+    "name": "Invincible",
+    "shared_genres": 3
+   },
+   {
+    "tt": "tt11126994",
+    "name": "Arcane",
+    "shared_genres": 3
+   },
+   {
+    "tt": "tt5626028",
+    "name": "My Hero Academia",
+    "shared_genres": 3
+   },
+   {
+    "tt": "tt2098220",
+    "name": "Hunter X Hunter",
+    "shared_genres": 3
+   },
+   {
+    "tt": "tt10233448",
+    "name": "Vinland Saga",
+    "shared_genres": 3
+   },
+   {
+    "tt": "tt2861424",
+    "name": "Rick and Morty",
+    "shared_genres": 2
+   },
+   {
+    "tt": "tt5607616",
+    "name": "Re: Zero - Starting Life in Another World",
+    "shared_genres": 2
+   },
+   {
+    "tt": "tt39957390",
+    "name": "Bass X Machina",
+    "shared_genres": 2
+   }
+  ]
+ }
+}

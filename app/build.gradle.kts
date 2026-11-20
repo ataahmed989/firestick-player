@@ -22,12 +22,22 @@ android {
     }
 
     signingConfigs {
-        // A fixed key so every build installs over the previous one.
+        // FirePlayer's fixed release key (this repository's, as for every release before), so each release installs
+        // over the one on the TVs.
         create("release") {
             storeFile = file("fireplayer-release.jks")
             storePassword = "fireplayer"
             keyAlias = "fireplayer"
             keyPassword = "fireplayer"
+        }
+        // The test build's own identity, kept in the repository (a test key with Android's standard development
+        // passwords, not the release key): every session signs test builds the same, so a test build already on a
+        // TV can be updated in place instead of being reinstalled and set up again.
+        create("test") {
+            storeFile = file("fireplayer-test.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
         }
     }
 
@@ -37,13 +47,21 @@ android {
             signingConfig = signingConfigs.getByName("release")
         }
         debug {
-            signingConfig = signingConfigs.getByName("release")
+            // Test builds are signed with the repository's test key (see signingConfigs).
+            signingConfig = signingConfigs.getByName("test")
+            // A separate app beside the user's FirePlayer: its own package, name, icon and Continue Watching address
+            // (app.fireplayer.next.continue), so Glass Home and the installed FirePlayer are never touched.
+            applicationIdSuffix = ".next"
         }
     }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     testOptions {
@@ -72,5 +90,8 @@ dependencies {
     implementation(libs.ass.media)
     implementation(libs.ffmpeg.decoder)
     implementation(libs.mlkit.text.recognition)
+    implementation(libs.androidx.recyclerview)
     testImplementation(libs.junit)
+    testImplementation(libs.org.json)
+    testImplementation(libs.kxml2)
 }

@@ -1,0 +1,95 @@
+{
+ "adult": false,
+ "backdrop_path": "/fixture_b1286656.jpg",
+ "belongs_to_collection": null,
+ "budget": 0,
+ "genres": [
+  {
+   "id": 18,
+   "name": "Drama"
+  },
+  {
+   "id": 36,
+   "name": "History"
+  }
+ ],
+ "homepage": "",
+ "id": 1286656,
+ "imdb_id": "tt11995650",
+ "origin_country": [
+  "US"
+ ],
+ "original_language": "en",
+ "original_title": "I Play Rocky",
+ "overview": "",
+ "popularity": 12.0,
+ "poster_path": "/fixture_p1286656.jpg",
+ "production_companies": [],
+ "production_countries": [],
+ "release_date": "2026-11-20",
+ "revenue": 0,
+ "runtime": 0,
+ "spoken_languages": [],
+ "status": "Post Production",
+ "tagline": "",
+ "title": "I Play Rocky",
+ "video": false,
+ "vote_average": 0.0,
+ "vote_count": 0,
+ "release_dates": {
+  "results": [
+   {
+    "iso_3166_1": "US",
+    "release_dates": [
+     {
+      "certification": "",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "TIFF",
+      "release_date": "2026-09-10T00:00:00.000Z",
+      "type": 1
+     },
+     {
+      "certification": "R",
+      "descriptors": [],
+      "iso_639_1": "",
+      "note": "",
+      "release_date": "2026-11-20T00:00:00.000Z",
+      "type": 3
+     }
+    ]
+   }
+  ]
+ },
+ "recommendations": {
+  "page": 1,
+  "results": [],
+  "total_pages": 0,
+  "total_results": 0
+ },
+ "similar": {
+  "page": 1,
+  "results": [
+   {
+    "adult": false,
+    "backdrop_path": "/fixture_b999999807.jpg",
+    "id": 999999807,
+    "title": "Low Votes Boxing Film",
+    "original_language": "en",
+    "original_title": "Low Votes Boxing Film",
+    "overview": "",
+    "poster_path": "/fixture_p999999807.jpg",
+    "genre_ids": [
+     18
+    ],
+    "popularity": 1.0,
+    "release_date": "2019-03-01",
+    "video": false,
+    "vote_average": 6.5,
+    "vote_count": 14
+   }
+  ],
+  "total_pages": 1,
+  "total_results": 1
+ }
+}

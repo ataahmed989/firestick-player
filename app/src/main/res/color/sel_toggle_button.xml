@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A round on/off button (the title page's My List ✓): blue on the white selected button, and blue while it's on
+     (like Live TV's favourite star); white otherwise. -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_focused="true" android:color="@color/accent" />
+    <item android:state_selected="true" android:color="@color/accent" />
+    <item android:color="@color/text" />
+</selector>

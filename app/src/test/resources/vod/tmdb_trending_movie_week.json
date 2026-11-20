@@ -1,0 +1,264 @@
+{
+ "page": 1,
+ "results": [
+  {
+   "adult": false,
+   "backdrop_path": "/synthMovieBackdrop00.jpg",
+   "id": 1368337,
+   "title": "The Odyssey",
+   "original_language": "en",
+   "original_title": "The Odyssey",
+   "overview": "After the Trojan War, Odysseus faces a dangerous voyage back to Ithaca, meeting creatures like the Cyclops Polyphemus, Sirens, and Calypso along the way.",
+   "poster_path": "/synthMoviePoster00.jpg",
+   "media_type": "movie",
+   "genre_ids": [
+    28,
+    12
+   ],
+   "popularity": 900.0,
+   "release_date": "2026-07-17",
+   "video": false,
+   "vote_average": 7.1,
+   "vote_count": 400
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/synthMovieBackdrop01.jpg",
+   "id": 1101383,
+   "title": "The End of Oak Street",
+   "original_language": "en",
+   "original_title": "The End of Oak Street",
+   "overview": "The Platt family bands together to navigate their new surroundings after a cosmic event transports their suburban neighborhood to someplace unknown.",
+   "poster_path": "/synthMoviePoster01.jpg",
+   "media_type": "movie",
+   "genre_ids": [
+    28,
+    12
+   ],
+   "popularity": 862.5,
+   "release_date": "2026-08-14",
+   "video": false,
+   "vote_average": 7.1,
+   "vote_count": 401
+  },
+  {
+   "adult": false,
+   "backdrop_path": null,
+   "id": 999999901,
+   "title": "Synthetic Film Without IMDb Id",
+   "original_language": "fr",
+   "original_title": "Film sans IMDb",
+   "overview": "",
+   "poster_path": null,
+   "media_type": "movie",
+   "genre_ids": [],
+   "popularity": 850.0,
+   "release_date": "",
+   "video": false,
+   "vote_average": 0,
+   "vote_count": 0
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/synthMovieBackdrop02.jpg",
+   "id": 1263337,
+   "title": "Heart of the Beast",
+   "original_language": "en",
+   "original_title": "Heart of the Beast",
+   "overview": "After a harrowing plane crash, Special Forces veteran James Belmont and his combat dog, Odin, find themselves stranded deep in the Alaskan wilderness. Together,",
+   "poster_path": "/synthMoviePoster02.jpg",
+   "media_type": "movie",
+   "genre_ids": [
+    28,
+    12
+   ],
+   "popularity": 825.0,
+   "release_date": "2026-09-25",
+   "video": false,
+   "vote_average": 7.1,
+   "vote_count": 402
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/synthMovieBackdrop03.jpg",
+   "id": 1423191,
+   "title": "Resident Evil",
+   "original_language": "en",
+   "original_title": "Resident Evil",
+   "overview": "Follows a hapless courier tasked with delivering a package to a remote hospital. He soon finds himself caught in the middle of an outbreak and must fight throug",
+   "poster_path": "/synthMoviePoster03.jpg",
+   "media_type": "movie",
+   "genre_ids": [
+    28,
+    12
+   ],
+   "popularity": 787.5,
+   "release_date": "2026-09-18",
+   "video": false,
+   "vote_average": 7.1,
+   "vote_count": 403
+  },
+  {
+   "adult": false,
+   "backdrop_path": null,
+   "id": 1375441,
+   "title": "Primetime",
+   "original_language": "en",
+   "original_title": "Primetime",
+   "overview": "In 2006, To Catch a Predator host Chris Hansen sets out to make television history.",
+   "poster_path": "/synthMoviePoster04.jpg",
+   "media_type": "movie",
+   "genre_ids": [
+    28,
+    12
+   ],
+   "popularity": 750.0,
+   "release_date": "2026-09-25",
+   "video": false,
+   "vote_average": 7.1,
+   "vote_count": 404
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/synthMovieBackdrop05.jpg",
+   "id": 1339713,
+   "title": "Obsession",
+   "original_language": "en",
+   "original_title": "Obsession",
+   "overview": "After breaking the mysterious \"One Wish Willow\" to win his crush's heart, a hopeless romantic finds himself getting exactly what he asked for but soon discovers",
+   "poster_path": "/synthMoviePoster05.jpg",
+   "media_type": "movie",
+   "genre_ids": [
+    28,
+    12
+   ],
+   "popularity": 712.5,
+   "release_date": "2026-05-15",
+   "video": false,
+   "vote_average": 7.1,
+   "vote_count": 405
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/synthMovieBackdrop06.jpg",
+   "id": 1570488,
+   "title": "A Dog's Perfect Christmas",
+   "original_language": "en",
+   "original_title": "A Dog's Perfect Christmas",
+   "overview": "A sage basset hound narrates how his family faces turmoil when Mrs. Goss falls into an induced coma, and a new Corgi pup helps unite the scattered household dur",
+   "poster_path": "/synthMoviePoster06.jpg",
+   "media_type": "movie",
+   "genre_ids": [
+    28,
+    12
+   ],
+   "popularity": 675.0,
+   "release_date": "2026-01-01",
+   "video": false,
+   "vote_average": 7.1,
+   "vote_count": 406
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/synthMovieBackdrop07.jpg",
+   "id": 1503762,
+   "title": "Sense and Sensibility",
+   "original_language": "en",
+   "original_title": "Sense and Sensibility",
+   "overview": "From Focus Features and Working Title comes an irresistible new take on Jane Austen's iconic Sense and Sensibility: a charming, witty, and deeply relatable stor",
+   "poster_path": "/synthMoviePoster07.jpg",
+   "media_type": "movie",
+   "genre_ids": [
+    28,
+    12
+   ],
+   "popularity": 637.5,
+   "release_date": "2026-10-16",
+   "video": false,
+   "vote_average": 7.1,
+   "vote_count": 407
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/synthMovieBackdrop08.jpg",
+   "id": 950028,
+   "title": "The Invite",
+   "original_language": "en",
+   "original_title": "The Invite",
+   "overview": "Joe and Angela's marriage is on thin ice. When they invite their enigmatic upstairs neighbors for a dinner party, the night spirals into unexpected places.",
+   "poster_path": "/synthMoviePoster08.jpg",
+   "media_type": "movie",
+   "genre_ids": [
+    28,
+    12
+   ],
+   "popularity": 600.0,
+   "release_date": "2026-07-10",
+   "video": false,
+   "vote_average": 7.1,
+   "vote_count": 408
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/synthMovieBackdrop09.jpg",
+   "id": 969681,
+   "title": "Spider-Man: Brand New Day",
+   "original_language": "en",
+   "original_title": "Spider-Man: Brand New Day",
+   "overview": "A forgotten Peter Parker lives alone as a full-time Spider-Man until mounting pressure triggers a dangerous change and a powerful new enemy emerges.",
+   "poster_path": "/synthMoviePoster09.jpg",
+   "media_type": "movie",
+   "genre_ids": [
+    28,
+    12
+   ],
+   "popularity": 562.5,
+   "release_date": "2026-07-31",
+   "video": false,
+   "vote_average": 7.1,
+   "vote_count": 409
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/synthMovieBackdrop10.jpg",
+   "id": 1616687,
+   "title": "Never Surrender",
+   "original_language": "en",
+   "original_title": "Never Surrender",
+   "overview": "An ex-soldier and his grandchildren battle against ruthless criminals in a remote village. To survive, they must also confront their fears and regrets.",
+   "poster_path": "/synthMoviePoster10.jpg",
+   "media_type": "movie",
+   "genre_ids": [
+    28,
+    12
+   ],
+   "popularity": 525.0,
+   "release_date": "2026-01-01",
+   "video": false,
+   "vote_average": 7.1,
+   "vote_count": 410
+  },
+  {
+   "adult": false,
+   "backdrop_path": "/synthMovieBackdrop11.jpg",
+   "id": 299534,
+   "title": "Avengers: Endgame",
+   "original_language": "en",
+   "original_title": "Avengers: Endgame",
+   "overview": "After the devastating events of Avengers: Infinity War (2018), the universe is in ruins. With the help of remaining allies, the Avengers assemble once more in o",
+   "poster_path": "/synthMoviePoster11.jpg",
+   "media_type": "movie",
+   "genre_ids": [
+    28,
+    12
+   ],
+   "popularity": 487.5,
+   "release_date": "2019-04-26",
+   "video": false,
+   "vote_average": 7.1,
+   "vote_count": 411
+  }
+ ],
+ "total_pages": 500,
+ "total_results": 10000
+}

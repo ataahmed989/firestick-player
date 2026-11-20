@@ -137,6 +137,28 @@ class OpenSubtitles(private val prefs: Prefs) {
         return file
     }
 
+    /**
+     * Whether the saved key works (and the sign-in, when one is saved): null when it does; otherwise whether the site
+     * answered no (true) or couldn't be reached (false), and what it said.
+     */
+    fun verify(): Pair<Boolean, String>? {
+        val signIn = prefs.openSubtitlesUser.isNotEmpty() && prefs.openSubtitlesPassword.isNotEmpty()
+        return try {
+            if (signIn) {
+                val body = JSONObject().put("username", prefs.openSubtitlesUser).put("password", prefs.openSubtitlesPassword).toString()
+                request("POST", "$base/login", body)
+            } else {
+                request("GET", "$base/infos/formats", null)
+            }
+            null
+        } catch (e: HttpError) {
+            // Only a sign-in or key refusal is "not accepted"; a server error or a busy site is "couldn't check".
+            (e.code == 400 || e.code == 401 || e.code == 403) to (e.message ?: "OpenSubtitles didn't accept it")
+        } catch (e: Exception) {
+            false to "Couldn't reach OpenSubtitles"
+        }
+    }
+
     private fun ensureLogin() {
         if (token != null || prefs.openSubtitlesUser.isEmpty() || prefs.openSubtitlesPassword.isEmpty()) return
         val body = JSONObject()
@@ -168,10 +190,13 @@ class OpenSubtitles(private val prefs: Prefs) {
         val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
         if (code !in 200..299) {
             val message = runCatching { JSONObject(text).optString("message") }.getOrNull()
-            error(message?.ifEmpty { null } ?: "OpenSubtitles error $code")
+            throw HttpError(code, message?.ifEmpty { null } ?: "OpenSubtitles error $code")
         }
         return text
     }
+
+    /** A refused request, with its HTTP code (an IllegalStateException, as the plain error() it replaces). */
+    class HttpError(val code: Int, message: String) : IllegalStateException(message)
 
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
 }
