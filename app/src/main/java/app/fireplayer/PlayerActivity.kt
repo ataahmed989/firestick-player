@@ -1310,6 +1310,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // Only this player's own: the next player's screen may be up already (Next episode) with its own set.
         if (FilmRoom.film === filmRoom) FilmRoom.film = null
         p.release()
+        // The second request's segment memory goes with the player (16 MiB at most).
+        filmRanges?.release()
+        filmRanges = null
         // What it had loaded is let go of: back with the TV now, not whenever Android next collects, and a player
         // built meanwhile (the next episode's) hears when it's there.
         FilmRoom.made(this)
@@ -5399,11 +5402,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
      * speed was the moment's, and is replaced ([app.fireplayer.vod.sources.LineRate.seen]).
      */
     private fun noteLineSpeed() {
-        if (source == null || !diagMade.isInitialized()) return
+        if (source == null || !diagMade.isInitialized() || twoRequestsNow()) return
         val d = diag.download
         if (d.sustainedSeconds < app.fireplayer.vod.play.FilmSupply.MIN_SECONDS) return
         app.fireplayer.vod.sources.LineRate.of(sourcePrefs).seen(d.sustainedMbps)
     }
+
+    /** Whether the film is being read with two range requests now ("Faster downloads"). */
+    private fun twoRequestsNow(): Boolean = filmRanges?.mode() == "2"
 
     /** Keeps what was measured of the copy playing, once its picture's data rate has been counted. */
     private fun rememberQuality() {
@@ -6006,6 +6012,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
 
         override fun lineShort(mbps: Double) {
+            // Two connections' combined speed isn't this line's speed for one: it's never kept as the line's.
+            if (twoRequestsNow()) return
             app.fireplayer.vod.sources.LineRate.of(sourcePrefs).short(mbps)
             // The lists in memory rank again: the Sources panel says at once which files this connection can't keep up with.
             (Sources.get(this@PlayerActivity) as? app.fireplayer.vod.sources.DefaultSourcesRepository)?.rerank()

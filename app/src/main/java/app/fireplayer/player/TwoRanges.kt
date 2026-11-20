@@ -105,6 +105,8 @@ class TwoRanges(val config: Config = Config(), private val log: (String) -> Unit
     private val links = HashMap<String, Link>()
     private val free = ArrayList<ByteArray>()
     private var made = 0
+    // The player is gone: no segment memory is kept or made again ([release]).
+    private var released = false
     private val poolLock = Object()
 
     private val primaryBytes = AtomicLong()
@@ -154,7 +156,7 @@ class TwoRanges(val config: Config = Config(), private val log: (String) -> Unit
     @Throws(InterruptedException::class)
     internal fun take(run: HelperRun): ByteArray? {
         synchronized(poolLock) {
-            while (!run.cancelled && !gaveUp.containsKey(run.total)) {
+            while (!run.cancelled && !released && !gaveUp.containsKey(run.total)) {
                 if (free.isNotEmpty()) return free.removeAt(free.size - 1)
                 if (made < config.buffers) {
                     val buffer = ByteArray(config.segmentBytes)
@@ -168,8 +170,19 @@ class TwoRanges(val config: Config = Config(), private val log: (String) -> Unit
     }
 
     internal fun put(buffer: ByteArray, total: Long) = synchronized(poolLock) {
-        // Given up: nothing is kept for a second request that won't come.
-        if (gaveUp.containsKey(total)) made-- else free.add(buffer)
+        // Given up, or the player is gone: nothing is kept for a second request that won't come.
+        if (released || gaveUp.containsKey(total)) made-- else free.add(buffer)
+        poolLock.notifyAll()
+    }
+
+    /**
+     * The player is let go of: the segments' memory waiting in the pool goes now, and any still with a second request
+     * goes as that request's thread ends ([put]). Nothing is made again.
+     */
+    fun release() = synchronized(poolLock) {
+        released = true
+        made -= free.size
+        free.clear()
         poolLock.notifyAll()
     }
 
@@ -456,9 +469,10 @@ class TwoRangeStream(
         } catch (e: IOException) {
             if (TwoRanges.cancelled(e)) throw e
             val status = primary.statusOf(e)
-            // As a connection opens, a failure that isn't the server turning two requests away is the player's to
-            // handle, as with one request. In the middle of one, the film goes on with one request instead.
-            if (first && status !in TwoRanges.LIMIT_STATUSES) throw e
+            // As a connection opens, any failure is the player's to handle, as with one request (a stale remembered
+            // address answering 403 is asked of the provider again, and is no reason to give up two requests). In the
+            // middle of one, the film goes on with one request instead.
+            if (first) throw e
             closeQuietly()
             fallBack(if (status > 0) "http $status" else "request for the next segment failed")
             goPlain()

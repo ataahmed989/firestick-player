@@ -307,6 +307,9 @@ class TwoRangesTest {
         assertArrayEquals(expected(200, 20_000), rest)
         rig.stream.close()
         assertEquals(2_000L, rig.film.heldBytes)
+        // The player let go of: the pool's memory goes, and none is made again.
+        rig.film.release()
+        waitFor { rig.film.heldBytes == 0L }
     }
 
     @Test
@@ -399,15 +402,23 @@ class TwoRangesTest {
             assertEquals("first 2000+-1 fresh", rig.firstOpens()[2])
             assertEquals(3, rig.firstOpens().size)
 
-            // As a connection opens: the same.
+            // As a connection opens: the player's to handle, as with one request (a stale remembered address's 403 is
+            // asked of the provider again), and two requests aren't given up for it.
             val again = Rig()
             again.stream.open(0, "k")
             again.stream.close()
             var once = true
             again.first.statusFor = { if (once) status.also { once = false } else 206 }
+            try {
+                again.stream.open(3_000, "k")
+                fail("the refusal reaches the player")
+            } catch (_: IOException) {
+            }
+            again.stream.close()
+            assertNull(again.film.fallback)
             assertEquals(10_500L - 3_000, again.stream.open(3_000, "k"))
             assertArrayEquals(expected(3_000, 10_500), again.readAll(3_000))
-            assertEquals("http $status", again.film.fallback)
+            assertNull(again.film.fallback)
         }
     }
 
