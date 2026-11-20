@@ -32,6 +32,7 @@ import app.fireplayer.live.ui.PipRules
 import app.fireplayer.live.ui.LivePicture
 import app.fireplayer.live.ui.LiveSettings
 import app.fireplayer.playback.PlayerHost
+import app.fireplayer.player.PausedRoom
 import app.fireplayer.player.PictureFit
 import app.fireplayer.shell.NavRail
 import app.fireplayer.shell.Tokens
@@ -288,6 +289,10 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW && ::vodPages.isInitialized) {
             vodPages.trimImages()
             ImageLoader.trim()
+        }
+        // In the background and Fire OS wants memory from the apps there: what would go after a while goes now.
+        if (PausedRoom.backgroundAsks(level) && ::filmMode.isInitialized && filmMode.releaseIfAway()) {
+            android.util.Log.i("FirePlayer", "Background: memory asked for (level $level), the pages let go now")
         }
     }
 

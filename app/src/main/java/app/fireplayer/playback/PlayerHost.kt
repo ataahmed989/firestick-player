@@ -27,7 +27,9 @@ import androidx.media3.exoplayer.analytics.AnalyticsListener
 import app.fireplayer.data.Prefs
 import app.fireplayer.live.ui.LivePrefs
 import app.fireplayer.player.Delays
+import app.fireplayer.player.FilmRoom
 import app.fireplayer.player.LiveBuffer
+import app.fireplayer.player.PausedRoom
 import app.fireplayer.player.PlayerFactory
 
 /**
@@ -229,18 +231,28 @@ class PlayerHost private constructor(context: Context) {
     fun onScreenStopped(owner: Any? = null) {
         if (owner != null && surface != null && owner !== surface) return
         screenOn = false
+        val had = player != null
         session.suspend()
         // A player built ahead ([warm]) that never got a channel.
         if (player != null && session.state != LiveSession.State.PLAYING) closeStream()
+        if (had) collect()
         publish()
     }
 
     /** The viewer closed live playback, or a film is starting. */
     fun stop() {
+        val had = player != null
         session.stop()
         if (player != null) closeStream()
+        if (had) collect()
         publish()
     }
+
+    /**
+     * A channel's player was let go of for good (stopped, not changed for another): its buffer is back with the TV
+     * now, not whenever Android next collects. Not from [closeStream] itself, or every channel change would collect.
+     */
+    private fun collect() = FilmRoom.made(app, forFilm = false)
 
     // ---- Playlist and EPG updates (live/SyncGuard.kt) ---------------------------------------------------------------
 
@@ -286,14 +298,63 @@ class PlayerHost private constructor(context: Context) {
     /** Behind the live edge since a pause, until Go live or a reconnect brings it back. */
     private var behind = false
 
+    /**
+     * A channel paused for long was let go of ([parkPaused]): no player, the channel still the one playing and shown
+     * as paused. Play or Go live opens it again, at live.
+     */
+    private var parked = false
+    /** When the channel was paused (elapsedRealtime). */
+    private var pausedAt = 0L
+
     /** Pauses or carries on. A paused channel falls behind live; it keeps its place while the buffer lasts. */
     fun togglePause() {
+        if (carryOnParked()) return
         val p = player ?: return
         if (session.playingKey == null) return
         paused = !paused
         if (paused) behind = true
         p.playWhenReady = !paused
+        watchPause()
         publish()
+    }
+
+    /** The paused channel's clock starts or ends, from every place that pauses it or carries on. */
+    private fun watchPause() {
+        main.removeCallbacks(parkPaused)
+        if (!paused || player == null) return
+        pausedAt = SystemClock.elapsedRealtime()
+        main.postDelayed(parkPaused, PausedRoom.LIVE_MS)
+    }
+
+    /**
+     * Paused for [PausedRoom.LIVE_MS]: a plain stream can't be held past its buffer (it stopped arriving once that
+     * was full), so the buffer (up to 64 MiB), the decoder and the connection were kept for nothing. Its player is let
+     * go of; the channel stays the one playing, shown as paused, and Play opens it again at live. A channel that can
+     * be wound back (a live HLS/DASH window) keeps its place and is left alone.
+     */
+    private val parkPaused = Runnable {
+        val p = player ?: return@Runnable
+        if (!paused || session.playingKey == null) return@Runnable
+        val seekable = p.isCurrentMediaItemDynamic && p.isCurrentMediaItemSeekable
+        if (!PausedRoom.liveSuspends(SystemClock.elapsedRealtime() - pausedAt, seekable)) return@Runnable
+        val held = control?.allocatedBytes ?: 0
+        closeStream()
+        paused = true
+        parked = true
+        collect()
+        Log.i(TAG, "Live: paused ${PausedRoom.LIVE_MS / 60_000} min, player let go with ${held shr 20} MiB loaded; Play opens the channel at live")
+        publish()
+    }
+
+    /** Play or Go live on a parked channel: it opens again, at live. True when it was parked. */
+    private fun carryOnParked(): Boolean {
+        if (!parked) return false
+        parked = false
+        paused = false
+        val source = session.source
+        if (source != null && session.playingKey != null) openStream(source)
+        publish()
+        return true
     }
 
     /**
@@ -301,6 +362,7 @@ class PlayerHost private constructor(context: Context) {
      * can't seek, is opened again, which is where the provider is now.
      */
     fun goLive() {
+        if (carryOnParked()) return
         val p = player ?: return
         val source = session.source ?: return
         if (session.playingKey == null) return
@@ -449,6 +511,8 @@ class PlayerHost private constructor(context: Context) {
         // A fresh stream starts at live.
         paused = false
         behind = false
+        parked = false
+        main.removeCallbacks(parkPaused)
         if (source.key != delayKey) {
             delayKey = source.key
             delays.audioUs = 0L
@@ -500,6 +564,8 @@ class PlayerHost private constructor(context: Context) {
         error = null
         paused = false
         behind = false
+        parked = false
+        main.removeCallbacks(parkPaused)
         setCues(emptyList())
     }
 
@@ -574,6 +640,7 @@ class PlayerHost private constructor(context: Context) {
             if (reason == Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_BECOMING_NOISY) Log.i(TAG, "Live: paused itself, the sound's output went away")
             paused = !playWhenReady
             if (paused) behind = true
+            watchPause()
             publish()
         }
 
