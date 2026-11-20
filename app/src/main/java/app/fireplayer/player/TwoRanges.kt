@@ -8,6 +8,7 @@ import java.net.SocketTimeoutException
 import java.util.ArrayDeque
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -26,6 +27,8 @@ import java.util.concurrent.atomic.AtomicLong
  *   and used again; a segment is given back the moment its last byte is handed on, and all of them when two requests
  *   are given up.
  * - A jump or a close cuts the second request off at once and drops what it had fetched.
+ * - A film standing still (a long pause) gives the segments back without giving two requests up ([rest]): the second
+ *   request starts again where reading goes on.
  * - One request for the rest of the film ([fallbackFor]) when the server answers 429, 503, 403 or 509 to either request,
  *   stops honouring a range, the second request fails, ends early or goes quiet, or the first request spends more time
  *   waiting for the second than reading ([HelperPace]): two must never be worse than one.
@@ -99,15 +102,38 @@ class TwoRanges(val config: Config = Config(), private val log: (String) -> Unit
     /** The same for the film last opened. */
     val fallback: String? get() = current?.let { fallbackFor(it.total) }
 
+    /** Takes a count of bytes without boxing it: called for every read of the second request. */
+    fun interface ByteSink {
+        fun add(bytes: Int)
+    }
+
     /** Told of every byte the second request brings, for the download speed ([ByteMeter]); on its thread. */
-    @Volatile var onHelperBytes: ((Int) -> Unit)? = null
+    @Volatile var onHelperBytes: ByteSink? = null
+
+    // Connections reading with two requests right now, whatever the setting has become since they opened.
+    private val twoOpen = AtomicInteger()
+
+    /** Whether a connection open now reads with two requests: one opened before the setting was turned off still does. */
+    val twoNow: Boolean get() = twoOpen.get() > 0
+
+    internal fun twoOpened() {
+        twoOpen.incrementAndGet()
+    }
+
+    internal fun twoClosed() {
+        twoOpen.decrementAndGet()
+    }
 
     private val links = HashMap<String, Link>()
     private val free = ArrayList<ByteArray>()
     private var made = 0
     // The player is gone: no segment memory is kept or made again ([release]).
     private var released = false
+    // The film stands still ([rest]): segments coming back are let go, until a second request asks for one again.
+    private var resting = false
     private val poolLock = Object()
+    // The second requests running, to cut them off from another thread ([rest]). Under its own lock.
+    private val running = ArrayList<HelperRun>()
 
     private val primaryBytes = AtomicLong()
     private val primaryNs = AtomicLong()
@@ -157,6 +183,7 @@ class TwoRanges(val config: Config = Config(), private val log: (String) -> Unit
     internal fun take(run: HelperRun): ByteArray? {
         synchronized(poolLock) {
             while (!run.cancelled && !released && !gaveUp.containsKey(run.total)) {
+                resting = false
                 if (free.isNotEmpty()) return free.removeAt(free.size - 1)
                 if (made < config.buffers) {
                     val buffer = ByteArray(config.segmentBytes)
@@ -170,9 +197,37 @@ class TwoRanges(val config: Config = Config(), private val log: (String) -> Unit
     }
 
     internal fun put(buffer: ByteArray, total: Long) = synchronized(poolLock) {
-        // Given up, or the player is gone: nothing is kept for a second request that won't come.
-        if (released || gaveUp.containsKey(total)) made-- else free.add(buffer)
+        // Given up, the player is gone, or the film stands still: nothing is kept for a second request that won't come.
+        if (released || resting || gaveUp.containsKey(total)) made-- else free.add(buffer)
         poolLock.notifyAll()
+    }
+
+    internal fun started(run: HelperRun) {
+        synchronized(running) { running.add(run) }
+    }
+
+    internal fun ended(run: HelperRun) {
+        synchronized(running) { running.remove(run) }
+    }
+
+    /**
+     * The film stands still (a long pause): the second request is cut off and the segments' memory let go, the ones in
+     * the pool now and the ones it holds as its thread ends. Two requests are not given up: the connection starts a
+     * second request again at the segment reading has reached ([TwoRangeStream]), and memory is made again then. From
+     * any thread; nothing to do with one request.
+     */
+    fun rest() {
+        val runs = synchronized(running) { ArrayList(running) }
+        // Cut off first: a run about to take a segment sees it and takes none.
+        for (run in runs) run.rest()
+        synchronized(poolLock) {
+            if (released) return
+            resting = true
+            made -= free.size
+            free.clear()
+            poolLock.notifyAll()
+        }
+        if (runs.isNotEmpty()) log("second request rested")
     }
 
     /**
@@ -202,7 +257,7 @@ class TwoRanges(val config: Config = Config(), private val log: (String) -> Unit
 
     internal fun helperRead(bytes: Int) {
         helperBytes.addAndGet(bytes.toLong())
-        onHelperBytes?.invoke(bytes)
+        onHelperBytes?.add(bytes)
     }
 
     internal fun helperTime(ns: Long) {
@@ -214,11 +269,12 @@ class TwoRanges(val config: Config = Config(), private val log: (String) -> Unit
     }
 
     /**
-     * For the film last opened: "2", "1(fallback: http 429)", "1(ranges ignored (status 200))", "1(turned off)", or
+     * For the film last opened: "2", "1(fallback: http 429)", "1(ranges ignored (status 200))", "1(turned off)",
+     * "2(turning off)" while a connection opened before the setting was turned off still reads with two, or
      * "2(not started)" before its first answer.
      */
     fun mode(): String {
-        if (!enabled) return "1(turned off)"
+        if (!enabled) return if (twoNow) "2(turning off)" else "1(turned off)"
         val film = current ?: return "2(not started)"
         fallbackFor(film.total)?.let { return "1(fallback: $it)" }
         return if (film.two) "2" else "1(${film.why})"
@@ -342,8 +398,10 @@ class TwoRangeStream(
     private val helper: () -> TwoRanges.Request,
 ) {
     private val segment = film.config.segmentBytes
-    private val pace = HelperPace(film.config.paceWindowNs)
+    private var pace = HelperPace(film.config.paceWindowNs)
     private var plain = true
+    // Counted in [TwoRanges.twoNow] while this connection reads with two requests.
+    private var counted = false
     private var plainLength = -1L
     private var position = 0L
     private var plan = SegmentPlan(0L, 0L, segment)
@@ -358,7 +416,7 @@ class TwoRangeStream(
         run?.cancel()
         run = null
         this.position = position
-        plain = true
+        setPlain()
         primaryOpen = false
         delivered = 0L
         if (!film.enabled) return primary.open(position, -1L, fresh = true, probe = false).length
@@ -395,6 +453,18 @@ class TwoRangeStream(
     private fun two(base: Long, end: Long) {
         plain = false
         plan = SegmentPlan(base, end, segment)
+        if (!counted) {
+            counted = true
+            film.twoOpened()
+        }
+    }
+
+    private fun setPlain() {
+        plain = true
+        if (counted) {
+            counted = false
+            film.twoClosed()
+        }
     }
 
     @Throws(IOException::class)
@@ -425,20 +495,36 @@ class TwoRangeStream(
             primaryOpen = false
             primary.close()
         }
-        if (run == null && delivered >= film.config.startAfterBytes && !gaveUp() && plan.count > 1) startHelper()
+        // A rested second request (a long pause) starts again as reading goes on.
+        if (run?.rested == true) run = null
+        if (run == null && delivered >= film.config.startAfterBytes && !gaveUp()) {
+            val next = plan.segmentOf(position).let { if (plan.helpers(it)) it else it + 1 }
+            if (next < plan.count) startHelper(next)
+        }
         return n
     }
 
     private fun readHelper(seg: Int, buffer: ByteArray, offset: Int, length: Int): Int {
-        val r = if (gaveUp()) null else run ?: startHelper()
-        val n = try {
-            r?.read(seg, position, buffer, offset, length) ?: -1
-        } catch (e: HelperGone) {
-            fallBack(e.reason)
-            -1
+        var r = if (gaveUp()) null else current(seg)
+        var n = -1
+        while (r != null) {
+            val asked = r
+            try {
+                n = asked.read(seg, position, buffer, offset, length)
+                break
+            } catch (e: HelperGone) {
+                // Rested while this read waited: no failure, a new second request takes the segment up.
+                if (!asked.rested || gaveUp()) {
+                    fallBack(e.reason)
+                    break
+                }
+                r = current(seg)
+            } finally {
+                // Also the wait that a failure, the film's end or a jump cut short.
+                film.waited(asked.lastWaitNs)
+            }
         }
         if (r != null) {
-            film.waited(r.lastWaitNs)
             if (n > 0 && pace.waited(r.lastWaitNs)) {
                 // It goes on with one request from the next segment; the second stops fetching now.
                 fallBack("second request too slow")
@@ -455,7 +541,16 @@ class TwoRangeStream(
         return n
     }
 
-    private fun startHelper(): HelperRun = HelperRun(film, helper(), plan).also {
+    // The second request serving [seg]: the one running, or a new one from [seg] when there is none or it was rested.
+    private fun current(seg: Int): HelperRun {
+        val r = run
+        if (r != null && !r.rested) return r
+        // The wait for a segment fetched again is the pause's, not a slow second request's.
+        if (r != null) pace = HelperPace(film.config.paceWindowNs)
+        return startHelper(seg)
+    }
+
+    private fun startHelper(from: Int): HelperRun = HelperRun(film, helper(), plan, from).also {
         run = it
         it.start()
     }
@@ -500,7 +595,7 @@ class TwoRangeStream(
         run = null
         if (primaryOpen) closeQuietly()
         primaryOpen = false
-        plain = true
+        setPlain()
         plainLength = primary.open(position, -1L, fresh = true, probe = false).length
     }
 
@@ -517,7 +612,7 @@ class TwoRangeStream(
         run?.cancel()
         run = null
         primaryOpen = false
-        plain = true
+        setPlain()
     }
 }
 
@@ -525,14 +620,19 @@ class TwoRangeStream(
 internal class HelperGone(val reason: String) : IOException(reason)
 
 /**
- * The second request of one connection: fetches [plan]'s odd segments one after another into memory, each with a range
- * request of its own, at most [TwoRanges.Config.buffers] ahead of what the player has taken. [read] on the loading
+ * The second request of one connection: fetches [plan]'s odd segments from [from] on, one after another into memory,
+ * each with a range request of its own, at most [TwoRanges.Config.buffers] ahead of what the player has taken. [read] on the loading
  * thread, [cancel] from it too.
  *
  * A segment's memory is its fetching thread's until the segment is whole (then the reader's, who gives it back) or the
  * thread has ended: a cancelled run's memory goes back as its thread ends, never while it may still write to it.
  */
-internal class HelperRun(private val film: TwoRanges, private val request: TwoRanges.Request, private val plan: SegmentPlan) : Runnable {
+internal class HelperRun(
+    private val film: TwoRanges,
+    private val request: TwoRanges.Request,
+    private val plan: SegmentPlan,
+    private val from: Int = 1,
+) : Runnable {
 
     private class Slot(val segment: Int, val start: Long, val length: Int, val buffer: ByteArray) {
         var filled = 0
@@ -541,6 +641,9 @@ internal class HelperRun(private val film: TwoRanges, private val request: TwoRa
     private val lock = Object()
     private val slots = ArrayDeque<Slot>()
     @Volatile var cancelled = false
+        private set
+    /** Cut off because the film stands still ([TwoRanges.rest]), not for a failure: another takes its place. */
+    @Volatile var rested = false
         private set
     private var failed: String? = null
     private var ended = false
@@ -553,11 +656,20 @@ internal class HelperRun(private val film: TwoRanges, private val request: TwoRa
     var lastWaitNs = 0L
         private set
 
-    fun start() = thread.start()
+    fun start() {
+        film.started(this)
+        thread.start()
+    }
+
+    /** [cancel], for a film standing still. From any thread. */
+    fun rest() {
+        rested = true
+        cancel()
+    }
 
     override fun run() {
         try {
-            var seg = 1
+            var seg = from
             while (!cancelled && seg < plan.count) {
                 val buffer = film.take(this) ?: break
                 val slot = Slot(seg, plan.start(seg), plan.length(seg), buffer)
@@ -573,6 +685,7 @@ internal class HelperRun(private val film: TwoRanges, private val request: TwoRa
         } catch (e: InterruptedException) {
             // Cancelled while waiting for memory.
         } finally {
+            film.ended(this)
             synchronized(lock) {
                 ended = true
                 if (cancelled || failed != null) drain()
@@ -605,11 +718,17 @@ internal class HelperRun(private val film: TwoRanges, private val request: TwoRa
             return true
         } catch (e: IOException) {
             return if (cancelled) false else fail("second request failed")
+        } catch (e: RuntimeException) {
+            // On this thread nothing else would catch it and the app would end; on the first request the player makes
+            // a load error of the same. Fixed words only: the exception's own may carry the address.
+            return if (cancelled) false else fail("second request failed")
         } finally {
             try {
                 request.close()
             } catch (_: IOException) {
                 // Gone either way.
+            } catch (_: RuntimeException) {
+                // The same.
             }
             film.helperTime(System.nanoTime() - started)
         }
@@ -644,43 +763,46 @@ internal class HelperRun(private val film: TwoRanges, private val request: TwoRa
         var waitFrom = 0L
         var progressAt = 0L
         var seen = -2
-        while (true) {
-            failed?.let { throw HelperGone(it) }
-            val slot = slots.peekFirst()
-            if (slot != null && slot.segment != seg) throw HelperGone("segments out of order")
-            if (slot != null) {
-                val at = (position - slot.start).toInt()
-                val have = slot.filled - at
-                if (have > 0) {
-                    val n = minOf(length, have)
-                    System.arraycopy(slot.buffer, at, out, offset, n)
-                    if (at + n == slot.length) {
-                        // Whole and handed on: its memory is free for the segment after next.
-                        slots.removeFirst()
-                        film.put(slot.buffer, plan.end)
+        try {
+            while (true) {
+                failed?.let { throw HelperGone(it) }
+                val slot = slots.peekFirst()
+                if (slot != null && slot.segment != seg) throw HelperGone("segments out of order")
+                if (slot != null) {
+                    val at = (position - slot.start).toInt()
+                    val have = slot.filled - at
+                    if (have > 0) {
+                        val n = minOf(length, have)
+                        System.arraycopy(slot.buffer, at, out, offset, n)
+                        if (at + n == slot.length) {
+                            // Whole and handed on: its memory is free for the segment after next.
+                            slots.removeFirst()
+                            film.put(slot.buffer, plan.end)
+                        }
+                        return n
                     }
-                    if (waitFrom != 0L) lastWaitNs = System.nanoTime() - waitFrom
-                    return n
+                }
+                if (ended) throw HelperGone("second request stopped")
+                val now = System.nanoTime()
+                val filled = slot?.filled ?: -1
+                if (waitFrom == 0L) waitFrom = now
+                if (filled != seen) {
+                    seen = filled
+                    progressAt = now
+                } else if (now - progressAt >= film.config.stallMs * 1_000_000L) {
+                    throw HelperGone("second request stalled")
+                }
+                try {
+                    lock.wait(50)
+                } catch (e: InterruptedException) {
+                    // The loading thread is being cancelled (a jump): Media3 expects this.
+                    Thread.currentThread().interrupt()
+                    throw InterruptedIOException()
                 }
             }
-            if (ended) throw HelperGone("second request stopped")
-            val now = System.nanoTime()
-            val filled = slot?.filled ?: -1
-            if (waitFrom == 0L) waitFrom = now
-            if (filled != seen) {
-                seen = filled
-                progressAt = now
-            } else if (now - progressAt >= film.config.stallMs * 1_000_000L) {
-                lastWaitNs = now - waitFrom
-                throw HelperGone("second request stalled")
-            }
-            try {
-                lock.wait(50)
-            } catch (e: InterruptedException) {
-                // The loading thread is being cancelled (a jump): Media3 expects this.
-                Thread.currentThread().interrupt()
-                throw InterruptedIOException()
-            }
+        } finally {
+            // However the wait ended: bytes, a failure, the end, or a jump.
+            if (waitFrom != 0L) lastWaitNs = System.nanoTime() - waitFrom
         }
     }
 

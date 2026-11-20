@@ -94,6 +94,7 @@ class TwoRangesTest {
         var contentRange: ((Long, Long) -> String?)? = null
         var statusFor: (Long) -> Int = { 206 }
         var throwOnOpen: (Long) -> IOException? = { null }
+        var crashOnOpen = false
         var endEarlyAt = -1L
         @Volatile var hold = false
         var readDelayMs = 0L
@@ -106,6 +107,7 @@ class TwoRangesTest {
             log.add("$name $start+$length" + (if (fresh) " fresh" else "") + if (probe) " probe" else "")
             if (cancelled) throw IOException("cancelled")
             throwOnOpen(start)?.let { throw it }
+            if (crashOnOpen) throw IllegalStateException("http://secret.example/key")
             val status = statusFor(start)
             if (status != 206) {
                 if (name == "first") throw Refused(status)
@@ -385,6 +387,134 @@ class TwoRangesTest {
         rig.stream.open(0, "other")
         assertEquals("first 0+-1 fresh", rig.log.last())
         rig.stream.close()
+    }
+
+    @Test
+    fun turnedOffWhileAConnectionReadsWithTwoItStillSaysTwo() {
+        val rig = Rig()
+        rig.stream.open(0, "k")
+        assertTrue(rig.film.twoNow)
+        rig.film.enabled = false
+        // Still two requests until this connection ends: the log and the speed kept must say so.
+        assertEquals("2(turning off)", rig.film.mode())
+        assertTrue(rig.film.twoNow)
+        assertArrayEquals(expected(0, 10_500), rig.readAll(0))
+        assertTrue(rig.secondOpens().isNotEmpty())
+        rig.stream.close()
+        assertFalse(rig.film.twoNow)
+        assertEquals("1(turned off)", rig.film.mode())
+        // The next connection is one request, and counts as one.
+        rig.stream.open(2_000, "k")
+        assertFalse(rig.film.twoNow)
+        rig.stream.close()
+    }
+
+    @Test
+    fun aConnectionPutBackOnOneRequestNoLongerCountsAsTwo() {
+        val rig = Rig()
+        rig.onHelper = { it.throwOnOpen = { IOException("refused") } }
+        rig.stream.open(0, "k")
+        assertTrue(rig.film.twoNow)
+        assertArrayEquals(expected(0, 10_500), rig.readAll(0))
+        assertFalse(rig.film.twoNow)
+        rig.stream.close()
+        assertFalse(rig.film.twoNow)
+    }
+
+    @Test
+    fun aFilmStandingStillGivesItsSegmentsBackAndGoesOnWithTwoRequests() {
+        val rig = Rig(total = 20_000)
+        rig.stream.open(0, "k")
+        val buffer = ByteArray(200)
+        var got = 0
+        while (got < 200) got += rig.stream.read(buffer, got, 200 - got)
+        waitFor { rig.secondOpens().size == 2 }
+        waitFor { rig.film.heldBytes == 2_000L }
+        rig.film.rest()
+        // Nothing is held while it stands still, and two requests are not given up.
+        waitFor { rig.film.heldBytes == 0L }
+        assertTrue(rig.helpers[0].cancelled)
+        assertNull(rig.film.fallback)
+        assertEquals("2", rig.film.mode())
+        // Taken up again: every byte in order, the second request back at the next odd segment.
+        assertArrayEquals(expected(200, 20_000), rig.readAll(200))
+        assertNull(rig.film.fallback)
+        assertEquals(2, rig.helpers.size)
+        assertEquals("second 1000+1000", rig.secondOpens()[2])
+        assertTrue(rig.secondOpens().contains("second 19000+1000"))
+        assertTrue(rig.film.heldBytes <= SMALL.maxExtraBytes)
+        rig.stream.close()
+        rig.film.release()
+        waitFor { rig.film.heldBytes == 0L }
+    }
+
+    @Test
+    fun restingInTheMiddleOfASecondRequestsSegmentLosesNoByte() {
+        val rig = Rig(total = 20_000)
+        rig.stream.open(0, "k")
+        val buffer = ByteArray(100)
+        var got = 0
+        // Into the second request's first segment (1000 to 2000), part of it handed on.
+        while (got < 1_400) got += rig.stream.read(buffer, 0, 100)
+        rig.film.rest()
+        val out = java.io.ByteArrayOutputStream()
+        while (true) {
+            val n = rig.stream.read(buffer, 0, 100)
+            if (n < 0) break
+            out.write(buffer, 0, n)
+        }
+        assertArrayEquals(expected(got.toLong(), 20_000), out.toByteArray())
+        assertNull(rig.film.fallback)
+        rig.stream.close()
+        // Rested twice, and with nothing running: no harm.
+        rig.film.rest()
+        rig.film.rest()
+        waitFor { rig.film.heldBytes == 0L }
+    }
+
+    @Test
+    fun restingDoesNothingOnOneRequestOrOnceThePlayerIsGone() {
+        val rig = Rig()
+        rig.film.enabled = false
+        rig.stream.open(0, "k")
+        rig.film.rest()
+        assertArrayEquals(expected(0, 10_500), rig.readAll(0))
+        rig.stream.close()
+        rig.film.release()
+        rig.film.rest()
+        assertEquals(0L, rig.film.heldBytes)
+        assertTrue(rig.lines.none { it.contains("rested") })
+    }
+
+    @Test
+    fun aCrashOnTheSecondRequestsThreadMeansOneRequestAndSaysNothingOfTheLink() {
+        val rig = Rig()
+        rig.onHelper = { it.crashOnOpen = true }
+        rig.stream.open(0, "k")
+        assertArrayEquals(expected(0, 10_500), rig.readAll(0))
+        rig.stream.close()
+        assertEquals("second request failed", rig.film.fallback)
+        assertTrue(rig.lines.none { it.contains("secret") })
+        waitFor { rig.film.heldBytes == 0L }
+    }
+
+    @Test
+    fun theWaitThatEndsInAFailureIsCounted() {
+        val film = TwoRanges(SMALL) {}
+        val request = Fake(10_500, Collections.synchronizedList(ArrayList<String>()), "second")
+        request.endEarlyAt = 1_500
+        request.readDelayMs = 30
+        val run = HelperRun(film, request, SegmentPlan(0, 10_500, 1_000))
+        run.start()
+        val buffer = ByteArray(1_000)
+        var position = 1_000L
+        try {
+            while (true) position += run.read(1, position, buffer, 0, 1_000)
+        } catch (e: HelperGone) {
+            assertEquals("second request ended early", e.reason)
+        }
+        assertTrue(run.lastWaitNs > 0L)
+        run.cancel()
     }
 
     @Test

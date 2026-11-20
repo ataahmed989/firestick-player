@@ -5414,11 +5414,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (source == null || !diagMade.isInitialized()) return
         val d = diag.download
         if (d.sustainedSeconds < app.fireplayer.vod.play.FilmSupply.MIN_SECONDS) return
-        app.fireplayer.vod.sources.LineRate.of(sourcePrefs, two = twoRequestsNow()).seen(d.sustainedMbps)
+        app.fireplayer.vod.sources.LineRate.of(sourcePrefs, two = measuredWithTwo()).seen(d.sustainedMbps)
     }
 
-    /** Whether the film is being read with two range requests now ("Faster downloads"). */
-    private fun twoRequestsNow(): Boolean = filmRanges?.mode() == "2"
+    /** Whether what is measured of this film goes with the two-connection speed ([app.fireplayer.vod.sources.LineRate.forTwo]). */
+    private fun measuredWithTwo(): Boolean {
+        val ranges = filmRanges
+        return app.fireplayer.vod.sources.LineRate.forTwo(ranges != null, prefs.fasterDownloads, ranges?.twoNow == true)
+    }
 
     /** Keeps what was measured of the copy playing, once its picture's data rate has been counted. */
     private fun rememberQuality() {
@@ -6022,7 +6025,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
         override fun lineShort(mbps: Double) {
             // Two connections' combined speed is kept apart from one connection's: each ranks the lists with its own.
-            app.fireplayer.vod.sources.LineRate.of(sourcePrefs, two = twoRequestsNow()).short(mbps)
+            // Under the key the lists are ranked by, so a film the server kept on one request still teaches them.
+            app.fireplayer.vod.sources.LineRate.of(sourcePrefs, two = measuredWithTwo()).short(mbps)
             // The lists in memory rank again: the Sources panel says at once which files this connection can't keep up with.
             (Sources.get(this@PlayerActivity) as? app.fireplayer.vod.sources.DefaultSourcesRepository)?.rerank()
         }
