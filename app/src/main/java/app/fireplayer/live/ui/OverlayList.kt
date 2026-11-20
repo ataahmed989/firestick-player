@@ -116,7 +116,8 @@ internal class OverlayList(context: Context, private val t: Tokens, val kind: Ki
     private val padX = t.dpf(LiveWidths.OV_PAD_X.toFloat())
     private val rowPad = t.dpf(LiveWidths.OV_ROW_PAD_X.toFloat())
     private val headTop = t.dpf(LiveWidths.OV_TOP.toFloat())
-    private val headH = t.dpf((if (kind == Kind.PROGRAMMES) LiveWidths.OV_CHANNEL_HEAD_H else LiveWidths.OV_HEAD_H).toFloat())
+    /** One header height for every column: their rules line up side by side. */
+    private val headH = t.dpf(LiveWidths.OV_HEAD_H.toFloat())
     private val rowsTop = headTop + headH
     private var rowH = t.dpf(
         when (kind) {
@@ -125,13 +126,15 @@ internal class OverlayList(context: Context, private val t: Tokens, val kind: Ki
             Kind.CHANNELS -> (LiveWidths.SCREEN_H - LiveWidths.OV_TOP * 2 - LiveWidths.OV_HEAD_H) / LiveWidths.OV_CHANNEL_ROWS
         }.toFloat(),
     )
-    private val numberW = t.dpf(LiveWidths.OV_NUMBER_W.toFloat())
+    /** The number column: as wide as the list's longest number needs ([setChannels]), never under [LiveWidths.OV_NUMBER_W]. */
+    private var numberW = t.dpf(LiveWidths.OV_NUMBER_W.toFloat())
     private val logoW = t.dpf(LiveWidths.OV_LOGO_W.toFloat())
     private val logoH = t.dpf(LiveWidths.OV_LOGO_H.toFloat())
     private val headLogoW = t.dpf(LiveWidths.OV_HEAD_LOGO_W.toFloat())
     private val headLogoH = t.dpf(LiveWidths.OV_HEAD_LOGO_H.toFloat())
     private val gap = t.dpf(LiveWidths.OV_GAP.toFloat())
-    private val timeW = t.dpf(LiveWidths.OV_TIME_W.toFloat())
+    /** The start times' column: as wide as the list's widest time needs ([setProgrammes]), never under [LiveWidths.OV_TIME_W]. */
+    private var timeW = t.dpf(LiveWidths.OV_TIME_W.toFloat())
     private val progressH = t.dpf(LiveWidths.OV_PROGRESS_H)
     private val progressGap = t.dpf(LiveWidths.OV_PROGRESS_GAP.toFloat())
     private val pillRadius = t.dpf(LiveWidths.OV_PILL_RADIUS)
@@ -157,7 +160,9 @@ internal class OverlayList(context: Context, private val t: Tokens, val kind: Ki
     private val subPaint = paint(LiveWidths.OV_SUB_SP, t.regular)
     private val headPaint = paint(LiveWidths.OV_HEAD_SP, t.semibold)
     private val headSubPaint = paint(LiveWidths.OV_SUB_SP, t.regular).apply { color = t.textMuted }
-    private val numberPaint = paint(LiveWidths.OV_SUB_SP, t.regular).apply { textAlign = Paint.Align.RIGHT }
+    private val numberPaint = paint(LiveWidths.OV_SUB_SP, t.regular).apply { textAlign = Paint.Align.CENTER }
+    /** The widest digit in the numbers' face (measured once). */
+    private val digitW = FloatArray(10).also { numberPaint.getTextWidths("0123456789", it) }.max()
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val plates = PlateDrawer(t.density)
     private val headPlates = PlateDrawer(t.density, LiveWidths.DETAIL_LOGO_PAD_X, LiveWidths.DETAIL_LOGO_PAD_Y)
@@ -224,6 +229,10 @@ internal class OverlayList(context: Context, private val t: Tokens, val kind: Ki
         channels = list
         numbers = Array(list.size) { list[it].number.toString() }
         keys = Array(list.size) { list[it].key }
+        // The number column holds the list's longest number (five digits and more), so none reaches out of its row.
+        var longest = 0
+        for (n in numbers) if (n.length > longest) longest = n.length
+        numberW = maxOf(t.dpf(LiveWidths.OV_NUMBER_W.toFloat()), ceil(digitW * longest))
         resetRows(list.size)
         place(select)
     }
@@ -232,6 +241,10 @@ internal class OverlayList(context: Context, private val t: Tokens, val kind: Ki
     fun setProgrammes(list: List<Programme>, onNow: Int) {
         programmes = list
         times = Array(list.size) { timeFormat.format(Date(list[it].start)) }
+        // The titles start after the widest time (a larger system font's "12:07 am" too), a gap between them.
+        var widest = 0f
+        for (time in times) widest = maxOf(widest, subPaint.measureText(time))
+        timeW = maxOf(t.dpf(LiveWidths.OV_TIME_W.toFloat()), ceil(widest) + gap)
         resetRows(list.size)
         mark = onNow
         place(-1, first = (onNow - 1).coerceAtLeast(0))
@@ -322,7 +335,7 @@ internal class OverlayList(context: Context, private val t: Tokens, val kind: Ki
     fun nameBox(row: Int, out: RectF) {
         val rTop = rowsTop + row * rowH - scrollY
         val x = nameX()
-        val cy = if (kind == Kind.CHANNELS) rTop + rowH * NAME_AT else rTop + rowH / 2
+        val cy = if (kind == Kind.CHANNELS) rTop + rowH * LiveWidths.OV_NAME_AT else rTop + rowH / 2
         val half = namePaint.fontSpacing / 2
         out.set(x, cy - half, x + nameRoomOf(row), cy + half)
     }
@@ -356,9 +369,10 @@ internal class OverlayList(context: Context, private val t: Tokens, val kind: Ki
     override fun onDraw(canvas: Canvas) {
         drawHeader(canvas)
         val w = width.toFloat()
-        val h = height.toFloat()
         canvas.save()
-        canvas.clipRect(0f, rowsTop, w, h)
+        // Whole rows only: no cut row in the margin under the last one, and rows gliding in appear from a clean line.
+        val bottom = rowsTop + visibleRows() * rowH
+        canvas.clipRect(0f, rowsTop, w, bottom)
         val n = count
         if (n == 0) {
             if (emptyText.isNotEmpty()) {
@@ -373,7 +387,7 @@ internal class OverlayList(context: Context, private val t: Tokens, val kind: Ki
                 canvas.drawRoundRect(rect, pillRadius, pillRadius, fill)
             }
             val first = (scrollY / rowH).toInt().coerceAtLeast(0)
-            val last = (ceil((scrollY + h - rowsTop) / rowH).toInt() - 1).coerceAtMost(n - 1)
+            val last = (ceil((scrollY + bottom - rowsTop) / rowH).toInt() - 1).coerceAtMost(n - 1)
             val now = clock()
             for (r in first..last) {
                 val top = rowsTop + r * rowH - scrollY
@@ -427,14 +441,15 @@ internal class OverlayList(context: Context, private val t: Tokens, val kind: Ki
         val onPill = active && r == focus
         val key = keys[r]
         val playing = key == playingKey
-        val nameCy = top + rowH * NAME_AT
-        val subCy = top + rowH * SUB_AT
+        val nameCy = top + rowH * LiveWidths.OV_NAME_AT
+        val subCy = top + rowH * LiveWidths.OV_SUB_AT
         val x = rowX()
+        // The number and the logo: centred in the row (and so in the white pill), the number in its own column.
+        val lcy = top + rowH / 2
         numberPaint.color = if (onPill) t.accent else t.text
-        canvas.drawText(numbers[r], x + numberW, baseline(nameCy, numberPaint), numberPaint)
+        canvas.drawText(numbers[r], x + numberW / 2, baseline(lcy, numberPaint), numberPaint)
 
         val lx = x + numberW + gap
-        val lcy = (nameCy + subCy) / 2
         val l = ch.logo?.let(logo)
         if (l != null || glass) {
             plates.draw(canvas, l, lx, lcy - logoH / 2, lx + logoW, lcy + logoH / 2)
@@ -522,9 +537,6 @@ internal class OverlayList(context: Context, private val t: Tokens, val kind: Ki
     }
 
     private companion object {
-        /** A channel row's name line and programme line, as shares of its height. */
-        const val NAME_AT = 0.33f
-        const val SUB_AT = 0.64f
         const val NO_INFO = "No information"
         const val UNTITLED = "Untitled"
         /** Classic: the rule under a header (the guide's). */

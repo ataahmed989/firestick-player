@@ -82,7 +82,16 @@ class LiveOverlay(context: Context, private val t: Tokens, private val io: Io) :
     /** The channel playing (or, picking, the picture the pick is for): marked in the list. */
     var playingKey: ChannelKey?
         get() = channelsCol.playingKey
-        set(v) { channelsCol.playingKey = v }
+        set(v) {
+            if (channelsCol.playingKey == v) return
+            channelsCol.playingKey = v
+            // The ▶ came to or left the row whose name is scrolling: its window is measured again with the ▶'s room,
+            // so the name never runs under it.
+            if (marqueeCol === channelsCol) {
+                stopMarquee()
+                scheduleMarquee()
+            }
+        }
 
     private var listener: Listener? = null
     private var playlist: Playlist? = null

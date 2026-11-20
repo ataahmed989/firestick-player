@@ -5,7 +5,9 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.graphics.drawable.Drawable
 import android.view.View
+import android.view.ViewGroup
 import app.fireplayer.R
+import kotlin.math.ceil
 
 /**
  * The optional glass look (Settings, Look, Glass look): buttons, chips, rows and windows become clear glass
@@ -62,6 +64,25 @@ object Glass {
         val b = view.paddingBottom
         if (on) view.background = drawable(view.context, kind) else view.setBackgroundResource(classic)
         view.setPadding(l, t, r, b)
+    }
+
+    /**
+     * Room inside [row] for all that a selected round button in it draws past its own edge: its glow and shadow
+     * ([GlassBakes.pad]) and its growth ([grow], of a button [buttonPx] across). A row that fades as a whole is drawn
+     * into a picture exactly its own size, which would cut those off flat at its edge for as long as it fades. The
+     * row grows by that room at its top (and, with [sides], at both ends) and its padding grows by the same, so
+     * nothing in it moves. Once per row, when it's built; the same in both looks.
+     */
+    fun roomForFocus(row: View, buttonPx: Int, grow: Float, sides: Boolean) {
+        val lp = row.layoutParams as? ViewGroup.MarginLayoutParams ?: return
+        val density = row.resources.displayMetrics.density
+        val room = GlassBakes.pad(Kind.CIRCLE, focused = true, density = density) + ceil(buttonPx * (grow - 1f) / 2f).toInt()
+        val side = if (sides) room else 0
+        lp.topMargin -= room
+        lp.leftMargin -= side
+        lp.rightMargin -= side
+        row.layoutParams = lp
+        row.setPadding(row.paddingLeft + side, row.paddingTop + room, row.paddingRight + side, row.paddingBottom)
     }
 
     /**

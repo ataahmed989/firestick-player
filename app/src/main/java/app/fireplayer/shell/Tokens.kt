@@ -165,5 +165,25 @@ class Tokens(context: Context) {
                 also?.invoke(hasFocus)
             }
         }
+
+        /**
+         * [button] has just taken focus inside a row that is itself fading in (the player's rows swapping): its
+         * selected look is put at its end at once ([scale], its surface's selected state, [label] shown), so only the
+         * row's own motion is seen, not the button changing inside it. A one-off at the key press; moving along a row
+         * keeps [focusEffect]'s motion.
+         */
+        fun settleFocus(button: View, scale: Float, label: View?) {
+            button.animate().cancel()
+            button.scaleX = scale
+            button.scaleY = scale
+            button.jumpDrawablesToCurrentState()
+            if (label != null) {
+                label.animate().cancel()
+                label.visibility = View.VISIBLE
+                label.alpha = 1f
+                label.scaleX = scale
+                label.scaleY = scale
+            }
+        }
     }
 }
