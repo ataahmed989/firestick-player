@@ -11,7 +11,8 @@ package app.fireplayer.player
  *   for half a minute ([GraphicsTrim.staleOnly]).
  * - [Step.PLAYER] after [playerMs]: the player itself, its place kept; the next key press builds it again there.
  *
- * Nothing goes while a window is open over the film ([due]'s busy), and the clock starts again with every pause.
+ * Nothing goes while a window is open over the film ([due]'s busy), and the clock starts again with every pause
+ * (and with every key press and window closed over it: [moving], then [still]).
  * Times are elapsedRealtime. One thread (the player screen's).
  */
 class PausedRoom(
@@ -81,11 +82,12 @@ class PausedRoom(
     }
 
     /**
-     * Fire OS says memory is critically short: a film standing still has nothing to protect, so its player goes now
-     * (true), unless a window is open over it ([busy]) or it plays. Counted as taken.
+     * Fire OS says memory is critically short at [nowMs]: a film that has stood still [lightMs] has nothing to
+     * protect, so its player goes now (true), unless a window is open over it ([busy]) or it plays. Counted as taken.
+     * One paused more recently keeps its player (false): the viewer may be about to play on.
      */
-    fun critical(busy: Boolean): Boolean {
-        if (since < 0L || busy) return false
+    fun critical(nowMs: Long, busy: Boolean): Boolean {
+        if (since < 0L || busy || nowMs - since < lightMs) return false
         moving()
         return true
     }

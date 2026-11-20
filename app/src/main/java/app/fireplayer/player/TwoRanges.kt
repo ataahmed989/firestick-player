@@ -409,12 +409,15 @@ class TwoRangeStream(
     private var primaryEnd = 0L
     private var delivered = 0L
     private var run: HelperRun? = null
+    // The segment a second request was started again for after a rest, or -1: its wait is the pause's, not weighed.
+    private var refetched = -1
 
     /** Opens at [position] to the file's end; [key] names the link in memory only. Gives the length to come (-1: not said). */
     @Throws(IOException::class)
     fun open(position: Long, key: String): Long {
         run?.cancel()
         run = null
+        refetched = -1
         this.position = position
         setPlain()
         primaryOpen = false
@@ -496,10 +499,14 @@ class TwoRangeStream(
             primary.close()
         }
         // A rested second request (a long pause) starts again as reading goes on.
-        if (run?.rested == true) run = null
+        val again = run?.rested == true
+        if (again) run = null
         if (run == null && delivered >= film.config.startAfterBytes && !gaveUp()) {
             val next = plan.segmentOf(position).let { if (plan.helpers(it)) it else it + 1 }
-            if (next < plan.count) startHelper(next)
+            if (next < plan.count) {
+                startHelper(next)
+                if (again) refetched = next
+            }
         }
         return n
     }
@@ -524,8 +531,13 @@ class TwoRangeStream(
                 film.waited(asked.lastWaitNs)
             }
         }
-        if (r != null) {
-            if (n > 0 && pace.waited(r.lastWaitNs)) {
+        if (r != null && n > 0 && seg != refetched) {
+            if (refetched >= 0) {
+                // Past the segment fetched again after a rest: the pace is weighed afresh from here.
+                refetched = -1
+                pace = HelperPace(film.config.paceWindowNs)
+            }
+            if (pace.waited(r.lastWaitNs)) {
                 // It goes on with one request from the next segment; the second stops fetching now.
                 fallBack("second request too slow")
                 r.cancel()
@@ -546,7 +558,7 @@ class TwoRangeStream(
         val r = run
         if (r != null && !r.rested) return r
         // The wait for a segment fetched again is the pause's, not a slow second request's.
-        if (r != null) pace = HelperPace(film.config.paceWindowNs)
+        if (r != null) refetched = seg
         return startHelper(seg)
     }
 

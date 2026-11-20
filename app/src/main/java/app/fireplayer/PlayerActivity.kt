@@ -1301,6 +1301,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     /** Paused by the viewer: not for the TV's refresh-rate switch or to get a frozen film going, which play on by themselves. */
     private fun filmStill(): Boolean {
         val p = player ?: return false
+        // Stopped with a message is not paused by the viewer: Retry and the other sources need the player.
+        if (::errorBox.isInitialized && errorBox.visibility == View.VISIBLE) return false
         return !p.playWhenReady && !pausedForSwitch && !pausedForFreeze
     }
 
@@ -1318,6 +1320,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val now = SystemClock.elapsedRealtime()
         pausedRoom.still(now)
         handler.postDelayed(pausedTick, pausedRoom.waitMs(now, windowOpen()))
+    }
+
+    /** The viewer is there (a key pressed, a window closed over the paused film): the clock starts again from now. */
+    private fun restartPause() {
+        if (asleep || !filmStill()) return
+        pausedRoom.moving()
+        watchPause()
     }
 
     private val pausedTick = object : Runnable {
@@ -1349,8 +1358,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         seekPreview.release()
         val ranges = filmRanges
         val segments = ranges?.heldBytes ?: 0L
-        // Off this thread: cutting the second request off closes its connection.
-        if (ranges != null) Thread({ ranges.rest() }, "FilmSecondRequestRest").apply { isDaemon = true }.start()
+        // Off this thread: cutting the second request off closes its connection. Not while the film still loads (its
+        // buffer isn't full yet): the second request is in use, and the wait for its segment would count against it.
+        if (ranges != null && player?.isLoading == false) Thread({ ranges.rest() }, "FilmSecondRequestRest").apply { isDaemon = true }.start()
         if (GlassLoad.smallRam(this)) GraphicsTrim.trim()
         FilmRoom.made(this, forFilm = false)
         android.util.Log.i(TAG, "Film paused ${PausedRoom.LIGHT_MS / 1000} s: pictures, drawing cache and ${segments shr 20} MiB of segments let go")
@@ -2576,7 +2586,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         focusEffect(btnEpisodes, 1.08f, findViewById(R.id.episodes_label))
         episodesSheet = EpisodesSheet(this, root).apply {
             onPlay = { ep -> playEpisode(ep) }
-            onClosed = { fadeSubtitles(true); showControls(btnEpisodes) }
+            onClosed = { fadeSubtitles(true); showControls(btnEpisodes); restartPause() }
         }
         focusEffect(btnPlay, 1.08f)
         focusEffect(btnRestart, 1.08f, findViewById(R.id.restart_label))
@@ -2855,7 +2865,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             else -> return
         }
         // Critically short with the film paused: it has nothing to protect, and its player goes with its place kept.
-        if (step == 2 && filmStill() && pausedRoom.critical(windowOpen())) {
+        // Not one paused only just now: the viewer is likely about to play on, and the buffer gives half back instead.
+        if (step == 2 && filmStill() && pausedRoom.critical(SystemClock.elapsedRealtime(), windowOpen())) {
             sleepFilm("paused, TV critically short of memory")
             return
         }
@@ -4296,6 +4307,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // Moving round with the D-pad: the glass holds still meanwhile, so the move gets the TV's full attention.
         if (event.action == KeyEvent.ACTION_DOWN && (code == KeyEvent.KEYCODE_DPAD_LEFT || code == KeyEvent.KEYCODE_DPAD_RIGHT ||
                 code == KeyEvent.KEYCODE_DPAD_UP || code == KeyEvent.KEYCODE_DPAD_DOWN)) backdrop?.holdForNavigation()
+        // A key pressed over a paused film: the viewer is there, and the long pause is counted from now.
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) restartPause()
         // A small window (a list of choices, a question) open over the screen takes the keys first.
         if (FireDialog.dispatch(this, event)) return true
         if (event.action == KeyEvent.ACTION_UP) {
@@ -4544,6 +4557,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         panel.open(title, onClose = {
             screenSubtitles.setPadding(0, 0, 0, 0)
             onClosed()
+            restartPause()
             // Example lines shown for a Subtitle style window (one opened from App settings, say) go with it.
             if (stylePreviewing) {
                 stylePreviewing = false

@@ -15,7 +15,7 @@ class PausedRoomTest {
         assertFalse(room.still)
         assertNull(room.due(1_000_000, busy = false))
         assertEquals(-1L, room.waitMs(1_000_000, busy = false))
-        assertFalse(room.critical(busy = false))
+        assertFalse(room.critical(1_000_000, busy = false))
     }
 
     @Test
@@ -67,7 +67,7 @@ class PausedRoomTest {
         assertNull(room.due(60_000, busy = true))
         assertEquals(PausedRoom.BUSY_CHECK_MS, room.waitMs(60_000, busy = true))
         assertNull(room.due(650_000, busy = true))
-        assertFalse(room.critical(busy = true))
+        assertFalse(room.critical(650_000, busy = true))
         // Closed after the long limit: the player goes straight away, the light step with it.
         assertEquals(0L, room.waitMs(650_000, busy = false))
         assertEquals(PausedRoom.Step.PLAYER, room.due(650_000, busy = false))
@@ -85,10 +85,34 @@ class PausedRoomTest {
     @Test
     fun criticallyShortOfMemoryAPausedFilmsPlayerGoesAtOnce() {
         room.still(0)
-        assertTrue(room.critical(busy = false))
+        assertTrue(room.critical(60_000, busy = false))
         assertFalse(room.still)
-        assertFalse(room.critical(busy = false))
+        assertFalse(room.critical(60_001, busy = false))
         assertNull(room.due(700_000, busy = false))
+    }
+
+    @Test
+    fun aFilmPausedOnlyJustNowKeepsItsPlayerOnACriticalTrim() {
+        room.still(10_000)
+        assertFalse(room.critical(15_000, busy = false))
+        assertFalse(room.critical(69_999, busy = false))
+        assertTrue(room.still)
+        assertTrue(room.critical(70_000, busy = false))
+    }
+
+    @Test
+    fun aKeyPressStartsTheClockAgain() {
+        room.still(0)
+        assertEquals(PausedRoom.Step.LIGHT, room.due(60_000, busy = false))
+        // A key at nine minutes: moving, then still again.
+        room.moving()
+        room.still(540_000)
+        assertNull(room.due(600_000 - 1, busy = false))
+        assertEquals(PausedRoom.Step.LIGHT, room.due(600_000, busy = false))
+        assertEquals(PausedRoom.Step.STALE, room.due(631_000, busy = false))
+        assertNull(room.due(1_139_999, busy = false))
+        assertEquals(PausedRoom.Step.PLAYER, room.due(1_140_000, busy = false))
+        assertFalse(room.critical(1_140_000, busy = false))
     }
 
     @Test
