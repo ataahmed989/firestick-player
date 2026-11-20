@@ -12,12 +12,13 @@ import app.fireplayer.player.RamTier
 /**
  * How hard the Glass look may work on the film playing. Each copy of the film ([GlassBackdrop], and [BarWatch] in Fill
  * screen or Stretch) makes the TV fetch the frame the decoder just made and convert it on the same graphics chip that
- * puts the film on screen. For a 4K film that's a 3840 x 2160 frame each time (25 MB when it's 10-bit); on a Fire TV
- * Stick 4K Max, with 1.7 GB of memory in all, such a film lost frames while the Stick was out of memory. So while a 4K
- * film plays on a TV with that little memory ("heavy video"), the glass copies it at most [HEAVY_REFRESH_PER_SEC] times
- * a second (fewer if that's the setting) and looks for camera cuts every [HEAVY_PROBE_MS] instead of every [PROBE_MS].
- * The look itself and the saved setting stay as they are. With no glass on screen nothing is copied at all, whatever
- * the film ([GlassBackdrop]).
+ * puts the film on screen, while the same TV is fetching and decoding the film. On a Fire TV Stick 4K Max, with 1.7 GB
+ * of memory in all, heavy films lost frames while the Stick was out of memory. So while a film of [HEAVY_GLASS_BPS] or
+ * more (its size over its running time) plays on a TV with that little memory ([heavyGlass]), the glass copies it at
+ * most [HEAVY_REFRESH_PER_SEC] times a second (fewer if that's the setting) and looks for camera cuts every
+ * [HEAVY_PROBE_MS] instead of every [PROBE_MS]; under that rate, 4K included, the glass follows the setting (the user's
+ * choice). [BarWatch] still slows down for any 4K film on such a TV ([heavy]). The look itself and the saved setting
+ * stay as they are. With no glass on screen nothing is copied at all, whatever the film ([GlassBackdrop]).
  */
 object GlassLoad {
 
@@ -31,6 +32,9 @@ object GlassLoad {
     /** The most copies a second with heavy video. */
     const val HEAVY_REFRESH_PER_SEC = 2
 
+    /** From this average rate (70 Mb/s, the user's line) a film is heavy for the glass. */
+    const val HEAVY_GLASS_BPS = 70_000_000L
+
     /** 4K: 2000 lines or more (2160p), or 3000 dots across (a wide 4K film is kept as 3840 x 1600). */
     const val UHD_MIN_HEIGHT = 2000
     const val UHD_MIN_WIDTH = 3000
@@ -38,7 +42,7 @@ object GlassLoad {
     /** Under 1.8 GiB in all a TV is short of memory for this: the Fire TV Stick 4K Max has 1.7 GB. */
     const val SMALL_RAM_BYTES = 1_932_735_283L // 1.8 * 2^30
 
-    /** The Glass refresh setting ([chosen], copies a second) as it applies now: at most 2 with [heavy] video. */
+    /** The Glass refresh setting ([chosen], copies a second) as it applies now: at most 2 with [heavy] video ([heavyGlass]). */
     fun refreshPerSec(chosen: Int, heavy: Boolean): Int {
         val rate = chosen.coerceIn(1, 8)
         return if (heavy) minOf(rate, HEAVY_REFRESH_PER_SEC) else rate
@@ -67,13 +71,19 @@ object GlassLoad {
     }
 
     /**
-     * What the Glass refresh row shows while the setting is lowered for heavy video, such as "8 a second · 2 in 4K";
+     * What the Glass refresh row shows while the setting is lowered for heavy video, such as "8 a second · 2 at 70+ Mb/s";
      * null when it isn't (the row then shows the setting's own name).
      */
     fun refreshLabel(chosen: Int, heavy: Boolean): String? {
         val now = refreshPerSec(chosen, heavy)
-        return if (heavy && now < chosen) "$chosen a second · $now in 4K" else null
+        return if (heavy && now < chosen) "$chosen a second · $now at 70+ Mb/s" else null
     }
+
+    /**
+     * Heavy for the glass: the film averages [HEAVY_GLASS_BPS] or more ([averageBps], its size over its running time; 0
+     * while not known) on a TV that's [smallRam]. Not known counts as not heavy.
+     */
+    fun heavyGlass(averageBps: Long, smallRam: Boolean): Boolean = smallRam && averageBps >= HEAVY_GLASS_BPS
 
     /** A TV with [totalMemBytes] in all (0: not known) is short of memory; [lowRam] is Fire OS's isLowRamDevice. */
     fun smallRam(totalMemBytes: Long, lowRam: Boolean): Boolean = lowRam || totalMemBytes in 1 until SMALL_RAM_BYTES
@@ -93,8 +103,8 @@ object GlassLoad {
     }
 
     /**
-     * Heavy video: the [video] track playing is 4K (HDR or not: the frame copied is as big either way) on a TV that's
-     * [smallRam]. The size shown ([shownWidth] x [shownHeight], 0 while not known) counts when the track doesn't say.
+     * Heavy video for [BarWatch]: the [video] track playing is 4K (HDR or not: the frame copied is as big either way) on
+     * a TV that's [smallRam]. The glass goes by the film's rate instead ([heavyGlass]). The size shown ([shownWidth] x [shownHeight], 0 while not known) counts when the track doesn't say.
      */
     @OptIn(UnstableApi::class)
     fun heavy(video: Format?, shownWidth: Int, shownHeight: Int, smallRam: Boolean): Boolean {

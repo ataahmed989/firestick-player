@@ -38,7 +38,7 @@ import kotlin.math.sqrt
  * the "FirePlayerGlass" thread. Between copies a tiny one checks for a camera cut ([probeTick]), so a new shot
  * reaches the glass at once instead of at the next refresh.
  *
- * While a 4K film plays on a TV short of memory ([heavyVideo], [GlassLoad]) both come less often. With no glass on
+ * While a film of 70 Mb/s or more plays on a TV short of memory ([heavyVideo], [GlassLoad]) both come less often. With no glass on
  * screen for a while, what only copies need is let go ([idleCheck]).
  */
 class GlassBackdrop(private val activity: Activity, private val surfaceView: SurfaceView) : GlassSource {
@@ -69,10 +69,10 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
     private val probeMs: Long get() = GlassLoad.probeMs(heavyVideo)
 
     /**
-     * The film playing is 4K on a TV short of memory ([GlassLoad.heavy]): the glass copies it at most twice a second
-     * (fewer if that's the setting) and probes for cuts every half second, as each copy of such a frame weighs on the
-     * TV's graphics chip and memory. Told by the player whenever the video's format or size changes; the saved setting
-     * stays as it is.
+     * The film playing averages 70 Mb/s or more on a TV short of memory ([GlassLoad.heavyGlass]): the glass copies it at
+     * most twice a second (fewer if that's the setting) and probes for cuts every half second, as each copy weighs on the
+     * TV's graphics chip and memory while it is busiest. A 4K film under that rate gets the setting as chosen. Told by
+     * the player whenever the video's format or size changes and when the film is ready; the saved setting stays as it is.
      */
     var heavyVideo = false
 

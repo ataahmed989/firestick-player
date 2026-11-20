@@ -1634,6 +1634,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             launchMark(LaunchLog.LOADED)
             pictureText.go()
             noteEpisodeLength()
+            // The film's size and running time are known by now: how hard the glass may work on it.
+            updateGlassLoad()
             if (glassAfterSeek) {
                 glassAfterSeek = false
                 backdrop?.frameChanged()
@@ -1811,18 +1813,20 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     /**
-     * Tells the glass and the black-bar watch whether the video playing is 4K on a TV short of memory
-     * ([GlassLoad.heavy]): they copy the film less often then. Asked again whenever the video's format or size changes.
+     * Tells the glass and the black-bar watch how heavy the film is on a TV short of memory: the glass copies less often
+     * for a film of 70 Mb/s or more ([GlassLoad.heavyGlass]), the black-bar watch looks less often for any 4K film
+     * ([GlassLoad.heavy]). Asked again whenever the video's format or size changes and when the film is ready (by then
+     * its size and running time are known).
      */
     private fun updateGlassLoad() {
-        val heavy = GlassLoad.heavy(
+        val smallRam = GlassLoad.smallRam(this)
+        backdrop?.heavyVideo = GlassLoad.heavyGlass(filmAverageBps(), smallRam)
+        barWatch?.heavyVideo = GlassLoad.heavy(
             selectedFormat(C.TRACK_TYPE_VIDEO),
             player?.videoSize?.width ?: 0,
             player?.videoSize?.height ?: 0,
-            GlassLoad.smallRam(this),
+            smallRam,
         )
-        backdrop?.heavyVideo = heavy
-        barWatch?.heavyVideo = heavy
     }
 
     // When the picture was last brought back in step with the sound, so a file that keeps landing ahead can't loop.
@@ -5204,6 +5208,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
     }
 
+    /** The film's average data rate, its size over its running time, in bits a second; 0 until both are known. */
+    private fun filmAverageBps(): Long {
+        val p = player ?: return 0L
+        val size = RedirectMemoryDataSource.fileSize(p.currentMediaItem?.localConfiguration?.uri?.toString())
+        val seconds = p.duration.takeIf { it != C.TIME_UNSET && it > 0 }?.div(1000) ?: 0L
+        return if (size > 0 && seconds > 0) size * 8 / seconds else 0L
+    }
+
     /** The picture and sound playing, as the file declares them, with the data rates counted as it loads. */
     private fun playingSpec(): MediaSpec? {
         val p = player ?: return null
@@ -5219,7 +5231,6 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val audioBps = rates?.bps(audio?.id) ?: 0L
         val secs = if (videoBps > 0) rates?.seconds(video?.id) ?: 0L else 0L
         val size = RedirectMemoryDataSource.fileSize(link)
-        val seconds = p.duration.takeIf { it > 0 }?.div(1000) ?: 0L
         return base.copy(
             width = w,
             height = h,
@@ -5229,7 +5240,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             audioBps = if (audioBps > 0) audioBps else base.audioBps,
             audioHow = if (audioBps > 0) MediaSpec.How.MEASURED else base.audioHow,
             sizeBytes = size,
-            overallBps = if (size > 0 && seconds > 0) size * 8 / seconds else 0L,
+            overallBps = filmAverageBps(),
             measuredSecs = secs,
             audioLangs = trackLanguages(C.TRACK_TYPE_AUDIO, inFileOnly = false),
             subLangs = trackLanguages(C.TRACK_TYPE_TEXT, inFileOnly = true),
