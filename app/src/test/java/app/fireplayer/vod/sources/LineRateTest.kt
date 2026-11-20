@@ -25,6 +25,7 @@ import app.fireplayer.vod.sources.SourceFixtures.H3
 import app.fireplayer.vod.sources.SourceFixtures.answer
 import app.fireplayer.vod.sources.SourceFixtures.torrentio
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -94,6 +95,20 @@ class LineRateTest {
         line.short(72.0)
         line.forget()
         assertNull(line.current())
+    }
+
+    @Test fun aMeasurementGoesWithTheSpeedTheListsAreRankedBy() {
+        // Two requests running, setting on.
+        assertTrue(LineRate.forTwo(built = true, settingOn = true, twoOpen = true))
+        // The server keeps the film on one request while the setting is on: still where the lists look.
+        assertTrue(LineRate.forTwo(built = true, settingOn = true, twoOpen = false))
+        // Turned off in the middle of a film: two still run, and their speed stays out of one connection's.
+        assertTrue(LineRate.forTwo(built = true, settingOn = false, twoOpen = true))
+        // Turned off and on one request since: one connection's.
+        assertFalse(LineRate.forTwo(built = true, settingOn = false, twoOpen = false))
+        // A player made for one request measures one connection, whatever the setting has become.
+        assertFalse(LineRate.forTwo(built = false, settingOn = true, twoOpen = false))
+        assertFalse(LineRate.forTwo(built = false, settingOn = false, twoOpen = false))
     }
 
     @Test fun tooFastIsOverNineTenthsOfTheLine() {

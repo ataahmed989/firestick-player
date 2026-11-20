@@ -67,6 +67,15 @@ class LineRate(private val store: Store, private val wall: () -> Long) {
         fun tooFast(sourceMbps: Double?, lineMbps: Double?): Boolean =
             sourceMbps != null && lineMbps != null && lineMbps > 0.0 && sourceMbps > lineMbps * SHORT_SHARE
 
+        /**
+         * Whether a film's measurement belongs with the two-connection speed. [built]: its player was made with
+         * "Faster downloads" on; [settingOn]: the setting as it is now; [twoOpen]: two requests are open right now.
+         * With the setting on the lists are ranked by the two-connection speed, so a film the server keeps on one
+         * request is measured there too (it is what this TV gets with the setting on, and a faster film replaces it);
+         * turned off in the middle of a film, the two requests still open keep their speed out of the one-connection one.
+         */
+        fun forTwo(built: Boolean, settingOn: Boolean, twoOpen: Boolean): Boolean = built && (settingOn || twoOpen)
+
         /** The speed kept for one connection, or for two when [two] (each measured with that many, never mixed). */
         fun of(prefs: SharedPreferences, two: Boolean = false, wall: () -> Long = System::currentTimeMillis): LineRate = LineRate(
             object : Store {

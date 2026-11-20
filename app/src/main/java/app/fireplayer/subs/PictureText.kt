@@ -54,6 +54,8 @@ class PictureText(private val onRead: () -> Unit) {
     }
     private val pending = HashSet<Long>()
     private val jobs = LinkedBlockingDeque<Job>()
+    // Not a picture: asks the reading thread to close the reader ([trimIdle]).
+    private val letGo = Job(Long.MIN_VALUE, ByteArray(0), 0, 0, "", false)
     private val keys = WeakHashMap<Bitmap, Long>()
     @Volatile private var broken = false
     // The picture track being shown as text: the only one read ahead. Null: none.
@@ -75,6 +77,14 @@ class PictureText(private val onRead: () -> Unit) {
                 jobs.take()
             } catch (_: InterruptedException) {
                 break
+            }
+            if (job === letGo) {
+                // Nothing came to be read since it was asked: the reader and its models go; the next picture loads them again.
+                if (jobs.isEmpty()) {
+                    recognizer?.close()
+                    recognizer = null
+                }
+                continue
             }
             try {
                 while (!released && SystemClock.elapsedRealtime() < heldUntil) Thread.sleep(HOLD_STEP_MS)
@@ -180,6 +190,15 @@ class PictureText(private val onRead: () -> Unit) {
         released = true
         jobs.clear()
         worker.interrupt()
+    }
+
+    /**
+     * No film is loaded: the reader (its models, loaded at the first picture subtitle) is closed if nothing waits to be
+     * read. On the reading thread, after what it's doing; the next picture subtitle loads it again, as the first did.
+     */
+    fun trimIdle() {
+        if (released || !jobs.isEmpty()) return
+        jobs.offer(letGo)
     }
 
     /** Wraps [base] so picture subtitles are sent to be read as soon as they're loaded. */

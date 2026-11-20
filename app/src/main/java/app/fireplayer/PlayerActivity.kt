@@ -88,6 +88,7 @@ import app.fireplayer.player.Delays
 import app.fireplayer.player.FilmMemory
 import app.fireplayer.player.FilmRoom
 import app.fireplayer.player.MemoryPressure
+import app.fireplayer.player.PausedRoom
 import app.fireplayer.player.DisplaySwitch
 import app.fireplayer.player.FpsMeter
 import app.fireplayer.player.GraphicsTrim
@@ -871,6 +872,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         pausedForSwitch = false
         pausedForFreeze = false
         freezeWatch.reset()
+        // The player is gone with the screen: nothing stands still to give memory back (onStart builds it again, paused).
+        pausedRoom.moving()
         if (!isFinishing) stoppedAt = SystemClock.elapsedRealtime()
         if (sleepEndsAt > 0) {
             sleepRemainingMs = (sleepEndsAt - SystemClock.elapsedRealtime()).coerceAtLeast(1L)
@@ -947,6 +950,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         nextLookup?.cancel()
         source?.close()
         if (isFinishing) PlayHandoff.done(sourceToken)
+        // This screen's views and pictures are let go of once Android has dropped it (right after this): collected
+        // then, not whenever Android next gets to it. Only the app is held meanwhile, never this screen.
+        val app = applicationContext
+        Handler(Looper.getMainLooper()).post { FilmRoom.made(app, forFilm = false) }
     }
 
     // ---------------------------------------------------------------------
@@ -1145,6 +1152,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             }
             return
         }
+        // Whoever builds a player wakes a film that was let go of while paused ([sleepFilm]).
+        if (asleep) {
+            asleep = false
+            backdrop?.suspended = false
+        }
         val vsync = VsyncFix(this)
         val hdr10Plus = Hdr10PlusGate(this)
         // "Faster downloads (2 connections)", as set when this film or source starts; null is one request, as ever.
@@ -1272,6 +1284,146 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         showTextCues()
         lineUpNext()
         learnRealEpisodes()
+        // A player that starts paused (back from the screensaver, the resume question) stands still from now.
+        watchPause()
+    }
+
+    // ---------------------------------------------------------------------
+    // A paused film gives memory back (PausedRoom)
+
+    private val pausedRoom = PausedRoom()
+
+    /** A film paused for long was let go of with its place kept ([sleepFilm]); the next key builds it again there. */
+    private var asleep = false
+    // How long the sleeping film is, for the app that opened it (the player that knew is gone).
+    private var sleptDurationMs = C.TIME_UNSET
+
+    /** Paused by the viewer: not for the TV's refresh-rate switch or to get a frozen film going, which play on by themselves. */
+    private fun filmStill(): Boolean {
+        val p = player ?: return false
+        // Stopped with a message is not paused by the viewer: Retry and the other sources need the player.
+        if (::errorBox.isInitialized && errorBox.visibility == View.VISIBLE) return false
+        return !p.playWhenReady && !pausedForSwitch && !pausedForFreeze
+    }
+
+    /** A window open over the film, a jump being made: nothing is let go of under it. */
+    private fun windowOpen(): Boolean =
+        panel.isOpen || episodesSheet.isOpen || resumeDialogShowing || seeking || FireDialog.isShowing(this)
+
+    /** Starts or ends the paused film's clock, as it stands still or plays; from every place that changes which. */
+    private fun watchPause() {
+        handler.removeCallbacks(pausedTick)
+        if (!filmStill()) {
+            pausedRoom.moving()
+            return
+        }
+        val now = SystemClock.elapsedRealtime()
+        pausedRoom.still(now)
+        handler.postDelayed(pausedTick, pausedRoom.waitMs(now, windowOpen()))
+    }
+
+    /** The viewer is there (a key pressed, a window closed over the paused film): the clock starts again from now. */
+    private fun restartPause() {
+        if (asleep || !filmStill()) return
+        pausedRoom.moving()
+        watchPause()
+    }
+
+    private val pausedTick = object : Runnable {
+        override fun run() {
+            if (isFinishing || isDestroyed) return
+            if (!filmStill()) {
+                pausedRoom.moving()
+                return
+            }
+            when (pausedRoom.due(SystemClock.elapsedRealtime(), windowOpen())) {
+                PausedRoom.Step.LIGHT -> lightenPausedFilm()
+                // Where Android only lets go of what went unused for half a minute: what the first trim left.
+                PausedRoom.Step.STALE -> if (GraphicsTrim.staleOnly && GlassLoad.smallRam(this@PlayerActivity)) GraphicsTrim.trim()
+                PausedRoom.Step.PLAYER -> sleepFilm("paused ${PausedRoom.PLAYER_MS / 60_000} min")
+                null -> Unit
+            }
+            val wait = pausedRoom.waitMs(SystemClock.elapsedRealtime(), windowOpen())
+            if (wait >= 0L) handler.postDelayed(this, wait)
+        }
+    }
+
+    /**
+     * Paused a minute: what costs nothing to bring back goes. Decoded pictures (the Episodes sheet's come back from
+     * disk), the skip preview's player, the second request's segments (fetched again behind what is loaded) and the
+     * drawing cache's unused pictures. The film's buffer and the glass on screen stay: Play goes on at once.
+     */
+    private fun lightenPausedFilm() {
+        app.fireplayer.ui.ImageLoader.trim()
+        seekPreview.release()
+        val ranges = filmRanges
+        val segments = ranges?.heldBytes ?: 0L
+        // Off this thread: cutting the second request off closes its connection. Not while the film still loads (its
+        // buffer isn't full yet): the second request is in use, and the wait for its segment would count against it.
+        if (ranges != null && player?.isLoading == false) Thread({ ranges.rest() }, "FilmSecondRequestRest").apply { isDaemon = true }.start()
+        if (GlassLoad.smallRam(this)) GraphicsTrim.trim()
+        FilmRoom.made(this, forFilm = false)
+        android.util.Log.i(TAG, "Film paused ${PausedRoom.LIGHT_MS / 1000} s: pictures, drawing cache and ${segments shr 20} MiB of segments let go")
+    }
+
+    /**
+     * A film paused for long (or paused while the TV is critically short of memory) is let go of with its place kept,
+     * as when the screen is stopped, but with the screen still up: its buffer, the decoder's frames, the sound, both
+     * connections and the loading threads go. The next key press builds it again where it was ([wakeFilm]); it never
+     * starts playing by itself. The controls stay up over whatever the picture shows meanwhile.
+     */
+    private fun sleepFilm(why: String) {
+        val p = player ?: return
+        if (isFinishing || isDestroyed || asleep) return
+        val from = SystemClock.elapsedRealtime()
+        val held = builtPlayer?.filmBytes?.invoke() ?: 0L
+        seekPreview.release()
+        retryPending = false
+        handler.removeCallbacks(retryRunnable)
+        sleptDurationMs = p.duration
+        savePosition()
+        source?.pause()
+        // No copy is taken of a picture that is being taken down; the blurred one the glass has stays.
+        backdrop?.suspended = true
+        releasePlayer()
+        keepBudgetBytes = 0
+        if (::autoSync.isInitialized) autoSync.playerGone()
+        freezeWatch.reset()
+        savedPlayWhenReady = false
+        asleep = true
+        pausedRoom.moving()
+        handler.removeCallbacks(pausedTick)
+        app.fireplayer.ui.ImageLoader.trim()
+        pictureText.trimIdle()
+        if (GlassLoad.smallRam(this)) GraphicsTrim.trim()
+        if (!controlsShown && !panel.isOpen && !episodesSheet.isOpen) showControls()
+        updatePlayButton()
+        updateKeepScreenOn()
+        android.util.Log.i(TAG, "Film $why: player let go with ${held shr 20} MiB loaded, in ${SystemClock.elapsedRealtime() - from} ms; a key brings it back")
+    }
+
+    /** A key pressed over a sleeping film: its player is built again at its place, paused (the key decides the rest). */
+    private fun wakeFilm() {
+        if (!asleep) return
+        asleep = false
+        savedPlayWhenReady = false
+        source?.resume()
+        backdrop?.suspended = false
+        if (!controlsShown && !panel.isOpen && !episodesSheet.isOpen) showControls()
+        if (entries.isNotEmpty() && player == null) initPlayer()
+        android.util.Log.i(TAG, "Film woken by a key")
+    }
+
+    /**
+     * The player screen is not in front and has no film loaded (stopped while paused, or asleep): what it still keeps
+     * in memory goes when Fire OS asks. Everything named is made again as it's drawn or read.
+     */
+    private fun trimWithoutFilm() {
+        app.fireplayer.ui.ImageLoader.trim()
+        app.fireplayer.ui.GlassBakes.trim()
+        pictureText.trimIdle()
+        GraphicsTrim.trim(GRAPHICS_TRIM_GAP_MS)
+        FilmRoom.made(this, forFilm = false)
     }
 
     private fun defaultTrackParams(base: TrackSelectionParameters): TrackSelectionParameters {
@@ -1554,7 +1706,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // Which episode the position is for, once a list has moved on to the next one. Web links only: handing back a
         // file:// link would crash the app on newer Android.
         // Never for a title opened from Continue Watching: its link (with the provider's login) is FirePlayer's alone.
-        entries.getOrNull(p?.currentMediaItemIndex ?: 0)?.uri
+        entries.getOrNull(p?.currentMediaItemIndex ?: if (asleep) startIndex else 0)?.uri
             ?.takeIf { !resumedFromRow && (it.scheme == "http" || it.scheme == "https") }
             ?.let { result.data = it }
         // A finished video is reported as finished, without a position, as MX Player does.
@@ -1564,6 +1716,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             duration?.let { result.putExtra("duration", it.toInt()) }
             // VLC's names too, for apps that only read those.
             result.putExtra("extra_position", p.currentPosition)
+            duration?.let { result.putExtra("extra_duration", it) }
+        } else if (p == null && asleep && !completed && startPositionMs != C.TIME_UNSET) {
+            // Let go of while paused: its place as kept then.
+            val duration = sleptDurationMs.takeIf { it != C.TIME_UNSET }
+            result.putExtra("position", startPositionMs.toInt())
+            duration?.let { result.putExtra("duration", it.toInt()) }
+            result.putExtra("extra_position", startPositionMs)
             duration?.let { result.putExtra("extra_duration", it) }
         }
         savePosition()
@@ -1701,6 +1860,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             return
         }
         updateKeepScreenOn()
+        watchPause()
         // Only while still paused there: a jump back made at the very end has already set it playing again.
         if (sleepAtEnd && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM && player?.playWhenReady == false) {
             completed = true
@@ -2426,7 +2586,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         focusEffect(btnEpisodes, 1.08f, findViewById(R.id.episodes_label))
         episodesSheet = EpisodesSheet(this, root).apply {
             onPlay = { ep -> playEpisode(ep) }
-            onClosed = { fadeSubtitles(true); showControls(btnEpisodes) }
+            onClosed = { fadeSubtitles(true); showControls(btnEpisodes); restartPause() }
         }
         focusEffect(btnPlay, 1.08f)
         focusEffect(btnRestart, 1.08f, findViewById(R.id.restart_label))
@@ -2686,15 +2846,29 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     /**
      * Fire OS asking the app in front to use less memory: the film's buffer gives a quarter back when memory is running
-     * low, and half when it's critical, until two minutes go by without it (see [checkMemory]).
+     * low, and half when it's critical, until two minutes go by without it (see [checkMemory]). A paused film is let
+     * go of instead when it's critical ([sleepFilm]), and a screen with no film loaded trims what it keeps when the
+     * app is no longer in front ([trimWithoutFilm]).
      */
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
+        // Not in front any more (Home pressed over a paused film, the app in the background): with no film loaded,
+        // what this screen still keeps goes. Only FirePlayer's own memory: no other app is touched.
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) {
+            if (player == null && !isFinishing && !isDestroyed) trimWithoutFilm()
+            return
+        }
         @Suppress("DEPRECATION")
         val step = when (level) {
             ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL -> 2
             ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW -> 1
             else -> return
+        }
+        // Critically short with the film paused: it has nothing to protect, and its player goes with its place kept.
+        // Not one paused only just now: the viewer is likely about to play on, and the buffer gives half back instead.
+        if (step == 2 && filmStill() && pausedRoom.critical(SystemClock.elapsedRealtime(), windowOpen())) {
+            sleepFilm("paused, TV critically short of memory")
+            return
         }
         if (memoryPressure.trimAsked(step, SystemClock.elapsedRealtime())) squeezeFilmBuffer()
     }
@@ -3979,6 +4153,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (p.playbackState == Player.STATE_ENDED) p.seekTo(0)
         p.playWhenReady = !p.playWhenReady
         updatePlayButton()
+        watchPause()
     }
 
     // ---------------------------------------------------------------------
@@ -4132,6 +4307,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // Moving round with the D-pad: the glass holds still meanwhile, so the move gets the TV's full attention.
         if (event.action == KeyEvent.ACTION_DOWN && (code == KeyEvent.KEYCODE_DPAD_LEFT || code == KeyEvent.KEYCODE_DPAD_RIGHT ||
                 code == KeyEvent.KEYCODE_DPAD_UP || code == KeyEvent.KEYCODE_DPAD_DOWN)) backdrop?.holdForNavigation()
+        // A key pressed over a paused film: the viewer is there, and the long pause is counted from now.
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) restartPause()
         // A small window (a list of choices, a question) open over the screen takes the keys first.
         if (FireDialog.dispatch(this, event)) return true
         if (event.action == KeyEvent.ACTION_UP) {
@@ -4144,6 +4321,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (event.action != KeyEvent.ACTION_DOWN) return super.dispatchKeyEvent(event)
         // Holding Back shouldn't close one thing after another.
         if (code == KeyEvent.KEYCODE_BACK && event.repeatCount > 0) return true
+        // A film let go of while paused: any key but Back brings it back, paused. Play and OK then do what they do
+        // (OK on the Play button plays); any other key has done its work by waking it.
+        if (asleep && code != KeyEvent.KEYCODE_BACK) {
+            if (event.repeatCount > 0) return true
+            wakeFilm()
+            val goesOn = code == KeyEvent.KEYCODE_MEDIA_PLAY || code == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE ||
+                code == KeyEvent.KEYCODE_DPAD_CENTER || code == KeyEvent.KEYCODE_ENTER || code == KeyEvent.KEYCODE_NUMPAD_ENTER
+            if (!goesOn) return true
+        }
 
         when (code) {
             KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> { if (!panel.isOpen) nudge(prefs.ffStepSec, 1, event); return true }
@@ -4159,6 +4345,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                         KeyEvent.KEYCODE_MEDIA_PAUSE -> player?.pause()
                         else -> togglePlay()
                     }
+                    watchPause()
                     if (!controlsShown && !panel.isOpen) showControls()
                 }
                 return true
@@ -4370,6 +4557,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         panel.open(title, onClose = {
             screenSubtitles.setPadding(0, 0, 0, 0)
             onClosed()
+            restartPause()
             // Example lines shown for a Subtitle style window (one opened from App settings, say) go with it.
             if (stylePreviewing) {
                 stylePreviewing = false
@@ -5414,11 +5602,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (source == null || !diagMade.isInitialized()) return
         val d = diag.download
         if (d.sustainedSeconds < app.fireplayer.vod.play.FilmSupply.MIN_SECONDS) return
-        app.fireplayer.vod.sources.LineRate.of(sourcePrefs, two = twoRequestsNow()).seen(d.sustainedMbps)
+        app.fireplayer.vod.sources.LineRate.of(sourcePrefs, two = measuredWithTwo()).seen(d.sustainedMbps)
     }
 
-    /** Whether the film is being read with two range requests now ("Faster downloads"). */
-    private fun twoRequestsNow(): Boolean = filmRanges?.mode() == "2"
+    /** Whether what is measured of this film goes with the two-connection speed ([app.fireplayer.vod.sources.LineRate.forTwo]). */
+    private fun measuredWithTwo(): Boolean {
+        val ranges = filmRanges
+        return app.fireplayer.vod.sources.LineRate.forTwo(ranges != null, prefs.fasterDownloads, ranges?.twoNow == true)
+    }
 
     /** Keeps what was measured of the copy playing, once its picture's data rate has been counted. */
     private fun rememberQuality() {
@@ -6022,7 +6213,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
         override fun lineShort(mbps: Double) {
             // Two connections' combined speed is kept apart from one connection's: each ranks the lists with its own.
-            app.fireplayer.vod.sources.LineRate.of(sourcePrefs, two = twoRequestsNow()).short(mbps)
+            // Under the key the lists are ranked by, so a film the server kept on one request still teaches them.
+            app.fireplayer.vod.sources.LineRate.of(sourcePrefs, two = measuredWithTwo()).short(mbps)
             // The lists in memory rank again: the Sources panel says at once which files this connection can't keep up with.
             (Sources.get(this@PlayerActivity) as? app.fireplayer.vod.sources.DefaultSourcesRepository)?.rerank()
         }
