@@ -38,8 +38,8 @@ import kotlin.math.sqrt
  * the "FirePlayerGlass" thread. Between copies a tiny one checks for a camera cut ([probeTick]), so a new shot
  * reaches the glass at once instead of at the next refresh.
  *
- * While a 4K film plays on a TV short of memory ([heavyVideo], [GlassLoad]) both come less often. With no glass on
- * screen for a while, what only copies need is let go ([idleCheck]).
+ * A 4K film gets the same copies and probes as any other ([GlassLoad]). With no glass on screen for a while, what only
+ * copies need is let go ([idleCheck]).
  */
 class GlassBackdrop(private val activity: Activity, private val surfaceView: SurfaceView) : GlassSource {
 
@@ -60,21 +60,13 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
     private val prefs = Prefs(activity)
 
     /**
-     * Time between copies while the film plays, from Settings (Look, Glass refresh), lowered for [heavyVideo]; read each
-     * time, so a change applies at once.
+     * Time between copies while the film plays, from Settings (Look, Glass refresh), whatever the film; read each time,
+     * so a change applies at once.
      */
-    private val refreshMs: Long get() = 1_000L / GlassLoad.refreshPerSec(prefs.glassRefreshPerSec, heavyVideo)
+    private val refreshMs: Long get() = 1_000L / GlassLoad.refreshPerSec(prefs.glassRefreshPerSec)
 
-    /** Time between cut probes while the film plays: longer for [heavyVideo]. */
-    private val probeMs: Long get() = GlassLoad.probeMs(heavyVideo)
-
-    /**
-     * The film playing is 4K on a TV short of memory ([GlassLoad.heavy]): the glass copies it at most twice a second
-     * (fewer if that's the setting) and probes for cuts every half second, as each copy of such a frame weighs on the
-     * TV's graphics chip and memory. Told by the player whenever the video's format or size changes; the saved setting
-     * stays as it is.
-     */
-    var heavyVideo = false
+    /** Time between cut probes while the film plays. */
+    private val probeMs: Long get() = GlassLoad.PROBE_MS
 
     /**
      * Each new copy fades in over nearly the whole gap to the next one, so the glass keeps drifting with the film
@@ -963,7 +955,7 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
         // The TV's refresh as it is now (it changes when a film's rate is matched): the fade is drawn at that pace.
         @Suppress("DEPRECATION")
         val hz = runCatching { activity.windowManager.defaultDisplay.refreshRate }.getOrDefault(60f)
-        fadeStepMs = GlassLoad.fadeStepMs(hz, heavyVideo)
+        fadeStepMs = GlassLoad.fadeStepMs(hz)
         scheduleExpiry()
         if (playing) startTicking(now)
         invalidateAll()

@@ -1800,8 +1800,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     /**
-     * Tells the glass and the black-bar watch whether the video playing is 4K on a TV short of memory
-     * ([GlassLoad.heavy]): they copy the film less often then. Asked again whenever the video's format or size changes.
+     * Tells the black-bar watch whether the video playing is 4K on a TV short of memory ([GlassLoad.heavy]): it looks
+     * less often then. The glass copies a 4K film like any other. Asked again whenever the video's format or size changes.
      */
     private fun updateGlassLoad() {
         val heavy = GlassLoad.heavy(
@@ -1810,7 +1810,6 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             player?.videoSize?.height ?: 0,
             GlassLoad.smallRam(this),
         )
-        backdrop?.heavyVideo = heavy
         barWatch?.heavyVideo = heavy
     }
 
