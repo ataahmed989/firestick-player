@@ -136,6 +136,9 @@ object PlayerFactory {
 
     private val HEAVY_VIDEO = setOf(MimeTypes.VIDEO_H265, MimeTypes.VIDEO_DOLBY_VISION, MimeTypes.VIDEO_VP9, MimeTypes.VIDEO_AV1)
 
+    private const val FILM_USER_AGENT = "FirePlayer/1.0 (Linux; Android) ExoPlayer"
+    private const val CONNECT_TIMEOUT_MS = 12_000
+
     private fun dataSourceFactory(
         context: Context,
         headers: Map<String, String>,
@@ -143,21 +146,30 @@ object PlayerFactory {
         readOnlyMemory: Boolean = false,
         meter: ByteMeter? = null,
         readTimeoutMs: Int = 12_000,
+        twoRanges: TwoRanges? = null,
     ): DataSource.Factory {
         // IPTV providers often require the User-Agent TiviMate passes along, so it must win over ours.
         val userAgent = headers.entries.firstOrNull { it.key.equals("User-Agent", true) }?.value
         val httpFactory = DefaultHttpDataSource.Factory()
-            .setUserAgent(userAgent ?: "FirePlayer/1.0 (Linux; Android) ExoPlayer")
+            .setUserAgent(userAgent ?: FILM_USER_AGENT)
             .setAllowCrossProtocolRedirects(true)
             // A server that doesn't answer in 12 s won't answer at 20; failing sooner lets the retries take over. The
             // same for one that goes quiet in the middle of the film: a skip can't get past a read that's waiting.
-            .setConnectTimeoutMs(12_000)
+            .setConnectTimeoutMs(CONNECT_TIMEOUT_MS)
             .setReadTimeoutMs(readTimeoutMs)
             .setDefaultRequestProperties(headers.filterKeys { !it.equals("User-Agent", true) })
         // The film's bytes are counted as they come, for the download speed in the log (DownloadRate), and its reads
         // timed, for the speed while really loading (LoaderRate).
         if (meter != null) httpFactory.setTransferListener(meter)
-        val network: DataSource.Factory = if (meter != null) LoaderRate.Timed.Factory(httpFactory, meter.loader) else httpFactory
+        // With "Faster downloads" on, a film file is read with up to two range requests at a time (TwoRanges); the
+        // timing goes around both, so the loader's speed is what the two bring together.
+        val film: DataSource.Factory = if (twoRanges == null) httpFactory else {
+            if (meter != null) twoRanges.onHelperBytes = meter::add
+            val all = headers.filterKeys { !it.equals("User-Agent", true) } +
+                ("User-Agent" to (userAgent ?: FILM_USER_AGENT))
+            TwoRangeDataSource.Factory(httpFactory, twoRanges, all, CONNECT_TIMEOUT_MS, readTimeoutMs)
+        }
+        val network: DataSource.Factory = if (meter != null) LoaderRate.Timed.Factory(film, meter.loader) else film
         return DefaultDataSource.Factory(context, RedirectMemoryDataSource.Factory(network, serverSwitch, readOnlyMemory))
     }
 
@@ -340,12 +352,15 @@ object PlayerFactory {
          * player that follows none.
          */
         keepBudgetBytes: Int = 0,
+        /** "Faster downloads (2 connections)" is on: this player's films may be read with two requests ([TwoRanges]). */
+        twoRanges: TwoRanges? = null,
     ): Built {
         IndexCache.dir = context.cacheDir
         val serverSwitch = ServerSwitch()
         val dataSourceFactory = dataSourceFactory(
             context, headers, serverSwitch, meter = byteMeter,
             readTimeoutMs = if (freshLinks) FreshLinks.READ_TIMEOUT_MS else 12_000,
+            twoRanges = twoRanges,
         )
 
         val extractors = DefaultExtractorsFactory()

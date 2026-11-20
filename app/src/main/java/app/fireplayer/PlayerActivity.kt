@@ -106,6 +106,7 @@ import app.fireplayer.player.PlayerFactory
 import app.fireplayer.player.ServerSwitch
 import app.fireplayer.player.ThreadBeat
 import app.fireplayer.player.TitleInfo
+import app.fireplayer.player.TwoRanges
 import app.fireplayer.player.VsyncFix
 import app.fireplayer.player.Hdr10PlusGate
 import app.fireplayer.player.XtreamAccount
@@ -1124,6 +1125,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     // ---------------------------------------------------------------------
     // Player
 
+    // This player's two requests ("Faster downloads"), to turn them off when the setting is; null without them.
+    private var filmRanges: TwoRanges? = null
+
     private fun initPlayer() {
         // Every way of building a player comes here: none is built until the decoder list is in, or it would wait on
         // a stuck decoder service forever.
@@ -1143,6 +1147,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         val vsync = VsyncFix(this)
         val hdr10Plus = Hdr10PlusGate(this)
+        // "Faster downloads (2 connections)", as set when this film or source starts; null is one request, as ever.
+        val twoRanges = if (prefs.fasterDownloads) TwoRanges() else null
+        filmRanges = twoRanges
         val built = PlayerFactory.build(
             context = this,
             delays = delays,
@@ -1161,6 +1168,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             byteMeter = diag.meter,
             freshLinks = source != null,
             keepBudgetBytes = keepBudgetBytes,
+            twoRanges = twoRanges,
         )
         keepBudgetBytes = 0
         builtAt = SystemClock.elapsedRealtime()
@@ -1186,7 +1194,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         p.addListener(this)
         p.addAnalyticsListener(filmLoadErrors)
         p.addAnalyticsListener(droppedFrames)
-        diag.newPlayer()
+        diag.newPlayer(twoRanges)
         diag.filmBytes = built.filmBytes
         diag.fillBytes = built.fillBytes
         diag.note = ::diagNote
@@ -1302,6 +1310,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // Only this player's own: the next player's screen may be up already (Next episode) with its own set.
         if (FilmRoom.film === filmRoom) FilmRoom.film = null
         p.release()
+        // The second request's segment memory goes with the player (16 MiB at most).
+        filmRanges?.release()
+        filmRanges = null
         // What it had loaded is let go of: back with the TV now, not whenever Android next collects, and a player
         // built meanwhile (the next episode's) hears when it's there.
         FilmRoom.made(this)
@@ -4832,6 +4843,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         openPanel("Settings", from, onClosed = {
             settingsOpen = false
             if (prefs.passthrough != passthrough) rebuildPlayer()
+            // No rebuild for this one: off, the film's next connection is one request; on, the next film's player has two.
+            filmRanges?.enabled = prefs.fasterDownloads
             if (prefs.playNextEpisode != playNext) nextEpisodeSwitched()
             // Only when the setting itself changed: matching again would pause the film for nothing.
             if (prefs.matchFrameRate != matchFps) {
@@ -5403,8 +5416,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (source == null || !diagMade.isInitialized()) return
         val d = diag.download
         if (d.sustainedSeconds < app.fireplayer.vod.play.FilmSupply.MIN_SECONDS) return
-        app.fireplayer.vod.sources.LineRate.of(sourcePrefs).seen(d.sustainedMbps)
+        app.fireplayer.vod.sources.LineRate.of(sourcePrefs, two = twoRequestsNow()).seen(d.sustainedMbps)
     }
+
+    /** Whether the film is being read with two range requests now ("Faster downloads"). */
+    private fun twoRequestsNow(): Boolean = filmRanges?.mode() == "2"
 
     /** Keeps what was measured of the copy playing, once its picture's data rate has been counted. */
     private fun rememberQuality() {
@@ -6007,7 +6023,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
 
         override fun lineShort(mbps: Double) {
-            app.fireplayer.vod.sources.LineRate.of(sourcePrefs).short(mbps)
+            // Two connections' combined speed is kept apart from one connection's: each ranks the lists with its own.
+            app.fireplayer.vod.sources.LineRate.of(sourcePrefs, two = twoRequestsNow()).short(mbps)
             // The lists in memory rank again: the Sources panel says at once which files this connection can't keep up with.
             (Sources.get(this@PlayerActivity) as? app.fireplayer.vod.sources.DefaultSourcesRepository)?.rerank()
         }
@@ -6044,6 +6061,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         sp.open(title, s.session.list, s.session.attempts, s.current?.key, sub = true) { picked, beginning ->
             panel.close()
             hideControls()
+            // The copy playing (its row at the top): it plays on, unless asked to start from the beginning.
+            if (picked.key == s.current?.key && !beginning) return@open
             s.pick(picked, beginning)
         }
         s.session.setListener { sp.update(s.session.list, s.session.attempts, s.current?.key) }

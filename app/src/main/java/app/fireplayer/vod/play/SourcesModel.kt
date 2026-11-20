@@ -59,6 +59,10 @@ object SourcesModel {
     const val BEST_LABEL = "Best for this TV"
     const val BEST_SO_FAR = "Best so far"
 
+    /** The row of the copy playing, at the top of the player's list, and its mark. */
+    const val PLAYING_KEY = "src:playing"
+    const val PLAYING_NOW = "Playing now"
+
     /** The Best row's key: the same row while a better copy arrives, so focus stays on it. */
     const val BEST_KEY = "src:best"
 
@@ -144,6 +148,13 @@ object SourcesModel {
             marks(s, bestRow = false), s, section, chosen = s.key == playingKey,
         )
 
+        // In the player: the copy playing, with its details, first (the user's wish), then Best for this TV.
+        list.sources.firstOrNull { it.key == playingKey }?.let { s ->
+            out += Item(PLAYING_KEY, Kind.SOURCE,
+                PlayRules.mainLine(s, lineChars).ifEmpty { s.offers.firstOrNull()?.text.orEmpty() },
+                PlayRules.detailLine(s, noteChars).ifEmpty { null },
+                PLAYING_NOW, s, chosen = true)
+        }
         // Best for this TV: the copy Play uses, with why. Last used is only a mark on its own row below.
         if (best != null) {
             out += Item(BEST_KEY, Kind.SOURCE, if (list.complete) BEST_LABEL else BEST_SO_FAR, reason(best, list).ifEmpty { null },

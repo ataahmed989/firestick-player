@@ -176,6 +176,7 @@ class SettingsPanels(
                 matchFrameRateRow(this)
                 passthroughRow(this)
                 whenBufferingRow(this)
+                fasterDownloadsRow(this)
                 // Live TV's own setting, here too (user): the same row and saved value as in the Live TV window.
                 liveBufferRow(this, activity)
                 skipIntroSection(this)
@@ -396,6 +397,7 @@ class SettingsPanels(
         playNextRow(this)
         matchFrameRateRow(this)
         passthroughRow(this)
+        fasterDownloadsRow(this)
     }
 
     // Playback's rows one by one: its category puts Resume where I left off among them.
@@ -415,6 +417,19 @@ class SettingsPanels(
         row("Surround passthrough", onOff(prefs.passthrough)) {
             prefs.passthrough = !prefs.passthrough; refresh()
         }
+    }
+
+    /**
+     * A film read with up to two requests at a time ([app.fireplayer.player.TwoRanges]); Off as it always was. The
+     * player reads it as it's built, so it holds from the next film or source started.
+     */
+    private fun fasterDownloadsRow(panel: SidePanel): Unit = with(panel) {
+        row("Faster downloads (2 connections)", onOff(prefs.fasterDownloads)) {
+            prefs.fasterDownloads = !prefs.fasterDownloads; refresh()
+            // The lists in memory rank again with the line speed measured for that many connections.
+            (app.fireplayer.vod.Sources.get(activity) as? app.fireplayer.vod.sources.DefaultSourcesRepository)?.rerank()
+        }
+        textBlock("Loads a film over two connections when the server allows it. From the next film or source started.")
     }
 
     /**

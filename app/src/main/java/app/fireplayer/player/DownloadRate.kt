@@ -21,6 +21,11 @@ class ByteMeter : TransferListener {
     /** The same connection's speed while really loading, pauses left out ([LoaderRate]). */
     val loader = LoaderRate()
 
+    /** Bytes that came outside the film's own connection: a second request's ([TwoRanges]). */
+    fun add(bytes: Int) {
+        total.addAndGet(bytes.toLong())
+    }
+
     override fun onTransferInitializing(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean) = Unit
 
     override fun onTransferStart(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean) = Unit

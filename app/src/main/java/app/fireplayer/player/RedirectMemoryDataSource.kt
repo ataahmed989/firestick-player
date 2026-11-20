@@ -194,7 +194,9 @@ class RedirectMemoryDataSource(
         } catch (e: IOException) {
             // The server dropped the film or went quiet: the reconnect asks the provider again rather than waiting on
             // the same server. Not when the read was only cut short by a jump.
-            val cancelled = e.cause is InterruptedIOException && e.cause !is SocketTimeoutException
+            // TwoRanges.cancelled looks at the error itself as well as its cause: a jump while waiting on the second
+            // request ends that wait with an InterruptedIOException of its own.
+            val cancelled = TwoRanges.cancelled(e)
             if (link != null && !readOnly && !cancelled) remembered.remove(link)
             throw e
         }
