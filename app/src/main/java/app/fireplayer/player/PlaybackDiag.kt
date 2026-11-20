@@ -36,6 +36,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   and the HDR it reports, the app's memory (Java heap, native heap, graphics), the system's free memory, and the heat.
  * - 20 s into the film and every minute after, playing or not, the "loader" line: the download's speed while really
  *   loading, pauses left out ([LoaderRate]), what else on the TV downloaded, and whether a VPN carries it ([NetPath]).
+ * - With the loader line while the film plays, and once as its player goes, the "bench" line under "FirePlayerBench":
+ *   one request against two ([BenchTally], [TwoRanges]).
  *
  * Never a link, a title or a key (links can carry the viewer's Real-Debrid key): only counts, sizes, formats, times
  * and the decoder's name.
@@ -67,6 +69,13 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
     /** How fast the film downloads, kept from [second] (see [DownloadRate]). */
     val download = DownloadRate()
 
+    /** The figures for comparing one request with two, under [TwoRanges.TAG] ([BenchTally]). */
+    val bench = BenchTally()
+
+    // This player's two requests ("Faster downloads"); null with the setting off.
+    private var ranges: TwoRanges? = null
+    private val pssBusy = AtomicBoolean(false)
+
     /** More for the line from the player screen (the glass's copies, what's kept behind): short, no links or titles. */
     var note: () -> String = { "" }
 
@@ -91,8 +100,10 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
     private val busy = AtomicBoolean(false)
     private var reader: ExecutorService? = null
 
-    /** A new player: its first wait to load isn't a stall. */
-    fun newPlayer() {
+    /** A new player: its first wait to load isn't a stall. [twoRanges]: its two requests, with "Faster downloads" on. */
+    fun newPlayer(twoRanges: TwoRanges? = null) {
+        ranges = twoRanges
+        bench.reset(SystemClock.elapsedRealtime())
         readyOnce = false
         waitingSince = 0L
         counters = null
@@ -109,6 +120,14 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
 
     /** The player was let go: nothing of it is held on to here. */
     fun playerGone() {
+        if (bench.running) {
+            // What the loader brought since its last line belongs to this player too.
+            val s = meter.loader.take()
+            bench.loader(s.countedBytes, s.countedNs, s.allBytes)
+            Log.i(TwoRanges.TAG, benchLine(last = true))
+            bench.stop()
+        }
+        ranges = null
         filmBytes = NO_BYTES
         fillBytes = NO_BYTES
     }
@@ -129,14 +148,29 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
             tally.sample(SystemClock.elapsedRealtime(), lastDropped(), lastRendered(), counts.shownTwice, counts.sameRefresh,
                 counts.neverDecoded)
         }
-        for (k in sinceLog.indices) sinceLog[k] += tally.added(k)
+        for (k in sinceLog.indices) {
+            sinceLog[k] += tally.added(k)
+            bench.frames(k, tally.added(k))
+        }
+        bench.ahead(SystemClock.elapsedRealtime(), player.totalBufferedDuration)
+        // The app's memory every few seconds, for its peak: on the log's thread, one read at a time.
+        if (seconds % PSS_EVERY_S == 0 && pssBusy.compareAndSet(false, true)) {
+            val ran = onReader {
+                try {
+                    bench.pss(Debug.getPss())
+                } finally {
+                    pssBusy.set(false)
+                }
+            }
+            if (!ran) pssBusy.set(false)
+        }
         // Loading freely: the buffer has room, so the server and the line set the speed (see DownloadRate).
         val held = filmBytes()
         val fill = fillBytes()
         val free = player.isLoading && fill > 0L && held < fill * DownloadRate.FREE_BELOW && wasFree
         wasFree = player.isLoading && fill > 0L && held < fill * DownloadRate.FREE_BELOW
         download.sample(SystemClock.elapsedRealtime(), meter.bytes, free, free && player.totalBufferedDuration < DownloadRate.FLAT_OUT_BELOW_MS)
-        loaderSecond()
+        loaderSecond(player.isPlaying)
         if (++seconds % LOG_EVERY_S != 0) return
         val playing = player.isPlaying
         if (!playing || !Log.isLoggable(TAG, Log.INFO)) {
@@ -203,11 +237,13 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
      * loading thread's share of one core then; loading: the share of the minute it loaded at all; got: all that came;
      * others: what the rest of the TV downloaded meanwhile; vpn: which way the film goes ([NetPath]).
      */
-    private fun loaderSecond() {
+    private fun loaderSecond(playing: Boolean) {
         val n = ++loaderSeconds
         if (n < LOADER_FIRST_S || (n - LOADER_FIRST_S) % LOADER_EVERY_S != 0) return
         val now = SystemClock.elapsedRealtime()
         val s = meter.loader.take()
+        bench.loader(s.countedBytes, s.countedNs, s.allBytes)
+        if (playing) Log.i(TwoRanges.TAG, benchLine(last = false))
         val windowMs = now - loaderFrom
         loaderFrom = now
         if (!Log.isLoggable(TAG, Log.INFO)) return
@@ -233,6 +269,9 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
             Log.i(TAG, line.toString())
         }
     }
+
+    private fun benchLine(last: Boolean): String =
+        bench.line(SystemClock.elapsedRealtime(), ranges?.mode() ?: "1", ranges?.rates() ?: "", last)
 
     private fun lastDropped(): Long = counters?.droppedBufferCount?.toLong() ?: 0L
     private fun lastRendered(): Long = counters?.renderedOutputBufferCount?.toLong() ?: 0L
@@ -266,6 +305,7 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
             out.append(" java=").append(mb(javaKb * 1024)).append(" native=").append(mb(nativeKb * 1024))
             if (graphicsKb >= 0) out.append(" gfx=").append(mb(graphicsKb * 1024))
             out.append(" pss=").append(mb(m.totalPss.toLong() * 1024))
+            bench.pss(m.totalPss.toLong())
         }
         runCatching {
             val am = app.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
@@ -335,7 +375,10 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
         newPosition: Player.PositionInfo,
         reason: Int,
     ) {
-        if (reason == Player.DISCONTINUITY_REASON_SEEK) jumpedAt = SystemClock.elapsedRealtime()
+        if (reason == Player.DISCONTINUITY_REASON_SEEK) {
+            jumpedAt = SystemClock.elapsedRealtime()
+            bench.jumped(jumpedAt)
+        }
     }
 
     override fun onPlaybackStateChanged(eventTime: AnalyticsListener.EventTime, state: Int) {
@@ -343,15 +386,22 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
         when (state) {
             Player.STATE_BUFFERING -> if (readyOnce && waitingSince == 0L) {
                 waitingSince = now
+                // The wait right after a jump is the jump's, not the line falling behind the film.
+                if (now - jumpedAt >= AFTER_JUMP_MS) bench.stallStart(now)
                 Log.i(TAG, "rebuffer start pos=${eventTime.currentPlaybackPositionMs / 1000}s " +
                     "ahead=${eventTime.totalBufferedDurationMs}ms" + if (now - jumpedAt < AFTER_JUMP_MS) " after a jump" else "")
             }
             Player.STATE_READY -> {
                 if (waitingSince > 0L) Log.i(TAG, "rebuffer end after ${now - waitingSince}ms")
                 waitingSince = 0L
+                bench.stallEnd(now)
+                if (!readyOnce) bench.firstFrame(now)
                 readyOnce = true
             }
-            else -> waitingSince = 0L
+            else -> {
+                waitingSince = 0L
+                bench.stallEnd(now)
+            }
         }
     }
 
@@ -362,6 +412,8 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
         /** The loader line's first, this many seconds after the film's player was built (its first fill), then every minute. */
         const val LOADER_FIRST_S = 20
         const val LOADER_EVERY_S = 60
+        /** Seconds between two reads of the app's memory for its peak ([BenchTally.pss]). */
+        const val PSS_EVERY_S = 5
         private const val HEADROOM_AHEAD_S = 10
         private const val AFTER_JUMP_MS = 3_000L
         private val NO_BYTES: () -> Long = { 0L }
