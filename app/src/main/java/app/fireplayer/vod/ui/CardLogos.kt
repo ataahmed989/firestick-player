@@ -45,11 +45,15 @@ internal object CardLogos {
     fun header(context: Context, service: Service, maxW: Int, maxH: Int): Bitmap? =
         header(context, service, resOf(service), maxW, maxH)
 
-    /** The same for one of Disney+'s studios ([brand]): its card's logo in its page's name line. */
-    fun header(context: Context, brand: Brand, maxW: Int, maxH: Int): Bitmap? =
-        header(context, brand, resOf(brand), maxW, maxH)
+    /**
+     * The same for one of Disney+'s studios ([brand]): its card's logo in its page's name line, no taller than gives
+     * it the room of a logo [evenW] px wide at the full height, so a long wordmark comes out no larger to the eye than
+     * a compact mark ([VodSizes.nameLogoH]).
+     */
+    fun header(context: Context, brand: Brand, maxW: Int, maxH: Int, evenW: Int): Bitmap? =
+        header(context, brand, resOf(brand), maxW, maxH, evenW)
 
-    private fun header(context: Context, key: Any, res: Int, maxW: Int, maxH: Int): Bitmap? {
+    private fun header(context: Context, key: Any, res: Int, maxW: Int, maxH: Int, evenW: Int = 0): Bitmap? {
         headers[key]?.let { return it }
         val src = BitmapFactory.decodeResource(context.resources, res) ?: return null
         val w = src.width
@@ -59,7 +63,8 @@ internal object CardLogos {
         val b = LogoBounds.of(px, w, h)
         var part = Bitmap.createBitmap(src, b[0], b[1], b[2] - b[0], b[3] - b[1])
         if (part !== src) src.recycle()
-        val (ow, oh) = ImageFit.inside(part.width, part.height, maxW, maxH)
+        val fitH = if (evenW > 0) VodSizes.nameLogoH(part.width, part.height, maxH, evenW) else maxH
+        val (ow, oh) = ImageFit.inside(part.width, part.height, maxW, fitH)
         // Halved while it's over twice the size it's shown at, so the small picture is smooth, then fitted.
         while (part.width / 2 >= ow && part.height / 2 >= oh && part.width >= 2 && part.height >= 2) part = scaled(part, part.width / 2, part.height / 2)
         if (part.width != ow || part.height != oh) part = scaled(part, ow, oh)

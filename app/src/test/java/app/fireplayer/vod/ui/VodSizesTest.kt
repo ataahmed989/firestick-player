@@ -494,4 +494,21 @@ class VodSizesTest {
         assertEquals(5, Services.cards().size)
         assertEquals(5, Services.brandCards().size)
     }
+
+    @Test
+    fun studioLogosComeOutMuchTheSameSizeOnTheNameLine() {
+        // The trimmed marks' shapes (px): Disney, Marvel and Star Wars stand at the full height; Pixar's long wordmark
+        // and National Geographic's stand lower, none covering more than the compact ones.
+        val maxH = 52
+        val evenW = 132
+        assertEquals(maxH, VodSizes.nameLogoH(512, 207, maxH, evenW))
+        assertEquals(maxH, VodSizes.nameLogoH(512, 204, maxH, evenW))
+        assertEquals(maxH, VodSizes.nameLogoH(488, 214, maxH, evenW))
+        val pixar = VodSizes.nameLogoH(512, 85, maxH, evenW)
+        val natGeo = VodSizes.nameLogoH(511, 142, maxH, evenW)
+        assertTrue(pixar in 30..36)
+        assertTrue(natGeo in 40..46)
+        assertTrue(pixar * (pixar * 512 / 85) <= evenW * maxH)
+        assertEquals(maxH, VodSizes.nameLogoH(0, 0, maxH, evenW))
+    }
 }

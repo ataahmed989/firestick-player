@@ -47,6 +47,8 @@ class WallpaperView(context: Context) : View(context) {
     private val blackRing = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = Color.BLACK }
     private val holeRect = RectF()
     private var holeRadius = 0f
+    /** The hole shows only below this line (0: all of it). */
+    private var holeCut = 0f
     /** The corners' outline: its rectangle, corner radius and width (none while the hole's corners are square). */
     private val ring = RectF()
     private var ringRadius = 0f
@@ -78,13 +80,15 @@ class WallpaperView(context: Context) : View(context) {
     /**
      * Where live video shows: [rect] in this view's coordinates; null for none; [full] for the whole view. Called every
      * frame while the picture moves (the hole follows it, its corners rounding off or back), so it makes nothing new,
-     * and the same hole again draws nothing again.
+     * and the same hole again draws nothing again. [cutAbove]: the hole only shows below that line (y, 0: all of it),
+     * cut square there (the live picture's window part-way under the top of its page's rows).
      */
-    fun setHole(rect: RectF?, radius: Float, full: Boolean = false) {
-        val same = full == fullHole && radius == holeRadius &&
+    fun setHole(rect: RectF?, radius: Float, full: Boolean = false, cutAbove: Float = 0f) {
+        val same = full == fullHole && radius == holeRadius && cutAbove == holeCut &&
             (if (rect == null || rect.isEmpty) holeRect.isEmpty else rect == holeRect)
         if (same) return
         fullHole = full
+        holeCut = cutAbove
         if (rect == null) holeRect.setEmpty() else holeRect.set(rect)
         holeRadius = radius
         // An outline as wide as the corners' radius (a pixel at least) reaches past each corner of the hole's box.
@@ -169,7 +173,8 @@ class WallpaperView(context: Context) : View(context) {
             return
         }
         val l = Math.round(holeRect.left).coerceIn(0, w)
-        val t = Math.round(holeRect.top).coerceIn(0, h)
+        val cut = Math.round(holeCut).coerceIn(0, h)
+        val t = Math.round(holeRect.top).coerceIn(cut, h)
         val r = Math.round(holeRect.right).coerceIn(l, w)
         val b = Math.round(holeRect.bottom).coerceIn(t, h)
         strip(canvas, bmp, 0, 0, w, t)
@@ -179,7 +184,14 @@ class WallpaperView(context: Context) : View(context) {
         if (ringWidth > 0f) {
             val p = if (bmp == null) blackRing else cornerPaint
             p.strokeWidth = ringWidth
+            // Cut at the line: the corners above it are under the strip already, and the hole's edge there is square.
+            val cutting = cut > 0 && ring.top < cut
+            if (cutting) {
+                canvas.save()
+                canvas.clipRect(0, cut, w, h)
+            }
             canvas.drawRoundRect(ring, ringRadius, ringRadius, p)
+            if (cutting) canvas.restore()
         }
     }
 
