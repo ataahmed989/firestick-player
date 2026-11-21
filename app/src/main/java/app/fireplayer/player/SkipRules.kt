@@ -115,7 +115,11 @@ object SkipRules {
     fun fits(part: Part, start: Long, end: Long, duration: Long): Pick {
         if (duration <= 0) return Pick.Rejected("no length")
         if (start < 0 || end <= start) return Pick.Rejected("bad range $start..$end")
-        if (end > duration + END_SLACK_MS) return Pick.Rejected("ends past the file")
+        // Credits (and what follows them) may end as far past this file's end as [outroAnchors] lets them end from it:
+        // a file a few seconds shorter than the one they were timed on (1558 s against IntroDB's 1561 s) still has them,
+        // cut at its end. Anything else gets the usual few seconds.
+        val slack = if (part == Part.OUTRO || part == Part.PREVIEW) maxOf(END_SLACK_MS, OUTRO_ANCHOR_MS) else END_SLACK_MS
+        if (end > duration + slack) return Pick.Rejected("ends past the file")
         val e = minOf(end, duration)
         return when (part) {
             Part.INTRO, Part.RECAP -> when {
