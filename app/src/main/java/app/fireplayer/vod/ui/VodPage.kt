@@ -657,7 +657,8 @@ class VodPage(
 
     /**
      * Where the column goes with [row] chosen: 0 on the first row (the header shows), else that row's top. A first row
-     * of posters is too tall to show whole under the banner: the column then moves up just as far as it needs.
+     * of posters is too tall to show whole under the banner: the column then moves up just as far as it needs. Never
+     * past the last row sitting at the bottom of the screen (the row above it stays in view).
      */
     private fun targetFor(row: TitleRow?): Float {
         if (row == null) return 0f
@@ -665,7 +666,9 @@ class VodPage(
         val k = vis.indexOf(row)
         if (k < 0) return pageSpring.target
         val viewH = if (myList) VodSizes.SCREEN_H - VodSizes.fixedRowsTop() else VodSizes.VIEWPORT_H
-        return RowMath.pageTarget(k, 0, row.shownHeight.toFloat(), t.dpf(viewH)) { column.topOf(vis[it]).coerceAtLeast(0).toFloat() }
+        val last = vis.last()
+        val end = column.topOf(last).coerceAtLeast(0) + last.shownHeight + t.dpf(VodSizes.ROW_GAP)
+        return RowMath.pageTarget(k, 0, row.shownHeight.toFloat(), t.dpf(viewH), end) { column.topOf(vis[it]).coerceAtLeast(0).toFloat() }
     }
 
     /** The first row shown that has something to focus (where Down from the banner or Recent channels goes). */

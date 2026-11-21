@@ -45,9 +45,14 @@ internal object RowMath {
      * row shown, else that row's top, so it sits just under the name line. [rowTops] are the rows' tops in the column,
      * [firstShown] the first row shown. A first row too tall to show whole under the header (its title and grown card
      * need [need] of the viewport's [viewportH]) moves up just far enough that it does, never past its own top.
+     * The column never goes past where its [end] (the last row's bottom, with the room under it) meets the screen's
+     * bottom: the last row sits at the bottom with the row above it still showing, not alone at the top.
      */
-    fun pageTarget(focused: Int, firstShown: Int, need: Float = 0f, viewportH: Float = Float.MAX_VALUE, rowTops: (Int) -> Float): Float {
-        if (focused > firstShown) return rowTops(focused)
+    fun pageTarget(
+        focused: Int, firstShown: Int, need: Float = 0f, viewportH: Float = Float.MAX_VALUE, end: Float = Float.MAX_VALUE,
+        rowTops: (Int) -> Float,
+    ): Float {
+        if (focused > firstShown) return minOf(rowTops(focused), (end - viewportH).coerceAtLeast(0f))
         val top = rowTops(focused)
         return (top + need - viewportH).coerceIn(0f, top.coerceAtLeast(0f))
     }
