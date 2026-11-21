@@ -320,7 +320,10 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
         }
     }
 
-    private inner class Holder(val row: LinearLayout, val label: TextView, val chevron: ImageView) : ViewHolder(row)
+    private inner class Holder(val row: LinearLayout, val label: TextView, val chevron: ImageView) : ViewHolder(row) {
+        /** The playlist whose heading this row last showed (null: another kind of row): its arrow turns, others are set. */
+        var head: String? = null
+    }
 
     private inner class Adapter : RecyclerView.Adapter<Holder>() {
         init { setHasStableIds(true) }
@@ -378,7 +381,16 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
             h.label.typeface = if (item is Item.Entry) t.regular else t.semibold
             h.label.text = GroupColumn.labelOf(item)
             h.chevron.visibility = if (item is Item.Head) View.VISIBLE else View.GONE
-            if (item is Item.Head) h.chevron.rotation = if (item.expanded) 0f else -90f
+            // The same playlist's heading bound again because it opened or folded: its arrow turns there (from where it
+            // is, when pressed again mid-turn); any other row's is simply set.
+            h.chevron.animate().cancel()
+            if (item is Item.Head) {
+                val turn = if (item.expanded) 0f else -90f
+                if (h.head == item.playlist.id && h.chevron.rotation != turn && isShown) {
+                    h.chevron.animate().rotation(turn).setDuration(LiveWidths.CHEVRON_MS).setInterpolator(TURN).start()
+                } else h.chevron.rotation = turn
+                h.head = item.playlist.id
+            } else h.head = null
             // Blue: the entry the guide shows, and the playlist in use, the one holding it (user). With All playlists in
             // use, its own row. Rebound whenever the current entry changes, so the blue follows it.
             h.row.isSelected = when (item) {
@@ -462,6 +474,7 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
     private val press = PressHold(android.view.ViewConfiguration.getLongPressTimeout().toLong())
 
     private companion object {
+        val TURN = android.view.animation.DecelerateInterpolator(1.5f)
         /** A wrap to a row far away glides only this many rows (the rest is a jump). */
         const val WRAP_ROWS = 3
 

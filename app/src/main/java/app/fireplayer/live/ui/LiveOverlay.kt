@@ -6,13 +6,11 @@ import android.graphics.RectF
 import android.graphics.drawable.GradientDrawable
 import android.text.TextUtils
 import android.text.format.DateFormat
-import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
-import android.view.ViewOutlineProvider
 import android.view.animation.PathInterpolator
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -27,6 +25,7 @@ import app.fireplayer.live.ui.OverlayRules.Level
 import app.fireplayer.shell.Tokens
 import app.fireplayer.ui.Glass
 import app.fireplayer.ui.GlassStyle
+import app.fireplayer.ui.SwapFade
 import app.fireplayer.vod.ui.VodSizes
 import java.util.Date
 
@@ -151,35 +150,10 @@ class LiveOverlay(context: Context, private val t: Tokens, private val io: Io) :
     private val ease = PathInterpolator(0.2f, 0f, 0f, 1f)
     private val box = RectF()
 
-    /** The window the whole name moves in, over the selected row's name; the copy inside it is as wide as any name. */
-    private val marqueeText = TextView(context).apply {
-        isSingleLine = true
-        includeFontPadding = false
-        gravity = Gravity.CENTER_VERTICAL or Gravity.START
-        setTextColor(t.accent)
-    }
-    private val marqueeLine = FrameLayout(context).apply {
-        outlineProvider = ViewOutlineProvider.BOUNDS
-        clipToOutline = true
-        visibility = INVISIBLE
-        importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
-        addView(marqueeText, LayoutParams(t.dp(MARQUEE_TEXT_DP), ViewGroup.LayoutParams.MATCH_PARENT))
-    }
+    /** The window the whole name moves in, over the selected row's name ([NameMarquee], the guide's too). */
+    private val marqueeLine = NameMarquee(context, t)
     private var marqueeCol: OverlayList? = null
-    private var travel = 0f
     private val marqueeStart: Runnable = Runnable { startMarquee() }
-    private val marqueeAgain: Runnable = Runnable {
-        if (marqueeCol == null) return@Runnable
-        marqueeText.translationX = 0f
-        postDelayed(marqueeRun, VodSizes.LIVE_MARQUEE_DELAY_MS)
-    }
-    private val marqueeEnd: Runnable = Runnable { postDelayed(marqueeAgain, VodSizes.LIVE_MARQUEE_HOLD_MS) }
-    private val marqueeRun: Runnable = Runnable {
-        if (marqueeCol == null) return@Runnable
-        marqueeText.animate().translationX(-travel).setStartDelay(0)
-            .setDuration(LiveSearchView.Marquee.durationMs(travel, t.dpf(VodSizes.LIVE_MARQUEE_DP_S)))
-            .setInterpolator(null).withEndAction(marqueeEnd).start()
-    }
 
     init {
         visibility = GONE
@@ -199,7 +173,7 @@ class LiveOverlay(context: Context, private val t: Tokens, private val io: Io) :
             rightMargin = t.dp(LiveWidths.GAP)
             topMargin = t.dp(LiveWidths.OV_DETAILS_GAP)
         })
-        addView(marqueeLine, LayoutParams(1, 1, Gravity.TOP or Gravity.START))
+        addView(marqueeLine, marqueeLine.params())
         applyLook()
     }
 
@@ -692,26 +666,46 @@ class LiveOverlay(context: Context, private val t: Tokens, private val io: Io) :
         programmesCol.setProgrammes(list, OverlayRules.onNow(list.size, now, { list[it].start }, { list[it].stop }))
     }
 
-    /** The focused channel's programme on now, at the top right: title, times, progress, minutes left, description. */
+    /**
+     * The focused channel's programme on now, at the top right: title, times, progress, minutes left, description.
+     * Another programme's words crossfade in ([SwapFade]; a held key's are swapped at once); the minutes and the
+     * progress line moving on in the same programme just change.
+     */
     private fun showDetails() {
         if (picking) return
         val ch = focusedChannel()
         val now = System.currentTimeMillis()
         val p = ch?.let { c -> nowMap[c.key]?.takeIf { it.isOn(now) } ?: kept[c.key]?.firstOrNull { it.isOn(now) } }
-        if (p == null) {
-            setText(detailTitle, if (ch == null) "" else NO_INFO)
-            setText(detailTime, "")
-            setText(detailLeft, "")
-            setText(detailDesc, "")
-            detailBar.alpha = 0f
-            return
-        }
-        setText(detailTitle, p.title.ifEmpty { ch.name })
-        setText(detailTime, "${timeFormat.format(Date(p.start))} – ${timeFormat.format(Date(p.stop))}")
-        detailBar.alpha = 1f
-        detailBar.fraction = OverlayRules.progress(p.start, p.stop, now)
-        setText(detailLeft, "${OverlayRules.minutesLeft(p.stop, now)} min")
-        setText(detailDesc, p.description.orEmpty())
+        val title = if (p == null) (if (ch == null) "" else NO_INFO) else p.title.ifEmpty { ch.name }
+        val time = if (p == null) "" else "${timeFormat.format(Date(p.start))} – ${timeFormat.format(Date(p.stop))}"
+        val desc = p?.description.orEmpty()
+        val changed = title != dTitle || time != dTime || desc != dDesc
+        dTitle = title
+        dTime = time
+        dDesc = desc
+        dLeft = if (p == null) "" else "${OverlayRules.minutesLeft(p.stop, now)} min"
+        dBar = p != null
+        dFraction = if (p == null) 0f else OverlayRules.progress(p.start, p.stop, now)
+        if (changed) detailFade.change(android.os.SystemClock.uptimeMillis(), isShown) else detailFade.refresh()
+    }
+
+    /** The details' words as last asked for ([showDetails]); [putDetails] shows them. */
+    private var dTitle = ""
+    private var dTime = ""
+    private var dLeft = ""
+    private var dDesc = ""
+    private var dBar = false
+    private var dFraction = 0f
+    private val detailFade = SwapFade(arrayOf(detailTitle, detailTime, detailBar, detailLeft, detailDesc), floatArrayOf(1f, 1f, 1f, 1f, 1f)) { putDetails() }
+
+    private fun putDetails() {
+        setText(detailTitle, dTitle)
+        setText(detailTime, dTime)
+        setText(detailLeft, dLeft)
+        setText(detailDesc, dDesc)
+        // Hidden by its strength (never by its visibility: the line beside it keeps its place).
+        detailFade.setBase(DETAIL_BAR, if (dBar) 1f else 0f)
+        if (dBar) detailBar.fraction = dFraction
     }
 
     private fun setText(v: TextView, text: String) {
@@ -754,39 +748,21 @@ class LiveOverlay(context: Context, private val t: Tokens, private val io: Io) :
         val row = col.focus
         if (row < 0 || !col.active || col.kind == OverlayList.Kind.PROGRAMMES) return
         val name = col.fullName(row)
-        marqueeText.setTextSize(TypedValue.COMPLEX_UNIT_PX, col.namePaint.textSize)
-        marqueeText.typeface = col.nameFace(row)
         col.nameBox(row, box)
-        travel = LiveSearchView.Marquee.distance(marqueeText.paint.measureText(name), box.width())
-        if (travel <= 0f) return
-        val w = box.width().toInt()
-        val h = kotlin.math.ceil(box.height()).toInt()
-        val lp = marqueeLine.layoutParams
-        // Sized once per column width (its first long name); after that only moved.
-        if (lp.width != w || lp.height != h) {
-            lp.width = w
-            lp.height = h
-            marqueeLine.layoutParams = lp
-        }
-        marqueeLine.translationX = col.left + col.translationX + box.left
-        marqueeLine.translationY = col.top + col.translationY + box.top
-        marqueeText.text = name
-        marqueeText.translationX = 0f
-        marqueeLine.visibility = VISIBLE
+        val scrolls = marqueeLine.start(
+            name, col.namePaint.textSize, col.nameFace(row), t.accent,
+            col.left + col.translationX + box.left, col.top + col.translationY + box.top, box.width(), box.height(),
+        )
+        if (!scrolls) return
         col.marqueeRow = row
         marqueeCol = col
-        marqueeRun.run()
     }
 
     private fun stopMarquee() {
         removeCallbacks(marqueeStart)
-        removeCallbacks(marqueeAgain)
-        removeCallbacks(marqueeRun)
-        marqueeText.animate().cancel()
-        marqueeText.translationX = 0f
+        marqueeLine.stop()
         marqueeCol?.marqueeRow = -1
         marqueeCol = null
-        if (marqueeLine.visibility != INVISIBLE) marqueeLine.visibility = INVISIBLE
     }
 
     override fun onDetachedFromWindow() {
@@ -798,8 +774,8 @@ class LiveOverlay(context: Context, private val t: Tokens, private val io: Io) :
     }
 
     private companion object {
-        /** The scrolling copy's width: longer than any name. */
-        const val MARQUEE_TEXT_DP = 1600
+        /** The progress line's place among the details' fading views. */
+        const val DETAIL_BAR = 2
         const val LOADING = "Loading…"
         const val NO_CHANNELS = "No channels"
         const val NO_FAVORITES = "No favorites in this playlist"

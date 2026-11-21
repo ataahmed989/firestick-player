@@ -141,6 +141,19 @@ object GuideCells {
         (newFocus - (oldFocus - oldTop)).coerceIn(0, (count - visible).coerceAtLeast(0))
 
     /** Whether a step from row [from] to row [to] ([down] or up) went round the list's end rather than to the row beside. */
+    /**
+     * The room a channel's name has in a channel column [column] wide: from [nameLeft] to [end] short of the column's
+     * edge, less [marker] (the ▶ after the playing channel's name). A name wider than this is cut with an ellipsis, and
+     * scrolls while its row has the focused programme.
+     */
+    fun nameRoom(column: Float, nameLeft: Float, end: Float, marker: Float): Float = (column - end - nameLeft - marker).coerceAtLeast(0f)
+
+    /** [color] at [level] (0 to 1) of its own strength: the focus highlight fading in and out. */
+    fun faded(color: Int, level: Float): Int {
+        val a = ((color ushr 24) * level.coerceIn(0f, 1f) + 0.5f).toInt()
+        return (color and 0x00FFFFFF) or (a shl 24)
+    }
+
     fun wentRound(from: Int, to: Int, down: Boolean): Boolean = if (down) to < from else to > from
 
     /**
