@@ -23,6 +23,8 @@ import app.fireplayer.live.Programme
 import app.fireplayer.shell.Tokens
 import app.fireplayer.ui.GlassStyle
 import app.fireplayer.ui.ListMath
+import app.fireplayer.ui.SwapFadeRules
+import app.fireplayer.vod.ui.VodSizes
 import java.util.Date
 import java.util.Locale
 import kotlin.math.ceil
@@ -76,7 +78,8 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
     /** The channel playing (in the miniature or full screen): its name and the ▶ after it are blue. */
     var playingKey: ChannelKey? = null
         // Set with every word from the player (its buffer filling, a caption line): drawn again only when it changes.
-        set(v) { if (field != v) { field = v; invalidate() } }
+        // The ▶ came to or left a row: a scrolling name is measured again with the ▶'s room.
+        set(v) { if (field != v) { field = v; syncMarquee(force = true); invalidate() } }
 
     /** Playlists whose guide is still being loaded for the first time: their empty rows say so. */
     var loadingPlaylists: Set<String> = emptySet()
@@ -171,6 +174,32 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         addUpdateListener { a -> columnAt(channelFrom + (channelTo - channelFrom) * a.animatedFraction) }
     }
 
+    /**
+     * How much of the white highlight shows: 1 while the grid has the focus, 0 while it hasn't, fading between the two
+     * as focus comes and goes ([LiveWidths.GUIDE_FOCUS_MS]; from where it is when focus turns round mid-fade).
+     */
+    private var focusLevel = 0f
+    private var focusFrom = 0f
+    private var focusTo = 0f
+    private val focusMotion: ValueAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+        interpolator = ease
+        addUpdateListener { a ->
+            focusLevel = focusFrom + (focusTo - focusFrom) * a.animatedFraction
+            invalidate()
+        }
+    }
+
+    /**
+     * The line a name too long for the channel column scrolls in ([NameMarquee], the page's, drawn over this view at
+     * the name's place; null: names never scroll). The focused programme's row's name scrolls there while the grid
+     * has the focus and everything is at rest; the row itself is drawn without its name meanwhile.
+     */
+    internal var marquee: NameMarquee? = null
+    /** The row whose name is scrolling (-1: none), and the channel a scroll is waiting or running for. */
+    private var marqueeRow = -1
+    private var marqueeKey: ChannelKey? = null
+    private val marqueeDue = Runnable { startMarquee() }
+
     /** OK: picks on release, or opens the channel's small window when held (see [PressHold]). */
     private val press = PressHold(ViewConfiguration.getLongPressTimeout().toLong())
 
@@ -247,8 +276,9 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
      * again (a playlist update), where a focused channel that has gone leaves focus on the row nearest its place
      * rather than sending it back to the top.
      */
-    fun setChannels(list: List<Channel>, focus: ChannelKey?, reload: Boolean = false) {
+    fun setChannels(list: List<Channel>, focus: ChannelKey?, reload: Boolean = false, fade: Boolean = false) {
         stopMotion()
+        if (fade && list !== channels) fadeIn()
         val keep = focus ?: channels.getOrNull(focusRow)?.key
         firstScreen = false
         // The very list already shown (nothing was written since it was read) keeps its rows' text as made.
@@ -265,8 +295,20 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         jumpScroll(targetScroll(focusRow) * rowH)
         requested = null
         ensureLoaded()
+        syncMarquee(force = true)
         notifyFocus()
         invalidate()
+    }
+
+    /**
+     * Another list's rows come in softly rather than in one step: the whole guide fades in as one picture (a layer
+     * drawn once, [LiveWidths.GUIDE_LIST_FADE_MS]). A list arriving mid-fade carries on from the strength it has.
+     */
+    private fun fadeIn() {
+        animate().cancel()
+        if (!isShown || height == 0) { alpha = 1f; return }
+        if (alpha == 1f) alpha = 0f
+        animate().alpha(1f).setDuration(SwapFadeRules.span(LiveWidths.GUIDE_LIST_FADE_MS, alpha, 1f)).setInterpolator(ease).withLayer().start()
     }
 
     /** [key]'s row (-1: not listed), found in the rows' keys as indexed: nothing is made to look. */
@@ -284,7 +326,7 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
      * They show at once, with their listings; [extendChannels] puts the whole list under them when it arrives.
      */
     fun showFirstScreen(part: List<Channel>, focus: ChannelKey?) {
-        setChannels(part, focus)
+        setChannels(part, focus, fade = true)
         firstScreen = true
     }
 
@@ -312,6 +354,7 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         }
         requested = null
         ensureLoaded()
+        syncMarquee(force = true)
         notifyFocus()
         invalidate()
     }
@@ -364,6 +407,7 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         val i = list.indexOfFirst { it.key == key }
         focusRow = if (i >= 0) i else focusRow.coerceAtMost((list.size - 1).coerceAtLeast(0))
         jumpScroll(targetScroll(focusRow) * rowH)
+        syncMarquee(force = true)
         notifyFocus()
         invalidate()
     }
@@ -375,8 +419,10 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
     fun updateChannel(ch: Channel) {
         val i = keys.indexOf(ch.key)
         if (i < 0 || channels[i] == ch) return
-        if (channels[i].name != ch.name) { names[i] = null; invalidate() }
+        val renamed = channels[i].name != ch.name
+        if (renamed) { names[i] = null; invalidate() }
         channels = ArrayList(channels).also { it[i] = ch }
+        if (renamed) syncMarquee(force = true)
         if (i == focusRow) notifyFocus()
     }
 
@@ -402,6 +448,8 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         if (to != channelTo) {
             channelTo = to
             names.fill(null)
+            // A scrolling name starts over in the room it has now, once the column has settled.
+            syncMarquee(force = true)
         }
         columnMotion.cancel()
         if (channelW == to) return
@@ -625,6 +673,7 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
     private fun notifyFocus() {
         val ch = focusedChannel() ?: return
         val cell = focusedCell()
+        syncMarquee(force = false)
         callbacks?.onFocusMoved(ch, cell)
         val p = cell?.programme
         contentDescription = buildString {
@@ -687,6 +736,7 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         // in rows, and focus stays on a whole row.
         val top = (scrollTarget / rowH).roundToInt()
         stopMotion()
+        syncMarquee(force = true)
         layRows(h)
         jumpScroll(top * rowH)
         jumpScroll(targetScroll(focusRow) * rowH)
@@ -707,8 +757,13 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
 
     override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: android.graphics.Rect?) {
         super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
-        // The highlight shows (or goes) on its cell at once; only moves within the grid glide.
+        // The highlight fades in (or out) on its cell; only moves within the grid glide.
         glide.clear()
+        focusMotion.cancel()
+        focusFrom = focusLevel
+        focusTo = if (gainFocus) 1f else 0f
+        focusMotion.duration = if (isShown && height > 0) SwapFadeRules.span(LiveWidths.GUIDE_FOCUS_MS, focusFrom, focusTo) else 0L
+        if (focusMotion.duration > 0L) focusMotion.start() else focusLevel = focusTo
         // An OK pressed here and released elsewhere (or the other way round) is no pick.
         press.cancel()
         if (gainFocus) {
@@ -717,8 +772,67 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
             if (cursor < now) cursor = now
             notifyFocus()
         }
+        // The focused programme's row's name scrolls while it's too long (and stops when focus leaves the grid).
+        syncMarquee(force = true)
         invalidate()
     }
+
+    /**
+     * The highlight at the strength it's heading for, at once: the page is about to fade as a whole (to full screen
+     * and back), one picture drawn once, so nothing in it is drawn again per frame meanwhile.
+     */
+    fun settleFocus() {
+        if (!focusMotion.isStarted) return
+        focusMotion.cancel()
+        focusLevel = focusTo
+        invalidate()
+    }
+
+    // ---- A long channel name scrolling (the focused programme's row's) ---------------------------------------------
+
+    /**
+     * The name that should be scrolling is the focused row's while the grid has the focus, none otherwise. When that
+     * changes (or [force]: its room or place may have), the scrolling one stops at once and the new one starts after
+     * the app's usual pause, so a held key only ever moves the pause along: nothing scrolls until focus rests.
+     */
+    private fun syncMarquee(force: Boolean) {
+        val key = if (isFocused) keys.getOrNull(focusRow) else null
+        if (!force && key == marqueeKey) return
+        marqueeKey = key
+        removeCallbacks(marqueeDue)
+        if (marqueeRow >= 0) {
+            marqueeRow = -1
+            marquee?.stop()
+            invalidate()
+        }
+        if (key != null && marquee != null) postDelayed(marqueeDue, VodSizes.LIVE_MARQUEE_DELAY_MS)
+    }
+
+    private fun startMarquee() {
+        val m = marquee ?: return
+        if (!isFocused || !isShown || focusRow !in channels.indices) return
+        // Still moving (rows scrolling, the column sliding): once it rests.
+        if (motion.isRunning || columnMotion.isRunning || channelW != channelTo) {
+            postDelayed(marqueeDue, VodSizes.LIVE_MARQUEE_DELAY_MS)
+            return
+        }
+        val playing = keys[focusRow] == playingKey
+        val nx = nameLeft()
+        val cy = headerH + focusRow * rowH - scrollTarget + rowH / 2
+        val half = namePaint.fontSpacing / 2
+        val scrolls = m.start(
+            channels[focusRow].name, namePaint.textSize, t.regular, if (playing) t.accent else t.text,
+            left + nx, top + cy - half, nameRoom(nx, playing), half * 2,
+        )
+        if (!scrolls) return
+        marqueeRow = focusRow
+        invalidate()
+    }
+
+    /** Where a row's name starts, and the room it has in the settled column (less when the ▶ follows it). */
+    private fun nameLeft(): Float = numberRight + logoGap + logoW + nameGap
+    private fun nameRoom(nx: Float, playing: Boolean): Float =
+        GuideCells.nameRoom(channelTo, nx, nameEnd, if (playing) markerGap + markerW else 0f)
 
     // ---- Drawing --------------------------------------------------------------------------------------------------
 
@@ -753,7 +867,7 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
                 drawCells(canvas, r, top, now, wEnd)
                 canvas.restore()
             }
-            if (isFocused) drawFocus(canvas)
+            if (focusLevel > 0f) drawFocus(canvas)
         }
         // The now line over the cells and the highlight, down to the last row.
         val nx = xOf(now)
@@ -819,7 +933,7 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
             canvas.drawRoundRect(rect, t.dpf(4f), t.dpf(4f), fill)
         }
 
-        val nx = lx + logoW + nameGap
+        val nx = nameLeft()
         namePaint.color = if (playing) t.accent else t.text
         val name = nameOf(r, nx, playing)
         // While the column widens, the names (ellipsized for its new width) show as far as it has got.
@@ -828,7 +942,8 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
             canvas.save()
             canvas.clipRect(nx, top, channelW - nameEnd, top + rowH)
         }
-        canvas.drawText(name, 0, name.length, nx, baseline(cy, namePaint), namePaint)
+        // The name scrolling over this row (the marquee line's copy) is left out here.
+        if (r != marqueeRow) canvas.drawText(name, 0, name.length, nx, baseline(cy, namePaint), namePaint)
         if (playing) {
             // The channel playing: a small blue ▶ just after its name.
             val mx = nx + nameWidths[r] + markerGap
@@ -847,8 +962,7 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
      */
     private fun nameOf(r: Int, nx: Float, playing: Boolean): CharSequence {
         names[r]?.let { if (namePlaying[r] == playing) return it }
-        val avail = channelTo - nameEnd - nx - if (playing) markerGap + markerW else 0f
-        val s = TextUtils.ellipsize(channels[r].name, namePaint, avail.coerceAtLeast(0f), TextUtils.TruncateAt.END)
+        val s = TextUtils.ellipsize(channels[r].name, namePaint, nameRoom(nx, playing), TextUtils.TruncateAt.END)
         names[r] = s
         namePlaying[r] = playing
         nameWidths[r] = namePaint.measureText(s, 0, s.length)
@@ -901,7 +1015,7 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
                 val ty = baseline(cy, textPaint)
                 canvas.drawText(text, 0, text.length, tx, ty, textPaint)
                 // Under the white highlight these are drawn again in blue (drawFocus).
-                if (isFocus && gridFocused) { overTo = text; overToX = tx; overToY = ty }
+                if (isFocus && focusLevel > 0f) { overTo = text; overToX = tx; overToY = ty }
                 if (!isFocus && r == glideFromRow && cell === glideFromCell) { overFrom = text; overFromX = tx; overFromY = ty }
             }
         }
@@ -942,10 +1056,11 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         val radius = cellRadius()
         canvas.save()
         canvas.clipRect(channelW, headerH, width.toFloat(), rowsBottom)
-        fill.color = t.focusFill
+        // Fading in or out with the focus: the highlight and the blue titles on it at that strength.
+        fill.color = GuideCells.faded(t.focusFill, focusLevel)
         canvas.drawRoundRect(highlight, radius, radius, fill)
         canvas.clipRect(highlight)
-        textPaint.color = t.accent
+        textPaint.color = GuideCells.faded(t.accent, focusLevel)
         val from = overFrom
         if (from != null && glide.moving) {
             textPaint.typeface = t.regular
@@ -992,6 +1107,14 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
     override fun onDetachedFromWindow() {
         removeCallbacks(tick)
         removeCallbacks(widthSettled)
+        removeCallbacks(marqueeDue)
+        marqueeKey = null
+        marqueeRow = -1
+        marquee?.stop()
+        focusMotion.cancel()
+        focusLevel = if (isFocused) 1f else 0f
+        animate().cancel()
+        alpha = 1f
         stopMotion()
         columnMotion.cancel()
         if (channelW != channelTo) columnAt(channelTo)

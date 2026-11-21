@@ -37,6 +37,8 @@ internal object LiveWidths {
     const val DETAIL_STAR = 34
     /** Between the top line and the programme's title. */
     const val DETAIL_TITLE_GAP = 6
+    /** "Playlist • Group" under the title: a little quieter than the name. */
+    const val DETAIL_META_ALPHA = 0.85f
 
     /**
      * The guide's channel column beside the groups column: "USA Cinemax Action West" at 15.5 sp (about 186 dp in
@@ -66,18 +68,26 @@ internal object LiveWidths {
     /** The minutes of programmes a guide [guide] wide shows beside a channel column [channels] wide. */
     fun minutesShown(guide: Int, channels: Int): Float = (guide - channels) / DP_PER_MIN
 
+    // ---- Motion on the page as focus moves (the words' crossfade itself is the shared SwapFade's) ---------------------
+
+    /** The guide's white highlight fading in and out as focus comes to the grid and leaves it. */
+    const val GUIDE_FOCUS_MS = 140L
+    /** Another group's channels coming in: the guide's rows fade in as one picture. */
+    const val GUIDE_LIST_FADE_MS = 180L
+    /** The details' star filling (and emptying): the filled star fades in over the outline, growing from this scale. */
+    const val DETAIL_STAR_MS = 180L
+    const val DETAIL_STAR_FROM = 0.6f
+    /** The outline star's strength (the filled one over it is full). */
+    const val DETAIL_STAR_OUTLINE = 0.7f
+    /** A playlist's arrow turning as it opens and folds in the groups column. */
+    const val CHEVRON_MS = 160L
+
     // ---- Multiview (inside the full-screen Live TV player; the layout itself is [MultiviewLayout]) ---------------------
 
     /** Screen height, for Multiview's layout on the 960 x 540 dp screen. */
     const val SCREEN_H = 540
     /** Between the pictures and round the screen's edge: room for the selected picture's white ring (VodSizes.RING). */
     const val MV_GAP = 8f
-    /** A picture's channel name: on the logos' neutral dark plate (Tokens.LOGO_BADGE_PLATE) at its bottom left. */
-    const val MV_NAME_SP = 13f
-    const val MV_NAME_PAD_X = 8
-    const val MV_NAME_PAD_Y = 4
-    const val MV_NAME_INSET = 8
-    const val MV_NAME_RADIUS = 7f
     /** A picture that can't play: its plain message, in its middle, shadowed as the buffering symbol's words are. */
     const val MV_MESSAGE_SP = 14f
     const val MV_MESSAGE_PAD_X = 16
@@ -108,7 +118,7 @@ internal object LiveWidths {
     // ---- The channel list over full screen and Multiview ([LiveOverlay]) ---------------------------------------------
 
     /**
-     * Its columns, left to right: the playing playlist's groups (as wide as the guide's groups column), the channels
+     * Its columns, left to right: the playlists and their groups (as wide as the guide's groups column), the channels
      * (number, logo, name over the programme on now, its progress line), the focused channel's programmes. Beside the
      * groups, the channels column ends at 534 dp: clear of Multiview's ready picture at the top right (580 dp on).
      */
@@ -130,6 +140,13 @@ internal object LiveWidths {
     /** A group's row (the guide's groups column's) and a programme's. */
     const val OV_GROUP_ROW = 39
     const val OV_PROGRAMME_ROW = 36
+    /**
+     * A playlist's heading in the groups: the arrow before its name (right while folded, down while open: its box, its
+     * line, the gap after it). The lists under a playlist start under its name.
+     */
+    const val OV_CHEVRON = 12
+    const val OV_CHEVRON_STROKE = 1.8f
+    const val OV_CHEVRON_GAP = 7
     /** Inside a column: its sides, and a row's content inside the white pill. */
     const val OV_PAD_X = 10
     const val OV_ROW_PAD_X = 10

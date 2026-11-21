@@ -2,8 +2,11 @@ package app.fireplayer.live.ui
 
 import app.fireplayer.live.ChannelGroup
 import app.fireplayer.live.GuideScope
+import app.fireplayer.live.Playlist
+import app.fireplayer.live.PlaylistKind
 import app.fireplayer.live.ui.OverlayRules.Level
 import app.fireplayer.live.ui.OverlayRules.Ok
+import app.fireplayer.live.ui.OverlayRules.Row
 import app.fireplayer.live.ui.OverlayRules.SearchStart
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -83,31 +86,106 @@ class OverlayRulesTest {
         assertFalse(OverlayRules.showsProgrammes(Level.CLOSED, picking = false))
     }
 
-    @Test fun theGroupsColumnListsThePlaylistsGroupsAsTheGuideDoes() {
-        val groups = listOf(
-            ChannelGroup("p", "news", "USA | News", 0),
-            ChannelGroup("p", "kids", "USA | Family & Kids", 1),
-            ChannelGroup("p", "gone", "Hidden", 2, hidden = true),
-            ChannelGroup("q", "other", "Another playlist's", 0),
+    private fun playlist(id: String, name: String) = Playlist(id, name, PlaylistKind.M3U, "")
+
+    private val twoPlaylists = listOf(playlist("p", "Home"), playlist("q", "Sports"))
+    private val theirGroups = mapOf(
+        "p" to listOf(ChannelGroup("p", "news", "USA | News", 0), ChannelGroup("p", "kids", "USA | Family & Kids", 1)),
+        "q" to listOf(ChannelGroup("q", "foot", "Football", 0)),
+    )
+
+    private fun column(picking: Boolean, vararg open: String): List<OverlayRules.Entry> {
+        val folds = GroupColumn.Folds()
+        open.forEach { folds.open(it) }
+        return OverlayRules.entries(picking, GroupColumn.items(twoPlaylists, theirGroups, folds))
+    }
+
+    @Test fun theGroupsColumnIsTheGuidesOwnListRowForRow() {
+        val folds = GroupColumn.Folds().apply { open("p"); open("q") }
+        val items = GroupColumn.items(twoPlaylists, theirGroups, folds)
+        val e = OverlayRules.entries(picking = false, items = items)
+        // The same rows in the same order: nothing added, left out or moved.
+        assertEquals(items.map { GroupColumn.labelOf(it) }, e.map { it.label })
+        assertEquals(items.map { GroupColumn.scopeOf(it) }, e.map { it.scope })
+        assertEquals(
+            listOf("All playlists", "Home", "Favorites", "All channels", "USA | News", "USA | Family & Kids", "Sports", "Favorites", "All channels", "Football"),
+            e.map { it.label },
         )
-        val e = OverlayRules.entries(picking = false, playlistId = "p", groups = groups)
-        assertEquals(listOf("Favorites", "All channels", "USA | News", "USA | Family & Kids"), e.map { it.label })
-        assertEquals(GuideScope.Favorites("p"), e[0].scope)
-        assertEquals(GuideScope.AllChannels("p"), e[1].scope)
-        assertEquals(GuideScope.Group("p", "kids"), e[3].scope)
+        assertEquals(Row.ALL, e[0].row)
+        assertEquals(GuideScope.AllPlaylists, e[0].scope)
+        assertEquals(Row.HEAD_OPEN, e[1].row)
+        assertEquals("p", e[1].playlistId)
+        assertNull(e[1].scope)
+        assertEquals(GuideScope.Group("p", "kids"), e[5].scope)
+        // Another playlist's lists are there to choose from.
+        assertEquals(GuideScope.Favorites("q"), e[7].scope)
+        assertEquals(GuideScope.Group("q", "foot"), e[9].scope)
         assertFalse(e.any { it.isSearch })
     }
 
+    @Test fun aFoldedPlaylistShowsItsHeadingOnly() {
+        val e = column(picking = false, "q")
+        assertEquals(listOf("All playlists", "Home", "Sports", "Favorites", "All channels", "Football"), e.map { it.label })
+        assertEquals(Row.HEAD_FOLDED, e[1].row)
+        assertEquals(Row.HEAD_OPEN, e[2].row)
+        assertTrue(e[1].isHead)
+        assertFalse(e[3].isHead)
+    }
+
     @Test fun pickingPutsSearchAtTheTopOfTheGroups() {
-        val e = OverlayRules.entries(picking = true, playlistId = "p", groups = emptyList())
+        val e = column(picking = true, "p")
         assertEquals(OverlayRules.SEARCH, e[0].label)
         assertTrue(e[0].isSearch)
         assertNull(e[0].scope)
-        assertEquals("Favorites", e[1].label)
+        assertEquals("All playlists", e[1].label)
         // The selection opens on the group shown, never on Search.
         assertEquals(1, OverlayRules.rowOf(e, null))
-        assertEquals(2, OverlayRules.rowOf(e, GuideScope.AllChannels("p")))
-        assertEquals(1, OverlayRules.rowOf(e, GuideScope.Group("p", "unknown")))
+        assertEquals(4, OverlayRules.rowOf(e, GuideScope.AllChannels("p")))
+        // A group that isn't listed (hidden): its playlist's heading. A folded playlist's group: its heading too.
+        assertEquals(2, OverlayRules.rowOf(e, GuideScope.Group("p", "unknown")))
+        assertEquals(7, OverlayRules.rowOf(e, GuideScope.Group("q", "foot")))
+        // A playlist that's gone: the first row that isn't Search.
+        assertEquals(1, OverlayRules.rowOf(e, GuideScope.AllChannels("gone")))
+        assertEquals(-1, OverlayRules.rowOf(emptyList(), null))
+    }
+
+    @Test fun theGroupShownAndItsPlaylistAreMarked() {
+        val e = column(picking = false, "p")
+        val shown = GuideScope.Group("p", "news")
+        assertEquals(4, OverlayRules.markOf(e, shown))
+        assertEquals(1, OverlayRules.headMarkOf(e, shown))
+        // In a folded playlist: its heading alone.
+        assertEquals(-1, OverlayRules.markOf(e, GuideScope.Group("q", "foot")))
+        assertEquals(6, OverlayRules.headMarkOf(e, GuideScope.Group("q", "foot")))
+        // All playlists: its own row, no playlist's heading.
+        assertEquals(0, OverlayRules.markOf(e, GuideScope.AllPlaylists))
+        assertEquals(-1, OverlayRules.headMarkOf(e, GuideScope.AllPlaylists))
+        assertEquals(-1, OverlayRules.markOf(e, null))
+        assertEquals(-1, OverlayRules.headMarkOf(e, null))
+    }
+
+    @Test fun okOnAPlaylistOpensOrFoldsItAndOnAListEntersIt() {
+        val e = column(picking = true, "p")
+        assertEquals(OverlayRules.GroupOk.SEARCH, OverlayRules.okOnGroupRow(e[0]))
+        assertEquals(OverlayRules.GroupOk.ENTER, OverlayRules.okOnGroupRow(e[1]))
+        assertEquals(OverlayRules.GroupOk.FOLD, OverlayRules.okOnGroupRow(e[2]))
+        assertEquals(OverlayRules.GroupOk.ENTER, OverlayRules.okOnGroupRow(e[5]))
+        assertEquals(OverlayRules.GroupOk.FOLD, OverlayRules.okOnGroupRow(e[7]))
+        // Right opens a folded playlist and Left folds an open one, as in the guide's column; nothing else folds.
+        assertTrue(OverlayRules.rightFolds(e[7]))
+        assertFalse(OverlayRules.rightFolds(e[2]))
+        assertFalse(OverlayRules.rightFolds(e[5]))
+        assertFalse(OverlayRules.rightFolds(null))
+        assertTrue(OverlayRules.leftFolds(e[2]))
+        assertFalse(OverlayRules.leftFolds(e[7]))
+        assertFalse(OverlayRules.leftFolds(e[0]))
+        assertFalse(OverlayRules.leftFolds(null))
+    }
+
+    @Test fun theGroupsHeadingNamesAnOnlyPlaylistElsePlaylists() {
+        assertEquals("Home", OverlayRules.groupsHeader(listOf("Home")))
+        assertEquals(OverlayRules.PLAYLISTS, OverlayRules.groupsHeader(listOf("Home", "Sports")))
+        assertEquals(OverlayRules.PLAYLISTS, OverlayRules.groupsHeader(emptyList()))
     }
 
     @Test fun aListOpensOnTheWantedChannelElseTheFirst() {

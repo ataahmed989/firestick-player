@@ -6,13 +6,11 @@ import android.graphics.RectF
 import android.graphics.drawable.GradientDrawable
 import android.text.TextUtils
 import android.text.format.DateFormat
-import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
-import android.view.ViewOutlineProvider
 import android.view.animation.PathInterpolator
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -27,6 +25,7 @@ import app.fireplayer.live.ui.OverlayRules.Level
 import app.fireplayer.shell.Tokens
 import app.fireplayer.ui.Glass
 import app.fireplayer.ui.GlassStyle
+import app.fireplayer.ui.SwapFade
 import app.fireplayer.vod.ui.VodSizes
 import java.util.Date
 
@@ -37,9 +36,10 @@ import java.util.Date
  *
  * - Full screen, Left: the playing channel's group (the list Channel ▲ / ▼ moves through), the playing channel
  *   selected; beside it the focused channel's programmes under its logo and name, and the programme on now's details
- *   at the top right. Left again: the playlist's groups, the channels beside them (the programmes go). Right steps back
- *   towards the picture, Back closes it all. OK on a channel plays it (the list stays, for browsing on); OK on the one
- *   playing closes the list. OK on a group: its channels.
+ *   at the top right. Left again: every playlist with its groups, as the guide's groups column lists them (the same
+ *   list, [GroupColumn]: a playlist's heading opens and folds it), the channels beside them (the programmes go). Right
+ *   steps back towards the picture, Back closes it all. OK on a channel plays it, whichever playlist it's in (the list
+ *   stays, for browsing on); OK on the one playing closes the list. OK on a group: its channels.
  * - Picking for Multiview: the groups and the channels beside them, "Search" at the groups' top ([Listener.onSearch]).
  *
  * The rules are [OverlayRules]. Columns move by translation and alpha only, laid out once. A long group or channel name
@@ -56,7 +56,15 @@ class LiveOverlay(context: Context, private val t: Tokens, private val io: Io) :
         /** [channel]'s group: the list it plays in (Channel ▲ / ▼'s), else its own group, else its playlist's channels. */
         fun groupOf(channel: Channel, then: (GuideScope, List<Channel>) -> Unit)
         fun channels(scope: GuideScope, then: (List<Channel>) -> Unit)
-        fun groups(playlistId: String, then: (List<ChannelGroup>) -> Unit)
+        /**
+         * The guide's groups column: every playlist in the viewer's order, and each one's groups as the guide lists
+         * them (the shown ones, in their order).
+         */
+        fun column(then: (List<Playlist>, Map<String, List<ChannelGroup>>) -> Unit)
+        /** Which playlists are open: the guide's column's own, so the two show the same. */
+        fun folds(): GroupColumn.Folds
+        /** A playlist was opened or folded here. */
+        fun foldsChanged()
         fun programmes(channels: List<Channel>, from: Long, to: Long, then: (Map<ChannelKey, List<Programme>>) -> Unit)
     }
 
@@ -94,7 +102,10 @@ class LiveOverlay(context: Context, private val t: Tokens, private val io: Io) :
         }
 
     private var listener: Listener? = null
-    private var playlist: Playlist? = null
+    /** The guide's list the groups column shows ([GroupColumn]): the playlists, their groups, which are open. */
+    private var colPlaylists: List<Playlist> = emptyList()
+    private var colGroups: Map<String, List<ChannelGroup>> = emptyMap()
+    private var folds = GroupColumn.Folds()
     private var entries: List<OverlayRules.Entry> = emptyList()
     /** The list the channels column shows (null: none yet). */
     private var shownScope: GuideScope? = null
@@ -139,35 +150,10 @@ class LiveOverlay(context: Context, private val t: Tokens, private val io: Io) :
     private val ease = PathInterpolator(0.2f, 0f, 0f, 1f)
     private val box = RectF()
 
-    /** The window the whole name moves in, over the selected row's name; the copy inside it is as wide as any name. */
-    private val marqueeText = TextView(context).apply {
-        isSingleLine = true
-        includeFontPadding = false
-        gravity = Gravity.CENTER_VERTICAL or Gravity.START
-        setTextColor(t.accent)
-    }
-    private val marqueeLine = FrameLayout(context).apply {
-        outlineProvider = ViewOutlineProvider.BOUNDS
-        clipToOutline = true
-        visibility = INVISIBLE
-        importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
-        addView(marqueeText, LayoutParams(t.dp(MARQUEE_TEXT_DP), ViewGroup.LayoutParams.MATCH_PARENT))
-    }
+    /** The window the whole name moves in, over the selected row's name ([NameMarquee], the guide's too). */
+    private val marqueeLine = NameMarquee(context, t)
     private var marqueeCol: OverlayList? = null
-    private var travel = 0f
     private val marqueeStart: Runnable = Runnable { startMarquee() }
-    private val marqueeAgain: Runnable = Runnable {
-        if (marqueeCol == null) return@Runnable
-        marqueeText.translationX = 0f
-        postDelayed(marqueeRun, VodSizes.LIVE_MARQUEE_DELAY_MS)
-    }
-    private val marqueeEnd: Runnable = Runnable { postDelayed(marqueeAgain, VodSizes.LIVE_MARQUEE_HOLD_MS) }
-    private val marqueeRun: Runnable = Runnable {
-        if (marqueeCol == null) return@Runnable
-        marqueeText.animate().translationX(-travel).setStartDelay(0)
-            .setDuration(LiveSearchView.Marquee.durationMs(travel, t.dpf(VodSizes.LIVE_MARQUEE_DP_S)))
-            .setInterpolator(null).withEndAction(marqueeEnd).start()
-    }
 
     init {
         visibility = GONE
@@ -187,7 +173,7 @@ class LiveOverlay(context: Context, private val t: Tokens, private val io: Io) :
             rightMargin = t.dp(LiveWidths.GAP)
             topMargin = t.dp(LiveWidths.OV_DETAILS_GAP)
         })
-        addView(marqueeLine, LayoutParams(1, 1, Gravity.TOP or Gravity.START))
+        addView(marqueeLine, marqueeLine.params())
         applyLook()
     }
 
@@ -248,18 +234,19 @@ class LiveOverlay(context: Context, private val t: Tokens, private val io: Io) :
         backDown = false
         press.cancel()
         this.listener = listener
-        this.playlist = playlist
         this.picking = picking
         level = OverlayRules.opening(picking)
         shownScope = null
         nowMap.clear()
         nowAsked.clear()
         playingKey = channel.key
-        entries = OverlayRules.entries(picking, playlist.id, emptyList())
-        groupsCol.bold = if (picking) 0 else -1
-        groupsCol.setHeader(playlist.name)
-        groupsCol.setGroups(entries.map { it.label }, OverlayRules.rowOf(entries, null))
-        groupsCol.mark = -1
+        // Until the guide's list is read: the playing channel's playlist alone (open or folded as the guide has it; the
+        // group shown opens it, [selectGroup]).
+        colPlaylists = listOf(playlist)
+        colGroups = emptyMap()
+        folds = io.folds()
+        val start = GuideScope.AllChannels(playlist.id)
+        listGroups(start)
         channelsCol.setHeader(playlist.name)
         channelsCol.setEmptyText(LOADING)
         channelsCol.setChannels(emptyList(), -1)
@@ -267,16 +254,14 @@ class LiveOverlay(context: Context, private val t: Tokens, private val io: Io) :
         programmesCol.setEmptyText("")
         programmesCol.setProgrammes(emptyList(), -1)
         showDetails()
-        io.groups(playlist.id) { groups ->
-            if (s != serial) return@groups
-            entries = OverlayRules.entries(picking, playlist.id, groups)
-            // The groups' rows are made again: a name scrolling over one of them goes (it starts again on the new row).
-            val scrolling = marqueeCol === groupsCol
-            if (scrolling) stopMarquee()
-            groupsCol.setGroups(entries.map { it.label }, OverlayRules.rowOf(entries, shownScope))
-            groupsCol.mark = shownScope?.let { sc -> entries.indexOfFirst { it.scope == sc } } ?: -1
+        io.column { playlists, groups ->
+            if (s != serial) return@column
+            colPlaylists = playlists
+            colGroups = groups
+            // As the guide's column starts: the playlist holding the group shown is open.
+            if (folds.starting(playlists, shownScope)) io.foldsChanged()
+            listGroups(shownScope ?: start)
             shownScope?.let { channelsCol.setHeader(headerOf(it)) }
-            if (scrolling || level == Level.GROUPS) scheduleMarquee()
         }
         val ls = listSerial
         io.groupOf(channel) { scope, list ->
@@ -285,7 +270,7 @@ class LiveOverlay(context: Context, private val t: Tokens, private val io: Io) :
             // The groups' selection moves to it below: a group's name scrolling goes (showList asks again).
             if (marqueeCol === groupsCol) stopMarquee()
             showList(scope, list, channel.key)
-            groupsCol.place(OverlayRules.rowOf(entries, scope))
+            selectGroup(scope)
         }
         visibility = VISIBLE
         layoutLevel(animate = false)
@@ -345,6 +330,10 @@ class LiveOverlay(context: Context, private val t: Tokens, private val io: Io) :
         nowAsked.clear()
         kept.clear()
         shownScope = null
+        colPlaylists = emptyList()
+        colGroups = emptyMap()
+        entries = emptyList()
+        groupsCol.setGroups(emptyList(), emptyList(), -1)
     }
 
     /** Its keys closed it: the one who opened it hears of it. */
@@ -437,8 +426,13 @@ class LiveOverlay(context: Context, private val t: Tokens, private val io: Io) :
 
     private fun left() {
         val next = OverlayRules.left(level)
-        if (next == level) return
-        groupsCol.place(OverlayRules.rowOf(entries, shownScope))
+        if (next == level) {
+            // In the groups already: an open playlist folds, as in the guide's column.
+            val e = entries.getOrNull(groupsCol.focus)
+            if (level == Level.GROUPS && OverlayRules.leftFolds(e)) fold(e)
+            return
+        }
+        selectGroup(shownScope)
         setLevel(next)
     }
 
@@ -447,7 +441,7 @@ class LiveOverlay(context: Context, private val t: Tokens, private val io: Io) :
             Level.CLOSED -> closeByKey()
             Level.CHANNELS -> if (level == Level.GROUPS) {
                 val e = entries.getOrNull(groupsCol.focus)
-                enter(e?.scope ?: shownScope)
+                if (OverlayRules.rightFolds(e)) fold(e) else enter(e?.scope ?: shownScope)
             }
             Level.GROUPS -> Unit
         }
@@ -456,11 +450,63 @@ class LiveOverlay(context: Context, private val t: Tokens, private val io: Io) :
     private fun ok() {
         if (level == Level.GROUPS) {
             val e = entries.getOrNull(groupsCol.focus) ?: return
-            if (e.isSearch) listener?.onSearch() else enter(e.scope)
+            when (OverlayRules.okOnGroupRow(e)) {
+                OverlayRules.GroupOk.SEARCH -> listener?.onSearch()
+                OverlayRules.GroupOk.FOLD -> fold(e)
+                OverlayRules.GroupOk.ENTER -> enter(e.scope)
+            }
             return
         }
         val ch = channelsCol.channels.getOrNull(channelsCol.focus) ?: return
         listener?.onChannel(ch, shownScope)
+    }
+
+    /**
+     * The groups' rows made again from the guide's list (it was read, or a playlist opened or folded), the selection
+     * on [select]'s row ([OverlayRules.rowOf]) or, with [row], on that one with [first] kept on top.
+     */
+    private fun listGroups(select: GuideScope?, row: Int = -1, first: Int = -1) {
+        // The rows are made again: a name scrolling over one of them goes (it starts again on the new row).
+        val scrolling = marqueeCol === groupsCol
+        if (scrolling) stopMarquee()
+        entries = OverlayRules.entries(picking, GroupColumn.items(colPlaylists, colGroups, folds))
+        groupsCol.setHeader(OverlayRules.groupsHeader(colPlaylists.map { it.name }))
+        groupsCol.setGroups(entries.map { it.label }, entries.map { it.row }, if (row >= 0) row else OverlayRules.rowOf(entries, select), first)
+        markGroups(shownScope)
+        if (scrolling || level == Level.GROUPS) scheduleMarquee()
+    }
+
+    /** Blue in the groups: [scope]'s row and the playlist holding it (the guide's column's marks). */
+    private fun markGroups(scope: GuideScope?) {
+        groupsCol.mark = OverlayRules.markOf(entries, scope)
+        groupsCol.markHead = OverlayRules.headMarkOf(entries, scope)
+    }
+
+    /** The groups' selection onto [scope]'s row; its playlist opens first if it was folded (the guide's rule). */
+    private fun selectGroup(scope: GuideScope?) {
+        val pl = scope?.let { GroupColumn.playlistOf(it) }
+        if (pl != null && folds.open(pl)) {
+            io.foldsChanged()
+            listGroups(scope)
+        } else {
+            groupsCol.place(OverlayRules.rowOf(entries, scope))
+        }
+    }
+
+    /** OK on a playlist's heading: it opens or folds, the selection staying on it and the rows above it where they are. */
+    private fun fold(head: OverlayRules.Entry?) {
+        val id = head?.playlistId ?: return
+        removeCallbacks(preview)
+        val row = groupsCol.focus
+        val first = groupsCol.firstRow
+        folds.toggle(id)
+        io.foldsChanged()
+        listGroups(null, row, first)
+    }
+
+    private fun playlistName(channel: Channel?): String {
+        val id = channel?.playlistId ?: return ""
+        return colPlaylists.firstOrNull { it.id == id }?.name.orEmpty()
     }
 
     /** [scope]'s channels, the selection in them ([OverlayRules.okOnGroup]). */
@@ -531,7 +577,7 @@ class LiveOverlay(context: Context, private val t: Tokens, private val io: Io) :
 
     private fun load(scope: GuideScope) {
         val s = ++listSerial
-        groupsCol.mark = entries.indexOfFirst { it.scope == scope }
+        markGroups(scope)
         io.channels(scope) { list ->
             if (s != listSerial || !isOpen) return@channels
             showList(scope, list, playingKey)
@@ -547,21 +593,14 @@ class LiveOverlay(context: Context, private val t: Tokens, private val io: Io) :
         channelsCol.setHeader(headerOf(scope))
         channelsCol.setEmptyText(if (scope is GuideScope.Favorites) NO_FAVORITES else NO_CHANNELS)
         channelsCol.setChannels(list, OverlayRules.focusIn(list, focus) { it.key })
-        groupsCol.mark = entries.indexOfFirst { it.scope == scope }
+        markGroups(scope)
         askNow()
         if (level == Level.CHANNELS) channelFocused()
         if (restart) scheduleMarquee()
     }
 
-    /** "Playlist · group", as the column's header. */
-    private fun headerOf(scope: GuideScope): String {
-        val pl = playlist?.name.orEmpty()
-        val label = when (scope) {
-            GuideScope.AllPlaylists -> ALL_PLAYLISTS
-            else -> entries.firstOrNull { it.scope == scope }?.label
-        } ?: return pl
-        return if (pl.isEmpty()) label else "$pl · $label"
-    }
+    /** "Playlist · group", as the column's header: the playlist the group shown is in. */
+    private fun headerOf(scope: GuideScope): String = GroupColumn.header(colPlaylists, colGroups, scope)
 
     /** The programme on now for the rows on screen and those round them, read once per channel (and when it ends). */
     private fun askNow() {
@@ -593,7 +632,7 @@ class LiveOverlay(context: Context, private val t: Tokens, private val io: Io) :
         removeCallbacks(readProgrammes)
         if (picking) return
         val ch = focusedChannel()
-        programmesCol.setHeadChannel(ch, playlist?.name.orEmpty())
+        programmesCol.setHeadChannel(ch, playlistName(ch))
         val list = ch?.let { kept[it.key] }
         if (list != null) {
             showProgrammes(list)
@@ -627,26 +666,46 @@ class LiveOverlay(context: Context, private val t: Tokens, private val io: Io) :
         programmesCol.setProgrammes(list, OverlayRules.onNow(list.size, now, { list[it].start }, { list[it].stop }))
     }
 
-    /** The focused channel's programme on now, at the top right: title, times, progress, minutes left, description. */
+    /**
+     * The focused channel's programme on now, at the top right: title, times, progress, minutes left, description.
+     * Another programme's words crossfade in ([SwapFade]; a held key's are swapped at once); the minutes and the
+     * progress line moving on in the same programme just change.
+     */
     private fun showDetails() {
         if (picking) return
         val ch = focusedChannel()
         val now = System.currentTimeMillis()
         val p = ch?.let { c -> nowMap[c.key]?.takeIf { it.isOn(now) } ?: kept[c.key]?.firstOrNull { it.isOn(now) } }
-        if (p == null) {
-            setText(detailTitle, if (ch == null) "" else NO_INFO)
-            setText(detailTime, "")
-            setText(detailLeft, "")
-            setText(detailDesc, "")
-            detailBar.alpha = 0f
-            return
-        }
-        setText(detailTitle, p.title.ifEmpty { ch.name })
-        setText(detailTime, "${timeFormat.format(Date(p.start))} – ${timeFormat.format(Date(p.stop))}")
-        detailBar.alpha = 1f
-        detailBar.fraction = OverlayRules.progress(p.start, p.stop, now)
-        setText(detailLeft, "${OverlayRules.minutesLeft(p.stop, now)} min")
-        setText(detailDesc, p.description.orEmpty())
+        val title = if (p == null) (if (ch == null) "" else NO_INFO) else p.title.ifEmpty { ch.name }
+        val time = if (p == null) "" else "${timeFormat.format(Date(p.start))} – ${timeFormat.format(Date(p.stop))}"
+        val desc = p?.description.orEmpty()
+        val changed = title != dTitle || time != dTime || desc != dDesc
+        dTitle = title
+        dTime = time
+        dDesc = desc
+        dLeft = if (p == null) "" else "${OverlayRules.minutesLeft(p.stop, now)} min"
+        dBar = p != null
+        dFraction = if (p == null) 0f else OverlayRules.progress(p.start, p.stop, now)
+        if (changed) detailFade.change(android.os.SystemClock.uptimeMillis(), isShown) else detailFade.refresh()
+    }
+
+    /** The details' words as last asked for ([showDetails]); [putDetails] shows them. */
+    private var dTitle = ""
+    private var dTime = ""
+    private var dLeft = ""
+    private var dDesc = ""
+    private var dBar = false
+    private var dFraction = 0f
+    private val detailFade = SwapFade(arrayOf(detailTitle, detailTime, detailBar, detailLeft, detailDesc), floatArrayOf(1f, 1f, 1f, 1f, 1f)) { putDetails() }
+
+    private fun putDetails() {
+        setText(detailTitle, dTitle)
+        setText(detailTime, dTime)
+        setText(detailLeft, dLeft)
+        setText(detailDesc, dDesc)
+        // Hidden by its strength (never by its visibility: the line beside it keeps its place).
+        detailFade.setBase(DETAIL_BAR, if (dBar) 1f else 0f)
+        if (dBar) detailBar.fraction = dFraction
     }
 
     private fun setText(v: TextView, text: String) {
@@ -689,39 +748,21 @@ class LiveOverlay(context: Context, private val t: Tokens, private val io: Io) :
         val row = col.focus
         if (row < 0 || !col.active || col.kind == OverlayList.Kind.PROGRAMMES) return
         val name = col.fullName(row)
-        marqueeText.setTextSize(TypedValue.COMPLEX_UNIT_PX, col.namePaint.textSize)
-        marqueeText.typeface = col.nameFace(row)
         col.nameBox(row, box)
-        travel = LiveSearchView.Marquee.distance(marqueeText.paint.measureText(name), box.width())
-        if (travel <= 0f) return
-        val w = box.width().toInt()
-        val h = kotlin.math.ceil(box.height()).toInt()
-        val lp = marqueeLine.layoutParams
-        // Sized once per column width (its first long name); after that only moved.
-        if (lp.width != w || lp.height != h) {
-            lp.width = w
-            lp.height = h
-            marqueeLine.layoutParams = lp
-        }
-        marqueeLine.translationX = col.left + col.translationX + box.left
-        marqueeLine.translationY = col.top + col.translationY + box.top
-        marqueeText.text = name
-        marqueeText.translationX = 0f
-        marqueeLine.visibility = VISIBLE
+        val scrolls = marqueeLine.start(
+            name, col.namePaint.textSize, col.nameFace(row), t.accent,
+            col.left + col.translationX + box.left, col.top + col.translationY + box.top, box.width(), box.height(),
+        )
+        if (!scrolls) return
         col.marqueeRow = row
         marqueeCol = col
-        marqueeRun.run()
     }
 
     private fun stopMarquee() {
         removeCallbacks(marqueeStart)
-        removeCallbacks(marqueeAgain)
-        removeCallbacks(marqueeRun)
-        marqueeText.animate().cancel()
-        marqueeText.translationX = 0f
+        marqueeLine.stop()
         marqueeCol?.marqueeRow = -1
         marqueeCol = null
-        if (marqueeLine.visibility != INVISIBLE) marqueeLine.visibility = INVISIBLE
     }
 
     override fun onDetachedFromWindow() {
@@ -733,12 +774,11 @@ class LiveOverlay(context: Context, private val t: Tokens, private val io: Io) :
     }
 
     private companion object {
-        /** The scrolling copy's width: longer than any name. */
-        const val MARQUEE_TEXT_DP = 1600
+        /** The progress line's place among the details' fading views. */
+        const val DETAIL_BAR = 2
         const val LOADING = "Loading…"
         const val NO_CHANNELS = "No channels"
         const val NO_FAVORITES = "No favorites in this playlist"
         const val NO_INFO = "No information"
-        const val ALL_PLAYLISTS = "All playlists"
     }
 }

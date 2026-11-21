@@ -10,7 +10,6 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
-import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.SystemClock
 import android.view.Gravity
@@ -30,7 +29,7 @@ import app.fireplayer.vod.ui.VodSizes
 
 /**
  * Multiview's pictures on the screen: a black board under the pages (the controls, the small window, the channel
- * picker and notices draw over it), each picture its own [SurfaceView] with its channel's name at the bottom left, the
+ * picker and notices draw over it), each picture its own [SurfaceView] with no channel name on it, only the
  * buffering symbol ([BusyOverlay], when [BusySigns] says) and a plain message when it can't play; the grid's free cell
  * says "Add a channel". Every picture's corners are round ([LiveWidths.MV_RADIUS]): the board's black is drawn over
  * them, anti-aliased, as the wallpaper's rounded hole does round the guide's miniature (a shape made once per size, no
@@ -49,13 +48,6 @@ class MultiviewBoard(context: Context, private val t: Tokens) : FrameLayout(cont
         /** The picture's own area: everything in it is cut at its edges (the ring is drawn outside, by [Picture]). */
         private val content = FrameLayout(context)
         val surface = SurfaceView(context)
-        private val name = t.label(context, LiveWidths.MV_NAME_SP, t.semibold).apply {
-            setPadding(t.dp(LiveWidths.MV_NAME_PAD_X), t.dp(LiveWidths.MV_NAME_PAD_Y), t.dp(LiveWidths.MV_NAME_PAD_X), t.dp(LiveWidths.MV_NAME_PAD_Y))
-            background = GradientDrawable().apply {
-                setColor(Tokens.LOGO_BADGE_PLATE)
-                cornerRadius = t.dpf(LiveWidths.MV_NAME_RADIUS)
-            }
-        }
         private val message = t.label(context, LiveWidths.MV_MESSAGE_SP, t.semibold).apply {
             maxLines = 3
             gravity = Gravity.CENTER
@@ -95,18 +87,7 @@ class MultiviewBoard(context: Context, private val t: Tokens) : FrameLayout(cont
             content.addView(surface, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT, Gravity.CENTER))
             content.addView(message, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.CENTER))
             content.addView(busy, busy.params())
-            content.addView(name, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.START).apply {
-                leftMargin = t.dp(LiveWidths.MV_NAME_INSET)
-                bottomMargin = t.dp(LiveWidths.MV_NAME_INSET)
-                rightMargin = t.dp(LiveWidths.MV_NAME_INSET)
-            })
             addView(content, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
-        }
-
-        fun setName(text: String) {
-            if (name.text.toString() != text) name.text = text
-            val v = if (text.isEmpty()) GONE else VISIBLE
-            if (name.visibility != v) name.visibility = v
         }
 
         /** A plain message in place of the picture (null: none). */
@@ -157,14 +138,13 @@ class MultiviewBoard(context: Context, private val t: Tokens) : FrameLayout(cont
             busy.place(w / 2f, h / 2f, 0f)
         }
 
-        /** Nothing left over from the last channel: no name, message, shape or buffering symbol. */
+        /** Nothing left over from the last channel: no message, shape or buffering symbol. */
         fun clear() {
             removeCallbacks(signsCheck)
             signsDue = null
             signs.update(false, false, 0L)
             busy.show(false, null)
             setMessage(null)
-            setName("")
             aspect = 0f
             ringed = false
         }

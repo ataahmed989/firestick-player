@@ -29,6 +29,7 @@ import app.fireplayer.shell.Tokens
 import app.fireplayer.ui.FireDialog
 import app.fireplayer.ui.Glass
 import app.fireplayer.ui.GlassStyle
+import app.fireplayer.ui.SwapFade
 import app.fireplayer.ui.SidePanel
 import java.util.Date
 import java.util.concurrent.Executors
@@ -141,7 +142,14 @@ class LivePage(private val activity: Activity, private val host: Host) {
     /** The channel's logo on its plate, before its name on the details' top line (as in the guide's rows). */
     private val detailLogo = LogoView(ctx)
     private val detailChannel = t.label(ctx, 16f, t.regular, t.text)
+    /**
+     * The favorite star at the top line's end: the outline, always there, and the filled star over it, which fades in
+     * (growing a little when the viewer has just starred this channel) and out. Both in [starBox], which keeps its
+     * place on the screen while the details change width under it ([placeStar]).
+     */
     private val detailStar = android.widget.ImageView(ctx)
+    private val detailStarOn = android.widget.ImageView(ctx)
+    private val starBox = FrameLayout(ctx)
     private val detailTitle = t.label(ctx, 25f, t.bold)
     private val detailMeta = t.label(ctx, 14.5f, t.regular, t.text)
     private val detailTime = t.label(ctx, 15f)
@@ -149,6 +157,17 @@ class LivePage(private val activity: Activity, private val host: Host) {
     private val detailLeft = t.label(ctx, 15f)
     private val detailDesc = t.label(ctx, 14.5f, color = t.textMuted).apply { maxLines = 3 }
     private val detailNext = t.label(ctx, 14f, color = t.textMuted)
+    /**
+     * The details' words crossfade when they change ([SwapFade]: only their alpha moves; a held key's changes are
+     * swapped at once): the channel's (logo, name, where it is) and the programme's, each on its own, so stepping
+     * along one channel's programmes leaves its name alone.
+     */
+    private val channelFade = SwapFade(arrayOf(detailLogo, detailChannel, detailMeta), floatArrayOf(1f, 1f, LiveWidths.DETAIL_META_ALPHA)) { putChannelDetails() }
+    private val programmeFade = SwapFade(
+        arrayOf(detailTitle, detailTime, detailBar, detailLeft, detailDesc, detailNext), floatArrayOf(1f, 1f, 1f, 1f, 1f, 1f),
+    ) { putProgrammeDetails() }
+    /** A channel name too long for the guide's column scrolls in this line, over its row ([GuideView.marquee]). */
+    private val nameMarquee = NameMarquee(ctx, t)
     val guide = GuideView(ctx, t)
     private val controls = LiveControls(ctx, t)
     /** The extra row's windows and the sleep timer. */
@@ -261,10 +280,16 @@ class LivePage(private val activity: Activity, private val host: Host) {
             main.post { if (!released) then(list) }
         }
 
-        override fun groups(playlistId: String, then: (List<ChannelGroup>) -> Unit) = bg {
-            val groups = runCatching { db.groups(playlistId) }.getOrDefault(emptyList())
-            main.post { if (!released) then(groups) }
+        // The guide's own read for its groups column ([reload]): every playlist, each one's shown groups in order.
+        override fun column(then: (List<Playlist>, Map<String, List<ChannelGroup>>) -> Unit) = bg {
+            val pls = runCatching { db.playlists() }.getOrDefault(emptyList())
+            val groups = runCatching { pls.associate { it.id to db.groups(it.id) } }.getOrDefault(emptyMap())
+            main.post { if (!released) then(pls, groups) }
         }
+
+        override fun folds(): GroupColumn.Folds = sidebar.folds
+
+        override fun foldsChanged() = sidebar.foldsChanged()
 
         override fun programmes(channels: List<Channel>, from: Long, to: Long, then: (Map<ChannelKey, List<Programme>>) -> Unit) = bg {
             val map = runCatching { db.programmes(channels, from, to) }.getOrDefault(emptyMap())
@@ -310,7 +335,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
             if (url == controlsLogo) refreshControls()
         }
         // The focused channel's own: its logo shows on the plate waiting for it, or (it failed) the name moves over.
-        detailChannelObj?.let { if (it.logo == url) showDetailLogo(it) }
+        detailChannelObj?.let { if (it.logo == url && !channelFade.fadingOut) showDetailLogo(it) }
         if (loaded) overlay?.logosChanged()
         logLogos()
     }.also { LogoCache.useDisk(ctx) }
@@ -401,8 +426,16 @@ class LivePage(private val activity: Activity, private val host: Host) {
         head.addView(detailChannel, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, detailLogoH).apply {
             leftMargin = detailNameInset; rightMargin = t.dp(LiveWidths.DETAIL_STAR)
         })
+        detailStar.setImageResource(app.fireplayer.R.drawable.ic_star)
         detailStar.imageTintList = android.content.res.ColorStateList.valueOf(t.text)
-        head.addView(detailStar, FrameLayout.LayoutParams(t.dp(22), t.dp(22), Gravity.END or Gravity.CENTER_VERTICAL))
+        detailStar.alpha = LiveWidths.DETAIL_STAR_OUTLINE
+        detailStarOn.setImageResource(app.fireplayer.R.drawable.ic_star_filled)
+        detailStarOn.imageTintList = android.content.res.ColorStateList.valueOf(t.text)
+        detailStarOn.alpha = 0f
+        starBox.addView(detailStar, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        starBox.addView(detailStarOn, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        starBox.visibility = View.INVISIBLE
+        head.addView(starBox, FrameLayout.LayoutParams(t.dp(22), t.dp(22), Gravity.END or Gravity.CENTER_VERTICAL))
         details.addView(head, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, detailLogoH))
         // Full width, one line each: a new channel's text only redraws them (nothing is laid out again as focus moves).
         detailTitle.maxLines = 1
@@ -410,7 +443,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         details.addView(detailTitle, wide(top = LiveWidths.DETAIL_TITLE_GAP))
         detailMeta.maxLines = 1
         detailMeta.ellipsize = android.text.TextUtils.TruncateAt.END
-        detailMeta.alpha = 0.85f
+        detailMeta.alpha = LiveWidths.DETAIL_META_ALPHA
         details.addView(detailMeta, wide(top = 2))
         val timeRow = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -424,13 +457,26 @@ class LivePage(private val activity: Activity, private val host: Host) {
         details.addView(detailDesc, wide(top = 8))
         details.addView(detailNext, wide(top = 6))
         topRow.addView(details, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply { leftMargin = t.dp(LiveWidths.DETAILS_GAP) })
+        // The star is moved past the details' own edge while the content slides ([placeStar]): neither the details nor
+        // their row cut it there. The details still cut their lines at their own height (set once per layout).
+        topRow.clipChildren = false
+        details.clipChildren = false
+        details.addOnLayoutChangeListener { v, l, tp, r, bt, _, _, _, _ ->
+            detailsClip.set(0, 0, r - l + shift, bt - tp)
+            v.clipBounds = detailsClip
+        }
         content.addView(topRow, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, miniH))
         content.addView(guide, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT).apply { topMargin = miniH + t.dp(10) })
         // Down to the screen's bottom edge: the guide fits exactly its eight whole rows in there ([GuideView.ROWS]).
         guideLayer.addView(content, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT).apply {
             leftMargin = closedInset; topMargin = t.dp(14); rightMargin = gap
         })
+        // Over the guide, at a row's name's place while that name scrolls (moved there, never laid out per name).
+        content.addView(nameMarquee, nameMarquee.params())
+        guide.marquee = nameMarquee
         content.translationX = shift.toFloat()
+        // The star keeps its place on the screen through every frame of the content's slide.
+        content.animate().setUpdateListener { placeStar() }
         root.addView(guideLayer, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
         // Nothing to show yet: a way to add a playlist.
@@ -470,8 +516,10 @@ class LivePage(private val activity: Activity, private val host: Host) {
      * margin while the content sits [shift] to the right) or none (the grid). A layout pass when they change: once per
      * slide, never during one.
      */
-    private fun narrowDetails(on: Boolean) {
-        rightMargin(details, if (on) shift else 0)
+    private fun narrowDetails(on: Boolean): Boolean {
+        val changed = rightMargin(details, if (on) shift else 0)
+        detailsNarrow = on
+        placeStar()
         // Narrow, the progress bar is shorter, so the time and "… min left" still fit beside it.
         val bar = detailBar.layoutParams as LinearLayout.LayoutParams
         val w = t.dp(if (on) 44 else 96)
@@ -484,14 +532,33 @@ class LivePage(private val activity: Activity, private val host: Host) {
             left.leftMargin = m
             detailLeft.layoutParams = left
         }
+        // Laid out at another width in one step: the programme's words come back in softly rather than re-wrap in sight.
+        if (changed) programmeFade.dip(root.isShown)
+        return changed
     }
-    private fun narrowGuide(on: Boolean) = rightMargin(guide, if (on) shift else 0)
+    private fun narrowGuide(on: Boolean) { rightMargin(guide, if (on) shift else 0) }
 
-    private fun rightMargin(v: View, px: Int) {
+    private fun rightMargin(v: View, px: Int): Boolean {
         val lp = v.layoutParams as ViewGroup.MarginLayoutParams
-        if (lp.rightMargin == px) return
+        if (lp.rightMargin == px) return false
         lp.rightMargin = px
         v.layoutParams = lp
+        return true
+    }
+
+    private val detailsClip = android.graphics.Rect()
+
+    /** The details end [shift] short of the content's edge (the column open, or on its way either way). */
+    private var detailsNarrow = false
+
+    /**
+     * The star at the details' end stays where it is on the screen while the content slides: narrow, the details end
+     * [shift] short of the content, which itself sits up to [shift] to the right, so the star is moved by what's left of
+     * that (a transform, set with the slide's own frames). Without it the star jumped a column's width when the details
+     * changed width at the slide's start or end.
+     */
+    private fun placeStar() {
+        starBox.translationX = if (detailsNarrow) shift - content.translationX else 0f
     }
 
     /**
@@ -515,6 +582,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
             host.setRailShown(columnOpen, 0L)
             content.translationX = target
             narrowDetails(columnOpen)
+            placeStar()
             narrowGuide(columnOpen)
             // In the grid the channel names get more room.
             guide.setWideColumn(!columnOpen)
@@ -1123,7 +1191,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         // Over its own first screenful, opened on the same channel: the whole list comes in under the rows showing.
         // (Another channel is wanted by now, say one that started playing meanwhile: the list opens on that one.)
         if (extend && (target == null || target == guide.focusedChannel()?.key)) guide.extendChannels(list)
-        else guide.setChannels(list, target, reload)
+        else guide.setChannels(list, target, reload, fade = !reload)
         if (list.isEmpty()) {
             showDetailsEmpty(if (s is GuideScope.Favorites) "No favorites yet. Add one with the Favorite button in full screen." else
                 if (sync.busy) "Updating the playlist…" else "No channels here.")
@@ -1209,57 +1277,137 @@ class LivePage(private val activity: Activity, private val host: Host) {
         detailCell = cell
         prefs.focus = channel.key
         val p = cell?.programme
-        val tf = DateFormat.getTimeFormat(ctx)
         // Channel (its logo first), then its title; under it where the channel is: "Playlist • Group" (the concepts).
-        showDetailLogo(channel)
-        detailChannel.text = channel.name
-        detailStar.setImageResource(if (channel.favorite) app.fireplayer.R.drawable.ic_star_filled else app.fireplayer.R.drawable.ic_star)
-        detailStar.alpha = if (channel.favorite) 1f else 0.7f
-        detailStar.contentDescription = if (channel.favorite) "In your favorites" else "Not in your favorites"
-        detailStar.visibility = View.VISIBLE
         val playlistName = playlists.firstOrNull { it.id == channel.playlistId }?.name
         val groupName = channel.groupId?.let { groupNames[channel.playlistId to it] }
-        detailMeta.text = listOfNotNull(playlistName, groupName).joinToString("  •  ")
+        val meta = listOfNotNull(playlistName, groupName).joinToString("  •  ")
         if (p == null) {
-            detailTitle.text = channel.name
-            detailTime.text = "No programme information"
-            detailBar.visibility = View.GONE
-            detailLeft.text = ""
-            detailDesc.text = ""
-            detailNext.text = ""
+            showDetailWords(channel, channel.name, meta, channel.name, "No programme information", "", "", "", false, 0f)
             return
         }
+        val tf = DateFormat.getTimeFormat(ctx)
         val now = System.currentTimeMillis()
-        detailTitle.text = p.title.ifBlank { "Untitled" }
-        detailTime.text = "${tf.format(Date(p.start))} – ${tf.format(Date(p.stop))}"
         val onAir = p.isOn(now)
-        detailBar.visibility = if (onAir) View.VISIBLE else View.GONE
-        detailBar.fraction = ((now - p.start).toFloat() / (p.stop - p.start)).coerceIn(0f, 1f)
-        detailLeft.text = when {
+        val left = when {
             onAir -> "${(p.stop - now) / 60_000} min left"
             p.start > now -> "in ${formatDelay(p.start - now)}"
             else -> "Ended"
         }
-        detailDesc.text = p.description ?: ""
         // What's next only when there's no story to tell (the guide shows it beside this one anyway).
         val next = if (p.description.isNullOrBlank()) nextAfter(channel, p.stop) else null
-        detailNext.text = next?.let { "Next: ${it.title} · ${tf.format(Date(it.start))}" } ?: ""
+        showDetailWords(
+            channel, channel.name, meta, p.title.ifBlank { "Untitled" }, "${tf.format(Date(p.start))} – ${tf.format(Date(p.stop))}", left,
+            p.description ?: "", next?.let { "Next: ${it.title} · ${tf.format(Date(it.start))}" } ?: "",
+            onAir, ((now - p.start).toFloat() / (p.stop - p.start)).coerceIn(0f, 1f),
+        )
     }
 
     private fun showDetailsEmpty(text: String) {
         // Nothing focused: the clock's refresh mustn't bring back the previous scope's channel.
         detailChannelObj = null
         detailCell = null
-        showDetailLogo(null)
-        detailChannel.text = ""
-        detailStar.visibility = View.INVISIBLE
-        detailMeta.text = ""
-        detailTitle.text = text
-        detailTime.text = ""
-        detailBar.visibility = View.GONE
-        detailLeft.text = ""
-        detailDesc.text = ""
-        detailNext.text = ""
+        showDetailWords(null, "", "", text, "", "", "", "", false, 0f)
+    }
+
+    // The details as last asked for; [putChannelDetails] and [putProgrammeDetails] show them (at once, or when the
+    // words they replace have faded out).
+    private var dChannel: Channel? = null
+    private var dName = ""
+    private var dMeta = ""
+    private var dTitle = ""
+    private var dTime = ""
+    private var dLeft = ""
+    private var dDesc = ""
+    private var dNext = ""
+    private var dBar = false
+    private var dFraction = 0f
+    /** The channel whose star shows, and whether it's filled (null: not decided yet). */
+    private var starKey: ChannelKey? = null
+    private var starOn: Boolean? = null
+
+    /**
+     * The details' words ([channel] null: none focused, [title] says why). Words that changed crossfade, the channel's
+     * and the programme's each on their own; the same words asked for again (the clock, listings arriving) only move
+     * the minutes and the progress line on.
+     */
+    private fun showDetailWords(
+        channel: Channel?, name: String, meta: String, title: String, time: String, left: String, desc: String, next: String,
+        bar: Boolean, fraction: Float,
+    ) {
+        val channelChanged = name != dName || meta != dMeta || channel?.logo != dChannel?.logo || (channel == null) != (dChannel == null)
+        val programmeChanged = title != dTitle || time != dTime || desc != dDesc || next != dNext
+        dChannel = channel
+        dName = name
+        dMeta = meta
+        dTitle = title
+        dTime = time
+        dLeft = left
+        dDesc = desc
+        dNext = next
+        dBar = bar
+        dFraction = fraction
+        val now = android.os.SystemClock.uptimeMillis()
+        val shown = root.isShown
+        if (channelChanged) channelFade.change(now, shown) else channelFade.refresh()
+        if (programmeChanged) programmeFade.change(now, shown) else programmeFade.refresh()
+    }
+
+    private fun putChannelDetails() {
+        val ch = dChannel
+        showDetailLogo(ch)
+        setText(detailChannel, dName)
+        setText(detailMeta, dMeta)
+        val v = if (ch != null) View.VISIBLE else View.INVISIBLE
+        if (starBox.visibility != v) starBox.visibility = v
+        if (ch != null) {
+            // The same channel's star just changed (the viewer starred it): it fills with a small pop. Another channel's
+            // only fades to what that one is.
+            showStar(ch.favorite, pop = ch.key == starKey)
+            starBox.contentDescription = if (ch.favorite) "In your favorites" else "Not in your favorites"
+        }
+        starKey = ch?.key
+    }
+
+    private fun putProgrammeDetails() {
+        setText(detailTitle, dTitle)
+        setText(detailTime, dTime)
+        val v = if (dBar) View.VISIBLE else View.GONE
+        if (detailBar.visibility != v) detailBar.visibility = v
+        detailBar.fraction = dFraction
+        setText(detailLeft, dLeft)
+        setText(detailDesc, dDesc)
+        setText(detailNext, dNext)
+    }
+
+    private fun setText(v: android.widget.TextView, text: String) {
+        if (v.text.toString() != text) v.text = text
+    }
+
+    /**
+     * The filled star over the outline: there ([on]) or not, fading ([LiveWidths.DETAIL_STAR_MS], eased); with [pop]
+     * it also grows from a little smaller as it fills and shrinks as it empties. A change mid-way carries on from
+     * where the star is; it ends exactly full size and full (or gone).
+     */
+    private fun showStar(on: Boolean, pop: Boolean) {
+        val first = starOn == null
+        if (starOn == on) return
+        starOn = on
+        val v = detailStarOn
+        v.animate().cancel()
+        if (first || !root.isShown) {
+            v.alpha = if (on) 1f else 0f
+            v.scaleX = 1f
+            v.scaleY = 1f
+            return
+        }
+        val small = LiveWidths.DETAIL_STAR_FROM
+        if (on && v.alpha == 0f) {
+            v.scaleX = if (pop) small else 1f
+            v.scaleY = v.scaleX
+        }
+        val scale = if (on || !pop) 1f else small
+        v.animate().alpha(if (on) 1f else 0f).scaleX(scale).scaleY(scale)
+            .setDuration(LiveWidths.DETAIL_STAR_MS).setInterpolator(EASE).start()
     }
 
     /**
@@ -1451,6 +1599,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
         // Nothing in the hidden guide may keep or take focus: in full screen the keys come to dispatchKey.
         guideLayer.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
         activity.currentFocus?.clearFocus()
+        // The guide fades away as one picture: its highlight doesn't fade inside it (that would draw it again per frame).
+        guide.settleFocus()
         guideLayer.animate().cancel()
         host.setChromeVisible(false)
         placedAt = null
@@ -1513,6 +1663,10 @@ class LivePage(private val activity: Activity, private val host: Host) {
             else focusBeforeFull?.let { k -> if (guide.focusedChannel()?.key != k) guide.focusChannel(k) }
         }
         guide.requestFocus()
+        // The guide fades in as one picture: everything in it is in place first, nothing fades inside it.
+        guide.settleFocus()
+        channelFade.settle()
+        programmeFade.settle()
         scheduleIdle()
     }
 
@@ -2399,6 +2553,9 @@ class ProgressLine(context: Context, private val t: Tokens) : View(context) {
         set(v) { field = v; invalidate() }
     private val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
     private val r = RectF()
+
+    /** Fading with the words beside it, it's drawn at that strength as it is (no picture of it is made to fade). */
+    override fun hasOverlappingRendering() = false
 
     override fun onDraw(canvas: android.graphics.Canvas) {
         // A blue bar on a light track (the concepts).

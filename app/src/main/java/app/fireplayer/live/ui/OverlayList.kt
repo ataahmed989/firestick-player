@@ -26,7 +26,8 @@ import kotlin.math.floor
 /**
  * One column of the channel list over the picture ([LiveOverlay]): a header line, then its rows, drawn by this one view
  * as the guide draws its own (only the rows on screen; nothing made per frame: names and titles are cut to fit once and
- * kept). [Kind.GROUPS]: a playlist's groups, as the guide's groups column lists them. [Kind.CHANNELS]: the guide's
+ * kept). [Kind.GROUPS]: every playlist with its groups, as the guide's groups column lists them (a playlist's heading
+ * semibold with its arrow, its lists under its name). [Kind.CHANNELS]: the guide's
  * channel rows (number, logo, name, the programme on now under it with its progress line; the playing one blue with
  * its ▶). [Kind.PROGRAMMES]: a channel's programmes, start time and title, the one on now blue, under a header of the
  * channel's logo and name.
@@ -62,9 +63,9 @@ internal class OverlayList(context: Context, private val t: Tokens, val kind: Ki
     var mark = -1
         set(v) { if (field != v) { field = v; invalidate() } }
 
-    /** A row drawn semibold (Search, at the groups' top). */
-    var bold = -1
-        set(v) { if (field != v) { field = v; names.fill(null); invalidate() } }
+    /** The playlist's heading drawn blue with [mark]: the one holding the group shown (-1: none). */
+    var markHead = -1
+        set(v) { if (field != v) { field = v; invalidate() } }
 
     /** The row whose name scrolls in the marquee line over it: its own name is left out meanwhile. */
     var marqueeRow = -1
@@ -82,6 +83,8 @@ internal class OverlayList(context: Context, private val t: Tokens, val kind: Ki
     private var emptyText = ""
 
     private var labels: List<String> = emptyList()
+    /** What each row of the groups is ([OverlayRules.Row]): how it's drawn. */
+    private var rows: List<OverlayRules.Row> = emptyList()
     var channels: List<Channel> = emptyList()
         private set
     private var programmes: List<Programme> = emptyList()
@@ -138,6 +141,9 @@ internal class OverlayList(context: Context, private val t: Tokens, val kind: Ki
     private val progressH = t.dpf(LiveWidths.OV_PROGRESS_H)
     private val progressGap = t.dpf(LiveWidths.OV_PROGRESS_GAP.toFloat())
     private val pillRadius = t.dpf(LiveWidths.OV_PILL_RADIUS)
+    private val chevron = t.dpf(LiveWidths.OV_CHEVRON.toFloat())
+    /** From a heading's start to its name; the lists under it start there too. */
+    private val headInset = chevron + t.dpf(LiveWidths.OV_CHEVRON_GAP.toFloat())
     private val pillInset = t.dpf(1.5f)
     private val markerGap = t.dpf(7f)
     private val markerW = t.dpf(8f)
@@ -164,6 +170,12 @@ internal class OverlayList(context: Context, private val t: Tokens, val kind: Ki
     /** The widest digit in the numbers' face (measured once). */
     private val digitW = FloatArray(10).also { numberPaint.getTextWidths("0123456789", it) }.max()
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val chevronPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = t.dpf(LiveWidths.OV_CHEVRON_STROKE)
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+    }
     private val plates = PlateDrawer(t.density)
     private val headPlates = PlateDrawer(t.density, LiveWidths.DETAIL_LOGO_PAD_X, LiveWidths.DETAIL_LOGO_PAD_Y)
     private val marker = Path()
@@ -219,10 +231,15 @@ internal class OverlayList(context: Context, private val t: Tokens, val kind: Ki
         invalidate()
     }
 
-    fun setGroups(list: List<String>, select: Int) {
+    /**
+     * The groups' rows ([list]'s words, [kinds] what each is), [select] selected: a third of the way down, or with
+     * [first] on top (a playlist opened or folded: the rows above it stay where they are).
+     */
+    fun setGroups(list: List<String>, kinds: List<OverlayRules.Row>, select: Int, first: Int = -1) {
         labels = list
+        rows = kinds
         resetRows(list.size)
-        place(select)
+        place(select, first)
     }
 
     fun setChannels(list: List<Channel>, select: Int) {
@@ -329,12 +346,14 @@ internal class OverlayList(context: Context, private val t: Tokens, val kind: Ki
         Kind.PROGRAMMES -> ""
     }
 
-    fun nameFace(row: Int): Typeface = if (row == bold) t.semibold else t.regular
+    /** Search, All playlists and a playlist's heading are semibold (the guide's column); the lists under one regular. */
+    fun nameFace(row: Int): Typeface =
+        if (kind == Kind.GROUPS && rows.getOrNull(row).let { it != null && it != OverlayRules.Row.ENTRY }) t.semibold else t.regular
 
     /** Where row [row]'s name goes (this view's coordinates, at rest): the room it has, one line tall. */
     fun nameBox(row: Int, out: RectF) {
         val rTop = rowsTop + row * rowH - scrollY
-        val x = nameX()
+        val x = nameX(row)
         val cy = if (kind == Kind.CHANNELS) rTop + rowH * LiveWidths.OV_NAME_AT else rTop + rowH / 2
         val half = namePaint.fontSpacing / 2
         out.set(x, cy - half, x + nameRoomOf(row), cy + half)
@@ -342,13 +361,22 @@ internal class OverlayList(context: Context, private val t: Tokens, val kind: Ki
 
     /** The room row [row]'s name has: on the playing channel's, less the ▶ after it. */
     private fun nameRoomOf(row: Int): Float =
-        if (kind == Kind.CHANNELS && keys.getOrNull(row) == playingKey) (nameRoom() - markerGap - markerW).coerceAtLeast(0f) else nameRoom()
+        if (kind == Kind.CHANNELS && keys.getOrNull(row) == playingKey) (nameRoom() - markerGap - markerW).coerceAtLeast(0f) else nameRoom(row)
 
     private fun rowX(): Float = padX + rowPad
 
     private fun nameX(): Float = if (kind == Kind.CHANNELS) rowX() + numberW + gap + logoW + gap else rowX()
 
     private fun nameRoom(): Float = (width - padX - rowPad - nameX()).coerceAtLeast(0f)
+
+    /** Row [row]'s name's start: in the groups, a playlist's and the lists under it after the arrow's room. */
+    private fun nameX(row: Int): Float {
+        if (kind != Kind.GROUPS) return nameX()
+        val k = rows.getOrNull(row)
+        return if (k == null || k == OverlayRules.Row.SEARCH || k == OverlayRules.Row.ALL) rowX() else rowX() + headInset
+    }
+
+    private fun nameRoom(row: Int): Float = (width - padX - rowPad - nameX(row)).coerceAtLeast(0f)
 
     // ---- Drawing ---------------------------------------------------------------------------------------------------
 
@@ -428,12 +456,30 @@ internal class OverlayList(context: Context, private val t: Tokens, val kind: Ki
     }
 
     private fun drawGroup(canvas: Canvas, r: Int, top: Float) {
-        if (r == marqueeRow) return
+        val k = rows[r]
+        val head = k == OverlayRules.Row.HEAD_OPEN || k == OverlayRules.Row.HEAD_FOLDED
         val onPill = active && r == focus
+        val color = if (onPill || r == mark || (head && r == markHead)) t.accent else t.text
+        val cy = top + rowH / 2
+        if (head) {
+            // The arrow before a playlist's name: pointing down while it's open, right while folded.
+            chevronPaint.color = color
+            val cx = rowX() + chevron / 2
+            val a = chevron * 0.3f
+            val b = chevron * 0.16f
+            if (k == OverlayRules.Row.HEAD_OPEN) {
+                canvas.drawLine(cx - a, cy - b, cx, cy + b, chevronPaint)
+                canvas.drawLine(cx, cy + b, cx + a, cy - b, chevronPaint)
+            } else {
+                canvas.drawLine(cx - b, cy - a, cx + b, cy, chevronPaint)
+                canvas.drawLine(cx + b, cy, cx - b, cy + a, chevronPaint)
+            }
+        }
+        if (r == marqueeRow) return
         namePaint.typeface = nameFace(r)
-        namePaint.color = if (onPill || r == mark) t.accent else t.text
-        val name = names[r] ?: TextUtils.ellipsize(labels[r], namePaint, nameRoom(), TextUtils.TruncateAt.END).also { names[r] = it }
-        canvas.drawText(name, 0, name.length, rowX(), baseline(top + rowH / 2, namePaint), namePaint)
+        namePaint.color = color
+        val name = names[r] ?: TextUtils.ellipsize(labels[r], namePaint, nameRoom(r), TextUtils.TruncateAt.END).also { names[r] = it }
+        canvas.drawText(name, 0, name.length, nameX(r), baseline(cy, namePaint), namePaint)
     }
 
     private fun drawChannel(canvas: Canvas, r: Int, top: Float, now: Long) {

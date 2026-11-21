@@ -1,6 +1,5 @@
 package app.fireplayer.live.ui
 
-import app.fireplayer.live.ChannelGroup
 import app.fireplayer.live.GuideScope
 
 /**
@@ -9,8 +8,8 @@ import app.fireplayer.live.GuideScope
  * how its search page starts (the user's answers, Design-References/tivimate-2026-11-20/REQUEST.md).
  *
  * Steps, from the picture outwards: [Level.CLOSED], [Level.CHANNELS] (the group's channels, the selection in them; in
- * full screen the focused channel's programmes beside them), [Level.GROUPS] (the playlist's groups, the selection in
- * them, the focused group's channels beside them).
+ * full screen the focused channel's programmes beside them), [Level.GROUPS] (every playlist with its groups, as the
+ * guide's groups column lists them, the selection in them, the focused group's channels beside them).
  */
 object OverlayRules {
 
@@ -67,28 +66,83 @@ object OverlayRules {
     /** Where the channels column stands: at the screen's edge, or beside the groups column ([groupsW] wide). */
     fun channelsX(level: Level, groupsW: Float): Float = if (level == Level.GROUPS) groupsW else 0f
 
-    /** A row of the groups column: its words and the list it shows (null: Search, which opens the search page). */
-    class Entry(val label: String, val scope: GuideScope?) {
-        val isSearch: Boolean get() = scope == null
+    /** What a row of the groups column is: Search, All playlists, a playlist's heading (open or folded), or a list under one. */
+    enum class Row { SEARCH, ALL, HEAD_OPEN, HEAD_FOLDED, ENTRY }
+
+    /**
+     * A row of the groups column: its words, the list it shows ([scope]; none for Search and a playlist's heading) and,
+     * for a heading, its playlist ([playlistId]).
+     */
+    class Entry(val label: String, val scope: GuideScope?, val row: Row, val playlistId: String? = null) {
+        val isSearch: Boolean get() = row == Row.SEARCH
+        val isHead: Boolean get() = row == Row.HEAD_OPEN || row == Row.HEAD_FOLDED
     }
 
     /**
-     * The groups column, as the guide's shows a playlist's (Favorites, All channels, its groups in their order); picking
-     * for Multiview, "Search" at its top.
+     * The groups column: the guide's own list ([GroupColumn.items]: All playlists, every playlist as a heading with its
+     * Favorites, All channels and groups under it while it's open), row for row; picking for Multiview, "Search" at
+     * its top.
      */
-    fun entries(picking: Boolean, playlistId: String, groups: List<ChannelGroup>): List<Entry> = buildList {
-        if (picking) add(Entry(SEARCH, null))
-        add(Entry("Favorites", GuideScope.Favorites(playlistId)))
-        add(Entry("All channels", GuideScope.AllChannels(playlistId)))
-        for (g in groups) if (!g.hidden && g.playlistId == playlistId) add(Entry(g.name, GuideScope.Group(playlistId, g.id)))
+    fun entries(picking: Boolean, items: List<GroupColumn.Item>): List<Entry> {
+        val out = ArrayList<Entry>(items.size + 1)
+        if (picking) out.add(Entry(SEARCH, null, Row.SEARCH))
+        for (item in items) {
+            val label = GroupColumn.labelOf(item)
+            out.add(
+                when (item) {
+                    GroupColumn.Item.All -> Entry(label, GuideScope.AllPlaylists, Row.ALL)
+                    is GroupColumn.Item.Head -> Entry(label, null, if (item.expanded) Row.HEAD_OPEN else Row.HEAD_FOLDED, item.playlist.id)
+                    is GroupColumn.Item.Entry -> Entry(label, item.scope, Row.ENTRY)
+                },
+            )
+        }
+        return out
     }
 
-    /** The row of [scope] in [entries]; else the first that isn't Search; -1 when there's none. */
+    /**
+     * The row the groups' selection opens on: [scope]'s; else its playlist's heading (the group isn't listed: hidden,
+     * or its playlist folded); else the first that isn't Search; -1 when there's none.
+     */
     fun rowOf(entries: List<Entry>, scope: GuideScope?): Int {
-        val i = if (scope == null) -1 else entries.indexOfFirst { it.scope == scope }
-        if (i >= 0) return i
+        if (scope != null) {
+            val i = entries.indexOfFirst { it.scope == scope }
+            if (i >= 0) return i
+            val pl = GroupColumn.playlistOf(scope)
+            val h = if (pl == null) -1 else entries.indexOfFirst { it.isHead && it.playlistId == pl }
+            if (h >= 0) return h
+        }
         return entries.indexOfFirst { !it.isSearch }
     }
+
+    /** The row drawn blue: [scope]'s own, the group whose channels show (-1: not listed). */
+    fun markOf(entries: List<Entry>, scope: GuideScope?): Int = if (scope == null) -1 else entries.indexOfFirst { it.scope == scope }
+
+    /** The playlist's heading drawn blue with it: the one holding [scope] (the playlist in use, as the guide marks it). */
+    fun headMarkOf(entries: List<Entry>, scope: GuideScope?): Int {
+        val pl = scope?.let { GroupColumn.playlistOf(it) } ?: return -1
+        return entries.indexOfFirst { it.isHead && it.playlistId == pl }
+    }
+
+    /** What OK does on a row of the groups: the search page, the playlist opens or folds, or the row's channels. */
+    enum class GroupOk { SEARCH, FOLD, ENTER }
+
+    fun okOnGroupRow(entry: Entry): GroupOk = when {
+        entry.isSearch -> GroupOk.SEARCH
+        entry.isHead -> GroupOk.FOLD
+        else -> GroupOk.ENTER
+    }
+
+    /**
+     * Right on a row of the groups, as in the guide's column: a folded playlist opens (the selection stays on it);
+     * from any other row, to the channels.
+     */
+    fun rightFolds(entry: Entry?): Boolean = entry?.row == Row.HEAD_FOLDED
+
+    /** Left on a row of the groups, as in the guide's column: an open playlist folds; else nothing. */
+    fun leftFolds(entry: Entry?): Boolean = entry?.row == Row.HEAD_OPEN
+
+    /** The groups column's heading: an only playlist's name, else "Playlists" (it lists them all). */
+    fun groupsHeader(names: List<String>): String = names.singleOrNull() ?: PLAYLISTS
 
     /** The channel row a list opens on: [wanted]'s, else the first; -1 for an empty list. */
     fun <T, K> focusIn(list: List<T>, wanted: K?, keyOf: (T) -> K): Int {
@@ -168,4 +222,5 @@ object OverlayRules {
     const val KEYBOARD_ON_OPEN = false
 
     const val SEARCH = "Search"
+    const val PLAYLISTS = "Playlists"
 }

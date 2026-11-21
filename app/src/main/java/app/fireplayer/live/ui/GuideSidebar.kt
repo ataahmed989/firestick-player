@@ -21,6 +21,7 @@ import app.fireplayer.R
 import app.fireplayer.live.ChannelGroup
 import app.fireplayer.live.GuideScope
 import app.fireplayer.live.Playlist
+import app.fireplayer.live.ui.GroupColumn.Item
 import app.fireplayer.shell.Tokens
 import app.fireplayer.ui.ListMath
 
@@ -41,17 +42,12 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
         fun onHold(scope: GuideScope.Group, name: String, row: View)
     }
 
-    sealed class Item {
-        object All : Item()
-        data class Head(val playlist: Playlist, val expanded: Boolean) : Item()
-        data class Entry(val scope: GuideScope, val label: String) : Item()
-    }
-
     var callbacks: Callbacks? = null
     private var items: List<Item> = emptyList()
     private var playlists: List<Playlist> = emptyList()
     private var groups: Map<String, List<ChannelGroup>> = emptyMap()
-    private val expanded = HashSet<String>()
+    /** Which playlists are open: the list over the picture's groups column shows the same ([GroupColumn.Folds]). */
+    val folds = GroupColumn.Folds()
     var current: GuideScope = GuideScope.AllPlaylists
         private set
     private val main = Handler(Looper.getMainLooper())
@@ -80,8 +76,7 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
         this.groups = groups
         current = scope
         // The playlist holding the current scope starts open.
-        playlistOf(scope)?.let { expanded += it }
-        if (expanded.isEmpty() && playlists.size == 1) expanded += playlists[0].id
+        folds.starting(playlists, scope)
         // An update arriving while the viewer is in this column (a playlist or its guide finished loading) must not
         // move them: the row they're on is found again by its identity.
         val focusedKey = focusedChild?.let { getChildAdapterPosition(it) }?.let { items.getOrNull(it) }?.let { keyOf(it) }
@@ -104,7 +99,7 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
         if (i < 0) {
             // Its playlist was folded: open it, so focus lands on the current entry (not "All playlists", whose
             // preview would switch the scope).
-            playlistOf(current)?.let { if (expanded.add(it)) rebuild() }
+            playlistOf(current)?.let { if (folds.open(it)) rebuild() }
             i = items.indexOfFirst { scopeOf(it) == current }.coerceAtLeast(0)
         }
         (layoutManager as LinearLayoutManager).scrollToPositionWithOffset(i, height / 3)
@@ -186,25 +181,18 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
         return landing
     }
 
+    /** A playlist was opened or folded in the list over the picture ([folds]): this column shows it too. */
+    fun foldsChanged() {
+        if (items != buildItems()) rebuild()
+    }
+
     private fun rebuild() {
         items = buildItems()
         @Suppress("NotifyDataSetChanged")
         adapter?.notifyDataSetChanged()
     }
 
-    private fun buildItems(): List<Item> =
-        buildList {
-            add(Item.All)
-            for (p in playlists) {
-                val open = p.id in expanded
-                add(Item.Head(p, open))
-                if (open) {
-                    add(Item.Entry(GuideScope.Favorites(p.id), "Favorites"))
-                    add(Item.Entry(GuideScope.AllChannels(p.id), "All channels"))
-                    for (g in groups[p.id].orEmpty()) add(Item.Entry(GuideScope.Group(p.id, g.id), g.name))
-                }
-            }
-        }
+    private fun buildItems(): List<Item> = GroupColumn.items(playlists, groups, folds)
 
     /** A row's identity across updates (RecyclerView keeps the focused row by it). */
     private fun keyOf(item: Item): String = when (item) {
@@ -218,18 +206,9 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
     private val ids = HashMap<String, Long>()
     private fun idOf(item: Item): Long = ids.getOrPut(keyOf(item)) { ids.size + 1L }
 
-    private fun scopeOf(item: Item): GuideScope? = when (item) {
-        Item.All -> GuideScope.AllPlaylists
-        is Item.Entry -> item.scope
-        is Item.Head -> null
-    }
+    private fun scopeOf(item: Item): GuideScope? = GroupColumn.scopeOf(item)
 
-    private fun playlistOf(scope: GuideScope): String? = when (scope) {
-        GuideScope.AllPlaylists -> null
-        is GuideScope.AllChannels -> scope.playlistId
-        is GuideScope.Favorites -> scope.playlistId
-        is GuideScope.Group -> scope.playlistId
-    }
+    private fun playlistOf(scope: GuideScope): String? = GroupColumn.playlistOf(scope)
 
     private fun pick(scope: GuideScope, enter: Boolean) {
         main.removeCallbacks(showPending)
@@ -247,7 +226,7 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
         val pos = items.indexOfFirst { it is Item.Head && it.playlist.id == id }
         if (pos < 0) return
         val before = items.size
-        if (!expanded.remove(id)) expanded += id
+        folds.toggle(id)
         items = buildItems()
         val delta = items.size - before
         adapter?.notifyItemChanged(pos)
@@ -341,7 +320,10 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
         }
     }
 
-    private inner class Holder(val row: LinearLayout, val label: TextView, val chevron: ImageView) : ViewHolder(row)
+    private inner class Holder(val row: LinearLayout, val label: TextView, val chevron: ImageView) : ViewHolder(row) {
+        /** The playlist whose heading this row last showed (null: another kind of row): its arrow turns, others are set. */
+        var head: String? = null
+    }
 
     private inner class Adapter : RecyclerView.Adapter<Holder>() {
         init { setHasStableIds(true) }
@@ -397,13 +379,18 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
             h.row.setPadding(indent, 0, t.dp(10), 0)
             h.label.setTextSize(TypedValue.COMPLEX_UNIT_SP, if (item is Item.Entry) ENTRY_SP else HEAD_SP)
             h.label.typeface = if (item is Item.Entry) t.regular else t.semibold
-            h.label.text = when (item) {
-                Item.All -> "All playlists"
-                is Item.Head -> item.playlist.name
-                is Item.Entry -> item.label
-            }
+            h.label.text = GroupColumn.labelOf(item)
             h.chevron.visibility = if (item is Item.Head) View.VISIBLE else View.GONE
-            if (item is Item.Head) h.chevron.rotation = if (item.expanded) 0f else -90f
+            // The same playlist's heading bound again because it opened or folded: its arrow turns there (from where it
+            // is, when pressed again mid-turn); any other row's is simply set.
+            h.chevron.animate().cancel()
+            if (item is Item.Head) {
+                val turn = if (item.expanded) 0f else -90f
+                if (h.head == item.playlist.id && h.chevron.rotation != turn && isShown) {
+                    h.chevron.animate().rotation(turn).setDuration(LiveWidths.CHEVRON_MS).setInterpolator(TURN).start()
+                } else h.chevron.rotation = turn
+                h.head = item.playlist.id
+            } else h.head = null
             // Blue: the entry the guide shows, and the playlist in use, the one holding it (user). With All playlists in
             // use, its own row. Rebound whenever the current entry changes, so the blue follows it.
             h.row.isSelected = when (item) {
@@ -487,6 +474,7 @@ class GuideSidebar(context: Context, private val t: Tokens) : RecyclerView(conte
     private val press = PressHold(android.view.ViewConfiguration.getLongPressTimeout().toLong())
 
     private companion object {
+        val TURN = android.view.animation.DecelerateInterpolator(1.5f)
         /** A wrap to a row far away glides only this many rows (the rest is a jump). */
         const val WRAP_ROWS = 3
 

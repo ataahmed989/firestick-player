@@ -255,7 +255,6 @@ class Multiview(private val activity: Activity, private val t: Tokens, private v
 
     private fun addTile(ch: Channel, pl: Playlist): Tile {
         val tile = Tile(nextId++, ch, pl, board().take())
-        tile.picture.setName(ch.name)
         model.add(tile, prefs.multiviewLarge)
         if (running) startTile(tile)
         refresh(tile)
@@ -333,7 +332,6 @@ class Multiview(private val activity: Activity, private val t: Tokens, private v
         closePicker()
         tile.channel = ch
         tile.playlist = pl
-        tile.picture.setName(ch.name)
         tile.picture.setMessage(null)
         if (running) {
             tile.limited = false
@@ -343,7 +341,7 @@ class Multiview(private val activity: Activity, private val t: Tokens, private v
         applyPlayers()
     }
 
-    /** [tile]'s name, message and buffering symbol as its player says (on its news, never per frame). */
+    /** [tile]'s message and buffering symbol as its player says (on its news, never per frame). */
     private fun refresh(tile: Tile) {
         val pic = tile.picture
         if (tile.limited) {
