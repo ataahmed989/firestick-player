@@ -35,6 +35,7 @@ import app.fireplayer.playback.PlayerHost
 import app.fireplayer.player.PausedRoom
 import app.fireplayer.player.PictureFit
 import app.fireplayer.shell.NavRail
+import app.fireplayer.shell.RailShape
 import app.fireplayer.shell.Tokens
 import app.fireplayer.shell.WallpaperView
 import app.fireplayer.subs.SubtitlePresets
@@ -698,7 +699,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
 
     private fun showRecentServices() {
         recentServices = Services.decode(Prefs(this).recentServices)
-        rail.setServices(recentServices.map { it.label to iconOf(it) })
+        rail.setServices(recentServices.map { NavRail.ServiceTab(it.label, iconOf(it), restOf(it)) })
     }
 
     private fun iconOf(service: Service): Int = when (service) {
@@ -709,11 +710,18 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         Service.APPLE_TV -> R.drawable.ic_service_apple_tv
     }
 
+    /** A service's rail icon at rest: Disney's D light blue, HBO Max and Apple TV white; Hulu and Netflix in their own colours. */
+    private fun restOf(service: Service): Int? = when (service) {
+        Service.DISNEY -> RailShape.SERVICE_LIGHT_BLUE
+        Service.HBO_MAX, Service.APPLE_TV -> RailShape.SERVICE_WHITE
+        Service.HULU, Service.NETFLIX -> null
+    }
+
     /** [s]'s page, on the rail's first service tab: it becomes the service visited last (once in the list). */
     private fun showService(s: Service) {
         recentServices = Services.visited(recentServices, s)
         Prefs(this).recentServices = Services.encode(recentServices)
-        rail.setServices(recentServices.map { it.label to iconOf(it) })
+        rail.setServices(recentServices.map { NavRail.ServiceTab(it.label, iconOf(it), restOf(it)) })
         service = s
         showTab(NavRail.Tab.SERVICE_1)
     }

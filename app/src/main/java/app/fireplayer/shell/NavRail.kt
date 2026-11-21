@@ -223,7 +223,7 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
             setPadding(t.dp(11), 0, t.dp(12), 0)
             icon = ImageView(context).apply {
                 setImageResource(tab.icon)
-                // A service's icon keeps its own colours.
+                // A service's icon has its own colours ([TabRow.showTint]).
                 if (!tab.isService) imageTintList = colors
                 isDuplicateParentStateEnabled = true
             }
@@ -254,6 +254,14 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
     private inner class TabRow(context: Context) : LinearLayout(context) {
         lateinit var icon: ImageView
         lateinit var label: TextView
+        /** A service's tab: its icon's colour at rest (null: the icon's own colours); dark on the white while focused. */
+        var service: ServiceTab? = null
+
+        /** A service's icon in its resting colour, or dark on the tab's white the moment the tab holds focus. */
+        fun showTint() {
+            val s = service ?: return
+            icon.imageTintList = if (isFocused) serviceFocused else s.rest?.let { ColorStateList.valueOf(it) }
+        }
 
         init {
             // No background of its own any more: without this Android would draw its own highlight on the chosen tab.
@@ -264,6 +272,7 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
 
         override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: Rect?) {
             super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
+            showTint()
             wake()
         }
     }
@@ -305,16 +314,19 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
     }
 
     /**
-     * The streaming-service pages visited last, newest first (each one's name and icon): a tab each under Live TV,
-     * with the rail's own focus, labels and motion. Tabs beyond those given stay as they are (the list only grows).
+     * The streaming-service pages visited last, newest first: a tab each under Live TV, with the rail's own focus,
+     * labels and motion. Tabs beyond those given stay as they are (the list only grows).
      */
-    fun setServices(services: List<Pair<String, Int>>) {
+    fun setServices(services: List<ServiceTab>) {
         for ((i, tab) in SERVICE_TABS.withIndex()) {
             val row = items[tab] ?: continue
-            val (name, icon) = services.getOrNull(i) ?: continue
-            row.contentDescription = name
-            row.label.text = name
-            row.icon.setImageResource(icon)
+            val s = services.getOrNull(i) ?: continue
+            if (row.service == s) continue
+            row.service = s
+            row.contentDescription = s.name
+            row.label.text = s.name
+            row.icon.setImageResource(s.icon)
+            row.showTint()
             row.visibility = VISIBLE
         }
     }
@@ -933,6 +945,14 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
         override fun unscheduleDrawable(who: Drawable, what: Runnable) = unscheduleSelf(what)
     }
 
+    /**
+     * A streaming service's tab: its name, its icon (a one-colour shape, or a mark in its own colours) and the colour
+     * the icon is drawn in at rest ([rest]; null: its own colours). Focused, every one is [RailShape.SERVICE_FOCUSED].
+     */
+    data class ServiceTab(val name: String, val icon: Int, val rest: Int?)
+
+    private val serviceFocused = ColorStateList.valueOf(RailShape.SERVICE_FOCUSED)
+
     companion object {
         /** The tabs of the streaming-service pages visited last, newest first. */
         val SERVICE_TABS = listOf(Tab.SERVICE_1, Tab.SERVICE_2)
@@ -970,6 +990,12 @@ object RailShape {
     const val MARK_DP = 30
     const val MARK_WIDE_DP = 38
     const val NAME_SP = 24f
+
+    /** A service's icon on a focused tab's white: dark, whatever its resting colour. */
+    const val SERVICE_FOCUSED = 0xFF10141A.toInt()
+    /** The resting colours of the one-colour service icons: Disney's light-blue D; white (HBO Max, Apple TV). */
+    const val SERVICE_LIGHT_BLUE = 0xFF8CCBFF.toInt()
+    const val SERVICE_WHITE = 0xFFFFFFFF.toInt()
 
     /** Classic: a little darker than the classic wallpaper along the screen's left edge (about #0C1117). */
     const val CLASSIC_FILL = 0xFF080B0F.toInt()

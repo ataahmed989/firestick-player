@@ -1523,7 +1523,7 @@ class VodPage(
                 // Not laid out yet: bound once the column's layout has placed it.
                 tops[j] < 0f -> Unit
                 j in bound -> {
-                    val range = RowMath.boundCards(row.chosen, row.items.size, after = VodSizes.boundAfter(row.style, row.large))
+                    val range = boundCards(row)
                     if (range != row.boundRange) row.bindImages(range)
                 }
                 abs(j - k) > 2 -> if (row.boundRange != IntRange.EMPTY) row.releaseImages()
@@ -1531,11 +1531,16 @@ class VodPage(
         }
         // Ahead, to disk only: the two cards after the chosen row's window and the first of the row after next.
         vis.getOrNull(k)?.let { row ->
-            val end = RowMath.boundCards(row.chosen, row.items.size, after = VodSizes.boundAfter(row.style, row.large)).last
+            val end = boundCards(row).last
             for (i in end + 1..end + 2) row.cards.getOrNull(i)?.let { ImageLoader.prefetch(pictureOf(row, it)) }
         }
         vis.getOrNull(k + 2)?.let { row -> row.cards.take(8).forEach { ImageLoader.prefetch(pictureOf(row, it)) } }
     }
+
+    /** The cards of [row] that hold pictures: those near the chosen one, or all of a row whose cards all show. */
+    private fun boundCards(row: TitleRow): IntRange =
+        if (VodSizes.still(row.style)) RowMath.boundCards(0, row.items.size, after = row.items.size)
+        else RowMath.boundCards(row.chosen, row.items.size, after = VodSizes.boundAfter(row.style, row.large))
 
     private fun pictureOf(row: TitleRow, card: Card): String? =
         if (row.style == RowStyle.WIDE) wideArt(card) else card.title.poster

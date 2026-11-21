@@ -334,9 +334,10 @@ internal object VodSizes {
     const val GRID_COLUMNS = 5
     const val GRID_GAP = 18f
     const val GRID_ROW_GAP = 30f
-    const val GRID_TOP = 16f
     val GRID_POSTER_W: Float = ((SCREEN_W - CONTENT_SCREEN_X - RIGHT_MARGIN - (GRID_COLUMNS - 1) * GRID_GAP) / GRID_COLUMNS).roundToInt().toFloat()
     val GRID_POSTER_H: Float = (GRID_POSTER_W * 4f / 3f).roundToInt().toFloat()
+    /** Above the first row of posters: the chosen one's growth (about its middle) and its ring show whole under the name line. */
+    val GRID_TOP: Float = ceil(GRID_POSTER_H * GROW / 2f + RING + 1f)
 
     // "Couldn't load titles": the message, Try again (its padding) and the gap between.
     const val TRY_PAD_X = 22f
@@ -688,8 +689,13 @@ internal object VodSizes {
 
     // ---- Streaming services: the logo cards, and a service page's wordmark in its name line ----
 
-    /** Logo cards across the page: all five show, the chosen one grown. */
+    /** Logo cards across the page: all five show at once and stay where they are (the row never moves sideways). */
     const val LOGO_ACROSS = 5
+    /**
+     * How much bigger the chosen logo card is. It grows about its middle, so less than [GROW]: its growth and its ring
+     * stay inside the [GAP] to the cards beside it.
+     */
+    const val LOGO_GROW = 0.10f
     /** A logo card's height for its width. */
     const val LOGO_SHAPE = 0.5f
     /** How much of a logo card's width and height its wordmark may take. */
@@ -704,8 +710,14 @@ internal object VodSizes {
     /** A logo card's name, shown until its wordmark comes (and for a brand TMDB has no wordmark for). */
     val LOGO_NAME = TextStyle(16f, Weight.BOLD)
 
-    /** A logo card's width: [LOGO_ACROSS] fill the rows' width with the chosen one grown. */
-    fun logoW(): Float = (tabHeaderW() - (LOGO_ACROSS - 1) * GAP) / (LOGO_ACROSS + GROW)
+    /** A logo card's width: [LOGO_ACROSS] share the rows' width (the content's left edge to the right margin), [GAP] apart. */
+    fun logoW(): Float = (tabHeaderW() - (LOGO_ACROSS - 1) * GAP) / LOGO_ACROSS
+
+    /**
+     * A row whose cards stay where they are: all of them show at once, Left and Right only move focus, and the chosen
+     * one grows about its middle with nothing moving along for it.
+     */
+    fun still(style: RowStyle): Boolean = style == RowStyle.LOGO
 
     // ---- Per row style ----
     // [large]: the browse pages' cards ([BROWSE_POSTER_W], [BROWSE_WIDE_W]); else the title page's.
@@ -744,10 +756,14 @@ internal object VodSizes {
     /** From one item's left edge to the next one's. */
     fun pitch(style: RowStyle, large: Boolean = false): Float = itemW(style, large) + GAP
 
-    fun grow(style: RowStyle): Float = if (isChips(style)) GROW_CHIP else GROW
+    fun grow(style: RowStyle): Float = when {
+        isChips(style) -> GROW_CHIP
+        style == RowStyle.LOGO -> LOGO_GROW
+        else -> GROW
+    }
 
-    /** How far the cards after the chosen one move along to make room for it as it grows. */
-    fun extra(style: RowStyle, large: Boolean = false): Float = cardW(style, large) * grow(style)
+    /** How far the cards after the chosen one move along to make room for it as it grows (none in a [still] row). */
+    fun extra(style: RowStyle, large: Boolean = false): Float = if (still(style)) 0f else cardW(style, large) * grow(style)
 
     /** Where an item grows from (its left edge and this height): the middle of its picture. */
     fun pivotY(style: RowStyle, large: Boolean = false): Float = pictureH(style, large) / 2f
@@ -759,17 +775,19 @@ internal object VodSizes {
     fun stripH(style: RowStyle, large: Boolean = false): Float =
         cardTop(style, large) + cardH(style, large) + (cardH(style, large) - pivotY(style, large)) * grow(style)
     fun stripTop(): Float = ROW_TITLE + ROW_TITLE_GAP
+    /** The strip's top in its row: under the title, or (a row without one) under room for the chosen card's ring. */
+    fun stripTop(header: Boolean): Float = if (header) stripTop() else RING + 1f
 
     /** A row's band: title, gap, strip and the gap under it. */
     fun bandH(style: RowStyle): Float = bandH(style, header = true, gapBelow = ROW_GAP)
 
     /** A row's band with or without its title line ([header]), and [gapBelow] under it. */
     fun bandH(style: RowStyle, header: Boolean, gapBelow: Float, large: Boolean = false): Float =
-        (if (header) stripTop() else 0f) + stripH(style, large) + gapBelow
+        stripTop(header) + stripH(style, large) + gapBelow
 
     /** What a chosen row needs to show whole: its title, its strip (a grown card) and the card's ring just outside it. */
     fun rowShownH(style: RowStyle, header: Boolean, large: Boolean): Float =
-        (if (header) stripTop() else 0f) + stripH(style, large) + RING + 1f
+        stripTop(header) + stripH(style, large) + RING + 1f
 
     /**
      * How many cards after the chosen one hold pictures in a row: those that show (the chosen one grown at the

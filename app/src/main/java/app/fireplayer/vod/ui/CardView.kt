@@ -130,8 +130,8 @@ class CardView(
     private fun decodeSize(): Pair<Int, Int> {
         if (kind == Kind.EPISODE) return ceil(t.dpf(pictureW)).toInt() to ceil(t.dpf(pictureH)).toInt()
         if (kind == Kind.LOGO) {
-            return ceil(t.dpf(pictureW) * VodSizes.LOGO_FILL_W * (1f + VodSizes.GROW)).toInt() to
-                ceil(t.dpf(pictureH) * VodSizes.LOGO_FILL_H * (1f + VodSizes.GROW)).toInt()
+            return ceil(t.dpf(pictureW) * VodSizes.LOGO_FILL_W * (1f + VodSizes.LOGO_GROW)).toInt() to
+                ceil(t.dpf(pictureH) * VodSizes.LOGO_FILL_H * (1f + VodSizes.LOGO_GROW)).toInt()
         }
         val w = ceil(t.dpf(pictureW) * (1f + VodSizes.GROW)).toInt()
         val h = ceil(t.dpf(pictureH) * (1f + VodSizes.GROW)).toInt()
