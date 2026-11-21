@@ -35,16 +35,23 @@ internal object CardLogos {
         return Logo(bitmap, share).also { logos[id] = it }
     }
 
-    private val headers = HashMap<Service, Bitmap>()
+    private val headers = HashMap<Any, Bitmap>()
 
     /**
      * [service]'s logo for its page's name line: its card's own picture, cut to its visible part (the clear room
      * round it is the card's, and would set it off the line) and fitted inside [maxW] x [maxH] px, never enlarged.
      * Made once per service and kept (five small bitmaps); null if it can't be read.
      */
-    fun header(context: Context, service: Service, maxW: Int, maxH: Int): Bitmap? {
-        headers[service]?.let { return it }
-        val src = BitmapFactory.decodeResource(context.resources, resOf(service)) ?: return null
+    fun header(context: Context, service: Service, maxW: Int, maxH: Int): Bitmap? =
+        header(context, service, resOf(service), maxW, maxH)
+
+    /** The same for one of Disney+'s studios ([brand]): its card's logo in its page's name line. */
+    fun header(context: Context, brand: Brand, maxW: Int, maxH: Int): Bitmap? =
+        header(context, brand, resOf(brand), maxW, maxH)
+
+    private fun header(context: Context, key: Any, res: Int, maxW: Int, maxH: Int): Bitmap? {
+        headers[key]?.let { return it }
+        val src = BitmapFactory.decodeResource(context.resources, res) ?: return null
         val w = src.width
         val h = src.height
         val px = IntArray(w * h)
@@ -56,7 +63,7 @@ internal object CardLogos {
         // Halved while it's over twice the size it's shown at, so the small picture is smooth, then fitted.
         while (part.width / 2 >= ow && part.height / 2 >= oh && part.width >= 2 && part.height >= 2) part = scaled(part, part.width / 2, part.height / 2)
         if (part.width != ow || part.height != oh) part = scaled(part, ow, oh)
-        return part.also { headers[service] = it }
+        return part.also { headers[key] = it }
     }
 
     private fun scaled(src: Bitmap, w: Int, h: Int): Bitmap =

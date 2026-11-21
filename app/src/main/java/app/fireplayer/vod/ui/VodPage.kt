@@ -286,9 +286,19 @@ class VodPage(
     }
     /**
      * A service page's logo in the name's place: the one its Home card shows ([CardLogos.header], the app's own
-     * picture, so nothing is fetched for it). The name shows instead over See all, and if the logo can't be read.
+     * picture, so nothing is fetched for it). A studio page shows its studio card's logo, followed by the service's
+     * name in words (" · Disney+", [nameSuffix]). The name shows instead over See all, and if the logo can't be read.
      */
-    private val nameLogoBitmap = if (service == null || studio != null) null else CardLogos.header(ctx, service, t.dp(VodSizes.NAME_LOGO_W), t.dp(VodSizes.NAME_LOGO_H))
+    private val nameLogoBitmap = when {
+        service == null -> null
+        studio != null -> CardLogos.header(ctx, studio, t.dp(VodSizes.NAME_LOGO_W), t.dp(VodSizes.NAME_LOGO_H))
+        else -> CardLogos.header(ctx, service, t.dp(VodSizes.NAME_LOGO_W), t.dp(VodSizes.NAME_LOGO_H))
+    }
+    /** After a studio's logo: " · Disney+", in the name's own words and style. */
+    private val nameSuffix = if (studio != null && service != null && nameLogoBitmap != null) t.label(ctx, VodSizes.PAGE_NAME).apply {
+        text = " · ${service.label}"
+        visibility = View.GONE
+    } else null
     private val nameLogo: android.widget.ImageView? = nameLogoBitmap?.let {
         android.widget.ImageView(ctx).apply {
             adjustViewBounds = true
@@ -310,6 +320,7 @@ class VodPage(
         nameLine.isBaselineAligned = true
         nameText.text = pageName
         nameLogo?.let { nameLine.addView(it, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, t.dp(VodSizes.NAME_LOGO_H))) }
+        nameSuffix?.let { nameLine.addView(it, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)) }
         nameLine.addView(nameText, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         // Fixed width: the clock's new minute only redraws it.
         nameLine.addView(clockText, LinearLayout.LayoutParams(t.dp(VodSizes.CLOCK_W), ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = t.dp(VodSizes.CLOCK_GAP) })
@@ -457,6 +468,7 @@ class VodPage(
         val logo = nameLogo ?: return
         val on = seeAll?.isOpen != true
         logo.visibility = if (on) View.VISIBLE else View.GONE
+        nameSuffix?.visibility = logo.visibility
         nameText.visibility = if (on) View.GONE else View.VISIBLE
     }
 
