@@ -457,6 +457,14 @@ class LivePage(private val activity: Activity, private val host: Host) {
         details.addView(detailDesc, wide(top = 8))
         details.addView(detailNext, wide(top = 6))
         topRow.addView(details, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply { leftMargin = t.dp(LiveWidths.DETAILS_GAP) })
+        // The star is moved past the details' own edge while the content slides ([placeStar]): neither the details nor
+        // their row cut it there. The details still cut their lines at their own height (set once per layout).
+        topRow.clipChildren = false
+        details.clipChildren = false
+        details.addOnLayoutChangeListener { v, l, tp, r, bt, _, _, _, _ ->
+            detailsClip.set(0, 0, r - l + shift, bt - tp)
+            v.clipBounds = detailsClip
+        }
         content.addView(topRow, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, miniH))
         content.addView(guide, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT).apply { topMargin = miniH + t.dp(10) })
         // Down to the screen's bottom edge: the guide fits exactly its eight whole rows in there ([GuideView.ROWS]).
@@ -537,6 +545,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
         v.layoutParams = lp
         return true
     }
+
+    private val detailsClip = android.graphics.Rect()
 
     /** The details end [shift] short of the content's edge (the column open, or on its way either way). */
     private var detailsNarrow = false
@@ -1589,6 +1599,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
         // Nothing in the hidden guide may keep or take focus: in full screen the keys come to dispatchKey.
         guideLayer.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
         activity.currentFocus?.clearFocus()
+        // The guide fades away as one picture: its highlight doesn't fade inside it (that would draw it again per frame).
+        guide.settleFocus()
         guideLayer.animate().cancel()
         host.setChromeVisible(false)
         placedAt = null
@@ -1651,6 +1663,10 @@ class LivePage(private val activity: Activity, private val host: Host) {
             else focusBeforeFull?.let { k -> if (guide.focusedChannel()?.key != k) guide.focusChannel(k) }
         }
         guide.requestFocus()
+        // The guide fades in as one picture: everything in it is in place first, nothing fades inside it.
+        guide.settleFocus()
+        channelFade.settle()
+        programmeFade.settle()
         scheduleIdle()
     }
 

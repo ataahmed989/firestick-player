@@ -777,6 +777,17 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         invalidate()
     }
 
+    /**
+     * The highlight at the strength it's heading for, at once: the page is about to fade as a whole (to full screen
+     * and back), one picture drawn once, so nothing in it is drawn again per frame meanwhile.
+     */
+    fun settleFocus() {
+        if (!focusMotion.isStarted) return
+        focusMotion.cancel()
+        focusLevel = focusTo
+        invalidate()
+    }
+
     // ---- A long channel name scrolling (the focused programme's row's) ---------------------------------------------
 
     /**
