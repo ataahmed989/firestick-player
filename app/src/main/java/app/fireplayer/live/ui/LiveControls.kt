@@ -30,6 +30,7 @@ import app.fireplayer.live.Programme
 import app.fireplayer.player.FpsMeter
 import app.fireplayer.player.MediaSpec
 import app.fireplayer.playback.PlayerHost
+import app.fireplayer.shell.HeaderClock
 import app.fireplayer.shell.Tokens
 import app.fireplayer.ui.Glass
 import java.util.Date
@@ -266,7 +267,7 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
      * ended, or the half hour with none did): the page then looks up what's on now.
      */
     fun tick(now: Long): Boolean {
-        clock.text = DateFormat.format("EEE, MMM d", now).toString() + " · " + DateFormat.getTimeFormat(context).format(Date(now))
+        clock.text = HeaderClock.text(context, now)
         val p = programme
         if (p != null) {
             updateEnd(p, now)

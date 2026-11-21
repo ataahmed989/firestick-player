@@ -6,6 +6,7 @@ import app.fireplayer.shell.TextStyle
 import app.fireplayer.shell.TextStyle.Ink
 import app.fireplayer.shell.TextStyle.Weight
 import app.fireplayer.shell.Tokens
+import app.fireplayer.ui.GlassStyle
 import app.fireplayer.ui.PageRow
 import app.fireplayer.vod.RowStyle
 import app.fireplayer.vod.data.Brand
@@ -701,21 +702,26 @@ internal object VodSizes {
     /** A logo card's height for its width: 16:9, as the finished cards (800 x 450). */
     const val LOGO_SHAPE = 9f / 16f
 
-    // The logo cards' one surface ([LogoSurface]; the user's reference of 2026-11-21): slate blue down to charcoal, a
-    // faint broad reflection from the upper left corner (reaching [LOGO_SHEEN_REACH] of the width), a fine cool-grey
-    // rim that fades toward the bottom, a soft close shadow, corners [LOGO_RADIUS_SHARE] of the height. The chosen
-    // card keeps all of it (dark fill, the logo's own colours) and gets the cards' ring ([RING], [RING_COLOR]).
-    const val LOGO_FILL_TOP = 0xFF202938.toInt()
-    const val LOGO_FILL_BOTTOM = 0xFF141923.toInt()
+    // The logo cards' one surface ([LogoSurface]): the rail's window for the look that's on ([logoFill]), and over
+    // it, the same on both looks, a faint broad reflection from the upper left corner (reaching [LOGO_SHEEN_REACH] of
+    // the width), a fine light rim that fades toward the bottom, a soft close shadow outside, corners
+    // [LOGO_RADIUS_SHARE] of the height. The reflection and rim are light laid over the fill, so they take either
+    // look's colour. The chosen card keeps all of it (the logo's own colours) and gets the cards' ring ([RING], [RING_COLOR]).
     const val LOGO_SHEEN = 0x10FFFFFF
     const val LOGO_SHEEN_REACH = 0.4f
     const val LOGO_RIM = 0.5f
-    const val LOGO_RIM_TOP = 0xFF465064.toInt()
-    const val LOGO_RIM_BOTTOM = 0x66465064
+    const val LOGO_RIM_TOP = 0x47C8D2E6
+    const val LOGO_RIM_BOTTOM = 0x1CC8D2E6
     const val LOGO_RADIUS_SHARE = 0.12f
     const val LOGO_SHADOW = 0x59000000
     const val LOGO_SHADOW_DY = 2f
     const val LOGO_SHADOW_BLUR = 4f
+
+    /**
+     * A logo card's fill: the rail's window's. Glass: the windows' tint ([GlassStyle.WINDOW_TINT]) over the wallpaper
+     * as it is, as the rail at rest and every glass surface in the page. Classic: the rail's solid colour.
+     */
+    fun logoFill(glass: Boolean): Int = if (glass) GlassStyle.WINDOW_TINT else RailShape.CLASSIC_FILL
 
     /** A logo card's corner radius, dp. */
     fun logoRadius(): Float = cardH(RowStyle.LOGO) * LOGO_RADIUS_SHARE
@@ -760,9 +766,10 @@ internal object VodSizes {
         while (sourceW / (n * 2) >= drawnW) n *= 2
         return n
     }
-    /** A one-colour wordmark is drawn in this, whatever its own colour (TMDB's are often black). */
-    const val LOGO_MONO = 0xFFFFFFFF.toInt()
-    /** A service page's wordmark in the name line: at most this size, its bottom on the clock's baseline. */
+    /**
+     * A service page's logo in the name line (its Home card's own, cut to its visible part: [CardLogos.header]): at
+     * most this size, its bottom on the clock's baseline.
+     */
     const val NAME_LOGO_H = 26f
     const val NAME_LOGO_W = 120f
     const val COULDNT_OPEN = "Couldn't load this title"

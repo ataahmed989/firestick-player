@@ -230,7 +230,7 @@ class CardView(
         val ph = if (kind == Kind.EPISODE) t.dpf(pictureH).coerceAtMost(h.toFloat()) else h.toFloat()
         box.set(0f, 0f, w.toFloat(), ph)
         if (kind == Kind.LOGO) {
-            surface = if (w > 0 && h > 0) LogoSurface.of(w, h, t.density) else null
+            surface = if (w > 0 && h > 0) LogoSurface.of(w, h, t.density, Glass.on) else null
             placeLogo()
         }
         holderPaint.shader = LinearGradient(0f, 0f, w.toFloat(), ph, VodSizes.HOLDER_TOP, VodSizes.HOLDER_BOTTOM, Shader.TileMode.CLAMP)
@@ -298,6 +298,8 @@ class CardView(
 
     /** A logo card: the shared surface, and its logo's whole picture in the middle (its name if it can't be read). */
     private fun drawLogo(canvas: Canvas) {
+        // The look changed under a card that's kept: its surface is the other look's, made once.
+        if (surface?.let { it.glass != Glass.on } == true) surface = LogoSurface.of(width, height, t.density, Glass.on)
         surface?.draw(canvas, imagePaint)
         val l = logo
         if (l != null) {
