@@ -21,7 +21,11 @@ import androidx.media3.common.Format
 import androidx.media3.common.util.UnstableApi
 import app.fireplayer.R
 import app.fireplayer.data.Prefs
+import android.view.Gravity
 import app.fireplayer.live.Channel
+import app.fireplayer.live.ChannelKey
+import app.fireplayer.live.LiveSearch
+import app.fireplayer.vod.ui.VodSizes
 import app.fireplayer.live.Programme
 import app.fireplayer.player.FpsMeter
 import app.fireplayer.player.MediaSpec
@@ -179,6 +183,7 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
         add(PIP, R.drawable.ic_pip, "External PiP", enabled = false)
         add(AUDIO, R.drawable.ic_audio, "Audio")
         add(AUDIO_DELAY, R.drawable.ic_audio_delay, "Audio delay")
+        add(SUB_STYLE, R.drawable.ic_sub_style, "Subtitle style")
         add(DISPLAY, R.drawable.ic_display, "Display size")
         add(DIM, R.drawable.ic_dim, "Screen dimmer")
         add(SLEEP, R.drawable.ic_sleep, "Sleep timer")
@@ -342,6 +347,7 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
      * [focus] in the extra row (a window opened from it closed) comes back to that row, as in the VOD player.
      */
     fun showControls(focus: View? = null) {
+        dropHistory()
         animate().cancel()
         visibility = VISIBLE
         controlsShown = true
@@ -364,6 +370,7 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
      * fade in after that many ms (the picture growing to full screen first) instead of showing at once.
      */
     fun showInfo(fadeInAfter: Long = -1L) {
+        dropHistory()
         animate().cancel()
         if (fadeInAfter >= 0 && visibility != VISIBLE) {
             alpha = 0f
@@ -382,11 +389,128 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
     }
 
     fun hideAll() {
+        dropHistory()
         animate().cancel()
         alpha = 1f
         visibility = GONE
         controlsShown = false
         showMainRow(focusRow = false, animate = false)
+    }
+
+    // ---- Channel History: a row of the channels watched last, where the buttons were ----------------------------------
+
+    /** OK on a channel of the history row. */
+    var onHistoryPick: ((ChannelKey) -> Unit)? = null
+
+    /** The history row is showing in place of the controls. */
+    var historyShown = false
+        private set
+
+    /** The row has channels to move through (else it only says there are none). */
+    val historyHasChannels: Boolean get() = historyRow?.hasResults() == true
+
+    private var historyBox: FrameLayout? = null
+    private var historyRow: LiveSearchView? = null
+    private var historyNote: TextView? = null
+
+    /** Made the first time Channel History is pressed: Live TV search's own row of tiles, over the buttons' gradient. */
+    private fun historyBox(): FrameLayout {
+        historyBox?.let { return it }
+        val at = bottom.layoutParams as MarginLayoutParams
+        val box = FrameLayout(context).apply {
+            setBackgroundResource(R.drawable.scrim_bottom)
+            clipChildren = false
+            visibility = GONE
+        }
+        val row = LiveSearchView(context, t, at.marginStart).apply {
+            onPlay = { key -> onHistoryPick?.invoke(key) }
+        }
+        val note = t.label(context, VodSizes.NOTE).apply {
+            text = NO_HISTORY
+            isFocusable = true
+            visibility = GONE
+        }
+        box.addView(row, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM).apply {
+            bottomMargin = at.bottomMargin
+        })
+        box.addView(note, LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.START).apply {
+            marginStart = at.marginStart
+            bottomMargin = at.bottomMargin + t.dp(LiveWidths.HISTORY_NOTE_UP)
+        })
+        addView(box, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, scrimBottom.layoutParams.height, Gravity.BOTTOM))
+        historyBox = box
+        historyRow = row
+        historyNote = note
+        return box
+    }
+
+    /**
+     * The channels watched last ([hits], the latest first) in place of the controls: logo tiles with each name under,
+     * over the bottom gradient, the first one selected. None: a line saying so. It glides in ([LiveWidths.HISTORY_IN_MS]).
+     */
+    fun showHistory(hits: List<LiveSearch.ChannelHit>) {
+        val box = historyBox()
+        val row = historyRow ?: return
+        val note = historyNote ?: return
+        animate().cancel()
+        alpha = 1f
+        visibility = VISIBLE
+        controlsShown = false
+        historyShown = true
+        showMainRow(focusRow = false, animate = false)
+        row.showHistory(hits)
+        note.visibility = if (hits.isEmpty()) VISIBLE else GONE
+        box.animate().cancel()
+        box.descendantFocusability = FOCUS_AFTER_DESCENDANTS
+        box.visibility = VISIBLE
+        box.alpha = 0f
+        box.translationY = t.dpf(LiveWidths.HISTORY_SHIFT)
+        // Focus first, then the controls go: it never has to look for somewhere else to be.
+        focusHistory()
+        top.visibility = GONE
+        bottom.visibility = GONE
+        scrimTop.visibility = GONE
+        scrimBottom.visibility = GONE
+        box.animate().alpha(1f).translationY(0f).setStartDelay(0).setDuration(LiveWidths.HISTORY_IN_MS)
+            .setInterpolator(HISTORY_EASE).withLayer().start()
+        // A row made just now takes the selection once it has been laid out.
+        post { if (historyShown && !box.hasFocus()) focusHistory() }
+    }
+
+    private fun focusHistory() {
+        if (historyRow?.focusFirst() != true) historyNote?.requestFocus()
+    }
+
+    /** The history row glides away ([LiveWidths.HISTORY_OUT_MS]), leaving the plain picture (or what was shown since). */
+    fun closeHistory() {
+        if (!historyShown) return
+        historyShown = false
+        val box = historyBox ?: return
+        // Nothing in a row on its way out takes the selection back.
+        box.descendantFocusability = FOCUS_BLOCK_DESCENDANTS
+        box.animate().cancel()
+        box.animate().alpha(0f).translationY(t.dpf(LiveWidths.HISTORY_SHIFT)).setStartDelay(0).setDuration(LiveWidths.HISTORY_OUT_MS)
+            .setInterpolator(HISTORY_EASE).withLayer().withEndAction {
+                box.visibility = GONE
+                // Nothing else came up meanwhile (the channel's lines after a pick, the controls): all of it is away.
+                if (!historyShown && !controlsShown && top.visibility != VISIBLE) visibility = GONE
+            }.start()
+    }
+
+    /** The history row gone at once (the controls or the channel's lines show, or full screen is left). */
+    private fun dropHistory() {
+        if (!historyShown) return
+        historyShown = false
+        historyBox?.let {
+            it.animate().cancel()
+            it.descendantFocusability = FOCUS_BLOCK_DESCENDANTS
+            it.visibility = GONE
+        }
+    }
+
+    /** The page is going: the row's searches and logos with it. */
+    fun release() {
+        historyRow?.release()
     }
 
     // ---- The extra row (VOD player's showMoreRow / showMainRow / swapRows) -----------------------------------------
@@ -466,12 +590,16 @@ class LiveControls(context: Context, private val t: Tokens) : FrameLayout(contex
         private const val DIMMED = 0.38f
         /** Beside the line while the channel has no programme on. */
         const val NO_PROGRAMME = "No programme information"
+        /** In the history row's place when no other channel has been watched. */
+        const val NO_HISTORY = "No other channels watched yet"
+        private val HISTORY_EASE = DecelerateInterpolator(1.6f)
 
         // The extra row's buttons, in order.
         const val MULTIVIEW = "multiview"
         const val PIP = "pip"
         const val AUDIO = "audio"
         const val AUDIO_DELAY = "audioDelay"
+        const val SUB_STYLE = "subStyle"
         const val DISPLAY = "display"
         const val DIM = "dim"
         const val SLEEP = "sleep"

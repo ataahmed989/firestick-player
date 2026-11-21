@@ -398,10 +398,15 @@ class LiveSearchView(context: Context, private val t: Tokens, private val x: Int
         var hit: LiveSearch.ChannelHit? = null
         private val boxW = t.dp(VodSizes.LIVE_TILE_W)
         private val marquee = Runnable { startMarquee() }
+        /**
+         * The logo this tile shows, kept here once it has come: the cache holds only so many, and a tile that asked it
+         * again each time lost its logo to the others' and fetched it back, over and over (the flicker).
+         */
+        private var shownLogo: Logo? = null
         private val showStandIn = Runnable {
             val h = hit ?: return@Runnable
-            if (h.logo?.let { logos.get(it) } != null) return@Runnable
-            standIn.text = h.name
+            if (shownLogo != null) return@Runnable
+            if (standIn.text.toString() != h.name) standIn.text = h.name
             standIn.visibility = View.VISIBLE
         }
 
@@ -429,9 +434,17 @@ class LiveSearchView(context: Context, private val t: Tokens, private val x: Int
         }
 
         fun bind(h: LiveSearch.ChannelHit?) {
+            // The same channel again (the programmes joining, a letter more that still finds it): the tile stays as it
+            // is, its logo or its name in the logo's place neither taken away nor shown again.
+            val was = hit
+            if (h != null && was != null && visibility == View.VISIBLE && was.key == h.key && was.name == h.name && was.logo == h.logo) {
+                hit = h
+                return
+            }
             stopMarquee()
             main.removeCallbacks(showStandIn)
             standIn.visibility = View.INVISIBLE
+            shownLogo = null
             hit = h
             visibility = if (h == null) View.GONE else View.VISIBLE
             val lp = layoutParams as? LinearLayout.LayoutParams
@@ -452,16 +465,24 @@ class LiveSearchView(context: Context, private val t: Tokens, private val x: Int
                 }
             }
             refreshLogo()
-            main.postDelayed(showStandIn, VodSizes.LIVE_STAND_IN_AFTER_MS)
+            // A logo still on its way gets a moment before the name stands in for it.
+            if (shownLogo == null && standIn.visibility != View.VISIBLE) main.postDelayed(showStandIn, VodSizes.LIVE_STAND_IN_AFTER_MS)
         }
 
         fun refreshLogo() {
-            val url = hit?.logo
+            val h = hit ?: return
+            if (shownLogo != null) return
+            val url = h.logo
             val l = url?.let { logos.get(it) }
+            shownLogo = l
             logo.set(l, plate = true)
             if (l != null) {
                 main.removeCallbacks(showStandIn)
                 standIn.visibility = View.INVISIBLE
+            } else if (url == null || logos.missing(url)) {
+                // No logo to wait for: the name at once.
+                main.removeCallbacks(showStandIn)
+                showStandIn.run()
             }
         }
 
@@ -526,6 +547,9 @@ class LiveSearchView(context: Context, private val t: Tokens, private val x: Int
             }
         }
         var hit: LiveSearch.ProgrammeHit? = null
+        /** The logo shown and whose it is, kept once it has come (as a tile's). */
+        private var shownLogo: Logo? = null
+        private var shownUrl: String? = null
 
         init {
             view.minimumHeight = t.dp(VodSizes.LIVE_ROW_H)
@@ -562,7 +586,10 @@ class LiveSearchView(context: Context, private val t: Tokens, private val x: Int
         }
 
         fun refreshLogo() {
-            logo.set(hit?.channel?.logo?.let { logos.get(it) }, plate = true)
+            val url = hit?.channel?.logo
+            if (url != shownUrl) { shownUrl = url; shownLogo = null }
+            if (shownLogo == null) shownLogo = url?.let { logos.get(it) }
+            logo.set(shownLogo, plate = true)
         }
 
         private fun key(keyCode: Int, event: KeyEvent): Boolean {

@@ -19,6 +19,7 @@ import app.fireplayer.live.ChannelGroup
 import app.fireplayer.live.ChannelKey
 import app.fireplayer.live.GuideScope
 import app.fireplayer.live.LiveDb
+import app.fireplayer.live.LiveSearch
 import app.fireplayer.live.LiveSync
 import app.fireplayer.live.Playlist
 import app.fireplayer.live.Programme
@@ -85,6 +86,8 @@ class LivePage(private val activity: Activity, private val host: Host) {
          * runs after it closes (the Settings button: focus back to it, the controls' timer again).
          */
         fun openPlayerSettings(onClosed: (() -> Unit)? = null)
+        /** Subtitle style (the app's setting, as the film player's window) over full screen; [onClosed] when it closes. */
+        fun openSubtitleStyle(onClosed: () -> Unit)
         /**
          * Assign favorites over this page (from the guide): [groupId]'s channels, with [channel] selected, and Back goes
          * to [playlistId]'s groups; with no [groupId], the groups. Focus comes back where it was when it closes.
@@ -702,6 +705,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
 
             override fun onHold(scope: GuideScope.Group, name: String, row: View) = openGroupPopup(scope, name, row)
         }
+        controls.onHistoryPick = { key -> pickHistory(key) }
         controls.actions = object : LiveControls.Actions {
             override fun onGuide() = toGuide(toPlaying = true)
             override fun onHistory() = showHistory()
@@ -713,6 +717,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
                 when (key) {
                     LiveControls.SETTINGS -> host.openPlayerSettings { backFromWindow(from) }
                     LiveControls.MULTIVIEW -> startMultiview(from)
+                    LiveControls.SUB_STYLE -> host.openSubtitleStyle { backFromWindow(from) }
                     else -> more.open(key, from)
                 }
             }
@@ -972,6 +977,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         multiview.release()
         overlay?.release()
         more.release()
+        controls.release()
         released = true
         ++reloadSerial
         ++loadSerial
@@ -1927,6 +1933,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
     }
 
     private fun hideControlsNow() {
+        if (controls.historyShown) return closeHistory()
         main.removeCallbacks(hideControls)
         waitedForOverlay = false
         val f = activity.currentFocus
@@ -1988,15 +1995,46 @@ class LivePage(private val activity: Activity, private val host: Host) {
         bumpControls()
     }
 
+    /** The channels the history row shows (the latest first), to open the one picked. */
+    private var historyChannels: List<Channel> = emptyList()
+
+    /**
+     * Channel History: the controls give way to a row of the channels watched before this one, at the bottom over the
+     * picture ([LiveControls.showHistory]). OK opens one, Back leaves; either way the plain picture is back.
+     */
     private fun showHistory() {
         bg {
             val recent = db.recent().filter { it.key.toString() != player.currentKey }.take(HISTORY_SIZE)
             main.post {
-                if (recent.isEmpty()) { showNotice("No other channels watched yet"); return@post }
-                FireDialog.choose(activity, "Channel History", recent.map { "${it.number}  ${it.name}" }, -1) { i ->
-                    recent.getOrNull(i)?.let { ch -> if (tune(ch)) { zappedInFull = true; refreshControls(); more.refreshValues() } }
-                }
+                // Left meanwhile (Back, the guide, the controls' time up): nothing to show it over.
+                if (released || !fullScreen || !controls.controlsShown || multiview.active) return@post
+                historyChannels = recent
+                filmGlass(false)
+                revealKey = 0
+                controls.showHistory(recent.map { LiveSearch.ChannelHit(it.key, it.name, it.logo, it.groupId, it.favorite) })
+                bumpControls()
             }
+        }
+    }
+
+    /** The history row away (Back, its time up, a channel picked): the plain full-screen picture. */
+    private fun closeHistory() {
+        main.removeCallbacks(hideControls)
+        waitedForOverlay = false
+        val f = activity.currentFocus
+        controls.closeHistory()
+        if (f != null && isInside(f, controls)) f.clearFocus()
+    }
+
+    private fun pickHistory(key: ChannelKey) {
+        if (!fullScreen || !controls.historyShown) return
+        val ch = historyChannels.firstOrNull { it.key == key }
+        closeHistory()
+        if (ch != null && tune(ch)) {
+            zappedInFull = true
+            refreshControls()
+            more.refreshValues()
+            showZapInfo()
         }
     }
 
@@ -2332,6 +2370,15 @@ class LivePage(private val activity: Activity, private val host: Host) {
             return true
         }
 
+        // Channel History's row: OK and the arrows are its tiles'; nothing else acts under it.
+        if (controls.historyShown) {
+            if (down) bumpControls()
+            val rowKey = code == KeyEvent.KEYCODE_DPAD_CENTER || code == KeyEvent.KEYCODE_ENTER || code == KeyEvent.KEYCODE_NUMPAD_ENTER ||
+                code == KeyEvent.KEYCODE_DPAD_LEFT || code == KeyEvent.KEYCODE_DPAD_RIGHT ||
+                code == KeyEvent.KEYCODE_DPAD_UP || code == KeyEvent.KEYCODE_DPAD_DOWN
+            return !(rowKey && controls.historyHasChannels)
+        }
+
         if (controls.controlsShown) {
             // The key that showed the controls doesn't also act on them while it's held (design-layout).
             if (code == revealKey) {
@@ -2442,7 +2489,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         if (!backDownSeen) return false
         backDownSeen = false
         if (fullScreen) {
-            if (controls.controlsShown) hideControlsNow() else toGuide()
+            if (controls.historyShown) closeHistory() else if (controls.controlsShown) hideControlsNow() else toGuide()
             return true
         }
         if (guide.hasFocus()) { openSidebar(focus = true); return true }
