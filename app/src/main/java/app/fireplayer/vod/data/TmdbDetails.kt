@@ -177,7 +177,7 @@ object TmdbDetails {
         )
     }
 
-    private fun writeItems(items: List<Item>) = JSONArray().apply {
+    internal fun writeItems(items: List<Item>) = JSONArray().apply {
         for (i in items) {
             put(JSONObject().apply {
                 put("id", i.tmdbId)
@@ -193,7 +193,7 @@ object TmdbDetails {
         }
     }
 
-    private fun readItems(a: JSONArray?): List<Item> = objects(a).mapNotNull { o ->
+    internal fun readItems(a: JSONArray?): List<Item> = objects(a).mapNotNull { o ->
         Item(
             tmdbId = o.optInt("id", 0).takeIf { it > 0 } ?: return@mapNotNull null,
             kind = kindOf(o.text("type")) ?: return@mapNotNull null,
@@ -208,7 +208,7 @@ object TmdbDetails {
     }
 
     /** A list part's first [LIST_KEPT] items. Each item's kind is its `media_type` (recommendations), else [kind]. */
-    private fun items(part: JSONObject?, kind: Kind): List<Item> =
+    internal fun items(part: JSONObject?, kind: Kind): List<Item> =
         objects(part?.optJSONArray("results")).asSequence().mapNotNull { o ->
             val k = when (o.text("media_type")) {
                 null -> kind

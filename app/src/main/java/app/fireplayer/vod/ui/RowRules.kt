@@ -36,6 +36,8 @@ internal object RowRules {
         total <= 0 -> false
         source is Source.Catalog -> true
         source is Source.Trending -> false
+        // A service's row is its first page only.
+        source is Source.Discover -> false
         else -> total > ROW_CARDS
     }
 

@@ -279,6 +279,10 @@ class Tmdb(private val key: () -> String, private val memory: Memory) {
     fun trendingThisWeek(show: Boolean): String =
         request("trending/${if (show) "tv" else "movie"}/week", listOf("language" to "en-US"))
 
+    /** TMDB Discover's films or shows for [params] (one page) as TMDB sends them, for a streaming service's rows. Blocks. */
+    fun discover(show: Boolean, params: List<Pair<String, String>>): String =
+        request("discover/${if (show) "tv" else "movie"}", params)
+
     /**
      * A film's or show's external ids (IMDb's among them) as TMDB sends them; null when TMDB has no such title. Not
      * remembered here: Top 10 keeps what it finds itself, letting a missing IMDb id be asked again days later. Blocks.

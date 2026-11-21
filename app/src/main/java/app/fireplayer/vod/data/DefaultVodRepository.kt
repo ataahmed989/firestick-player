@@ -121,6 +121,9 @@ class DefaultVodRepository(
             is Source.Genres -> local(req, skip, limit, sink) { emptyList() }
             // The title page fills these rows itself (details(), moreLikeThis()).
             is Source.Fixed -> local(req, skip, limit, sink) { emptyList() }
+            is Source.Discover -> discoverCards(s, skip, limit, req, sink)
+            Source.Services -> local(req, skip, limit, sink) { Services.cards() }
+            Source.Brands -> local(req, skip, limit, sink) { Services.brandCards() }
         }
         return req
     }
@@ -841,6 +844,92 @@ class DefaultVodRepository(
         cache.write(top10Key(kind), JSONObject().put("cards", TitleJson.writeCards(cards)), freshMs, now)
         top10[kind] = Stored(cards, now, freshMs)
         return cards
+    }
+
+    // ---- Streaming services (TMDB Discover) ----
+
+    /**
+     * A service's titles at [skip] until [skip] + [limit] to [sink], once, fresh; empty without a usable key. Only the
+     * TMDB pages those positions need are read: a row's is the first alone, a collection's ([Source.Discover.full]) go
+     * on as the grid asks. Pages are kept [Discover.FRESH_MS]; one that can't be fetched keeps its stored copy.
+     */
+    private fun discoverCards(s: Source.Discover, skip: Int, limit: Int, req: Req, sink: (List<Card>, Boolean) -> Unit) {
+        val kinds = s.kind?.let { listOf(it) } ?: Kind.entries.toList()
+        val pages = if (s.full) Discover.pages(skip, limit, kinds.size) else 1..1
+        io.execute {
+            if (req.cancelled) return@execute
+            if (!usableKey()) {
+                sink(emptyList(), true)
+                return@execute
+            }
+            val got = HashMap<String, Discover.Page>()
+            val cut = {
+                Discover.slice(pages, kinds, skip, limit) { k, p -> got[Discover.key(s, k, p)]?.items }.mapNotNull(::discoverCard)
+            }
+            var missing = false
+            for (k in kinds) for (p in pages) {
+                val key = Discover.key(s, k, p)
+                val page = storedDiscover(key, fresh = true)
+                if (page == null) missing = true else got[key] = page
+                if (page == null || page.last) break
+            }
+            if (!missing) {
+                sink(cut(), true)
+                return@execute
+            }
+            net.execute {
+                if (req.cancelled) return@execute
+                for (k in kinds) for (p in pages) {
+                    val key = Discover.key(s, k, p)
+                    val page = got[key] ?: fetchDiscover(s, k, p) ?: storedDiscover(key, fresh = false) ?: break
+                    got[key] = page
+                    if (page.last) break
+                }
+                sink(cut(), true)
+            }
+        }
+    }
+
+    private fun storedDiscover(key: String, fresh: Boolean): Discover.Page? {
+        val entry = cache.read(key)?.takeIf { !fresh || it.isFresh(clock()) } ?: return null
+        return Discover.Page(TmdbDetails.readItems(entry.data.optJSONArray("items")), entry.data.optBoolean("last", false))
+    }
+
+    /**
+     * Fetches a Discover page (once, however many ask meanwhile) and stores it. A row's titles get their IMDb ids
+     * looked up as a Top 10's do (kept for good), so its cards and the header are whole titles; a collection's wait
+     * until one is opened ([resolve]). Null on failure.
+     */
+    private fun fetchDiscover(s: Source.Discover, kind: Kind, page: Int): Discover.Page? = single(Discover.key(s, kind, page)) {
+        if (clock() < tmdbPausedUntil) return@single null
+        try {
+            val got = Discover.parse(tmdb.discover(kind, Discover.params(s, kind, page)), kind, page)
+            if (!s.full) {
+                val ask = got.items.filter { knownImdb(it.kind, it.tmdbId) == TmdbTrending.Known.Unknown }
+                    .map { TmdbTrending.Candidate(it.tmdbId, it.kind, it.name, it.year, it.overview, it.backdrop) }
+                if (ask.isNotEmpty()) lookUp(kind, ask)?.let { Log.w(TAG, "TMDB ids not read: ${it.javaClass.simpleName}") }
+            }
+            cache.write(
+                Discover.key(s, kind, page),
+                JSONObject().put("items", TmdbDetails.writeItems(got.items)).put("last", got.last),
+                Discover.FRESH_MS,
+            )
+            got
+        } catch (t: Throwable) {
+            tmdbFailed(t)
+            null
+        }
+    }
+
+    /** A Discover title's card: the title itself when its IMDb id is known, else a stand-in; none when TMDB has no id. */
+    private fun discoverCard(item: TmdbDetails.Item): Card? {
+        if (item.adult) return null
+        val imdb = when (val k = knownImdb(item.kind, item.tmdbId)) {
+            is TmdbTrending.Known.Hit -> k.imdb
+            TmdbTrending.Known.Miss -> return null
+            TmdbTrending.Known.Unknown -> null
+        }
+        return MoreLikeThis.card(MoreLikeThis.Pick(item, imdb), imdb?.let { byId["${item.kind.type}|$it"] })
     }
 
     /** Asks TMDB for the IMDb ids of [ask] side by side and keeps the answers; the first failure, if any. */

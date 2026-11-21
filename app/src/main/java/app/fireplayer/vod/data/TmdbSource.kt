@@ -24,6 +24,9 @@ interface TmdbSource {
     /** `find/{tt}?external_source=imdb_id` as TMDB sends it. */
     fun find(imdbId: String): String
 
+    /** `discover/{movie|tv}` with [params] ([Discover.params]) as TMDB sends it. */
+    fun discover(kind: Kind, params: List<Pair<String, String>>): String = "{}"
+
     companion object {
         fun of(tmdb: Tmdb): TmdbSource = object : TmdbSource {
             override fun trending(kind: Kind) = tmdb.trendingThisWeek(kind == Kind.SERIES)
@@ -31,6 +34,7 @@ interface TmdbSource {
             override fun details(kind: Kind, tmdbId: Int) =
                 tmdb.titleDetails(tmdbId, kind == Kind.SERIES, TmdbDetails.append(kind))
             override fun find(imdbId: String) = tmdb.findByImdb(imdbId)
+            override fun discover(kind: Kind, params: List<Pair<String, String>>) = tmdb.discover(kind == Kind.SERIES, params)
         }
     }
 }

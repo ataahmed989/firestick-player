@@ -31,6 +31,11 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("pip_sound", app.fireplayer.live.ui.PipRules.SOUND_DEFAULT)
         set(v) = sp.edit().putBoolean("pip_sound", v).apply()
 
+    /** The streaming-service pages visited last, newest first ([app.fireplayer.vod.data.Services.encode]): the rail's two. */
+    var recentServices: String
+        get() = sp.getString("recent_services", "") ?: ""
+        set(v) = sp.edit().putString("recent_services", v).apply()
+
     var dpadStepSec: Int
         get() = sp.getInt("dpad_step", 10)
         set(v) = sp.edit().putInt("dpad_step", v).apply()
