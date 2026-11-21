@@ -84,6 +84,8 @@ class CardView(
     /** A logo card's wordmark and where it's drawn: kept whole, in the card's middle. */
     private val logoPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private val logoBox = RectF()
+    /** A studio's card: its logo from the app's own pictures ([StudioLogos]), drawn in its own colours; else null. */
+    private var ownLogo: Bitmap? = null
     private val holderPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val scrimPaint = Paint()
     private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = VodSizes.RING_COLOR }
@@ -150,7 +152,10 @@ class CardView(
         contentDescription = card.title.name
         textFor = -1
         if (!samePicture && imageKey != null) ImageLoader.release(this)
-        if (kind == Kind.LOGO) logoPaint.colorFilter = if (Services.isMono(card.title.poster)) LOGO_WHITE else null
+        if (kind == Kind.LOGO) {
+            ownLogo = StudioLogos.of(context, card.title.id)
+            logoPaint.colorFilter = if (ownLogo == null && Services.isMono(card.title.poster)) LOGO_WHITE else null
+        }
         invalidate()
     }
 
@@ -301,19 +306,22 @@ class CardView(
     private fun drawLogo(canvas: Canvas) {
         if (textFor != width) layOutText(card)
         canvas.drawRoundRect(box, radius, radius, holderPaint)
-        val bmp = bitmap
-        if (bmp == null || imageAlpha < 1f) holderLayout?.let { l ->
+        val own = ownLogo
+        val bmp = own ?: bitmap
+        if (own == null && (bmp == null || imageAlpha < 1f)) holderLayout?.let { l ->
             canvas.save()
             canvas.translate((width - l.width) / 2f, (height - l.height) / 2f)
             l.draw(canvas)
             canvas.restore()
         }
         if (bmp == null) return
-        val k = minOf(box.width() * VodSizes.LOGO_FILL_W / bmp.width, box.height() * VodSizes.LOGO_FILL_H / bmp.height)
+        val fill = minOf(box.width() * VodSizes.LOGO_FILL_W / bmp.width, box.height() * VodSizes.LOGO_FILL_H / bmp.height)
+        // A studio's logo keeps its drawn size against the card's width (each sits as in the reference), never past the fill.
+        val k = if (own != null) minOf(box.width() / VodSizes.STUDIO_LOGO_CARD_PX, fill) else fill
         val w = bmp.width * k
         val h = bmp.height * k
         logoBox.set((box.width() - w) / 2f, (box.height() - h) / 2f, (box.width() + w) / 2f, (box.height() + h) / 2f)
-        logoPaint.alpha = (255 * imageAlpha).toInt()
+        logoPaint.alpha = if (own != null) 255 else (255 * imageAlpha).toInt()
         canvas.drawBitmap(bmp, null, logoBox, logoPaint)
     }
 

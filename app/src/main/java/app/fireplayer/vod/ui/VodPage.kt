@@ -46,8 +46,10 @@ import app.fireplayer.vod.Source
 import app.fireplayer.vod.Title
 import app.fireplayer.vod.VodRepository
 import app.fireplayer.vod.hasImdbId
+import app.fireplayer.vod.data.Brand
 import app.fireplayer.vod.data.Service
 import app.fireplayer.vod.data.Services
+import app.fireplayer.vod.data.Studios
 import app.fireplayer.vod.data.TmdbTrending
 import app.fireplayer.vod.data.SearchHistory
 import app.fireplayer.vod.data.SearchHistoryRules
@@ -91,6 +93,11 @@ class VodPage(
      * and its own rows ([Services.rows]); null on the tabs' pages.
      */
     val service: Service? = null,
+    /**
+     * One of Disney+'s studios: its page, the service's layout with the studio's rows of titles ([Studios.rows]) and
+     * its name in words ("Marvel · Disney+"); null on the service's own page.
+     */
+    val studio: Brand? = null,
 ) : TitleRow.Listener, SeeAllPage.Host, HoldWindow.Host, TitleStack.Host, VodHeader.Listener {
 
     /** What the shell gives a page: the same as Live TV's (HomeActivity implements both). */
@@ -108,6 +115,8 @@ class VodPage(
         fun openChannel(key: ChannelKey) {}
         /** OK on one of Home's streaming-service cards: that service's page opens. */
         fun openService(service: Service) {}
+        /** OK on one of Disney+'s studio cards that has a page of rows: that page opens. */
+        fun openStudio(brand: Brand) {}
         /** Live TV search: [key] plays full screen on Live TV ([at] null), or the guide shows it ([at]: a later programme's start). */
         fun openLiveResult(key: ChannelKey, at: Long?) {}
         /** Back from Live TV search's starting view: the Live TV tab. */
@@ -272,9 +281,13 @@ class VodPage(
     private val libraryListener: () -> Unit = { onLibraryChanged() }
     private val rowsListener: () -> Unit = { applyRows() }
 
-    private val pageName = service?.label ?: tab.title
+    private val pageName = when {
+        service == null -> tab.title
+        studio != null -> "${studio.label} · ${service.label}"
+        else -> service.label
+    }
     /** A service page's wordmark in the name's place (the name shows until it comes, and over See all). */
-    private val nameLogo: android.widget.ImageView? = if (service == null) null else android.widget.ImageView(ctx).apply {
+    private val nameLogo: android.widget.ImageView? = if (service == null || studio != null) null else android.widget.ImageView(ctx).apply {
         adjustViewBounds = true
         baselineAlignBottom = true
         visibility = View.GONE
@@ -441,7 +454,7 @@ class VodPage(
         buildRows()
         applyLook()
         if (service != null) ImageLoader.init(ctx)
-        if (service != null) ImageLoader.load(
+        if (service != null && studio == null) ImageLoader.load(
             Services.logoUrl(service.logo), nameLogoTarget, t.dp(VodSizes.NAME_LOGO_W), t.dp(VodSizes.NAME_LOGO_H),
             config = android.graphics.Bitmap.Config.ARGB_8888, fit = ImageLoader.Fit.INSIDE,
         )
@@ -505,7 +518,10 @@ class VodPage(
         stopTopRightFrames()
         released = true
         repo?.removeRowsListener(rowsListener)
-        for (row in rows) row.cancel?.cancel()
+        for (row in rows) {
+            row.cancel?.cancel()
+            row.moreCancel?.cancel()
+        }
         headerCancel?.cancel()
         resolveCancel?.cancel()
         ImageLoader.release(nameLogoTarget)
@@ -740,6 +756,7 @@ class VodPage(
         if (card != null && (myList || followsContinue(row))) followCard(card) else if (!myList) header.unfollow()
         updateHeaderPause()
         updateImages()
+        if (RowRules.nearEnd(index, row.cards.size)) loadMore(row)
     }
 
     override fun onRowLeft(row: TitleRow): Boolean {
@@ -873,12 +890,14 @@ class VodPage(
     private fun onPick(row: TitleRow, index: Int) {
         when {
             row.style == RowStyle.GENRES -> row.genres.getOrNull(index)?.let { openSeeAll(row, index, genreSpec(row.spec, it)) }
-            // A service's card opens its page; a Disney+ brand's, its collection (See all's grid).
+            // A service's card opens its page; a Disney+ studio's, its page of rows (National Geographic's, its
+            // collection in See all's grid).
             row.style == RowStyle.LOGO -> row.cards.getOrNull(index)?.title?.id?.let { id ->
                 Services.serviceOf(id)?.let { host.openService(it) }
-                Services.brandOf(id)?.let { openSeeAll(row, index, Services.collection(it)) }
+                Services.brandOf(id)?.let { if (Studios.hasPage(it)) host.openStudio(it) else openSeeAll(row, index, Services.collection(it)) }
             }
-            row.isSeeAll(index) -> openSeeAll(row, index, row.spec)
+            // A studio page's first row ends with the studio's whole collection.
+            row.isSeeAll(index) -> openSeeAll(row, index, Studios.seeAll(row.spec) ?: row.spec)
             row.spec.continueRow -> row.cards.getOrNull(index)?.let { playContinue(it, Origin.InRow(row, index, it.title.id)) }
             else -> row.cards.getOrNull(index)?.let { openTitle(it, Origin.InRow(row, index, it.title.id), soon = row.spec.source is Source.NextEpisodes) }
         }
@@ -1069,7 +1088,12 @@ class VodPage(
         if (pageSpring.moving) pageSpring.snap(pageSpring.target)
         viewport.visibility = View.INVISIBLE
         // "Popular · Movies"; My List's rows name it already ("My List · Movies").
-        nameText.text = if (spec.label.startsWith(pageName)) spec.label else "${spec.label} · $pageName"
+        // A studio's whole collection keeps the studio page's name ("Marvel · Disney+").
+        nameText.text = when {
+            spec.label.startsWith(pageName) -> spec.label
+            studio != null && spec.label == studio.label -> pageName
+            else -> "${spec.label} · $pageName"
+        }
         updateName()
         updateListHeader()
         updateHeaderPause()
@@ -1232,6 +1256,8 @@ class VodPage(
     private fun load(row: TitleRow) {
         val r = repo ?: return
         row.cancel?.cancel()
+        row.moreCancel?.cancel()
+        row.loadingMore = false
         val gen = ++row.generation
         row.cancel = if (row.style == RowStyle.GENRES) {
             val kind = (row.spec.source as? Source.Genres)?.kind ?: if (page == Page.SHOWS) Kind.SERIES else Kind.MOVIE
@@ -1254,7 +1280,13 @@ class VodPage(
         if (!RowRules.isFinal(row.spec.source, cards.isEmpty(), fresh)) return
         row.answered = true
         val shownCards = cards.take(ROW_CARDS)
-        val seeAll = RowRules.seeAll(row.spec.source, cards.size)
+        val seeAll = RowRules.seeAll(row.spec.source, cards.size) || (cards.isNotEmpty() && Studios.seeAll(row.spec) != null)
+        if (RowRules.pages(row.spec.source)) {
+            // Loaded again with the viewer further along: the longer list stays while it starts the same.
+            if (shownCards.isNotEmpty() && row.cards.size > shownCards.size && row.cards.take(shownCards.size) == shownCards) return
+            row.asked = ROW_CARDS
+            row.ended = RowRules.endsAt(row.spec.source, cards.size)
+        }
         if (search) {
             holdSearchAnswer(row, shownCards, seeAll)
             return
@@ -1264,11 +1296,37 @@ class VodPage(
     }
 
     /**
+     * A row that goes on ([RowRules.pages]) takes its next titles: asked for as the viewer nears its end, added after
+     * the cards it shows (before See all), up to [RowRules.ROW_MAX]. Nothing the viewer is on moves.
+     */
+    private fun loadMore(row: TitleRow) {
+        if (!RowRules.pages(row.spec.source) || row.ended || row.loadingMore || row.cards.size >= RowRules.ROW_MAX) return
+        val r = repo ?: return
+        val gen = row.generation
+        val skip = row.asked
+        row.loadingMore = true
+        row.moreCancel = r.load(row.spec, skip, RowRules.ROW_MORE) { more, fresh ->
+            if (released || gen != row.generation) return@load
+            if (!RowRules.isFinal(row.spec.source, more.isEmpty(), fresh)) return@load
+            row.loadingMore = false
+            // On See all: the cards before it stay as they are (it would move away under the viewer); asked again later.
+            if (row.isSeeAll(row.focusedIndex())) return@load
+            row.asked = skip + RowRules.ROW_MORE
+            if (more.isEmpty()) {
+                row.ended = true
+                return@load
+            }
+            val cards = RowRules.more(row.cards, more)
+            if (cards.size > row.cards.size) showCards(row, cards, row.hasSeeAll, mine = true)
+        }
+    }
+
+    /**
      * A service page's banner goes through its rows' titles, films and series in turn, as Home's does through its
      * lists: once every row has answered, and only titles whose IMDb id is known (the banner's buttons need it).
      */
     private fun updateServiceFeed() {
-        val lists = rows.filter { it.spec.source is Source.Discover }
+        val lists = rows.filter { it.spec.source is Source.Discover || it.spec.source is Source.Curated }
         if (lists.any { !it.answered }) return
         val titles = lists.map { row -> row.cards.map { it.title }.filter { it.hasImdbId } }
         header.setFeed(TmdbTrending.interleave(titles.getOrNull(0).orEmpty(), titles.getOrNull(1).orEmpty()))
@@ -1600,6 +1658,7 @@ class VodPage(
     // ---- Search ---------------------------------------------------------------------------------------------------
 
     private fun rowSpecs(r: VodRepository): List<RowSpec> = when {
+        studio != null -> Studios.rows(studio)
         service != null -> Services.rows(service)
         else -> tabRowSpecs(r)
     }

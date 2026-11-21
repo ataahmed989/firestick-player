@@ -701,6 +701,11 @@ internal object VodSizes {
     /** How much of a logo card's width and height its wordmark may take. */
     const val LOGO_FILL_W = 0.66f
     const val LOGO_FILL_H = 0.5f
+    /**
+     * The studio logos (res/drawable-nodpi/studio_*.png) are drawn for a card this many of their pixels wide: each
+     * keeps its size against the card's width, so the five sit together as in the reference.
+     */
+    const val STUDIO_LOGO_CARD_PX = 258f
     /** A one-colour wordmark is drawn in this, whatever its own colour (TMDB's are often black). */
     const val LOGO_MONO = 0xFFFFFFFF.toInt()
     /** A service page's wordmark in the name line: at most this size, its bottom on the clock's baseline. */

@@ -52,11 +52,8 @@ object Services {
     /** Home's row of services: a card each, its wordmark as its picture. */
     fun cards(): List<Card> = Service.entries.map { logoCard(SERVICE_ID + it.key, it.label, it.logo) }
 
-    /** Disney+'s row of brands. */
-    fun brandCards(): List<Card> = Brand.entries.map { logoCard(BRAND_ID + it.key, it.label, it.logo) }
-
-    /** Whether [id] is a studio's card (its logo is drawn from the app's own pictures, never fetched). */
-    fun isBrand(id: String): Boolean = id.startsWith(BRAND_ID)
+    /** Disney+'s row of studios: a card each, its logo one of the app's own pictures (nothing is fetched for it). */
+    fun brandCards(): List<Card> = Brand.entries.map { logoCard(BRAND_ID + it.key, it.label, null) }
 
     private fun logoCard(id: String, name: String, logo: String?) = Card(Title(id, Kind.MOVIE, name, poster = logoUrl(logo)))
 

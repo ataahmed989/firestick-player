@@ -80,6 +80,14 @@ class TitleRow(
     /** Bumped for each load: older answers are dropped. */
     var generation = 0
     var cancel: Cancel? = null
+    /**
+     * A row that takes more titles as the viewer nears its end ([RowRules.pages]): how many of its source's positions
+     * were asked for, whether more are on their way, and whether the source has ended.
+     */
+    var asked = 0
+    var loadingMore = false
+    var ended = false
+    var moreCancel: Cancel? = null
     /** Answered at least once with something to go by (cards, or a final "none"). */
     var answered = false
     /** Cards that came while the viewer was in this row and would have moved what they're on: shown when they leave. */

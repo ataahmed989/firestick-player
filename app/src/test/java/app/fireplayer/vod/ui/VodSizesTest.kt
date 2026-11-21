@@ -2,6 +2,7 @@ package app.fireplayer.vod.ui
 
 import app.fireplayer.vod.RowStyle
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.ceil
