@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import app.fireplayer.R
+import app.fireplayer.ui.ImageFit
 import app.fireplayer.vod.data.Brand
 import app.fireplayer.vod.data.Service
 import app.fireplayer.vod.data.Services
@@ -33,6 +34,33 @@ internal object CardLogos {
         val bitmap = BitmapFactory.decodeResource(context.resources, res, options) ?: return null
         return Logo(bitmap, share).also { logos[id] = it }
     }
+
+    private val headers = HashMap<Service, Bitmap>()
+
+    /**
+     * [service]'s logo for its page's name line: its card's own picture, cut to its visible part (the clear room
+     * round it is the card's, and would set it off the line) and fitted inside [maxW] x [maxH] px, never enlarged.
+     * Made once per service and kept (five small bitmaps); null if it can't be read.
+     */
+    fun header(context: Context, service: Service, maxW: Int, maxH: Int): Bitmap? {
+        headers[service]?.let { return it }
+        val src = BitmapFactory.decodeResource(context.resources, resOf(service)) ?: return null
+        val w = src.width
+        val h = src.height
+        val px = IntArray(w * h)
+        src.getPixels(px, 0, w, 0, 0, w, h)
+        val b = LogoBounds.of(px, w, h)
+        var part = Bitmap.createBitmap(src, b[0], b[1], b[2] - b[0], b[3] - b[1])
+        if (part !== src) src.recycle()
+        val (ow, oh) = ImageFit.inside(part.width, part.height, maxW, maxH)
+        // Halved while it's over twice the size it's shown at, so the small picture is smooth, then fitted.
+        while (part.width / 2 >= ow && part.height / 2 >= oh && part.width >= 2 && part.height >= 2) part = scaled(part, part.width / 2, part.height / 2)
+        if (part.width != ow || part.height != oh) part = scaled(part, ow, oh)
+        return part.also { headers[service] = it }
+    }
+
+    private fun scaled(src: Bitmap, w: Int, h: Int): Bitmap =
+        Bitmap.createScaledBitmap(src, w, h, true).also { if (it !== src) src.recycle() }
 
     private fun resOf(service: Service): Int = when (service) {
         Service.DISNEY -> R.drawable.card_logo_disney_plus

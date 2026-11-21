@@ -20,13 +20,13 @@ import android.view.animation.DecelerateInterpolator
 import app.fireplayer.live.Channel
 import app.fireplayer.live.ChannelKey
 import app.fireplayer.live.Programme
+import app.fireplayer.shell.HeaderClock
 import app.fireplayer.shell.Tokens
 import app.fireplayer.ui.GlassStyle
 import app.fireplayer.ui.ListMath
 import app.fireplayer.ui.SwapFadeRules
 import app.fireplayer.vod.ui.VodSizes
 import java.util.Date
-import java.util.Locale
 import kotlin.math.ceil
 import kotlin.math.roundToInt
 
@@ -228,7 +228,6 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
     private val focusRect = RectF()
     private val highlight = RectF()
     private val timeFormat = DateFormat.getTimeFormat(context)
-    private val datePattern = DateFormat.getBestDateTimePattern(Locale.getDefault(), "EEEMMMd")
 
     // Header labels, made once per minute / per half hour rather than every frame.
     private var dateText = ""
@@ -899,7 +898,7 @@ class GuideView(context: Context, private val t: Tokens) : View(context) {
         val minute = now / 60_000
         if (minute != dateMinute) {
             dateMinute = minute
-            dateText = DateFormat.format(datePattern, now).toString() + " · " + timeFormat.format(Date(now))
+            dateText = HeaderClock.text(context, now)
         }
         return dateText
     }

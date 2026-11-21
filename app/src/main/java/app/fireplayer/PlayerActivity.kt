@@ -34,7 +34,6 @@ import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.StaticLayout
 import android.text.TextPaint
-import android.text.format.DateFormat
 import android.text.style.ForegroundColorSpan
 import android.view.Gravity
 import android.view.KeyEvent
@@ -156,7 +155,6 @@ import io.github.peerless2012.ass.media.AssHandler
 import java.io.File
 import java.io.IOException
 import java.lang.ref.WeakReference
-import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executors
 import kotlin.concurrent.thread
@@ -4096,8 +4094,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     private fun updateClock() {
-        val pattern = if (DateFormat.is24HourFormat(this)) "EEE, MMM d · HH:mm" else "EEE, MMM d · h:mm a"
-        clockView.text = java.text.SimpleDateFormat(pattern, Locale.getDefault()).format(Date())
+        clockView.text = app.fireplayer.shell.HeaderClock.text(this, System.currentTimeMillis())
     }
 
     private fun updateProgress() {

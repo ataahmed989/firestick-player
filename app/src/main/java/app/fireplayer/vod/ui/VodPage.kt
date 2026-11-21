@@ -6,7 +6,6 @@ import android.graphics.RectF
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import android.text.format.DateFormat
 import android.view.Gravity
 import android.view.Choreographer
 import android.view.KeyEvent
@@ -25,6 +24,7 @@ import app.fireplayer.live.ui.LiveSearchView
 import app.fireplayer.live.ui.HoldPopup
 import app.fireplayer.live.ui.PipRules
 import app.fireplayer.live.ui.PressHold
+import app.fireplayer.shell.HeaderClock
 import app.fireplayer.shell.RailMotion
 import app.fireplayer.shell.Tokens
 import app.fireplayer.ui.Buttons
@@ -54,8 +54,6 @@ import app.fireplayer.vod.data.TmdbTrending
 import app.fireplayer.vod.data.SearchHistory
 import app.fireplayer.vod.data.SearchHistoryRules
 import app.fireplayer.vod.data.TabRows
-import java.util.Date
-import java.util.Locale
 import kotlin.math.abs
 
 /**
@@ -286,20 +284,17 @@ class VodPage(
         studio != null -> "${studio.label} · ${service.label}"
         else -> service.label
     }
-    /** A service page's wordmark in the name's place (the name shows until it comes, and over See all). */
-    private val nameLogo: android.widget.ImageView? = if (service == null || studio != null) null else android.widget.ImageView(ctx).apply {
-        adjustViewBounds = true
-        baselineAlignBottom = true
-        visibility = View.GONE
-        if (service.mono) setColorFilter(VodSizes.LOGO_MONO)
-    }
-    private var nameLogoOn = false
-    private val nameLogoTarget = object : app.fireplayer.ui.ImageTarget {
-        override var imageKey: String? = null
-        override fun setImage(bitmap: android.graphics.Bitmap?, fromMemory: Boolean) {
-            nameLogo?.setImageBitmap(bitmap)
-            nameLogoOn = bitmap != null
-            updateName()
+    /**
+     * A service page's logo in the name's place: the one its Home card shows ([CardLogos.header], the app's own
+     * picture, so nothing is fetched for it). The name shows instead over See all, and if the logo can't be read.
+     */
+    private val nameLogoBitmap = if (service == null || studio != null) null else CardLogos.header(ctx, service, t.dp(VodSizes.NAME_LOGO_W), t.dp(VodSizes.NAME_LOGO_H))
+    private val nameLogo: android.widget.ImageView? = nameLogoBitmap?.let {
+        android.widget.ImageView(ctx).apply {
+            adjustViewBounds = true
+            baselineAlignBottom = true
+            visibility = View.GONE
+            setImageBitmap(it)
         }
     }
     /** A collection's title being looked up before it opens ([resolveThen]). */
@@ -454,16 +449,13 @@ class VodPage(
         buildRows()
         applyLook()
         if (service != null) ImageLoader.init(ctx)
-        if (service != null && studio == null) ImageLoader.load(
-            Services.logoUrl(service.logo), nameLogoTarget, t.dp(VodSizes.NAME_LOGO_W), t.dp(VodSizes.NAME_LOGO_H),
-            config = android.graphics.Bitmap.Config.ARGB_8888, fit = ImageLoader.Fit.INSIDE,
-        )
+        updateName()
     }
 
-    /** The name line shows the service's wordmark once it has come, the page's name otherwise (and over See all). */
+    /** The name line shows the service's logo, and the page's name over See all. */
     private fun updateName() {
         val logo = nameLogo ?: return
-        val on = nameLogoOn && seeAll?.isOpen != true
+        val on = seeAll?.isOpen != true
         logo.visibility = if (on) View.VISIBLE else View.GONE
         nameText.visibility = if (on) View.GONE else View.VISIBLE
     }
@@ -524,7 +516,6 @@ class VodPage(
         }
         headerCancel?.cancel()
         resolveCancel?.cancel()
-        ImageLoader.release(nameLogoTarget)
         window?.release()
         searchBar?.cancel()
         liveResults?.release()
@@ -1609,8 +1600,7 @@ class VodPage(
 
     private fun tickClock() {
         val now = System.currentTimeMillis()
-        val date = DateFormat.format(DateFormat.getBestDateTimePattern(Locale.getDefault(), "EEEMMMd"), now)
-        clockText.text = "$date · ${DateFormat.getTimeFormat(ctx).format(Date(now))}"
+        clockText.text = HeaderClock.text(ctx, now)
         main.removeCallbacks(clockTick)
         // On the next minute.
         main.postDelayed(clockTick, 60_000L - now % 60_000L + 50L)
