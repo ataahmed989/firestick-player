@@ -99,25 +99,6 @@ object FilmMemory {
     /** Sized by free memory, the buffer still gets this much (it steps down further only under pressure, [capFor]). */
     const val FREE_FLOOR_BYTES = 64 shl 20
 
-    /** One segment of a film read with two requests ([TwoRanges]); two are held at most. */
-    const val SEGMENT_BYTES = 8 shl 20
-    /** The same where the TV has the memory for two of them. */
-    const val BIG_SEGMENT_BYTES = 16 shl 20
-
-    /**
-     * How big a segment of a film read with two requests is on a TV of [tier] with [freeBytes] free as the film starts
-     * (0 or less: not known). Asking for the next segment costs each request about 98 ms (measured on a Fire TV Stick
-     * 4K Max on connections used again: the request's way there and back, not a new connection), 6% of the 1.5 s an
-     * 8 MiB segment takes at 45 Mb/s and 3% of a 16 MiB one's 3 s. Two segments are held in memory beside the film's
-     * buffer, so the bigger ones cost 16 MiB more: only where what's free leaves [RESERVE_BYTES], the least film
-     * buffer ([FREE_FLOOR_BYTES]) and both segments, and never on the smallest TVs.
-     */
-    fun segmentBytes(tier: RamTier, freeBytes: Long): Int = when {
-        tier == RamTier.TINY -> SEGMENT_BYTES
-        freeBytes in 1 until RESERVE_BYTES + FREE_FLOOR_BYTES + 2L * BIG_SEGMENT_BYTES -> SEGMENT_BYTES
-        else -> BIG_SEGMENT_BYTES
-    }
-
     /**
      * The film's buffer on a TV of [tier] whose app heap limit is [maxHeapBytes] (Runtime.maxMemory): the tier's
      * budget, but never more than [HEAP_SHARE] of the heap limit or [CEILING_BYTES], nor less than [FLOOR_BYTES].

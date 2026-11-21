@@ -1,8 +1,6 @@
 package app.fireplayer.player
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -197,29 +195,5 @@ class FilmStallsTest {
         }
         assertTrue("${r.sustainedMbps}", r.sustainedMbps < 100.0)
         assertTrue(r.sustainedSeconds <= DownloadRate.SUSTAIN_MEMORY_MS / 1000 + 1)
-    }
-
-    @Test
-    fun aHeavyFilmWaitsForMoreBeforeItsFirstFrameOnly() {
-        // 92.7 GB over 2 h 55 min: 70.6 Mb/s.
-        val remux = HeavyStart.mbps(92_730_105_346L, 10_500_000_000L)!!
-        assertEquals(70.6, remux, 0.1)
-        assertTrue(HeavyStart.heavy(null, remux))
-        assertTrue(HeavyStart.heavy(71.0, null))
-        assertTrue(HeavyStart.heavy(50.0, null))
-        assertFalse(HeavyStart.heavy(49.9, null))
-        assertFalse(HeavyStart.heavy(null, null))
-        assertFalse(HeavyStart.heavy(0.0, 0.0))
-        // The file's own size and running time tell better than what the add-on named (a season in one file).
-        assertFalse(HeavyStart.heavy(120.0, 12.0))
-        assertTrue(HeavyStart.heavy(20.0, 60.0))
-        assertNull(HeavyStart.mbps(-1L, 10_500_000_000L))
-        assertNull(HeavyStart.mbps(92_730_105_346L, 0L))
-        // Four seconds before a heavy film's first frame; a light film, a jump and a stall as ever.
-        assertEquals(4_000_000L, HeavyStart.leastUs(first = true, heavy = true, usualUs = 1_000_000L))
-        assertEquals(1_000_000L, HeavyStart.leastUs(first = true, heavy = false, usualUs = 1_000_000L))
-        assertEquals(1_000_000L, HeavyStart.leastUs(first = false, heavy = true, usualUs = 1_000_000L))
-        // Where memory holds a 70 Mb/s film's 8 s, the wait is the four seconds; where it holds less, a full buffer ends it.
-        assertEquals(4_000_000L, FilmMemory.waitUs(4_000_000L, 8_000_000L, 4_000_000L))
     }
 }

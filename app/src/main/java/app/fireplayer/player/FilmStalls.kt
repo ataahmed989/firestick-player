@@ -35,43 +35,6 @@ class StallCount(private val quietMs: Long = QUIET_MS) {
 data class FilmFlow(val fillRate: Float?, val stalls: Int, val stallWaitMs: Long)
 
 /**
- * How much of a heavy film to have before its first frame.
- *
- * A film's first seconds arrive slower than the rest: its connections are new, the second request starts a moment
- * after the first, and the provider's server takes a while to reach its speed. Measured on a Fire TV Stick 4K Max
- * with two requests: the first 10 s came at 0.74 of what a 70 Mb/s film plays at, then 80 to 86 Mb/s. Started with
- * one second ahead, the film fell 2.6 s behind in those 10 s and stalled. With [START_US] ahead it has more than it
- * falls behind by. A lighter film arrives several times faster than it plays from the first second and starts as it
- * always did; so does a heavy one after a jump.
- *
- * Pure.
- */
-object HeavyStart {
-    /** A film is heavy from this average on, in Mb/s. */
-    const val HEAVY_MBPS = 50.0
-    /** What a heavy film has ahead before its first frame, in µs. */
-    const val START_US = 4_000_000L
-
-    /** [bytes] over [durationUs] in Mb/s; null when either isn't known. */
-    fun mbps(bytes: Long, durationUs: Long): Double? =
-        if (bytes <= 0L || durationUs <= 0L) null else bytes * 8.0 / durationUs
-
-    /**
-     * Whether a film is heavy: by [fileMbps], the size its server gave over its own running time, or, where that
-     * isn't known, by [sourceMbps], its source's average as known before it started (the size its add-on named over
-     * the title's running time; a season in one file names the whole season's). Neither known: not heavy.
-     */
-    fun heavy(sourceMbps: Double?, fileMbps: Double?): Boolean {
-        val known = fileMbps?.takeIf { it > 0.0 } ?: sourceMbps?.takeIf { it > 0.0 } ?: return false
-        return known >= HEAVY_MBPS
-    }
-
-    /** The least to have before playing: [START_US] before a heavy film's [first] frame, else [usualUs]. */
-    fun leastUs(first: Boolean, heavy: Boolean, usualUs: Long): Long =
-        if (first && heavy) maxOf(START_US, usualUs) else usualUs
-}
-
-/**
  * How much film to wait for after a stall before playing on.
  *
  * A film that arrives about as fast as it plays (a 4K remux at 70 to 90 Mb/s on a line bringing 65 to 80) can't be

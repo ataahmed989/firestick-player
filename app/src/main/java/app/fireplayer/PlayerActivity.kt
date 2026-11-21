@@ -545,7 +545,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     // ---- A film or episode from the add-ons (Films & Shows step 3; design-brief.md §6.5) ----
     /** The play from the add-ons this player runs (stages 2-4), or null for any other video. */
-    @Volatile private var source: SourcePlayback? = null
+    private var source: SourcePlayback? = null
     private var sourceToken: String? = null
     private var sourcesPanel: SourcesPanel? = null
     private var nextLookup: app.fireplayer.vod.Cancel? = null
@@ -1160,10 +1160,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val vsync = VsyncFix(this)
         val hdr10Plus = Hdr10PlusGate(this)
         // "Faster downloads (2 connections)", as set when this film or source starts; null is one request, as ever.
-        // Its segments are as big as this TV's free memory allows now (FilmMemory.segmentBytes).
-        val twoRanges = if (!prefs.fasterDownloads) null else TwoRanges(
-            TwoRanges.Config(segmentBytes = FilmMemory.segmentBytes(FilmMemory.tier(this), FilmMemory.freeNow(this))),
-        )
+        val twoRanges = if (prefs.fasterDownloads) TwoRanges() else null
         filmRanges = twoRanges
         val built = PlayerFactory.build(
             context = this,
@@ -1184,7 +1181,6 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             freshLinks = source != null,
             keepBudgetBytes = keepBudgetBytes,
             twoRanges = twoRanges,
-            sourceMbps = { source?.current?.facts?.avgMbps },
         )
         keepBudgetBytes = 0
         builtAt = SystemClock.elapsedRealtime()

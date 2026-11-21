@@ -354,12 +354,6 @@ object PlayerFactory {
         keepBudgetBytes: Int = 0,
         /** "Faster downloads (2 connections)" is on: this player's films may be read with two requests ([TwoRanges]). */
         twoRanges: TwoRanges? = null,
-        /**
-         * The average of the source playing now in Mb/s, when it was known before it started (its size over the
-         * title's running time); null when not. A heavy film waits for more before its first frame ([HeavyStart]).
-         * Asked on the playback thread.
-         */
-        sourceMbps: () -> Double? = { null },
     ): Built {
         IndexCache.dir = context.cacheDir
         val serverSwitch = ServerSwitch()
@@ -421,8 +415,6 @@ object PlayerFactory {
             free,
             serverSwitch,
             byteMeter?.loader,
-            sourceMbps,
-            twoRanges,
         )
 
         val builder = ExoPlayer.Builder(context)
@@ -603,9 +595,6 @@ private class FilmLoadControl(
     private val serverSwitch: ServerSwitch,
     /** Told when loading is held back, so the log's loader speed leaves the pause out ([LoaderRate.held]). */
     private val loaderRate: LoaderRate? = null,
-    /** The playing source's average in Mb/s when known before its start, and the film's two requests: for [HeavyStart]. */
-    private val sourceMbps: () -> Double? = { null },
-    private val twoRanges: TwoRanges? = null,
 ) : LoadControl {
 
     /** The film's budget: [plannedBytes], or more once room was made. Set on the main thread, read on the playback thread. */
@@ -669,22 +658,8 @@ private class FilmLoadControl(
     private var fullUs = 0L
     private var fullPeriod: Any? = null
 
-    // The item whose first frame has been let through: a wait in it from here on is a jump's or a stall's. And the
-    // item whose heavy start has been logged. On the playback thread only.
-    private var startedPeriod: Any? = null
-    private var heavyLogged: Any? = null
-
     /** The memory the film's loaded part holds now, in bytes: any thread (Media3's allocator answers under its lock). */
     val allocatedBytes: Long get() = inner.allocator.totalBytesAllocated.toLong()
-
-    /** Whether this item is a heavy film, by its source's average or its size over its running time ([HeavyStart]). */
-    private fun heavy(parameters: LoadControl.Parameters): Boolean {
-        val timeline = parameters.timeline
-        val index = timeline.getIndexOfPeriod(parameters.mediaPeriodId.periodUid)
-        val durationUs = if (index == C.INDEX_UNSET) C.TIME_UNSET else timeline.getPeriod(index, period).durationUs
-        val fileMbps = if (durationUs == C.TIME_UNSET) null else HeavyStart.mbps(twoRanges?.filmBytes ?: -1L, durationUs)
-        return HeavyStart.heavy(sourceMbps(), fileMbps)
-    }
 
     /** What the buffer fills to now, in bytes. */
     val fillBytes: Long get() = capBytes.toLong()
@@ -694,28 +669,12 @@ private class FilmLoadControl(
         if (isLive(parameters)) return inner.shouldStartPlayback(parameters)
         // All of this episode is loaded, and what's loading is the next one (queued after it): nothing more of this
         // one can come, so waiting on would only wait on the next episode's server.
-        val uid = parameters.mediaPeriodId.periodUid
-        if (loadedToEnd(parameters)) {
-            startedPeriod = uid
-            return true
-        }
+        if (loadedToEnd(parameters)) return true
         measure(parameters, waiting = true)
         forgetRoomIfRaised()
         // Memory full means nothing more can come before playing on.
         val limit = FilmMemory.fillLimit(capBytes, budgetBytes, parameters.bufferedDurationUs)
-        if (allocator.totalBytesAllocated >= limit) {
-            startedPeriod = uid
-            return true
-        }
-        // Before a heavy film's first frame, more than a second: its first stretch arrives slower than it plays.
-        val first = !parameters.rebuffering && startedPeriod != uid
-        val heavyStart = first && heavy(parameters)
-        val leastUs = HeavyStart.leastUs(first, heavyStart, START_US)
-        if (heavyStart && heavyLogged != uid) {
-            heavyLogged = uid
-            // Once per film. No links, no titles.
-            Log.i(PlaybackDiag.TAG, "heavy film: its first frame waits for " + leastUs / 1000 + "ms ahead")
-        }
+        if (allocator.totalBytesAllocated >= limit) return true
         val buffered = parameters.bufferedDurationUs
         val rate = fillRate()
         val now = SystemClock.elapsedRealtime()
@@ -727,14 +686,14 @@ private class FilmLoadControl(
         else FilmMemory.roomUs(measured, buffered, allocator.totalBytesAllocated.toLong(), limit.toLong())
         val wantedUs = if (!parameters.rebuffering) {
             // Starting, or after a jump: a second's worth, once it's clear how fast the rest is coming (or plenty).
-            if (rate == null) 10_000_000L else maxOf(leastUs, cushionFor(rate))
+            if (rate == null) 10_000_000L else maxOf(START_US, cushionFor(rate))
         } else {
             StallCushion.wantedUs(stallsNow(parameters, now), rate)
         }
         // Never for all that fits in this TV's memory at a start or after a jump: half of it, where that's a few
         // seconds of a high-quality film. After a stall, more of it with each stall in the same film (StallCushion).
         val neededUs = if (parameters.rebuffering) StallCushion.waitUs(stallsNow(parameters, now), wantedUs, room)
-        else FilmMemory.waitUs(wantedUs, room, leastUs)
+        else FilmMemory.waitUs(wantedUs, room, START_US)
         if (parameters.rebuffering && stallLogged != stallId) {
             stallLogged = stallId
             // Once per stall. No links, no titles.
@@ -747,9 +706,7 @@ private class FilmLoadControl(
         // Whichever comes first ends the wait: enough film, or full memory.
         val fraction = maxOf(buffered.toFloat() / neededUs, allocator.totalBytesAllocated.toFloat() / limit)
         wait = BufferWait(fraction.coerceIn(0f, 1f), rate != null && rate < 1f, now)
-        if (buffered < neededUs) return false
-        startedPeriod = uid
-        return true
+        return buffered >= neededUs
     }
 
     /** Keeps [flow] up to date; a new one only when something in it changed. [stallWaitMs] under 0: as it was. */

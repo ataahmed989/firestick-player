@@ -99,8 +99,8 @@ class SourcePlayback(
         fun lineShort(mbps: Double) = Unit
     }
 
-    /** The source playing (or being opened), and the add-on offer it came from. Read on the playback thread too. */
-    @Volatile var current: PlaybackSource? = null
+    /** The source playing (or being opened), and the add-on offer it came from. */
+    var current: PlaybackSource? = null
         private set
     private var offer: Offer? = null
     /** The current source has shown its first frame (stage 4 from here; before it, stage 3). */
