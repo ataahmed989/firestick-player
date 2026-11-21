@@ -55,6 +55,9 @@ object Services {
     /** Disney+'s row of brands. */
     fun brandCards(): List<Card> = Brand.entries.map { logoCard(BRAND_ID + it.key, it.label, it.logo) }
 
+    /** Whether [id] is a studio's card (its logo is drawn from the app's own pictures, never fetched). */
+    fun isBrand(id: String): Boolean = id.startsWith(BRAND_ID)
+
     private fun logoCard(id: String, name: String, logo: String?) = Card(Title(id, Kind.MOVIE, name, poster = logoUrl(logo)))
 
     /** The service a card of [cards] stands for. */
@@ -117,12 +120,18 @@ object Discover {
         "with_watch_providers" to s.provider.toString(),
         "with_watch_monetization_types" to "flatrate",
         if (kind == Kind.SERIES && s.networks != null) "with_networks" to s.networks else s.companies?.let { "with_companies" to it },
+        s.genres?.let { "with_genres" to it },
+        s.withoutGenres?.let { "without_genres" to it },
+        s.maxRuntime?.let { "with_runtime.lte" to it.toString() },
         "page" to page.toString(),
     )
 
     /** Where a page is kept. */
-    fun key(s: Source.Discover, kind: Kind, page: Int): String =
-        "tmdb|discover|v1|${kind.type}|${s.provider}|${s.companies.orEmpty()}|${s.networks.orEmpty()}|$page"
+    fun key(s: Source.Discover, kind: Kind, page: Int): String {
+        val narrowed = if (s.genres == null && s.withoutGenres == null && s.maxRuntime == null) ""
+        else "g${s.genres.orEmpty()}x${s.withoutGenres.orEmpty()}r${s.maxRuntime ?: ""}|"
+        return "tmdb|discover|v1|${kind.type}|${s.provider}|${s.companies.orEmpty()}|${s.networks.orEmpty()}|$narrowed$page"
+    }
 
     /** TMDB's answer for [page] of [kind]. */
     fun parse(text: String, kind: Kind, page: Int): Page {

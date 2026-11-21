@@ -24,6 +24,12 @@ interface TmdbSource {
     /** `find/{tt}?external_source=imdb_id` as TMDB sends it. */
     fun find(imdbId: String): String
 
+    /**
+     * `{movie|tv}/{id}` with where it can be watched and its external ids appended ([Curated.APPEND]), as TMDB sends
+     * it; null when TMDB has no such title.
+     */
+    fun curated(kind: Kind, tmdbId: Int): String? = null
+
     /** `discover/{movie|tv}` with [params] ([Discover.params]) as TMDB sends it. */
     fun discover(kind: Kind, params: List<Pair<String, String>>): String = "{}"
 
@@ -34,6 +40,7 @@ interface TmdbSource {
             override fun details(kind: Kind, tmdbId: Int) =
                 tmdb.titleDetails(tmdbId, kind == Kind.SERIES, TmdbDetails.append(kind))
             override fun find(imdbId: String) = tmdb.findByImdb(imdbId)
+            override fun curated(kind: Kind, tmdbId: Int) = tmdb.titleDetails(tmdbId, kind == Kind.SERIES, Curated.APPEND)
             override fun discover(kind: Kind, params: List<Pair<String, String>>) = tmdb.discover(kind == Kind.SERIES, params)
         }
     }

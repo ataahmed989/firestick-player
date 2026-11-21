@@ -36,8 +36,10 @@ internal object RowRules {
         total <= 0 -> false
         source is Source.Catalog -> true
         source is Source.Trending -> false
-        // A service's row is its first page only.
-        source is Source.Discover -> false
+        // A service's row is its first page only; a studio page's goes on, and ends with See all (its whole grid).
+        source is Source.Discover -> source.paged
+        // A chosen list shows whole in its row.
+        source is Source.Curated -> false
         else -> total > ROW_CARDS
     }
 

@@ -223,7 +223,7 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
             setPadding(t.dp(11), 0, t.dp(12), 0)
             icon = ImageView(context).apply {
                 setImageResource(tab.icon)
-                // A service's icon has its own colours ([TabRow.showTint]).
+                // A service's icon keeps its own colours ([TabRow.showIcon]).
                 if (!tab.isService) imageTintList = colors
                 isDuplicateParentStateEnabled = true
             }
@@ -254,13 +254,20 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
     private inner class TabRow(context: Context) : LinearLayout(context) {
         lateinit var icon: ImageView
         lateinit var label: TextView
-        /** A service's tab: its icon's colour at rest (null: the icon's own colours); dark on the white while focused. */
+        /** A service's tab: its resting icon, and its dark one for the light highlight while the tab holds focus. */
         var service: ServiceTab? = null
+        private var shownIcon = 0
 
-        /** A service's icon in its resting colour, or dark on the tab's white the moment the tab holds focus. */
-        fun showTint() {
+        /**
+         * A service's icon: the dark one only while this tab itself holds D-pad focus, the resting one the moment
+         * focus leaves (also while its page is open). Both are the same size, so nothing moves in the swap.
+         */
+        fun showIcon() {
             val s = service ?: return
-            icon.imageTintList = if (isFocused) serviceFocused else s.rest?.let { ColorStateList.valueOf(it) }
+            val res = if (isFocused) s.focusedIcon ?: s.icon else s.icon
+            if (res == shownIcon) return
+            shownIcon = res
+            icon.setImageResource(res)
         }
 
         init {
@@ -272,7 +279,7 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
 
         override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: Rect?) {
             super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
-            showTint()
+            showIcon()
             wake()
         }
     }
@@ -325,8 +332,7 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
             row.service = s
             row.contentDescription = s.name
             row.label.text = s.name
-            row.icon.setImageResource(s.icon)
-            row.showTint()
+            row.showIcon()
             row.visibility = VISIBLE
         }
     }
@@ -946,12 +952,10 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
     }
 
     /**
-     * A streaming service's tab: its name, its icon (a one-colour shape, or a mark in its own colours) and the colour
-     * the icon is drawn in at rest ([rest]; null: its own colours). Focused, every one is [RailShape.SERVICE_FOCUSED].
+     * A streaming service's tab: its name, its icon at rest (a drawable, in its own colours) and the dark one shown on
+     * the light highlight while the tab holds focus ([focusedIcon]; null: the same icon always). Both the same size.
      */
-    data class ServiceTab(val name: String, val icon: Int, val rest: Int?)
-
-    private val serviceFocused = ColorStateList.valueOf(RailShape.SERVICE_FOCUSED)
+    data class ServiceTab(val name: String, val icon: Int, val focusedIcon: Int?)
 
     companion object {
         /** The tabs of the streaming-service pages visited last, newest first. */
@@ -990,12 +994,6 @@ object RailShape {
     const val MARK_DP = 30
     const val MARK_WIDE_DP = 38
     const val NAME_SP = 24f
-
-    /** A service's icon on a focused tab's white: dark, whatever its resting colour. */
-    const val SERVICE_FOCUSED = 0xFF10141A.toInt()
-    /** The resting colours of the one-colour service icons: Disney's light-blue D; white (HBO Max, Apple TV). */
-    const val SERVICE_LIGHT_BLUE = 0xFF8CCBFF.toInt()
-    const val SERVICE_WHITE = 0xFFFFFFFF.toInt()
 
     /** Classic: a little darker than the classic wallpaper along the screen's left edge (about #0C1117). */
     const val CLASSIC_FILL = 0xFF080B0F.toInt()

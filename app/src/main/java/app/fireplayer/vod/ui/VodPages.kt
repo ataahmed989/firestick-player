@@ -7,6 +7,7 @@ import android.view.ViewGroup
 import android.widget.FrameLayout
 import app.fireplayer.shell.NavRail
 import app.fireplayer.vod.VodRepository
+import app.fireplayer.vod.data.Brand
 import app.fireplayer.vod.data.Service
 import app.fireplayer.vod.data.VodRepositories
 import java.util.EnumMap
@@ -22,7 +23,9 @@ class VodPages(private val context: Context, private val host: VodPage.Host, pri
     private val pages = EnumMap<VodTab, VodPage>(VodTab::class.java)
     /** The streaming services' pages, each made the first time it opens: the one shared page, with that service's rows. */
     private val servicePages = EnumMap<Service, VodPage>(Service::class.java)
-    private val all: List<VodPage> get() = pages.values + servicePages.values
+    /** Disney+'s studio pages (a studio's rows of titles), each made the first time it opens. */
+    private val studioPages = EnumMap<Brand, VodPage>(Brand::class.java)
+    private val all: List<VodPage> get() = pages.values + servicePages.values + studioPages.values
     private var started = false
 
     /** The page shown, or null on another tab. */
@@ -33,23 +36,27 @@ class VodPages(private val context: Context, private val host: VodPage.Host, pri
 
     /**
      * Shows [tab]'s page (hiding the others), or only hides them for a tab that isn't one. On a service's tab, the page
-     * of [service].
+     * of [service]; with [studio], that studio's page in the service's place (the service's stays as it was left, for
+     * Back).
      */
-    fun show(tab: NavRail.Tab, service: Service? = null) {
+    fun show(tab: NavRail.Tab, service: Service? = null, studio: Brand? = null) {
         val p = pageOf(tab)
         val s = service?.takeIf { tab.isService }
+        val b = studio?.takeIf { s != null }
         for ((k, page) in pages) if (k != p) page.hide()
-        for ((k, page) in servicePages) if (k != s) page.hide()
+        for ((k, page) in servicePages) if (k != s || b != null) page.hide()
+        for ((k, page) in studioPages) if (k != b) page.hide()
         val page = when {
-            s != null -> servicePages.getOrPut(s) { make(VodTab.HOME, s) }
-            p != null -> pages.getOrPut(p) { make(p, null) }
+            b != null -> studioPages.getOrPut(b) { make(VodTab.HOME, s, b) }
+            s != null -> servicePages.getOrPut(s) { make(VodTab.HOME, s, null) }
+            p != null -> pages.getOrPut(p) { make(p, null, null) }
             else -> null
         }
         current = page
         page?.show()
     }
 
-    private fun make(tab: VodTab, service: Service?) = VodPage(context, host, ::repository, tab, service).also {
+    private fun make(tab: VodTab, service: Service?, studio: Brand?) = VodPage(context, host, ::repository, tab, service, studio).also {
         container.addView(it.root, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         if (started) it.start()
     }
