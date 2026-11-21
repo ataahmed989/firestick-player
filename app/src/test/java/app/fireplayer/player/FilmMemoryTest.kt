@@ -197,4 +197,21 @@ class FilmMemoryTest {
             assertEquals(t.name, 3_000L, t.previewHoldMs)
         }
     }
+
+    @Test
+    fun segmentsAreBiggerOnlyWhereTheMemoryForTwoOfThemIsFree() {
+        val mib = 1L shl 20
+        // The smallest TVs: never.
+        assertEquals(8 shl 20, FilmMemory.segmentBytes(RamTier.TINY, 900 * mib))
+        // A Fire TV Stick 4K Max as a film starts cold (329 MiB free, measured): the film's own buffer is already held
+        // down, so the segments stay as they were.
+        assertEquals(8 shl 20, FilmMemory.segmentBytes(RamTier.SMALL, 329 * mib))
+        assertEquals(8 shl 20, FilmMemory.segmentBytes(RamTier.SMALL, 356 * mib - 1))
+        // The reserve, the least buffer and both segments fit: 16 MiB each.
+        assertEquals(16 shl 20, FilmMemory.segmentBytes(RamTier.SMALL, 356 * mib))
+        assertEquals(16 shl 20, FilmMemory.segmentBytes(RamTier.LARGE, 900 * mib))
+        // Not known: by the tier.
+        assertEquals(16 shl 20, FilmMemory.segmentBytes(RamTier.MEDIUM, 0))
+        assertEquals(8 shl 20, FilmMemory.segmentBytes(RamTier.TINY, 0))
+    }
 }

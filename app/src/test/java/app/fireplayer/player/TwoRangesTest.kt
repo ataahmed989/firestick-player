@@ -197,6 +197,72 @@ class TwoRangesTest {
     }
 
     @Test
+    fun theSecondRequestStartsAsSoonAsTheFirstIsAnsweredWithItsRange() {
+        assertEquals(0L, TwoRanges.Config().startAfterBytes)
+        val rig = Rig(config = AT_ONCE)
+        rig.stream.open(0, "k")
+        // Nothing read yet: the first request has the byte wanted, the second is on the segment after it.
+        waitFor { rig.secondOpens().isNotEmpty() }
+        assertEquals("first 0+-1 fresh probe", rig.firstOpens()[0])
+        assertEquals("second 1000+1000", rig.secondOpens()[0])
+        assertArrayEquals(expected(0, 10_500), rig.readAll(0))
+        rig.stream.close()
+        assertNull(rig.film.fallback)
+        // Each segment once, and no more memory than two of them.
+        assertEquals(
+            listOf("second 1000+1000", "second 3000+1000", "second 5000+1000", "second 7000+1000", "second 9000+1000"),
+            rig.secondOpens(),
+        )
+        assertTrue(rig.film.heldBytes <= AT_ONCE.maxExtraBytes)
+        // A jump: the same, from where it lands.
+        rig.log.clear()
+        rig.stream.open(2_345, "k")
+        waitFor { rig.secondOpens().isNotEmpty() }
+        assertEquals("first 2345+1000 fresh", rig.firstOpens()[0])
+        assertEquals("second 3345+1000", rig.secondOpens()[0])
+        assertArrayEquals(expected(2_345, 10_500), rig.readAll(2_345))
+        rig.stream.close()
+        // What each request's answers cost is in the figures: the second's first on a connection, and its next ones.
+        val rates = rig.film.rates()
+        assertTrue(rates, Regex(""".* reopen=\d+ms/\d+ reopen2=\d+ms/[1-9]\d* new2=\d+ms/2$""").matches(rates))
+    }
+
+    @Test
+    fun noSecondRequestStartsForOneRequestOrAFileEndingWithinASegment() {
+        val rig = Rig(config = AT_ONCE)
+        rig.first.ranges = false
+        rig.stream.open(0, "k")
+        assertArrayEquals(expected(0, 10_500), rig.readAll(0))
+        rig.stream.close()
+        val near = Rig(config = AT_ONCE)
+        near.stream.open(0, "k")
+        near.stream.close()
+        near.helpers.clear()
+        near.stream.open(10_100, "k")
+        assertArrayEquals(expected(10_100, 10_500), near.readAll(10_100))
+        near.stream.close()
+        val off = Rig(config = AT_ONCE)
+        off.film.enabled = false
+        off.stream.open(0, "k")
+        assertArrayEquals(expected(0, 10_500), off.readAll(0))
+        off.stream.close()
+        assertTrue(rig.helpers.isEmpty() && near.helpers.isEmpty() && off.helpers.isEmpty())
+    }
+
+    @Test
+    fun aConnectionClosedBeforeAnythingIsReadCutsTheSecondRequestOffAndGivesItsMemoryBack() {
+        val rig = Rig(config = AT_ONCE)
+        rig.onHelper = { it.hold = true }
+        rig.stream.open(0, "k")
+        waitFor { rig.helpers.isNotEmpty() }
+        rig.stream.close()
+        waitFor { rig.helpers[0].cancelled }
+        rig.film.release()
+        waitFor { rig.film.heldBytes == 0L }
+        assertNull(rig.film.fallback)
+    }
+
+    @Test
     fun aLaterConnectionStartsWithTheBytesWantedAndABoundedRange() {
         val rig = Rig()
         rig.stream.open(0, "k")
@@ -673,6 +739,12 @@ class TwoRangesTest {
     companion object {
         private val SMALL = TwoRanges.Config(
             segmentBytes = 1_000, buffers = 2, startAfterBytes = 100, minFileBytes = 5_000, stallMs = 3_000,
+            paceWindowNs = Long.MAX_VALUE,
+        )
+
+        // As the app has it: the second request starts with the first one's answer.
+        private val AT_ONCE = TwoRanges.Config(
+            segmentBytes = 1_000, buffers = 2, startAfterBytes = 0, minFileBytes = 5_000, stallMs = 3_000,
             paceWindowNs = Long.MAX_VALUE,
         )
 

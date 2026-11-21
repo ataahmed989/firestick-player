@@ -20,12 +20,12 @@ import java.util.concurrent.atomic.AtomicLong
  * first request reads the even ones straight into the player, as before; the second fetches the odd ones ahead into
  * memory, and the player is handed every byte in order.
  *
- * - The bytes the player waits for always come first: a connection (and so every jump) starts with the first request
- *   alone, at the very byte wanted; the second only starts once [Config.startAfterBytes] have come, and only ever
- *   reads ahead.
- * - Memory: at most [Config.buffers] segments are held, [Config.maxExtraBytes] in all (16 MiB), made once per player
- *   and used again; a segment is given back the moment its last byte is handed on, and all of them when two requests
- *   are given up.
+ * - The bytes the player waits for always come first: a connection (and so every jump) starts with the first request,
+ *   at the very byte wanted; the second starts as soon as the first is answered with its range (or once
+ *   [Config.startAfterBytes] have come, when set), and only ever reads the segment after, ahead.
+ * - Memory: at most [Config.buffers] segments are held, [Config.maxExtraBytes] in all (16 or 32 MiB, by what the TV
+ *   has: [FilmMemory.segmentBytes]), made once per player and used again; a segment is given back the moment its
+ *   last byte is handed on, and all of them when two requests are given up.
  * - A jump or a close cuts the second request off at once and drops what it had fetched.
  * - A film standing still (a long pause) gives the segments back without giving two requests up ([rest]): the second
  *   request starts again where reading goes on.
@@ -46,8 +46,12 @@ class TwoRanges(val config: Config = Config(), private val log: (String) -> Unit
         val segmentBytes: Int = 8 shl 20,
         /** Segments the second request may hold in memory at once. */
         val buffers: Int = 2,
-        /** The second request starts once the first has brought this much on a connection. */
-        val startAfterBytes: Long = 1L shl 20,
+        /**
+         * The second request starts once the first has brought this much on a connection; 0: as soon as the first is
+         * answered with its range. Waiting for 1 MiB left the second a fifth of a second and its own new connection
+         * behind at every start and jump, just when the film's buffer is empty.
+         */
+        val startAfterBytes: Long = 0L,
         /** Smaller files stay on one request (subtitle files; and a small film has no need). */
         val minFileBytes: Long = 64L shl 20,
         /** The first request waiting this long for the second with nothing coming gives two requests up. */
@@ -102,6 +106,9 @@ class TwoRanges(val config: Config = Config(), private val log: (String) -> Unit
     /** The same for the film last opened. */
     val fallback: String? get() = current?.let { fallbackFor(it.total) }
 
+    /** The size in bytes of the film last opened, once its server has said it; -1 before. Any thread. */
+    val filmBytes: Long get() = current?.total ?: -1L
+
     /** Takes a count of bytes without boxing it: called for every read of the second request. */
     fun interface ByteSink {
         fun add(bytes: Int)
@@ -142,6 +149,10 @@ class TwoRanges(val config: Config = Config(), private val log: (String) -> Unit
     private val waitNs = AtomicLong()
     private val reopens = AtomicLong()
     private val reopenNs = AtomicLong()
+    private val helperNews = AtomicLong()
+    private val helperNewNs = AtomicLong()
+    private val helperReopens = AtomicLong()
+    private val helperReopenNs = AtomicLong()
 
     internal fun link(key: String): Link? = synchronized(links) { links[key] }
 
@@ -260,6 +271,17 @@ class TwoRanges(val config: Config = Config(), private val log: (String) -> Unit
         onHelperBytes?.add(bytes)
     }
 
+    /** The second request was answered after [ns]: on a [new] connection (its first), or asking for its next segment. */
+    internal fun helperOpened(ns: Long, new: Boolean) {
+        if (new) {
+            helperNews.incrementAndGet()
+            helperNewNs.addAndGet(ns)
+        } else {
+            helperReopens.incrementAndGet()
+            helperReopenNs.addAndGet(ns)
+        }
+    }
+
     internal fun helperTime(ns: Long) {
         helperNs.addAndGet(ns)
     }
@@ -282,8 +304,10 @@ class TwoRanges(val config: Config = Config(), private val log: (String) -> Unit
 
     /**
      * Each request's own speed while it worked, the share of the first one's time spent waiting for the second, and
-     * what asking for the next segment cost it: "r1=55.1Mb/s r2=53.9Mb/s wait=3% reopen=41ms/212". Empty before two
-     * requests ran.
+     * what asking for the next segment cost each (average and count): "r1=55.1Mb/s r2=53.9Mb/s wait=3% reopen=41ms/212
+     * reopen2=39ms/208 new2=420ms/4". new2 is each second request's first answer, nearly always on a new connection: a
+     * reopen far below it is a connection used again, one near it a new connection for every segment.
+     * Empty before two requests ran.
      */
     fun rates(): String {
         val hb = helperBytes.get()
@@ -293,8 +317,11 @@ class TwoRanges(val config: Config = Config(), private val log: (String) -> Unit
         val n = reopens.get()
         return "r1=" + mbps(primaryBytes.get(), pn) + " r2=" + mbps(hb, helperNs.get()) +
             " wait=" + (if (pn + wn <= 0L) 0 else wn * 100 / (pn + wn)) + "%" +
-            " reopen=" + (if (n <= 0L) 0 else reopenNs.get() / n / 1_000_000L) + "ms/" + n
+            " reopen=" + each(reopenNs.get(), n) + " reopen2=" + each(helperReopenNs.get(), helperReopens.get()) +
+            " new2=" + each(helperNewNs.get(), helperNews.get())
     }
+
+    private fun each(ns: Long, n: Long): String = "" + (if (n <= 0L) 0 else ns / n / 1_000_000L) + "ms/" + n
 
     private fun mbps(bytes: Long, ns: Long): String =
         String.format(Locale.US, "%.1fMb/s", if (ns <= 0L) 0.0 else bytes * 8_000.0 / ns)
@@ -435,6 +462,7 @@ class TwoRangeStream(
                 two(position, known.total)
                 primaryOpen = true
                 primaryEnd = plan.endOf(0)
+                startAhead()
             }
             return answer.length
         }
@@ -442,7 +470,17 @@ class TwoRangeStream(
         if (!usable(link, position)) return primary.open(position, -1L, fresh = true, probe = false).length
         two(position, link.total)
         openSegment(first = true)
+        startAhead()
         return if (plain) plainLength else link.total - position
+    }
+
+    /**
+     * The first request has just been answered with its range, at the byte wanted: the second starts on the segment
+     * after it now, on its own thread and connection, so nothing the player waits for is held up by it.
+     */
+    private fun startAhead() {
+        if (plain || run != null || film.config.startAfterBytes > 0L || gaveUp() || plan.count < 2) return
+        startHelper(1)
     }
 
     // The server gives ranges, the film hasn't been put back on one request, and there's a segment for each.
@@ -659,6 +697,8 @@ internal class HelperRun(
         private set
     private var failed: String? = null
     private var ended = false
+    // On the fetching thread: the request has been answered once, so its next answer can come on the same connection.
+    private var answered = false
     private val thread = Thread(this, "FilmSecondRequest").apply { isDaemon = true }
 
     /** The film's size: what tells it from another. */
@@ -710,6 +750,8 @@ internal class HelperRun(
         val started = System.nanoTime()
         try {
             val answer = request.open(slot.start, slot.length.toLong(), fresh = false, probe = false)
+            film.helperOpened(System.nanoTime() - started, new = !answered)
+            answered = true
             if (answer.status in TwoRanges.LIMIT_STATUSES) return fail("http ${answer.status} on the second request")
             val verdict = RangeCheck.check(answer.status, answer.contentRange, slot.start, slot.start + slot.length - 1)
             if (!verdict.honoured) return fail("second request: ${verdict.reason}")

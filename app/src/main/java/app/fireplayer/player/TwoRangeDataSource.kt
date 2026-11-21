@@ -130,8 +130,12 @@ class TwoRangeDataSource(
 
 /**
  * The second request: one HTTP range request at a time to [link], over the platform's HttpURLConnection like the
- * first, so a segment read to its end leaves its connection for the next. [cancel] from another thread disconnects,
- * which ends a read in progress at once. [link] is never logged.
+ * first, so a segment read to its end leaves its connection for the next: [close] then only closes the body and the
+ * connection stays in the platform's keep-alive pool. (Measured on a Fire TV Stick 4K Max, Fire OS 8: a range read
+ * to its last byte, then asked again: 36 ms on the same connection against 435 ms on a new one, with or without
+ * disconnect() after the last byte, which is what Media3's own data source does for the first request.) A range not
+ * read to its end is never left on a connection to be used again: it is disconnected. [cancel] from another thread
+ * disconnects, which ends a read in progress at once. [link] is never logged.
  */
 class HttpRangeRequest(
     private val link: String,
@@ -143,6 +147,8 @@ class HttpRangeRequest(
     @Volatile private var connection: HttpURLConnection? = null
     @Volatile private var cancelled = false
     private var body: InputStream? = null
+    // Of the range asked for, what hasn't been read yet; below 0: not known (asked to the file's end).
+    private var left = -1L
 
     override fun open(start: Long, length: Long, fresh: Boolean, probe: Boolean): TwoRanges.Answer {
         val c = URL(link).openConnection() as? HttpURLConnection ?: throw IOException("Not an HTTP link")
@@ -159,21 +165,30 @@ class HttpRangeRequest(
         c.setRequestProperty("Accept-Encoding", "identity")
         val status = c.responseCode
         val contentRange = c.getHeaderField("Content-Range")
-        if (status == HttpURLConnection.HTTP_PARTIAL) body = c.inputStream
+        if (status == HttpURLConnection.HTTP_PARTIAL) {
+            body = c.inputStream
+            left = length
+        }
         return TwoRanges.Answer(status, contentRange, length)
     }
 
-    override fun read(buffer: ByteArray, offset: Int, length: Int): Int =
-        (body ?: throw IOException("Not open")).read(buffer, offset, length)
+    override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+        val n = (body ?: throw IOException("Not open")).read(buffer, offset, length)
+        if (n > 0 && left > 0L) left -= n
+        return n
+    }
 
     override fun close() {
         val c = connection
+        // Every byte of the range has come: the connection is whole and can carry the next segment's request.
+        val whole = body != null && left == 0L && !cancelled
         try {
             body?.close()
         } finally {
             body = null
+            left = -1L
             connection = null
-            c?.disconnect()
+            if (!whole) c?.disconnect()
         }
     }
 
