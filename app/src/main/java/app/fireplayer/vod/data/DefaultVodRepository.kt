@@ -4,6 +4,7 @@ import android.util.Log
 import app.fireplayer.subs.Tmdb
 import app.fireplayer.vod.Cancel
 import app.fireplayer.vod.Card
+import app.fireplayer.vod.CuratedTitle
 import app.fireplayer.vod.Episode
 import app.fireplayer.vod.EpisodeRef
 import app.fireplayer.vod.HeaderFeed
@@ -122,6 +123,7 @@ class DefaultVodRepository(
             // The title page fills these rows itself (details(), moreLikeThis()).
             is Source.Fixed -> local(req, skip, limit, sink) { emptyList() }
             is Source.Discover -> discoverCards(s, skip, limit, req, sink)
+            is Source.Curated -> curatedCards(s, skip, limit, req, sink)
             Source.Services -> local(req, skip, limit, sink) { Services.cards() }
             Source.Brands -> local(req, skip, limit, sink) { Services.brandCards() }
         }
@@ -855,7 +857,7 @@ class DefaultVodRepository(
      */
     private fun discoverCards(s: Source.Discover, skip: Int, limit: Int, req: Req, sink: (List<Card>, Boolean) -> Unit) {
         val kinds = s.kind?.let { listOf(it) } ?: Kind.entries.toList()
-        val pages = if (s.full) Discover.pages(skip, limit, kinds.size) else 1..1
+        val pages = if (s.full || s.paged) Discover.pages(skip, limit, kinds.size) else 1..1
         io.execute {
             if (req.cancelled) return@execute
             if (!usableKey()) {
@@ -888,6 +890,61 @@ class DefaultVodRepository(
                 sink(cut(), true)
             }
         }
+    }
+
+    /**
+     * A chosen list's titles at [skip] until [skip] + [limit] to [sink], once, fresh; empty without a usable key. The
+     * list is walked in its order, a few titles side by side (each kept [Discover.FRESH_MS]; one that can't be fetched
+     * keeps its stored copy), only as far as those positions need: the titles the service carries in the US count.
+     */
+    private fun curatedCards(s: Source.Curated, skip: Int, limit: Int, req: Req, sink: (List<Card>, Boolean) -> Unit) {
+        net.execute {
+            if (req.cancelled) return@execute
+            if (!usableKey() || limit <= 0) {
+                sink(emptyList(), true)
+                return@execute
+            }
+            val from = skip.coerceAtLeast(0)
+            val shown = ArrayList<Card>()
+            for (chunk in s.titles.chunked(Curated.SIDE_BY_SIDE)) {
+                if (req.cancelled) return@execute
+                if (shown.size >= from + limit) break
+                val tasks = chunk.map { pick -> FutureTask { curatedEntry(s, pick) }.also(lookups::execute) }
+                for ((pick, task) in chunk.zip(tasks)) {
+                    val entry = try {
+                        task.get()
+                    } catch (e: ExecutionException) {
+                        null
+                    } catch (e: InterruptedException) {
+                        null
+                    }
+                    if (entry == null || !entry.on || !Curated.matches(pick, entry.item)) continue
+                    // Its IMDb id came with it: the card is the whole title.
+                    if (entry.imdb != null && knownImdb(s.kind, pick.tmdbId) !is TmdbTrending.Known.Hit) ids.found(s.kind, pick.tmdbId, entry.imdb)
+                    discoverCard(entry.item)?.let { shown += it }
+                }
+            }
+            sink(shown.window(from, limit), true)
+        }
+    }
+
+    /** One chosen title as TMDB has it: the stored copy while fresh, else fetched else the old copy. */
+    private fun curatedEntry(s: Source.Curated, pick: CuratedTitle): Curated.Entry? {
+        val key = Curated.key(s.kind, s.provider, pick.tmdbId)
+        val stored = cache.read(key)
+        if (stored != null && stored.isFresh(clock())) return Curated.read(stored.data)
+        val fetched = single(key) {
+            if (clock() < tmdbPausedUntil) return@single null
+            try {
+                val entry = tmdb.curated(s.kind, pick.tmdbId)?.let { Curated.parse(it, s.kind, s.provider) } ?: return@single null
+                cache.write(key, Curated.write(entry), Discover.FRESH_MS)
+                entry
+            } catch (t: Throwable) {
+                tmdbFailed(t)
+                null
+            }
+        }
+        return fetched ?: stored?.let { Curated.read(it.data) }
     }
 
     private fun storedDiscover(key: String, fresh: Boolean): Discover.Page? {

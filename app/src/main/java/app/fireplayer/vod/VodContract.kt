@@ -129,8 +129,10 @@ sealed class Source {
     /**
      * TMDB Discover: what TMDB's watch provider [provider] carries with a US subscription, the most popular first;
      * [kind] null: films and series in turn. [companies] (and, for series, [networks] in their place) narrow it to a
-     * brand's titles. A row takes the first page only; [full] (a brand's collection) goes on page after page. Needs the
-     * user's TMDB key; empty without it.
+     * brand's titles; [genres] and [withoutGenres] (TMDB's genre ids) and [maxRuntime] (minutes: shorts) narrow it
+     * further. A row takes the first page only; [full] (a brand's collection) goes on page after page, and so does
+     * [paged] (a studio page's row, which takes more as the viewer nears its end and whose titles are whole, as a
+     * row's are). Needs the user's TMDB key; empty without it.
      */
     data class Discover(
         val kind: Kind?,
@@ -138,7 +140,18 @@ sealed class Source {
         val companies: String? = null,
         val networks: String? = null,
         val full: Boolean = false,
+        val genres: String? = null,
+        val withoutGenres: String? = null,
+        val maxRuntime: Int? = null,
+        val paged: Boolean = false,
     ) : Source()
+
+    /**
+     * Chosen titles in a set order (a saga's episodes, a franchise in release order): those of [titles] that TMDB's
+     * watch provider [provider] carries with a US subscription, in that order. Needs the user's TMDB key; empty
+     * without it.
+     */
+    data class Curated(val kind: Kind, val provider: Int, val titles: List<CuratedTitle>) : Source()
 
     /** The streaming services with a page of their own: a card each (Home's row). */
     data object Services : Source()
@@ -146,6 +159,12 @@ sealed class Source {
     /** Disney+'s brands: a card each, opening that brand's collection. */
     data object Brands : Source()
 }
+
+/**
+ * One chosen title of a [Source.Curated] list: its TMDB id, with words of its name and the year it came out, which the
+ * answer must agree with (an id that turned out to be another title's is left out, never shown as the wrong film).
+ */
+data class CuratedTitle(val tmdbId: Int, val name: String, val year: Int)
 
 /**
  * One row on a page.

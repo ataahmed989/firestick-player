@@ -30,6 +30,8 @@ class CardStrip(
     private val cardH = t.dp(VodSizes.cardH(style, large))
     private val cardTop = t.dp(VodSizes.cardTop(style, large))
     private val pivotY = t.dpf(VodSizes.pivotY(style, large))
+    /** A row whose cards stay in place grows its chosen card about its middle; the others from the left edge. */
+    private val pivotX = if (VodSizes.still(style)) itemW / 2f else 0f
     private val chipGap = t.dp(VodSizes.CHIP_GAP)
     private val chips = VodSizes.isChips(style)
 
@@ -70,7 +72,7 @@ class CardStrip(
             x = left + c.measuredWidth + chipGap
             // Grows from its left edge, about the middle of its picture (the Episodes sheet's pivot).
             if (c !is RankedItem) {
-                c.pivotX = 0f
+                c.pivotX = pivotX
                 c.pivotY = pivotY
             }
         }

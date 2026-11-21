@@ -71,14 +71,23 @@ class TitleRow(
 
     /**
      * How far the strip may move left, px. Unlimited for cards (each chosen one goes to the left edge); a row of season
-     * pills moves only as far as its last pill needs ([clampToView]).
+     * pills moves only as far as its last pill needs ([clampToView]), and a row whose cards all show never moves
+     * ([VodSizes.still]).
      */
-    var maxOffset = Float.MAX_VALUE
+    var maxOffset = if (VodSizes.still(spec.style)) 0f else Float.MAX_VALUE
 
     // The page's bookkeeping for this row's data.
     /** Bumped for each load: older answers are dropped. */
     var generation = 0
     var cancel: Cancel? = null
+    /**
+     * A row that takes more titles as the viewer nears its end ([RowRules.pages]): how many of its source's positions
+     * were asked for, whether more are on their way, and whether the source has ended.
+     */
+    var asked = 0
+    var loadingMore = false
+    var ended = false
+    var moreCancel: Cancel? = null
     /** Answered at least once with something to go by (cards, or a final "none"). */
     var answered = false
     /** Cards that came while the viewer was in this row and would have moved what they're on: shown when they leave. */
@@ -107,7 +116,7 @@ class TitleRow(
         }
     })
 
-    private val stripTop = if (header) t.dp(VodSizes.stripTop()) else 0
+    private val stripTop = t.dp(VodSizes.stripTop(header))
     private val pageX = t.dp(VodSizes.PAGE_X)
     private val band = t.dp(VodSizes.bandH(spec.style, header, gapBelow, large))
 

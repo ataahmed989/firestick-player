@@ -15,6 +15,31 @@ internal object RowRules {
     /** Cards shown in a row; one more is asked for, to know whether there are more ([seeAll]). */
     const val ROW_CARDS = 15
 
+    /** A row that goes on takes this many more titles at a time ([pages]), up to [ROW_MAX] cards. */
+    const val ROW_MORE = 15
+    const val ROW_MAX = 60
+    /** More are asked for with the viewer this close to the row's last card. */
+    const val MORE_AHEAD = 5
+
+    /**
+     * Whether a row of [source] goes on: it takes more titles as the viewer nears its end (a studio page's rows: a
+     * chosen list, or TMDB Discover page after page).
+     */
+    fun pages(source: Source): Boolean = source is Source.Curated || (source is Source.Discover && source.paged)
+
+    /** Whether the viewer on card [index] of [size] is near enough to the end for more to be asked for. */
+    fun nearEnd(index: Int, size: Int): Boolean = size > 0 && index >= size - MORE_AHEAD
+
+    /**
+     * Whether a row's first answer of [total] titles (of the [ROW_CARDS] + 1 asked for) was all its source has: none
+     * at all, or a chosen list that came up short (Discover drops titles from a full page, so it can't tell).
+     */
+    fun endsAt(source: Source, total: Int): Boolean = total <= 0 || (source is Source.Curated && total <= ROW_CARDS)
+
+    /** A row's cards with [more] after them: a title already shown isn't repeated; never past [max]. */
+    fun more(shown: List<Card>, more: List<Card>, max: Int = ROW_MAX): List<Card> =
+        (shown + more).distinctBy { it.title.kind to it.title.id }.take(max)
+
     fun isLibrary(source: Source): Boolean =
         isMyList(source) || source is Source.ContinueWatching || source is Source.NextEpisodes
 
@@ -36,8 +61,10 @@ internal object RowRules {
         total <= 0 -> false
         source is Source.Catalog -> true
         source is Source.Trending -> false
-        // A service's row is its first page only.
-        source is Source.Discover -> false
+        // A service's row is its first page only; a studio page's goes on, and ends with See all (its whole grid).
+        source is Source.Discover -> source.paged
+        // A chosen list shows whole in its row.
+        source is Source.Curated -> false
         else -> total > ROW_CARDS
     }
 

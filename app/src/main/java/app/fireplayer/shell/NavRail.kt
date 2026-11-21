@@ -223,7 +223,7 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
             setPadding(t.dp(11), 0, t.dp(12), 0)
             icon = ImageView(context).apply {
                 setImageResource(tab.icon)
-                // A service's icon keeps its own colours.
+                // A service's icon keeps its own colours ([TabRow.showIcon]).
                 if (!tab.isService) imageTintList = colors
                 isDuplicateParentStateEnabled = true
             }
@@ -254,6 +254,21 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
     private inner class TabRow(context: Context) : LinearLayout(context) {
         lateinit var icon: ImageView
         lateinit var label: TextView
+        /** A service's tab: its resting icon, and its dark one for the light highlight while the tab holds focus. */
+        var service: ServiceTab? = null
+        private var shownIcon = 0
+
+        /**
+         * A service's icon: the dark one only while this tab itself holds D-pad focus, the resting one the moment
+         * focus leaves (also while its page is open). Both are the same size, so nothing moves in the swap.
+         */
+        fun showIcon() {
+            val s = service ?: return
+            val res = if (isFocused) s.focusedIcon ?: s.icon else s.icon
+            if (res == shownIcon) return
+            shownIcon = res
+            icon.setImageResource(res)
+        }
 
         init {
             // No background of its own any more: without this Android would draw its own highlight on the chosen tab.
@@ -264,6 +279,7 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
 
         override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: Rect?) {
             super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
+            showIcon()
             wake()
         }
     }
@@ -305,16 +321,18 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
     }
 
     /**
-     * The streaming-service pages visited last, newest first (each one's name and icon): a tab each under Live TV,
-     * with the rail's own focus, labels and motion. Tabs beyond those given stay as they are (the list only grows).
+     * The streaming-service pages visited last, newest first: a tab each under Live TV, with the rail's own focus,
+     * labels and motion. Tabs beyond those given stay as they are (the list only grows).
      */
-    fun setServices(services: List<Pair<String, Int>>) {
+    fun setServices(services: List<ServiceTab>) {
         for ((i, tab) in SERVICE_TABS.withIndex()) {
             val row = items[tab] ?: continue
-            val (name, icon) = services.getOrNull(i) ?: continue
-            row.contentDescription = name
-            row.label.text = name
-            row.icon.setImageResource(icon)
+            val s = services.getOrNull(i) ?: continue
+            if (row.service == s) continue
+            row.service = s
+            row.contentDescription = s.name
+            row.label.text = s.name
+            row.showIcon()
             row.visibility = VISIBLE
         }
     }
@@ -932,6 +950,12 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
 
         override fun unscheduleDrawable(who: Drawable, what: Runnable) = unscheduleSelf(what)
     }
+
+    /**
+     * A streaming service's tab: its name, its icon at rest (a drawable, in its own colours) and the dark one shown on
+     * the light highlight while the tab holds focus ([focusedIcon]; null: the same icon always). Both the same size.
+     */
+    data class ServiceTab(val name: String, val icon: Int, val focusedIcon: Int?)
 
     companion object {
         /** The tabs of the streaming-service pages visited last, newest first. */

@@ -56,6 +56,7 @@ import app.fireplayer.vod.PlayHandoff
 import app.fireplayer.vod.PlayRequest
 import app.fireplayer.vod.play.FilmMode
 import app.fireplayer.vod.play.VodLaunch
+import app.fireplayer.vod.data.Brand
 import app.fireplayer.vod.data.Service
 import app.fireplayer.vod.data.Services
 import app.fireplayer.vod.ui.VodPage
@@ -698,7 +699,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
 
     private fun showRecentServices() {
         recentServices = Services.decode(Prefs(this).recentServices)
-        rail.setServices(recentServices.map { it.label to iconOf(it) })
+        rail.setServices(recentServices.map { NavRail.ServiceTab(it.label, iconOf(it), focusedIconOf(it)) })
     }
 
     private fun iconOf(service: Service): Int = when (service) {
@@ -709,11 +710,19 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         Service.APPLE_TV -> R.drawable.ic_service_apple_tv
     }
 
+    /** A service's dark rail icon, for the light highlight while its tab holds focus; Hulu and Netflix keep their one icon. */
+    private fun focusedIconOf(service: Service): Int? = when (service) {
+        Service.DISNEY -> R.drawable.ic_service_disney_plus_focused
+        Service.HBO_MAX -> R.drawable.ic_service_hbo_max_focused
+        Service.APPLE_TV -> R.drawable.ic_service_apple_tv_focused
+        Service.HULU, Service.NETFLIX -> null
+    }
+
     /** [s]'s page, on the rail's first service tab: it becomes the service visited last (once in the list). */
     private fun showService(s: Service) {
         recentServices = Services.visited(recentServices, s)
         Prefs(this).recentServices = Services.encode(recentServices)
-        rail.setServices(recentServices.map { it.label to iconOf(it) })
+        rail.setServices(recentServices.map { NavRail.ServiceTab(it.label, iconOf(it), focusedIconOf(it)) })
         service = s
         showTab(NavRail.Tab.SERVICE_1)
     }
@@ -726,6 +735,28 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         // As when a tab is entered from the rail: focus on its tab, then into the page, at once or when its rows have come.
         rail.focusSelected()
         focusPage()
+    }
+
+    /** The Disney+ studio whose page shows over the service's, opened from its card there; null: the service's own page. */
+    private var studio: Brand? = null
+
+    /** OK on a studio's card (Disney+'s row): its page of rows opens over the service's, and Back comes back to the card. */
+    override fun openStudio(brand: Brand) {
+        if (!rail.selected.isService || service == null) return
+        studio = brand
+        vodPages.show(rail.selected, service, brand)
+        rail.focusSelected()
+        focusPage()
+    }
+
+    /** Back on a studio's page: the service's page again, as it was left, on the studio's card. False otherwise. */
+    private fun backFromStudio(): Boolean {
+        if (studio == null || !rail.selected.isService) return false
+        studio = null
+        vodPages.show(rail.selected, service)
+        rail.focusSelected()
+        focusPage()
+        return true
     }
 
     /** Back on a service's page opened from a card: the page it was opened from, on that card. False otherwise. */
@@ -742,6 +773,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
 
     private fun showTab(tab: NavRail.Tab) {
         val from = rail.selected
+        // A tab chosen anew shows its own page, never a studio's left open.
+        studio = null
         rail.setSelected(tab)
         // Live TV's rail is a strip attached to the screen's edge; every other tab's a floating window. It moves from
         // one to the other as Live TV is entered or left.
@@ -1432,7 +1465,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
             }
             // Back from a page goes to the rail; Back on the rail leaves the app.
             if (!panel.isOpen && !rail.hasFocus()) {
-                if (event.action == KeyEvent.ACTION_UP && !backFromService()) rail.focusSelected()
+                if (event.action == KeyEvent.ACTION_UP && !backFromStudio() && !backFromService()) rail.focusSelected()
                 return true
             }
             // On the rail over a title page: back into the page (its place kept), never out of the app.

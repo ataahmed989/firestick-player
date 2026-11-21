@@ -2,6 +2,7 @@ package app.fireplayer.vod.ui
 
 import app.fireplayer.vod.RowStyle
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.ceil
@@ -433,5 +434,28 @@ class VodSizesTest {
         assertTrue(VodSizes.GRID_POSTER_H * VodSizes.GROW / 2 + VodSizes.RING < VodSizes.GRID_ROW_GAP)
         // Two rows of posters fill the viewport under the name line.
         assertTrue(VodSizes.GRID_TOP + 2 * VodSizes.gridPitchY() <= VodSizes.VIEWPORT_H)
+        // The first row's chosen poster, grown, and its ring show whole under the name line.
+        assertTrue(VodSizes.GRID_TOP >= VodSizes.GRID_POSTER_H * VodSizes.GROW / 2 + VodSizes.RING)
+    }
+
+    @Test
+    fun `the five logo cards all show and stay in place`() {
+        val style = RowStyle.LOGO
+        assertTrue(VodSizes.still(style))
+        assertFalse(VodSizes.still(RowStyle.POSTER))
+        // Five share the content's width, the normal gap apart: the last ends at the right margin.
+        val w = VodSizes.cardW(style)
+        near(VodSizes.tabHeaderW(), VodSizes.LOGO_ACROSS * w + (VodSizes.LOGO_ACROSS - 1) * VodSizes.GAP, 0.01f)
+        near(VodSizes.SCREEN_W - VodSizes.RIGHT_MARGIN, VodSizes.CONTENT_SCREEN_X + 4 * VodSizes.pitch(style) + w, 0.01f)
+        // Nothing moves along for the chosen card: it grows about its middle, inside the gaps, with its ring.
+        assertEquals(0f, VodSizes.extra(style))
+        val out = w * VodSizes.grow(style) / 2 + VodSizes.RING
+        assertTrue(out < VodSizes.GAP)
+        // Never under the rail, never off the screen's right edge.
+        assertTrue(VodSizes.CONTENT_SCREEN_X - out > VodSizes.RAIL)
+        assertTrue(VodSizes.SCREEN_W - VodSizes.RIGHT_MARGIN + out < VodSizes.SCREEN_W)
+        // A row without a title keeps room for the ring above its cards.
+        assertTrue(VodSizes.stripTop(header = false) >= VodSizes.RING)
+        near(VodSizes.stripTop(), VodSizes.stripTop(header = true), 0.001f)
     }
 }
