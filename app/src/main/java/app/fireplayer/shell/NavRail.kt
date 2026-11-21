@@ -76,7 +76,12 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
         SHOWS("TV Shows", R.drawable.ic_tv_shows),
         MY_LIST("My List", R.drawable.ic_my_list),
         LIVE("Live TV", R.drawable.ic_live),
-        SETTINGS("Settings", R.drawable.ic_settings),
+        /** The two streaming-service pages visited last, newest first ([setServices]); not shown until one has been. */
+        SERVICE_1("", 0),
+        SERVICE_2("", 0),
+        SETTINGS("Settings", R.drawable.ic_settings);
+
+        val isService: Boolean get() = this == SERVICE_1 || this == SERVICE_2
     }
 
     var onTab: ((Tab) -> Unit)? = null
@@ -187,6 +192,7 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
         for (tab in Tab.values()) {
             if (tab == Tab.SETTINGS) addView(View(context), LayoutParams(1, 0, 1f)) // Settings at the bottom
             val row = item(tab)
+            if (tab.isService) row.visibility = GONE
             items[tab] = row
             rows += row
             addView(row, LayoutParams(LayoutParams.MATCH_PARENT, t.dp(44)).apply { bottomMargin = t.dp(6) })
@@ -215,11 +221,14 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
             isFocusable = true
             contentDescription = tab.label
             setPadding(t.dp(11), 0, t.dp(12), 0)
-            addView(ImageView(context).apply {
+            icon = ImageView(context).apply {
                 setImageResource(tab.icon)
-                imageTintList = colors
+                // A service's icon keeps its own colours.
+                if (!tab.isService) imageTintList = colors
                 isDuplicateParentStateEnabled = true
-            }, LayoutParams(t.dp(22), t.dp(22)))
+            }
+            this.label = label
+            addView(icon, LayoutParams(t.dp(22), t.dp(22)))
             addView(label, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply { leftMargin = t.dp(14) })
             setOnClickListener { open(tab) }
             // The rail moves its own focus: the expanded rail is drawn over the page, so Android's nearest-view
@@ -243,6 +252,9 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
      * always was; its white is drawn by the rail, as wide as the rail is drawn just then.
      */
     private inner class TabRow(context: Context) : LinearLayout(context) {
+        lateinit var icon: ImageView
+        lateinit var label: TextView
+
         init {
             // No background of its own any more: without this Android would draw its own highlight on the chosen tab.
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) defaultFocusHighlightEnabled = false
@@ -270,7 +282,7 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
      * last; [held], it stops there instead (holding the D-pad doesn't go round and round).
      */
     private fun step(from: Tab, down: Boolean, held: Boolean) {
-        val tabs = items.keys.toList()
+        val tabs = items.filter { it.value.visibility == VISIBLE }.keys.toList()
         val to = ListMath.step(tabs.indexOf(from), tabs.size, down, held) { true }
         if (to >= 0) items[tabs[to]]?.requestFocus()
     }
@@ -290,6 +302,21 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
     fun setSelected(tab: Tab) {
         selected = tab
         for ((k, v) in items) v.isSelected = k == tab
+    }
+
+    /**
+     * The streaming-service pages visited last, newest first (each one's name and icon): a tab each under Live TV,
+     * with the rail's own focus, labels and motion. Tabs beyond those given stay as they are (the list only grows).
+     */
+    fun setServices(services: List<Pair<String, Int>>) {
+        for ((i, tab) in SERVICE_TABS.withIndex()) {
+            val row = items[tab] ?: continue
+            val (name, icon) = services.getOrNull(i) ?: continue
+            row.contentDescription = name
+            row.label.text = name
+            row.icon.setImageResource(icon)
+            row.visibility = VISIBLE
+        }
     }
 
     fun focusSelected() {
@@ -907,6 +934,9 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
     }
 
     companion object {
+        /** The tabs of the streaming-service pages visited last, newest first. */
+        val SERVICE_TABS = listOf(Tab.SERVICE_1, Tab.SERVICE_2)
+
         /**
          * The collapsed rail's width (dp): its 44 dp tabs with [SIDE_DP] each side. The pages beside it start here (Live
          * TV's groups column, the other tabs' pages).

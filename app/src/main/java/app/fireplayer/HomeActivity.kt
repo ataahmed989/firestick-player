@@ -56,6 +56,8 @@ import app.fireplayer.vod.PlayHandoff
 import app.fireplayer.vod.PlayRequest
 import app.fireplayer.vod.play.FilmMode
 import app.fireplayer.vod.play.VodLaunch
+import app.fireplayer.vod.data.Service
+import app.fireplayer.vod.data.Services
 import app.fireplayer.vod.ui.VodPage
 import app.fireplayer.vod.ui.VodPages
 
@@ -174,7 +176,13 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         rail = NavRail(this, tokens)
         // Always as wide as the widened rail: it draws its window inside that, so widening lays nothing out.
         findViewById<FrameLayout>(R.id.rail_host).addView(rail, FrameLayout.LayoutParams(rail.viewWidth, ViewGroup.LayoutParams.MATCH_PARENT))
-        rail.onTab = { showTab(it) }
+        rail.onTab = { tab ->
+            // Chosen in the rail: Back from it goes to the rail, as from any tab.
+            serviceFrom = null
+            val picked = recentServices.getOrNull(NavRail.SERVICE_TABS.indexOf(tab))
+            if (picked != null) showService(picked) else showTab(tab)
+        }
+        showRecentServices()
         rail.onEnterPage = { focusPage() }
         root.viewTreeObserver.addOnGlobalFocusChangeListener(focusWatcher)
 
@@ -461,6 +469,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         NavRail.Tab.MY_LIST -> PipRules.Page.MY_LIST
         NavRail.Tab.LIVE -> PipRules.Page.LIVE
         NavRail.Tab.SETTINGS -> PipRules.Page.SETTINGS
+        // A service's page is Home's layout: the picture stays there the same way.
+        NavRail.Tab.SERVICE_1, NavRail.Tab.SERVICE_2 -> PipRules.Page.HOME
     }
 
     /**
@@ -677,6 +687,57 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         }
     }
 
+    // ---- Streaming services ---------------------------------------------------------------------------------------
+
+    /** The service pages visited last, newest first: the rail's two tabs under Live TV, kept across restarts. */
+    private var recentServices: List<Service> = emptyList()
+    /** The service whose page shows on a service tab. */
+    private var service: Service? = null
+    /** The tab a service's page was opened from by a card: Back on the page goes back there. */
+    private var serviceFrom: NavRail.Tab? = null
+
+    private fun showRecentServices() {
+        recentServices = Services.decode(Prefs(this).recentServices)
+        rail.setServices(recentServices.map { it.label to iconOf(it) })
+    }
+
+    private fun iconOf(service: Service): Int = when (service) {
+        Service.DISNEY -> R.drawable.ic_service_disney_plus
+        Service.HULU -> R.drawable.ic_service_hulu
+        Service.NETFLIX -> R.drawable.ic_service_netflix
+        Service.HBO_MAX -> R.drawable.ic_service_hbo_max
+        Service.APPLE_TV -> R.drawable.ic_service_apple_tv
+    }
+
+    /** [s]'s page, on the rail's first service tab: it becomes the service visited last (once in the list). */
+    private fun showService(s: Service) {
+        recentServices = Services.visited(recentServices, s)
+        Prefs(this).recentServices = Services.encode(recentServices)
+        rail.setServices(recentServices.map { it.label to iconOf(it) })
+        service = s
+        showTab(NavRail.Tab.SERVICE_1)
+    }
+
+    /** OK on a service's card (Home's Streaming Services row): its page opens, and Back on it comes back here. */
+    override fun openService(service: Service) {
+        val from = rail.selected
+        showService(service)
+        serviceFrom = from.takeIf { !it.isService }
+        // As when a tab is entered from the rail: focus on its tab, then into the page, at once or when its rows have come.
+        rail.focusSelected()
+        focusPage()
+    }
+
+    /** Back on a service's page opened from a card: the page it was opened from, on that card. False otherwise. */
+    private fun backFromService(): Boolean {
+        val to = serviceFrom?.takeIf { rail.selected.isService } ?: return false
+        serviceFrom = null
+        showTab(to)
+        rail.focusSelected()
+        focusPage()
+        return true
+    }
+
     // ---- Tabs -----------------------------------------------------------------------------------------------------
 
     private fun showTab(tab: NavRail.Tab) {
@@ -691,7 +752,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         live.root.visibility = if (isLive) View.VISIBLE else View.GONE
         settingsPage.visibility = if (tab == NavRail.Tab.SETTINGS) View.VISIBLE else View.GONE
         // Search, Home, Movies, TV Shows or My List (the others hidden, their pictures let go).
-        vodPages.show(tab)
+        vodPages.show(tab, service)
         // Live TV in front a while: what the other tabs left in memory goes (LiveRoom).
         armLiveRoom(isLive, full = false)
         if (isLive) {
@@ -1371,7 +1432,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
             }
             // Back from a page goes to the rail; Back on the rail leaves the app.
             if (!panel.isOpen && !rail.hasFocus()) {
-                if (event.action == KeyEvent.ACTION_UP) rail.focusSelected()
+                if (event.action == KeyEvent.ACTION_UP && !backFromService()) rail.focusSelected()
                 return true
             }
             // On the rail over a title page: back into the page (its place kept), never out of the app.

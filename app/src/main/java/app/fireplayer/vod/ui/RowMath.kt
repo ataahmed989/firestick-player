@@ -52,7 +52,10 @@ internal object RowMath {
         focused: Int, firstShown: Int, need: Float = 0f, viewportH: Float = Float.MAX_VALUE, end: Float = Float.MAX_VALUE,
         rowTops: (Int) -> Float,
     ): Float {
-        if (focused > firstShown) return minOf(rowTops(focused), (end - viewportH).coerceAtLeast(0f))
+        if (focused > firstShown) {
+            val top = rowTops(focused)
+            return if (end == Float.MAX_VALUE) top else minOf(top, (end - viewportH).coerceAtLeast(0f))
+        }
         val top = rowTops(focused)
         return (top + need - viewportH).coerceIn(0f, top.coerceAtLeast(0f))
     }

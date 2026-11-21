@@ -12,13 +12,14 @@ class PageRowsTest {
     @Test
     fun homeRows() {
         val rows = PageRows.rows(Page.HOME, 2026)
-        assertEquals(listOf("Continue Watching", "My List", "Next Episodes", "Popular Movies", "Popular Shows"), rows.map { it.label })
-        assertEquals(listOf(RowStyle.WIDE, RowStyle.POSTER, RowStyle.POSTER, RowStyle.POSTER, RowStyle.POSTER), rows.map { it.style })
+        // Streaming Services sits under Continue Watching, a row like any other in Settings › Rows.
+        assertEquals(listOf("Continue Watching", "Streaming Services", "My List", "Next Episodes", "Popular Movies", "Popular Shows"), rows.map { it.label })
+        assertEquals(listOf(RowStyle.WIDE, RowStyle.LOGO, RowStyle.POSTER, RowStyle.POSTER, RowStyle.POSTER, RowStyle.POSTER), rows.map { it.style })
         assertEquals(
-            listOf(Source.ContinueWatching(null), Source.MyList, Source.NextEpisodes(), Source.Catalog(Kind.MOVIE, "top"), Source.Catalog(Kind.SERIES, "top")),
+            listOf(Source.ContinueWatching(null), Source.Services, Source.MyList, Source.NextEpisodes(), Source.Catalog(Kind.MOVIE, "top"), Source.Catalog(Kind.SERIES, "top")),
             rows.map { it.source },
         )
-        assertEquals(listOf(true, false, false, false, false), rows.map { it.continueRow })
+        assertEquals(listOf(true, false, false, false, false, false), rows.map { it.continueRow })
     }
 
     @Test
