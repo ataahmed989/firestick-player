@@ -8,6 +8,8 @@ import app.fireplayer.shell.TextStyle.Weight
 import app.fireplayer.shell.Tokens
 import app.fireplayer.ui.PageRow
 import app.fireplayer.vod.RowStyle
+import app.fireplayer.vod.data.Brand
+import app.fireplayer.vod.data.Service
 import kotlin.math.ceil
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -693,26 +695,78 @@ internal object VodSizes {
     const val LOGO_ACROSS = 5
     /**
      * How much bigger the chosen logo card is. It grows about its middle, so less than [GROW]: its growth and its ring
-     * stay inside the [GAP] to the cards beside it.
+     * stay inside the [GAP] to the cards beside it (and clear of the rail and the screen's right edge).
      */
     const val LOGO_GROW = 0.10f
-    /** A logo card's height for its width. */
-    const val LOGO_SHAPE = 0.5f
-    /** How much of a logo card's width and height its wordmark may take. */
-    const val LOGO_FILL_W = 0.66f
-    const val LOGO_FILL_H = 0.5f
+    /** A logo card's height for its width: 16:9, as the finished cards (800 x 450). */
+    const val LOGO_SHAPE = 9f / 16f
+
+    // The logo cards' one surface ([LogoSurface]; the user's reference of 2026-11-21): slate blue down to charcoal, a
+    // faint broad reflection from the upper left corner (reaching [LOGO_SHEEN_REACH] of the width), a fine cool-grey
+    // rim that fades toward the bottom, a soft close shadow, corners [LOGO_RADIUS_SHARE] of the height. The chosen
+    // card keeps all of it (dark fill, the logo's own colours) and gets the cards' ring ([RING], [RING_COLOR]).
+    const val LOGO_FILL_TOP = 0xFF202938.toInt()
+    const val LOGO_FILL_BOTTOM = 0xFF141923.toInt()
+    const val LOGO_SHEEN = 0x10FFFFFF
+    const val LOGO_SHEEN_REACH = 0.4f
+    const val LOGO_RIM = 0.5f
+    const val LOGO_RIM_TOP = 0xFF465064.toInt()
+    const val LOGO_RIM_BOTTOM = 0x66465064
+    const val LOGO_RADIUS_SHARE = 0.12f
+    const val LOGO_SHADOW = 0x59000000
+    const val LOGO_SHADOW_DY = 2f
+    const val LOGO_SHADOW_BLUR = 4f
+
+    /** A logo card's corner radius, dp. */
+    fun logoRadius(): Float = cardH(RowStyle.LOGO) * LOGO_RADIUS_SHARE
+
+    /** How far the shadow may show outside a logo card, dp (the room [LogoSurface]'s picture keeps round the card). */
+    fun logoShadowReach(): Float = LOGO_SHADOW_DY + LOGO_SHADOW_BLUR
+
     /**
-     * The studio logos (res/drawable-nodpi/studio_*.png) are drawn for a card this many of their pixels wide: each
-     * keeps its size against the card's width, so the five sit together as in the reference.
+     * How much of its card's width a logo's whole picture takes (res/drawable-nodpi/card_logo_*.png, 640 x 300, the
+     * mark with clear room round it): measured from the finished cards, so each mark is the size it is there. The
+     * picture is fitted whole, in the card's middle ([logoFit]): never cut, its own room kept.
      */
-    const val STUDIO_LOGO_CARD_PX = 258f
+    fun logoShare(service: Service): Float = when (service) {
+        Service.DISNEY -> 0.939f
+        Service.HULU -> 0.662f
+        Service.NETFLIX -> 0.777f
+        Service.HBO_MAX -> 0.906f
+        Service.APPLE_TV -> 0.642f
+    }
+
+    fun logoShare(brand: Brand): Float = when (brand) {
+        Brand.DISNEY -> 0.786f
+        Brand.PIXAR -> 0.862f
+        Brand.MARVEL -> 0.713f
+        Brand.STAR_WARS -> 0.706f
+        Brand.NAT_GEO -> 0.916f
+    }
+
+    /**
+     * The scale a logo's picture, [logoW] x [logoH], is drawn at in a card [cardW] x [cardH]: its [share] of the
+     * card's width, and never taller than the card (whatever size the picture was read at: it keeps its shape).
+     */
+    fun logoFit(share: Float, logoW: Int, logoH: Int, cardW: Float, cardH: Float): Float =
+        min(cardW * share / logoW, cardH / logoH)
+
+    /**
+     * A logo [sourceW] px wide is read at one in this many pixels (a power of two) for a drawn width of [drawnW] px:
+     * the smallest picture still at least as wide as it's drawn (halved evenly on reading, so it isn't jagged small).
+     */
+    fun logoSample(sourceW: Int, drawnW: Float): Int {
+        var n = 1
+        while (sourceW / (n * 2) >= drawnW) n *= 2
+        return n
+    }
     /** A one-colour wordmark is drawn in this, whatever its own colour (TMDB's are often black). */
     const val LOGO_MONO = 0xFFFFFFFF.toInt()
     /** A service page's wordmark in the name line: at most this size, its bottom on the clock's baseline. */
     const val NAME_LOGO_H = 26f
     const val NAME_LOGO_W = 120f
     const val COULDNT_OPEN = "Couldn't load this title"
-    /** A logo card's name, shown until its wordmark comes (and for a brand TMDB has no wordmark for). */
+    /** A logo card's name, shown only if its logo can't be read. */
     val LOGO_NAME = TextStyle(16f, Weight.BOLD)
 
     /** A logo card's width: [LOGO_ACROSS] share the rows' width (the content's left edge to the right margin), [GAP] apart. */

@@ -1,6 +1,9 @@
 package app.fireplayer.vod.ui
 
 import app.fireplayer.vod.RowStyle
+import app.fireplayer.vod.data.Services
+import app.fireplayer.vod.data.Service
+import app.fireplayer.vod.data.Brand
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -457,5 +460,38 @@ class VodSizesTest {
         // A row without a title keeps room for the ring above its cards.
         assertTrue(VodSizes.stripTop(header = false) >= VodSizes.RING)
         near(VodSizes.stripTop(), VodSizes.stripTop(header = true), 0.001f)
+    }
+
+    @Test
+    fun `the ten logo cards share one 16 to 9 card and every logo sits whole inside it`() {
+        val w = VodSizes.cardW(RowStyle.LOGO)
+        val h = VodSizes.cardH(RowStyle.LOGO)
+        near(w * 9f / 16f, h, 0.01f)
+        near(h * 0.12f, VodSizes.logoRadius(), 0.01f)
+        // The pictures are 640 x 300 with clear room round the mark: each whole inside the card, room left on all sides.
+        val shares = Service.entries.map { VodSizes.logoShare(it) } + Brand.entries.map { VodSizes.logoShare(it) }
+        assertEquals(10, shares.size)
+        for (share in shares) {
+            val k = VodSizes.logoFit(share, 640, 300, w, h)
+            near(w * share, 640 * k, 0.01f)
+            assertTrue(640 * k < w && 300 * k < h)
+            // Read at half size it's drawn the same.
+            near(640 * k, 320 * VodSizes.logoFit(share, 320, 150, w, h), 0.01f)
+        }
+        // Marvel on the TV (2 px a dp): about 224 x 105 px, read at half size (320 x 150), never smaller than drawn.
+        val marvel = w * 2f * VodSizes.logoShare(Brand.MARVEL)
+        near(224.2f, marvel, 0.5f)
+        assertEquals(2, VodSizes.logoSample(640, marvel))
+        assertEquals(2, VodSizes.logoSample(640, w * 2f * VodSizes.logoShare(Service.DISNEY)))
+        assertEquals(1, VodSizes.logoSample(640, 321f))
+        // The shadow stays in the gap between two cards.
+        assertTrue(VodSizes.logoShadowReach() < VodSizes.GAP)
+    }
+
+    @Test
+    fun `nothing is fetched for a logo card`() {
+        assertTrue((Services.cards() + Services.brandCards()).all { it.title.poster == null })
+        assertEquals(5, Services.cards().size)
+        assertEquals(5, Services.brandCards().size)
     }
 }
