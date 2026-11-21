@@ -223,4 +223,12 @@ internal object LiveWidths {
     /** The programme column reads from this long before now to this long after. */
     const val OV_PROGRAMMES_BEFORE_MS = 3 * 60 * 60_000L
     const val OV_PROGRAMMES_AHEAD_MS = 12 * 60 * 60_000L
+
+    // Channel History over full screen: Live TV search's row of logo tiles where the control buttons were.
+    /** It glides in from this far below, fading (as the buttons and the extra row swap), and away again. */
+    const val HISTORY_SHIFT = 14f
+    const val HISTORY_IN_MS = 220L
+    const val HISTORY_OUT_MS = 160L
+    /** "No other channels watched yet" sits this far above the row's bottom edge. */
+    const val HISTORY_NOTE_UP = 44
 }

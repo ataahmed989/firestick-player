@@ -191,6 +191,9 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         lookOn = Glass.on
         clipForLook()
         settingsPanels.onLookChanged = { applyLook() }
+        // Subtitle style changed in a settings window: the live captions follow at once, as the film player's do.
+        settingsPanels.onSubtitleStyleChanged = { applyCaptionStyle() }
+        settingsPanels.onAssStylingChanged = { applyCaptionStyle() }
         // Info pods are one setting for films and live channels: the live controls follow a change at once.
         settingsPanels.onChipsChanged = { live.refreshPods() }
         filmMode = FilmMode(this, object : FilmMode.Hooks {
@@ -887,6 +890,31 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         })
     }
 
+    /**
+     * Subtitle style over the full-screen live picture, the window the film player opens: each change shows on the
+     * captions at once (example text stands in while none are on screen).
+     */
+    override fun openSubtitleStyle(onClosed: () -> Unit) {
+        captionPreview = true
+        showCues(player.currentCues)
+        panel.open("Subtitle style", onClose = {
+            captionPreview = false
+            showCues(player.currentCues)
+            onClosed()
+        }) {
+            settingsPanels.renderSubtitleStyle(this, onStyleChanged = { applyCaptionStyle() }, onAssChanged = { applyCaptionStyle() })
+        }
+    }
+
+    /** Subtitle style's window is open over the picture: with no captions on screen, example text shows the style. */
+    private var captionPreview = false
+
+    /** The live captions in the Subtitle style as it is now (it was changed), those on screen with them. */
+    private fun applyCaptionStyle() {
+        captionStyler.apply(captions, SubtitlePresets(Prefs(this)).active())
+        showCues(player.currentCues)
+    }
+
     /** Assign favorites over the Live TV tab (from the guide); focus returns where it was when it closes. */
     override fun openAssignFavorites(playlistId: String, groupId: String?, channel: ChannelKey?) {
         // A window already open closes first, so its own close runs (its focus, the guide brightening again).
@@ -987,6 +1015,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         videoTarget = rect?.let { RectF(it) }
         // Captions follow the Subtitle style setting, read again each time full screen opens.
         if (full && !videoFull) captionStyler.apply(captions, SubtitlePresets(Prefs(this)).active())
+        if (!full) captionPreview = false
         videoFull = full
         videoRadius = radius
         layoutVideo(animateMs)
@@ -1257,7 +1286,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
     private fun showCues(cues: List<Cue>) {
         if (!pictureFull) { captions.setCues(emptyList()); return }
         val (pictures, text) = cues.partition { it.bitmap != null }
-        captions.setCues(captionStyler.normalize(text) + pictures)
+        val shown = captionStyler.normalize(text) + pictures
+        captions.setCues(if (shown.isEmpty() && captionPreview) captionStyler.sample() else shown)
     }
 
     override fun setChromeVisible(visible: Boolean) {
@@ -1371,7 +1401,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         if (!style && rail.selected == NavRail.Tab.LIVE) return openPlayerSettings()
         val title = if (style) "Subtitle style" else SettingsCategory.LIST_TITLE
         val render: SidePanel.() -> Unit = {
-            if (style) settingsPanels.renderSubtitleStyle(this, onStyleChanged = {}, onAssChanged = {})
+            if (style) settingsPanels.renderSubtitleStyle(this, onStyleChanged = { applyCaptionStyle() }, onAssChanged = { applyCaptionStyle() })
             else settingsPanels.renderCategories(this)
         }
         val back = currentFocus
