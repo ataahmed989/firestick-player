@@ -9,7 +9,8 @@ import app.fireplayer.vod.Title
 
 /**
  * A streaming service with a page of its own: its name, TMDB's watch-provider id for it (US subscriptions) and TMDB's
- * wordmark for its cards ([logo], a path; [mono]: a one-colour mark, drawn white on the dark cards).
+ * wordmark for its page's name line ([logo], a path; [mono]: a one-colour mark, drawn white). Its card's logo is the
+ * app's own picture.
  */
 enum class Service(val key: String, val label: String, val providerId: Int, val logo: String, val mono: Boolean) {
     DISNEY("disney", "Disney+", 337, "/1edZOYAfoyZyZ3rklNSiUpXX30Q.png", true),
@@ -49,13 +50,13 @@ object Services {
     private val MONO: Set<String> =
         (Service.entries.filter { it.mono }.map { it.logo } + Brand.entries.filter { it.mono }.mapNotNull { it.logo }).map { LOGOS + it }.toSet()
 
-    /** Home's row of services: a card each, its wordmark as its picture. */
-    fun cards(): List<Card> = Service.entries.map { logoCard(SERVICE_ID + it.key, it.label, it.logo) }
+    /** Home's row of services: a card each, its logo one of the app's own pictures (nothing is fetched for it). */
+    fun cards(): List<Card> = Service.entries.map { logoCard(SERVICE_ID + it.key, it.label) }
 
-    /** Disney+'s row of studios: a card each, its logo one of the app's own pictures (nothing is fetched for it). */
-    fun brandCards(): List<Card> = Brand.entries.map { logoCard(BRAND_ID + it.key, it.label, null) }
+    /** Disney+'s row of studios: a card each, its logo likewise the app's own. */
+    fun brandCards(): List<Card> = Brand.entries.map { logoCard(BRAND_ID + it.key, it.label) }
 
-    private fun logoCard(id: String, name: String, logo: String?) = Card(Title(id, Kind.MOVIE, name, poster = logoUrl(logo)))
+    private fun logoCard(id: String, name: String) = Card(Title(id, Kind.MOVIE, name))
 
     /** The service a card of [cards] stands for. */
     fun serviceOf(id: String): Service? =

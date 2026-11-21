@@ -24,7 +24,6 @@ import app.fireplayer.ui.ImageLoader
 import app.fireplayer.ui.ImageTarget
 import app.fireplayer.ui.Rows
 import app.fireplayer.vod.Card
-import app.fireplayer.vod.data.Services
 import app.fireplayer.vod.data.VodArt
 import kotlin.math.ceil
 import kotlin.math.roundToInt
@@ -51,7 +50,7 @@ class CardView(
 
     enum class Kind {
         POSTER, WIDE, EPISODE, SEE_ALL,
-        /** A streaming service's or brand's card: its wordmark whole in the middle of a dark card, its name until it comes. */
+        /** A streaming service's or studio's card: its logo whole in the middle of the logo cards' surface ([LogoSurface]). */
         LOGO,
     }
 
@@ -75,17 +74,17 @@ class CardView(
     private var imageAlpha = 1f
     private var fader: ValueAnimator? = null
 
-    private val radius = t.dpf(VodSizes.CARD_RADIUS)
+    private val radius = t.dpf(if (kind == Kind.LOGO) VodSizes.logoRadius() else VodSizes.CARD_RADIUS)
     private val ringPx = t.dpf(VodSizes.RING)
     /** The picture's box: the whole card, or an episode's still above its captions. */
     private val box = RectF()
     private val ringBox = RectF()
     private val imagePaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-    /** A logo card's wordmark and where it's drawn: kept whole, in the card's middle. */
+    /** A logo card: its surface (made once per size), its logo ([CardLogos], its own colours) and where that's drawn. */
+    private var surface: LogoSurface? = null
+    private var logo: CardLogos.Logo? = null
     private val logoPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private val logoBox = RectF()
-    /** A studio's card: its logo from the app's own pictures ([StudioLogos]), drawn in its own colours; else null. */
-    private var ownLogo: Bitmap? = null
     private val holderPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val scrimPaint = Paint()
     private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = VodSizes.RING_COLOR }
@@ -131,10 +130,6 @@ class CardView(
 
     private fun decodeSize(): Pair<Int, Int> {
         if (kind == Kind.EPISODE) return ceil(t.dpf(pictureW)).toInt() to ceil(t.dpf(pictureH)).toInt()
-        if (kind == Kind.LOGO) {
-            return ceil(t.dpf(pictureW) * VodSizes.LOGO_FILL_W * (1f + VodSizes.LOGO_GROW)).toInt() to
-                ceil(t.dpf(pictureH) * VodSizes.LOGO_FILL_H * (1f + VodSizes.LOGO_GROW)).toInt()
-        }
         val w = ceil(t.dpf(pictureW) * (1f + VodSizes.GROW)).toInt()
         val h = ceil(t.dpf(pictureH) * (1f + VodSizes.GROW)).toInt()
         // A poster never decoded wider than its source says it is (TMDB's w185, metahub's small poster): no larger
@@ -153,8 +148,8 @@ class CardView(
         textFor = -1
         if (!samePicture && imageKey != null) ImageLoader.release(this)
         if (kind == Kind.LOGO) {
-            ownLogo = StudioLogos.of(context, card.title.id)
-            logoPaint.colorFilter = if (ownLogo == null && Services.isMono(card.title.poster)) LOGO_WHITE else null
+            logo = CardLogos.of(context, card.title.id, t.dp(pictureW))
+            placeLogo()
         }
         invalidate()
     }
@@ -176,11 +171,6 @@ class CardView(
             return
         }
         val (w, h) = decodeSize()
-        if (kind == Kind.LOGO) {
-            // Whole, with its transparency (a wordmark is never cropped).
-            if (imageKey == null) ImageLoader.load(url, this, w, h, config = Bitmap.Config.ARGB_8888, fit = ImageLoader.Fit.INSIDE)
-            return
-        }
         val key = ImageLoader.keyOf(url, w, h)
         if (imageKey == key) return
         ImageLoader.load(url, this, w, h)
@@ -239,6 +229,10 @@ class CardView(
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         val ph = if (kind == Kind.EPISODE) t.dpf(pictureH).coerceAtMost(h.toFloat()) else h.toFloat()
         box.set(0f, 0f, w.toFloat(), ph)
+        if (kind == Kind.LOGO) {
+            surface = if (w > 0 && h > 0) LogoSurface.of(w, h, t.density) else null
+            placeLogo()
+        }
         holderPaint.shader = LinearGradient(0f, 0f, w.toFloat(), ph, VodSizes.HOLDER_TOP, VodSizes.HOLDER_BOTTOM, Shader.TileMode.CLAMP)
         // The gradient behind a wide card's words: clear above, easing to dark at the bottom (no visible start).
         val stops = VodSizes.WIDE_SCRIM_STOPS
@@ -268,10 +262,10 @@ class CardView(
     /**
      * Glass look: a hairline just inside the picture's edge, so a dark picture still reads as a card on the dark
      * wallpaper. It fades out as the white ring of the chosen card fades in, and stays a hairline whatever the card's
-     * growth. (See all has its own rim.)
+     * growth. (See all and the logo cards have their own rim.)
      */
     private fun drawEdge(canvas: Canvas) {
-        if (!Glass.on || kind == Kind.SEE_ALL) return
+        if (!Glass.on || kind == Kind.SEE_ALL || kind == Kind.LOGO) return
         val f = focus
         if (f >= 1f) return
         val scale = if (scaleX > 0f) scaleX else 1f
@@ -302,27 +296,30 @@ class CardView(
         c?.badge?.let { drawBadge(canvas, it, right = true, alpha = 255) }
     }
 
-    /** A logo card: the dark card, and its wordmark kept whole in the middle (its name until it has come). */
+    /** A logo card: the shared surface, and its logo's whole picture in the middle (its name if it can't be read). */
     private fun drawLogo(canvas: Canvas) {
+        surface?.draw(canvas, imagePaint)
+        val l = logo
+        if (l != null) {
+            canvas.drawBitmap(l.bitmap, null, logoBox, logoPaint)
+            return
+        }
         if (textFor != width) layOutText(card)
-        canvas.drawRoundRect(box, radius, radius, holderPaint)
-        val own = ownLogo
-        val bmp = own ?: bitmap
-        if (own == null && (bmp == null || imageAlpha < 1f)) holderLayout?.let { l ->
+        holderLayout?.let {
             canvas.save()
-            canvas.translate((width - l.width) / 2f, (height - l.height) / 2f)
-            l.draw(canvas)
+            canvas.translate((width - it.width) / 2f, (height - it.height) / 2f)
+            it.draw(canvas)
             canvas.restore()
         }
-        if (bmp == null) return
-        val fill = minOf(box.width() * VodSizes.LOGO_FILL_W / bmp.width, box.height() * VodSizes.LOGO_FILL_H / bmp.height)
-        // A studio's logo keeps its drawn size against the card's width (each sits as in the reference), never past the fill.
-        val k = if (own != null) minOf(box.width() / VodSizes.STUDIO_LOGO_CARD_PX, fill) else fill
-        val w = bmp.width * k
-        val h = bmp.height * k
+    }
+
+    /** Where the logo's picture goes: whole and in proportion, its share of the card ([VodSizes.logoFit]), in the middle. */
+    private fun placeLogo() {
+        val l = logo ?: return
+        val k = VodSizes.logoFit(l.share, l.bitmap.width, l.bitmap.height, box.width(), box.height())
+        val w = l.bitmap.width * k
+        val h = l.bitmap.height * k
         logoBox.set((box.width() - w) / 2f, (box.height() - h) / 2f, (box.width() + w) / 2f, (box.height() + h) / 2f)
-        logoPaint.alpha = if (own != null) 255 else (255 * imageAlpha).toInt()
-        canvas.drawBitmap(bmp, null, logoBox, logoPaint)
     }
 
     private fun drawPicture(canvas: Canvas, bmp: Bitmap, s: BitmapShader, alpha: Int) {
@@ -491,8 +488,6 @@ class CardView(
     private companion object {
         fun alphaOf(c: Int) = c ushr 24
 
-        /** One-colour wordmarks drawn white ([VodSizes.LOGO_MONO]). */
-        val LOGO_WHITE = android.graphics.PorterDuffColorFilter(VodSizes.LOGO_MONO, android.graphics.PorterDuff.Mode.SRC_IN)
 
         /** TMDB's picture width in its address ("…/t/p/w185/…"); null for any other. */
         private val TMDB_WIDTH = Regex("""image\.tmdb\.org/t/p/w(\d+)/""")
