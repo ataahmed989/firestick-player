@@ -13,8 +13,7 @@ import kotlin.math.abs
  * The Disney+ studio pages: each studio's rows of titles, in order, and the chosen lists behind the ordered ones (pure,
  * unit-tested). Every row holds only what Disney+ carries in the US: TMDB Discover narrowed to the studio
  * ([Source.Discover], most popular first, more as the viewer goes along), or a chosen list in its own order
- * ([Source.Curated]). A row with nothing to show is hidden by the page. National Geographic has no page of rows: its
- * card opens its collection ([Services.collection]).
+ * ([Source.Curated]). A row with nothing to show is hidden by the page.
  *
  * The lists hold TMDB's ids. Each entry carries words of the title's name and its year, which TMDB's answer must agree
  * with ([Curated.matches]), so a mistaken id leaves a title out and never shows another in its place.
@@ -74,26 +73,33 @@ object Studios {
             // Lucasfilm's short films and specials.
             discover(brand, "shorts", "Shorts & Specials", Kind.MOVIE, LUCASFILM, maxRuntime = SPECIAL_MINUTES),
         )
-        Brand.NAT_GEO -> emptyList()
+        Brand.NAT_GEO -> listOf(
+            // Its films by the company, its series by the channel ([Brand.networks]), as its collection has them.
+            discover(brand, "popular", "Popular National Geographic", null, brand.companies, networks = brand.networks),
+            discover(brand, "series", "National Geographic Series", Kind.SERIES, brand.companies, networks = brand.networks),
+            discover(brand, "films", "National Geographic Films", Kind.MOVIE, brand.companies, networks = brand.networks),
+        )
     }
 
     /**
      * The grid a studio row's See all opens when it isn't the row's own titles: the studio's whole collection on
-     * Disney+, from its page's first row (Popular Pixar, Popular Marvel, the Skywalker Saga). Null: the row's own.
+     * Disney+, from its page's first row (Popular Pixar, Popular Marvel, the Skywalker Saga, Popular National
+     * Geographic). Null: the row's own.
      */
     fun seeAll(spec: RowSpec): RowSpec? = when (spec.key) {
         "studio.${Brand.PIXAR.key}.popular" -> Services.collection(Brand.PIXAR)
         "studio.${Brand.MARVEL.key}.popular" -> Services.collection(Brand.MARVEL)
         "studio.${Brand.STAR_WARS.key}.saga" -> Services.collection(Brand.STAR_WARS)
+        "studio.${Brand.NAT_GEO.key}.popular" -> Services.collection(Brand.NAT_GEO)
         else -> null
     }
 
     private fun discover(
         brand: Brand, key: String, label: String, kind: Kind?, companies: String,
-        genres: String? = null, without: String? = null, maxRuntime: Int? = null,
+        genres: String? = null, without: String? = null, maxRuntime: Int? = null, networks: String? = null,
     ) = RowSpec(
         "studio.${brand.key}.$key", label, RowStyle.POSTER,
-        Source.Discover(kind, DISNEY_PLUS, companies, genres = genres, withoutGenres = without, maxRuntime = maxRuntime, paged = true),
+        Source.Discover(kind, DISNEY_PLUS, companies, networks, genres = genres, withoutGenres = without, maxRuntime = maxRuntime, paged = true),
     )
 
     private fun curated(brand: Brand, key: String, label: String, kind: Kind, titles: List<CuratedTitle>) =

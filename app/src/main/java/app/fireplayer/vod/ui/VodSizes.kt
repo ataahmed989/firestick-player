@@ -772,6 +772,19 @@ internal object VodSizes {
      */
     const val NAME_LOGO_H = 26f
     const val NAME_LOGO_W = 120f
+    /**
+     * A studio page's logo takes no more room than a logo this wide at the full height: the compact marks (Disney,
+     * Marvel, Star Wars: about 2.4 to 1) stand at the full height, and a long wordmark (Pixar's, 6 to 1) stands lower,
+     * so the five look much the same size ([nameLogoH]).
+     */
+    const val NAME_LOGO_EVEN_W = 66f
+
+    /**
+     * The height a logo [w] x [h] is fitted in on the name line: [maxH], or less for one so long that at that height
+     * it would cover more than [evenW] x [maxH] (any one unit).
+     */
+    fun nameLogoH(w: Int, h: Int, maxH: Int, evenW: Int): Int =
+        if (w <= 0 || h <= 0) maxH else min(maxH.toFloat(), kotlin.math.sqrt(evenW.toFloat() * maxH * h / w)).toInt().coerceAtLeast(1)
     const val COULDNT_OPEN = "Couldn't load this title"
     /** A logo card's name, shown only if its logo can't be read. */
     val LOGO_NAME = TextStyle(16f, Weight.BOLD)

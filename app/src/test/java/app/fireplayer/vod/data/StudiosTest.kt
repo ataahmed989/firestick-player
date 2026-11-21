@@ -28,10 +28,15 @@ class StudiosTest {
             listOf("Skywalker Saga", "Standalone Movies", "Live-Action Series", "Animated Series", "Shorts & Specials"),
             Studios.rows(Brand.STAR_WARS).map { it.label },
         )
-        // National Geographic keeps its collection.
-        assertTrue(Studios.rows(Brand.NAT_GEO).isEmpty())
-        assertFalse(Studios.hasPage(Brand.NAT_GEO))
-        assertTrue(Studios.hasPage(Brand.MARVEL))
+        assertEquals(
+            listOf("Popular National Geographic", "National Geographic Series", "National Geographic Films"),
+            Studios.rows(Brand.NAT_GEO).map { it.label },
+        )
+        // Every studio has its page; National Geographic's series are found by its channel.
+        for (brand in Brand.entries) assertTrue(Studios.hasPage(brand))
+        val natGeo = Studios.rows(Brand.NAT_GEO)[1].source as Source.Discover
+        assertEquals("43", Discover.params(natGeo, Kind.SERIES, 1).toMap()["with_networks"])
+        assertEquals("7521", Discover.params(Studios.rows(Brand.NAT_GEO)[2].source as Source.Discover, Kind.MOVIE, 1).toMap()["with_companies"])
     }
 
     @Test
@@ -87,6 +92,7 @@ class StudiosTest {
         assertEquals(Services.collection(Brand.PIXAR), Studios.seeAll(Studios.rows(Brand.PIXAR)[0]))
         assertEquals(Services.collection(Brand.MARVEL), Studios.seeAll(Studios.rows(Brand.MARVEL)[0]))
         assertEquals(Services.collection(Brand.STAR_WARS), Studios.seeAll(Studios.rows(Brand.STAR_WARS)[0]))
+        assertEquals(Services.collection(Brand.NAT_GEO), Studios.seeAll(Studios.rows(Brand.NAT_GEO)[0]))
         assertNull(Studios.seeAll(Studios.rows(Brand.MARVEL)[1]))
         assertNull(Studios.seeAll(Studios.rows(Brand.DISNEY)[0]))
         // A Discover row that goes on ends with See all (its own grid); a service's first-page row and a chosen list don't.

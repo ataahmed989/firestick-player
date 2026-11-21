@@ -445,6 +445,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
     private var pipResumeMuted = false
     /** How far the page has moved the picture up from its place (px, 0 at rest). */
     private var pipShift = 0f
+    /** The line the picture is cut at as its page takes it up (px on screen; 0: none), [VodPage.pipClipTop]. */
+    private var pipClip = 0f
     /** Its place is covered (or not laid out yet): it plays on under the wallpaper. */
     private var pipVeiled = false
     /** A held Back opened the picture full screen: its release does nothing more. */
@@ -558,6 +560,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         val frame = pages.layoutParams as ViewGroup.MarginLayoutParams
         spot.offset(frame.marginStart.toFloat(), frame.topMargin.toFloat())
         pipShift = page.pipShift()
+        pipClip = page.pipClipTop() + frame.topMargin
         pipVeiled = page.pipCovered() || panel.isOpen
         placeVideo(spot, page.pipRadius(), false)
     }
@@ -575,6 +578,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         val frame = pages.layoutParams as ViewGroup.MarginLayoutParams
         sizingSpot.offset(frame.marginStart.toFloat(), frame.topMargin.toFloat())
         pipShift = page.pipShift()
+        pipClip = page.pipClipTop() + frame.topMargin
         pipSizing = true
         showPipSizing()
     }
@@ -607,9 +611,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         surface.scaleY = transformNow[1]
         surface.translationX = transformNow[2]
         surface.translationY = transformNow[3] + pipShift
-        holeNow.set(s.left, s.top + pipShift, s.right, s.bottom + pipShift)
-        wallpaper.setHole(holeNow, videoRadius, full = false)
-        busy.place(holeNow.centerX(), holeNow.centerY(), 0f)
+        showPipHole(s.left, s.top, s.right, s.bottom)
     }
 
     /** The picture where the page has moved its box to, by translation only (or unseen; see [PipRules.pictureShows]). */
@@ -623,9 +625,25 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
             busy.away()
             return
         }
-        holeNow.set(endHole.left, endHole.top + pipShift, endHole.right, endHole.bottom + pipShift)
-        wallpaper.setHole(holeNow, videoRadius, full = false)
-        busy.place(holeNow.centerX(), holeNow.centerY(), 0f)
+        showPipHole(endHole.left, endHole.top, endHole.right, endHole.bottom)
+    }
+
+    /**
+     * The wallpaper's hole for the picture's window (at rest: [left], [top], [right], [bottom]) where the page has it
+     * now: moved by the page's shift and cut at the viewport's top ([pipClip]), as the banner beside it is, so the
+     * picture shows only inside its window all the way up, and not at all once the window is out of sight. The
+     * surface itself only moves (translation); the wallpaper covers what's above the line.
+     */
+    private fun showPipHole(left: Float, top: Float, right: Float, bottom: Float) {
+        holeNow.set(left, top + pipShift, right, bottom + pipShift)
+        if (holeNow.bottom <= pipClip) {
+            wallpaper.setHole(null, 0f)
+            busy.away()
+            return
+        }
+        wallpaper.setHole(holeNow, videoRadius, full = false, cutAbove = pipClip)
+        // The buffering symbol only while the picture's middle is in sight.
+        if (holeNow.centerY() > pipClip) busy.place(holeNow.centerX(), holeNow.centerY(), 0f) else busy.away()
     }
 
     override fun pipButton(button: PipRules.Button) {
@@ -745,6 +763,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         if (!rail.selected.isService || service == null) return
         studio = brand
         vodPages.show(rail.selected, service, brand)
+        // The live picture goes with the page shown: into the studio page's own window.
+        if (pipOn) showPip(fresh = false)
         rail.focusSelected()
         focusPage()
     }
@@ -754,6 +774,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         if (studio == null || !rail.selected.isService) return false
         studio = null
         vodPages.show(rail.selected, service)
+        if (pipOn) showPip(fresh = false)
         rail.focusSelected()
         focusPage()
         return true
