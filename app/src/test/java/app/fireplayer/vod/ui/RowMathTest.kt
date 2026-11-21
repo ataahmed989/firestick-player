@@ -75,6 +75,17 @@ class RowMathTest {
     }
 
     @Test
+    fun pageTargetStopsWithTheLastRowAtTheBottom() {
+        val tops = floatArrayOf(422f, 746f, 1210f)
+        // The last row ends at 1500: the column stops with that at the screen's bottom, the row above still in view.
+        assertEquals(508f, RowMath.pageTarget(2, 0, viewportH = 992f, end = 1500f) { tops[it] }, 0f)
+        assertEquals(508f, RowMath.pageTarget(1, 0, viewportH = 992f, end = 1500f) { tops[it] }, 0f)
+        // A long page still puts a middle row at the top; a page shorter than the screen doesn't move.
+        assertEquals(746f, RowMath.pageTarget(1, 0, viewportH = 992f, end = 3_000f) { tops[it] }, 0f)
+        assertEquals(0f, RowMath.pageTarget(2, 0, viewportH = 992f, end = 900f) { tops[it] }, 0f)
+    }
+
+    @Test
     fun boundRowsAreThoseInViewAndTheOneAbove() {
         // Bands of 464 px from 422 down (header 390 + 32), viewport 992 px.
         val tops = floatArrayOf(422f, 886f, 1350f, 1814f, 2278f)

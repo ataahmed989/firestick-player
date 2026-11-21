@@ -80,6 +80,8 @@ enum class RowStyle {
     EPISODE,
     /** A show's season pills on the title page: chips drawn like GENRES, the season shown selected. */
     SEASONS,
+    /** Five rounded cards across with a wordmark each and no title line: Home's streaming services, Disney+'s brands. */
+    LOGO,
 }
 
 /** Where a row's cards come from. */
@@ -123,6 +125,26 @@ sealed class Source {
      * list. [key] tells such rows apart.
      */
     data class Fixed(val key: String) : Source()
+
+    /**
+     * TMDB Discover: what TMDB's watch provider [provider] carries with a US subscription, the most popular first;
+     * [kind] null: films and series in turn. [companies] (and, for series, [networks] in their place) narrow it to a
+     * brand's titles. A row takes the first page only; [full] (a brand's collection) goes on page after page. Needs the
+     * user's TMDB key; empty without it.
+     */
+    data class Discover(
+        val kind: Kind?,
+        val provider: Int,
+        val companies: String? = null,
+        val networks: String? = null,
+        val full: Boolean = false,
+    ) : Source()
+
+    /** The streaming services with a page of their own: a card each (Home's row). */
+    data object Services : Source()
+
+    /** Disney+'s brands: a card each, opening that brand's collection. */
+    data object Brands : Source()
 }
 
 /**

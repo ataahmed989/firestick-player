@@ -36,7 +36,7 @@ class RowSettingsTest {
         s.setOn(Page.HOME, "home.my_list", false)
         s.setOrder(Page.HOME, listOf("home.popular_shows", "home.continue"))
         assertTrue(s.add(Page.HOME, key(Page.HOME, "top10.both")))
-        val expected = listOf("home.popular_shows", "home.continue", "home.next_episodes", "home.popular_movies", "home.add.top10.both")
+        val expected = listOf("home.popular_shows", "home.continue", "home.services", "home.next_episodes", "home.popular_movies", "home.add.top10.both")
         assertEquals(expected, s.rows(Page.HOME).map { it.key })
         assertFalse(s.isDefault(Page.HOME))
         // Read again from what was stored: the same, and the other pages untouched.

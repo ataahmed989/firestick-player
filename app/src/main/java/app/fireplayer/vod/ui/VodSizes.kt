@@ -686,6 +686,27 @@ internal object VodSizes {
     const val EPISODE_WINDOW = 40
     const val EPISODE_AHEAD = 10
 
+    // ---- Streaming services: the logo cards, and a service page's wordmark in its name line ----
+
+    /** Logo cards across the page: all five show, the chosen one grown. */
+    const val LOGO_ACROSS = 5
+    /** A logo card's height for its width. */
+    const val LOGO_SHAPE = 0.5f
+    /** How much of a logo card's width and height its wordmark may take. */
+    const val LOGO_FILL_W = 0.66f
+    const val LOGO_FILL_H = 0.5f
+    /** A one-colour wordmark is drawn in this, whatever its own colour (TMDB's are often black). */
+    const val LOGO_MONO = 0xFFFFFFFF.toInt()
+    /** A service page's wordmark in the name line: at most this size, its bottom on the clock's baseline. */
+    const val NAME_LOGO_H = 26f
+    const val NAME_LOGO_W = 120f
+    const val COULDNT_OPEN = "Couldn't load this title"
+    /** A logo card's name, shown until its wordmark comes (and for a brand TMDB has no wordmark for). */
+    val LOGO_NAME = TextStyle(16f, Weight.BOLD)
+
+    /** A logo card's width: [LOGO_ACROSS] fill the rows' width with the chosen one grown. */
+    fun logoW(): Float = (tabHeaderW() - (LOGO_ACROSS - 1) * GAP) / (LOGO_ACROSS + GROW)
+
     // ---- Per row style ----
     // [large]: the browse pages' cards ([BROWSE_POSTER_W], [BROWSE_WIDE_W]); else the title page's.
 
@@ -693,6 +714,7 @@ internal object VodSizes {
     fun posterH(large: Boolean): Float = if (large) BROWSE_POSTER_H else POSTER_H
 
     fun cardW(style: RowStyle, large: Boolean = false): Float = when {
+        style == RowStyle.LOGO -> logoW()
         style == RowStyle.EPISODE -> WIDE_W
         style == RowStyle.WIDE -> if (large) BROWSE_WIDE_W else WIDE_W
         else -> posterW(large)
@@ -703,6 +725,7 @@ internal object VodSizes {
         RowStyle.WIDE -> if (large) BROWSE_WIDE_H else WIDE_H
         RowStyle.EPISODE -> EPISODE_ITEM_H
         RowStyle.GENRES, RowStyle.SEASONS -> CHIP_H
+        RowStyle.LOGO -> logoW() * LOGO_SHAPE
         else -> posterH(large)
     }
 

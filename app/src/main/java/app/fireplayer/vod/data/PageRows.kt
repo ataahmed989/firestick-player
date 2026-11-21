@@ -17,6 +17,7 @@ object PageRows {
     fun rows(page: Page, newYear: Int): List<RowSpec> = when (page) {
         Page.HOME -> listOf(
             RowSpec("home.continue", "Continue Watching", RowStyle.WIDE, Source.ContinueWatching(null), continueRow = true),
+            Services.homeRow(),
             RowSpec("home.my_list", "My List", RowStyle.POSTER, Source.MyList),
             RowSpec("home.next_episodes", "Next Episodes", RowStyle.POSTER, Source.NextEpisodes()),
             RowSpec("home.popular_movies", "Popular Movies", RowStyle.POSTER, Source.Catalog(Kind.MOVIE, Cinemeta.TOP)),
