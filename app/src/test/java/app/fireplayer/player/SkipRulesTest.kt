@@ -15,6 +15,23 @@ class SkipRulesTest {
     private fun found(p: Pick) = p as Pick.Found
 
     @Test
+    fun creditsEndingAFewSecondsPastAShorterFileStillCount() {
+        // The user's episode: a file of 1558 s, IntroDB's credits 1425 s..1561 s (timed on a file 3 s longer).
+        val file = 1_558_000L
+        val outro = IntroDbSegment(1_425_000, 1_561_000, 1.0)
+        val e = SkipRules.Evidence(tmdbAgrees = true, creditsEndHere = SkipRules.outroAnchors(outro, file))
+        assertTrue(e.creditsEndHere)
+        val found = SkipRules.introDb(Part.OUTRO, outro, false, e, file) as Pick.Found
+        assertEquals(1_425_000L, found.start)
+        assertEquals(file, found.end)
+        // Past the anchor's 5 s: still rejected.
+        val far = IntroDbSegment(1_425_000, 1_564_000, 1.0)
+        assertTrue(SkipRules.introDb(Part.OUTRO, far, false, SkipRules.Evidence(true, SkipRules.outroAnchors(far, file)), file) is Pick.Rejected)
+        // An intro still gets only the usual 2 s past the end (it never ends near it anyway).
+        assertTrue(SkipRules.fits(Part.INTRO, 0, 60_000, 57_000) is Pick.Rejected)
+    }
+
+    @Test
     fun exactAndConfidentIsUsed() {
         val p = SkipRules.skipDb(Part.INTRO, SkipDbSegment(61_000, 91_000, "exact", 0, 0.9), length)
         assertEquals(61_000L, found(p).start)
