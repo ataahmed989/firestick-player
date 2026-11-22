@@ -506,6 +506,12 @@ interface VodRepository {
     fun removeRowsListener(listener: () -> Unit) {}
 
     /**
+     * Home's streaming services put in [order] (a card moved on Home): kept as Settings › Rows › Reorder services keeps
+     * it, so both show the same order, across restarts.
+     */
+    fun setServiceOrder(order: List<app.fireplayer.vod.data.Service>) {}
+
+    /**
      * Cards for [row], up to [limit] starting at [skip]. [onCards] is called first with whatever is cached (fresh =
      * false, possibly empty) and then once more with fresh data (fresh = true) if the cache was old or missing. On a
      * network failure with nothing cached it is called once with an empty list and fresh = true.

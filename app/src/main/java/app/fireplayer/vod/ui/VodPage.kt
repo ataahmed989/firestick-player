@@ -31,6 +31,7 @@ import app.fireplayer.ui.Buttons
 import app.fireplayer.ui.FireDialog
 import app.fireplayer.ui.Glass
 import app.fireplayer.ui.ImageLoader
+import app.fireplayer.ui.ReorderMath
 import app.fireplayer.ui.SidePanel
 import app.fireplayer.ui.Spring
 import app.fireplayer.vod.Cancel
@@ -48,6 +49,7 @@ import app.fireplayer.vod.VodRepository
 import app.fireplayer.vod.hasImdbId
 import app.fireplayer.vod.data.Brand
 import app.fireplayer.vod.data.Service
+import app.fireplayer.vod.data.ServiceHold
 import app.fireplayer.vod.data.Services
 import app.fireplayer.vod.data.Studios
 import app.fireplayer.vod.data.TmdbTrending
@@ -115,6 +117,11 @@ class VodPage(
         fun openService(service: Service) {}
         /** OK on one of Disney+'s studio cards that has a page of rows: that page opens. */
         fun openStudio(brand: Brand) {}
+        /**
+         * A Home service card's small window pinned or unpinned one: [pins] are the services pinned to the rail's
+         * shortcuts now (top first), and [show] whether the rail shows its shortcuts.
+         */
+        fun pinServices(pins: List<Service>, show: Boolean) {}
         /** Live TV search: [key] plays full screen on Live TV ([at] null), or the guide shows it ([at]: a later programme's start). */
         fun openLiveResult(key: ChannelKey, at: Long?) {}
         /** Back from Live TV search's starting view: the Live TV tab. */
@@ -480,6 +487,7 @@ class VodPage(
 
     /** Another tab: hidden; the title pages, See all and the small window close, its pictures go. */
     fun hide() {
+        dropCarry(animate = false)
         shown = false
         focusPending = false
         pendingFrom = null
@@ -509,11 +517,13 @@ class VodPage(
 
     /** The screen stopped (onStop): timers stop, pictures go. */
     fun stop() {
+        dropCarry(animate = false)
         started = false
         pause()
     }
 
     fun release() {
+        dropCarry(animate = false)
         pause()
         stopTopRightFrames()
         released = true
@@ -667,6 +677,16 @@ class VodPage(
     /** The page's Back: closes the small window, then the title pages ([TitleStack]), then See all. False when it's the shell's (to the rail). */
     fun dispatchKey(event: KeyEvent): Boolean {
         if (event.keyCode != KeyEvent.KEYCODE_BACK) return false
+        // A service card being moved: Back puts it down where it is, as Glass Home's Back does (on its release).
+        if (carryRow != null || carryBackDown) {
+            if (event.action == KeyEvent.ACTION_DOWN) {
+                carryBackDown = true
+            } else if (event.action == KeyEvent.ACTION_UP) {
+                if (carryBackDown && !event.isCanceled) dropCarry()
+                carryBackDown = false
+            }
+            return true
+        }
         // The live picture's strip: Back goes back to where focus was on the page (held, the shell opens full screen).
         val inStrip = pipBox?.hasFocus() == true
         if (pipBackDown || PipRules.back(held = false, inStrip = inStrip, playing = pipOn, pageInFront = true) == PipRules.BackAct.RETURN_FOCUS) {
@@ -759,6 +779,8 @@ class VodPage(
     }
 
     override fun onRowLeft(row: TitleRow): Boolean {
+        // Something else took focus (the settings window) from a card being moved: it's put down there.
+        if (carryRow === row) dropCarry()
         // Into a title page opened from it: the card stays grown, the row as it was, until the viewer comes back.
         if (titles.isOpen && originRow() === row) return false
         // Into its small window: the card stays grown and the header on its title until the window closes.
@@ -775,6 +797,7 @@ class VodPage(
     }
 
     override fun onItemKey(row: TitleRow, index: Int, keyCode: Int, event: KeyEvent): Boolean {
+        if (carryRow === row) return carryKey(row, keyCode, event)
         if (isOk(keyCode)) {
             when (event.action) {
                 KeyEvent.ACTION_DOWN -> if (press.down(event.repeatCount, event.isLongPress, event.eventTime - event.downTime)) onHold(row, index)
@@ -903,6 +926,7 @@ class VodPage(
     }
 
     private fun onHold(row: TitleRow, index: Int) {
+        if (row.style == RowStyle.SERVICES) return openServiceHold(row, index)
         if (row.style == RowStyle.GENRES || VodSizes.isLogo(row.style) || row.isSeeAll(index)) return
         val card = row.cards.getOrNull(index)?.takeIf { it.title.hasImdbId } ?: return
         val anchor = row.cardViewAt(index) ?: return
@@ -911,6 +935,98 @@ class VodPage(
             { openTitle(card, Origin.InRow(row, index, card.title.id), soon = true) }
         } else null
         hold.openPoster(card, row.spec.continueRow, anchor, row.items[index], hold.area(VodSizes.VIEWPORT_TOP), row, this, onTitlePage = page)
+    }
+
+    // ---- A Home service card's small window, and moving the card (Glass Home's move, ReorderMotion) -----------------
+
+    /** The row whose card is being moved (Home's services) and the card; null when none is. */
+    private var carryRow: TitleRow? = null
+    private var carried: View? = null
+    /** When an arrow last carried it a place on (a held arrow steps as Glass Home's does, [ReorderMath.acceptsStep]). */
+    private var carryStepAt = 0L
+    /** Back went down while a card was carried: its release is the move's. */
+    private var carryBackDown = false
+
+    /**
+     * Held OK on a service's card: its small window, titled with its name: Move, then the pin choice that fits the
+     * rail's two shortcuts now ([ServiceHold]): Pin to rail, Pin as second shortcut, Replace first or second shortcut
+     * (each naming what it replaces), or Unpin from rail. Back closes it, focus back on the card.
+     */
+    private fun openServiceHold(row: TitleRow, index: Int) {
+        val service = row.cards.getOrNull(index)?.let { Services.serviceOf(it.title.id) } ?: return
+        val anchor = row.cardViewAt(index) ?: return
+        val held = row.items[index]
+        val pins = Services.decode(prefs.pinnedServices)
+        val on = prefs.serviceShortcuts
+        val buttons = ServiceHold.options(on, pins, service).map { option ->
+            HoldPopup.Button(option.label, detail = ServiceHold.detail(option, pins)) {
+                hold.close()
+                if (option == ServiceHold.Option.MOVE) {
+                    startCarry(row, held)
+                } else {
+                    host.pinServices(ServiceHold.pinsAfter(option, pins, service), ServiceHold.onAfter(option, on))
+                }
+            }
+        }
+        hold.open(service.label, buttons, anchor, held, hold.area(VodSizes.VIEWPORT_TOP), row, this)
+    }
+
+    /** Move: the card (focus back on it) lifts and jiggles, the others recede ([ReorderMotion]); the arrows carry it. */
+    private fun startCarry(row: TitleRow, card: View) {
+        val r = row.reorder ?: return
+        if (!card.isFocused || row.items.indexOf(card) < 0) return
+        press.cancel()
+        carryRow = row
+        carried = card
+        carryBackDown = false
+        r.lift(row.items, card)
+    }
+
+    /**
+     * Keys on the card being moved, as in Glass Home: Left and Right carry it a place along, the cards it passes
+     * making room (held: one place each [ReorderMotion.STEP_MS] after [ReorderMotion.STEP_DELAY_MS]; a fresh press it
+     * can't follow bumps it against the end); OK puts it down (on its release); Up and Down put it down and go on to
+     * the row above or below. Back is [dispatchKey]'s.
+     */
+    private fun carryKey(row: TitleRow, keyCode: Int, event: KeyEvent): Boolean {
+        val down = event.action == KeyEvent.ACTION_DOWN
+        when (keyCode) {
+            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                val repeat = event.repeatCount > 0
+                if (down && ReorderMath.acceptsStep(repeat, event.eventTime, event.downTime, carryStepAt)) {
+                    carryStepAt = event.eventTime
+                    stepCarry(row, if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) -1 else 1, fresh = !repeat)
+                }
+            }
+            KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN -> if (down) {
+                dropCarry()
+                moveRow(row, if (keyCode == KeyEvent.KEYCODE_DPAD_UP) -1 else 1)
+            }
+            else -> {
+                if (!isOk(keyCode)) return false
+                if (!down && !event.isCanceled) dropCarry()
+            }
+        }
+        return true
+    }
+
+    /** One place along ([dir] -1 left, 1 right): the card it passes takes its place; at the end, a bump ([fresh] presses only). */
+    private fun stepCarry(row: TitleRow, dir: Int, fresh: Boolean) {
+        val from = row.items.indexOf(carried ?: return)
+        val to = ReorderMath.step(from, dir, row.cards.size)
+        if (to != from) row.moveItem(from, to) else if (fresh) row.reorder?.nudge(dir)
+    }
+
+    /**
+     * Puts the card being moved down where it is ([animate] false: at once; leaving the page) and keeps the order, as
+     * Settings › Rows › Reorder services does: both show it, and it stays across restarts.
+     */
+    private fun dropCarry(animate: Boolean = true) {
+        val row = carryRow ?: return
+        carryRow = null
+        carried = null
+        row.reorder?.drop(animate)
+        repo?.setServiceOrder(row.cards.mapNotNull { Services.serviceOf(it.title.id) })
     }
 
     private fun genreSpec(of: RowSpec, genre: String): RowSpec {
@@ -1402,6 +1518,8 @@ class VodPage(
      * viewer's own change (applied at once even in the row they're in).
      */
     private fun showCards(row: TitleRow, cards: List<Card>, seeAll: Boolean, mine: Boolean = false) {
+        // A card being moved: the row is the viewer's until it's put down (its order is then stored, and read again).
+        if (row === carryRow) return
         row.pending = null
         val same = !mine && row.visibility == View.VISIBLE && row.hasSeeAll == seeAll &&
             row.cards.size == cards.size && row.cards.indices.all { row.cards[it] == cards[it] }

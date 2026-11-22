@@ -98,6 +98,10 @@ class Tokens(context: Context) {
         /** An option's icon (the guide's star) and the room between it and its words. */
         const val HOLD_ICON_DP = 16f
         const val HOLD_ICON_GAP_DP = 10f
+        /** An option with a quieter second line under its words (a Home service's "Replaces Netflix"): this tall, that line this size and strength. */
+        const val HOLD_ROW_TALL_H_DP = 44f
+        const val HOLD_DETAIL_SP = 11f
+        const val HOLD_DETAIL_ALPHA = 0.65f
         /** The title line: the name held, quieter than the options, in line with their words, up to two lines. */
         val HOLD_TITLE = TextStyle(13f, TextStyle.Weight.BOLD, TextStyle.Ink.MUTED, lineGap = 1f)
         const val HOLD_TITLE_LINES = 2

@@ -107,6 +107,8 @@ class DefaultVodRepository(
 
     override fun removeRowsListener(listener: () -> Unit) = rowSettings.removeListener(listener)
 
+    override fun setServiceOrder(order: List<Service>) = rowSettings.setServiceOrder(order)
+
     override fun load(row: RowSpec, skip: Int, limit: Int, onCards: (cards: List<Card>, fresh: Boolean) -> Unit): Cancel {
         val req = Req()
         val sink: (List<Card>, Boolean) -> Unit = { cards, fresh -> post(req) { onCards(cards, fresh) } }

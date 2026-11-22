@@ -8,6 +8,8 @@ import android.widget.FrameLayout
 import android.widget.TextView
 import app.fireplayer.shell.Tokens
 import app.fireplayer.ui.Buttons
+import app.fireplayer.ui.ReorderMath
+import app.fireplayer.ui.ReorderMotion
 import app.fireplayer.ui.RowMotion
 import app.fireplayer.vod.Card
 import app.fireplayer.vod.Cancel
@@ -104,8 +106,10 @@ class TitleRow(
 
         override fun item(i: Int, share: Float, shift: Float) {
             val v = items[i]
-            v.translationX = shift
-            val grow = 1f + VodSizes.grow(style) * share
+            val r = reorder
+            // A card being moved, or settling after it: its glide and its lifted or receded size go on top ([reorder]).
+            v.translationX = if (r == null) shift else shift + r.offsetOf(v)
+            val grow = (1f + VodSizes.grow(style) * share) * (r?.scaleOf(v) ?: 1f)
             val g = if (v is RankedItem) v.poster else v
             g.scaleX = grow
             g.scaleY = grow
@@ -115,6 +119,13 @@ class TitleRow(
             }
         }
     })
+
+    /**
+     * Home's services: a card can be moved along the row (held OK, Move), as Glass Home's app tiles are: it lifts and
+     * jiggles, the others make room ([moveItem]). Null in other rows.
+     */
+    val reorder: ReorderMotion? =
+        if (spec.style == RowStyle.SERVICES) ReorderMotion(t.density, 1f + VodSizes.grow(spec.style)) { motion.apply() } else null
 
     private val stripTop = t.dp(VodSizes.stripTop(header))
     private val pageX = t.dp(VodSizes.PAGE_X)
@@ -240,6 +251,21 @@ class TitleRow(
         }
         chosen = if (items.isEmpty()) 0 else chosen.coerceIn(0, items.size - 1)
         motion.apply()
+    }
+
+    /**
+     * Card [from] moves to place [to] (a card being moved, [reorder]): the cards between move along one place, each
+     * gliding from where it's drawn into its new place, and the chosen card stays chosen. Nothing is measured.
+     */
+    fun moveItem(from: Int, to: Int) {
+        val r = reorder ?: return
+        if (from == to || from !in cards.indices || to !in cards.indices) return
+        for (i in minOf(from, to)..maxOf(from, to)) r.shifted(items[i], strip.itemLeft(i) - strip.itemLeft(ReorderMath.placeAfter(i, from, to)))
+        items.add(to, items.removeAt(from))
+        cards = ReorderMath.moved(cards, from, to)
+        strip.moveItem(from, to)
+        chosen = ReorderMath.placeAfter(chosen, from, to)
+        motion.snap(chosen, focusedIndex() >= 0)
     }
 
     /** Item [i] shows as selected (the season shown); the others not. */

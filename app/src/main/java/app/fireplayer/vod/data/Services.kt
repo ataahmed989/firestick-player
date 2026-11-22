@@ -144,6 +144,66 @@ object Services {
 }
 
 /**
+ * A Home service card's small window (OK held on it): Move, then the one pin choice that fits the rail's two service
+ * shortcuts as they are: pin it (the first shortcut, or the second when the first is taken), replace either when both
+ * are taken, or unpin it when it's pinned. Pinning switches the shortcuts on (Show streaming services on rail). Pure,
+ * unit-tested.
+ */
+object ServiceHold {
+
+    enum class Option(val label: String) {
+        MOVE("Move"),
+        PIN("Pin to rail"),
+        PIN_SECOND("Pin as second shortcut"),
+        REPLACE_FIRST("Replace first shortcut"),
+        REPLACE_SECOND("Replace second shortcut"),
+        UNPIN("Unpin from rail"),
+    }
+
+    /**
+     * The options for [service]'s card, top first, with [pinned] the services pinned now (top first) and the shortcuts
+     * [on] or not. Pinned while they're off, Pin to rail shows them again.
+     */
+    fun options(on: Boolean, pinned: List<Service>, service: Service): List<Option> {
+        val pins = pins(pinned)
+        val pin = when {
+            service in pins -> listOf(if (on) Option.UNPIN else Option.PIN)
+            pins.isEmpty() -> listOf(Option.PIN)
+            pins.size == 1 -> listOf(Option.PIN_SECOND)
+            else -> listOf(Option.REPLACE_FIRST, Option.REPLACE_SECOND)
+        }
+        return listOf(Option.MOVE) + pin
+    }
+
+    /** What's pinned, top first, after [option] on [service]'s card ([Services.pin]: each service pinned once). */
+    fun pinsAfter(option: Option, pinned: List<Service>, service: Service): List<Service> {
+        val pins = pins(pinned)
+        return when (option) {
+            Option.MOVE -> pins
+            Option.PIN, Option.PIN_SECOND -> if (service in pins) pins else Services.pin(pins, minOf(pins.size, Services.RECENT - 1), service)
+            Option.REPLACE_FIRST -> Services.pin(pins, 0, service)
+            Option.REPLACE_SECOND -> Services.pin(pins, 1, service)
+            Option.UNPIN -> pins - service
+        }
+    }
+
+    /** Whether the rail shows its service shortcuts after [option] ([on]: before it): pinning shows them. */
+    fun onAfter(option: Option, on: Boolean): Boolean = on || option != Option.MOVE && option != Option.UNPIN
+
+    /** An option's quieter second line: what a replace option replaces ("Replaces Netflix"); none for the others. */
+    fun detail(option: Option, pinned: List<Service>): String? {
+        val slot = when (option) {
+            Option.REPLACE_FIRST -> 0
+            Option.REPLACE_SECOND -> 1
+            else -> return null
+        }
+        return pins(pinned).getOrNull(slot)?.let { "Replaces ${it.label}" }
+    }
+
+    private fun pins(pinned: List<Service>) = pinned.distinct().take(Services.RECENT)
+}
+
+/**
  * TMDB Discover for the titles a US subscription service carries ([Source.Discover]): the query, which of TMDB's
  * pages a request needs, and the titles of an answer (pure, unit-tested).
  */
