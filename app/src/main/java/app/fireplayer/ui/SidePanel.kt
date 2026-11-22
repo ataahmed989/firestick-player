@@ -82,11 +82,27 @@ class SidePanel(private val activity: Activity) {
             if (i >= 0) lastKey = rowKey(rows, i)
         }
         // While the window holds the selection itself (its rows being replaced, a long list's row not laid out yet),
-        // the arrows are used up here, so focus can't wander out of it.
-        root.setOnKeyListener { _, keyCode, _ ->
-            keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN ||
-                keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
+        // the arrows are used up here, so focus can't wander out of it. A window that reads with Up and Down
+        // ([scrollsWithArrows]) and has nothing to select glides its text on instead.
+        root.setOnKeyListener { _, keyCode, event ->
+            val vertical = keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN
+            if (vertical && arrowScroll && !longShown && event.action == KeyEvent.ACTION_DOWN && focusables().isEmpty()) {
+                val step = rows.dp(ARROW_SCROLL_DP)
+                scroll.glideBy(if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) step else -step)
+            }
+            vertical || keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
         }
+    }
+
+    /** Set by the window being drawn ([scrollsWithArrows]); every window starts without it. */
+    private var arrowScroll = false
+
+    /**
+     * This window is read rather than used (an episode's whole story): with nothing in it to select, Up and Down glide
+     * its text on by a few lines, so all of it can be read however long it is.
+     */
+    fun scrollsWithArrows() {
+        arrowScroll = true
     }
 
     /**
@@ -130,9 +146,10 @@ class SidePanel(private val activity: Activity) {
 
     /**
      * A window opened from a row of this one (a playlist from the list, a status's settings): Back ([back]) comes back
-     * to this window as it was, on that row. Closing ([close]) closes them all.
+     * to this window as it was, on that row. Closing ([close]) closes them all. [focusIndex]: the row it opens on (a
+     * list's current choice), the first by default.
      */
-    fun openSub(titleText: String, wide: Boolean = false, render: SidePanel.() -> Unit) {
+    fun openSub(titleText: String, wide: Boolean = false, focusIndex: Int = 0, render: SidePanel.() -> Unit) {
         // Only from an open window (a late answer mustn't bring a closed one back without its close callback).
         val current = renderer
         if (!isOpen || current == null) return
@@ -152,7 +169,7 @@ class SidePanel(private val activity: Activity) {
         title.text = titleText
         setWide(wide)
         scroll.scrollTo(0, 0)
-        rebuild(focusIndex = 0)
+        rebuild(focusIndex = focusIndex)
     }
 
     // Which parts of which window are open (Info pods ▾, Statuses ▾…), by the window's session: each opening starts
@@ -248,6 +265,7 @@ class SidePanel(private val activity: Activity) {
         val y = scroll.scrollY
         list.removeAllViews()
         pendingLong = null
+        arrowScroll = false
         renderer?.invoke(this)
         val entries = pendingLong
         pendingLong = null
@@ -984,6 +1002,30 @@ class SidePanel(private val activity: Activity) {
     }
 
     /**
+     * A card that can be selected and opened (an episode in Show details): [card] keeps its own surface and takes the
+     * rows' selected look over it, the same highlight as every row; OK runs [onClick]. Its words turn dark with it when
+     * they follow its state ([RowLayout], with isDuplicateParentStateEnabled).
+     */
+    fun cardRow(card: View, top: Int = 2, bottom: Int = 2, onClick: () -> Unit): View {
+        val l = card.paddingLeft
+        val t = card.paddingTop
+        val r = card.paddingRight
+        val b = card.paddingBottom
+        val focus = RowGroups.focusOnly(activity)
+        card.background = card.background?.let { android.graphics.drawable.LayerDrawable(arrayOf(it, focus)) } ?: focus
+        card.setPadding(l, t, r, b)
+        card.isFocusable = true
+        card.isClickable = true
+        card.setOnClickListener { onClick() }
+        card.setOnKeyListener { v, keyCode, event ->
+            Rows.verticalNav(list, v, keyCode, event) ||
+                keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
+        }
+        list.addView(card, rows.listParams(top, bottom))
+        return card
+    }
+
+    /**
      * A setting with several values: shows the current one and opens a small picker window. [alsoChecked] is ticked
      * there too: what the current value stands for (Auto's own pick). [valueText] is the value as the row shows it,
      * shorter than its name in the picker when that wouldn't fit the row.
@@ -1042,6 +1084,9 @@ class SidePanel(private val activity: Activity) {
     }
 
     companion object {
+        /** How far one press of Up or Down moves a window read with the arrows ([scrollsWithArrows]): about three lines. */
+        const val ARROW_SCROLL_DP = 60
+
         /** The icon beside each heading, by its name; headings not listed have none. */
         private val HEADING_ICONS = mapOf(
             "This film" to R.drawable.ic_head_film,

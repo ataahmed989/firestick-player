@@ -210,6 +210,8 @@ class Tmdb(private val key: () -> String, private val memory: Memory) {
         val originalLanguage: String = "",
         /** Whose score [rating] is: TMDB's, or IMDb's for details handed over by Films & Shows. */
         val ratingFrom: String = "TMDB",
+        /** A wide picture of it, ready to load (an episode's window shows it when the episode has no still); null for none. */
+        val backdrop: String? = null,
     )
 
     /** A film or show's details by its TMDB id; null when TMDB has none. Blocks. */
@@ -239,6 +241,7 @@ class Tmdb(private val key: () -> String, private val memory: Memory) {
             seasons = if (show) item.optInt("number_of_seasons") else 0,
             ageRating = ageRating(item, show),
             originalLanguage = item.optString("original_language").lowercase(java.util.Locale.ROOT),
+            backdrop = item.optString("backdrop_path").takeIf { it.startsWith("/") }?.let { "$IMAGES/w780$it" },
         )
     }
 
@@ -316,6 +319,8 @@ class Tmdb(private val key: () -> String, private val memory: Memory) {
         val still: String?,
         val runtime: Int,
         val airDate: String,
+        /** TMDB's score for it (0 to 10); 0 when nobody has rated it. */
+        val rating: Double = 0.0,
     )
 
     /** A season's episodes in order; empty when TMDB has no such season. Blocks. */
@@ -337,6 +342,7 @@ class Tmdb(private val key: () -> String, private val memory: Memory) {
                 still = e.optString("still_path").takeIf { it.startsWith("/") }?.let { "$IMAGES/w300$it" },
                 runtime = e.optInt("runtime"),
                 airDate = e.optString("air_date"),
+                rating = if (e.optInt("vote_count") > 0) e.optDouble("vote_average", 0.0) else 0.0,
             )
         }
     }
