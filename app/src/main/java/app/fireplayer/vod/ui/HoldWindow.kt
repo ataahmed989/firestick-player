@@ -29,6 +29,8 @@ class HoldWindow(private val t: Tokens, private val root: ViewGroup, private val
         fun onListChanged(title: Title, inList: Boolean)
         /** [id] left Continue Watching (Remove, Mark watched): its cards go from the continue rows now. */
         fun onLeftContinue(id: String)
+        /** [title]'s Continue Watching card changed (Mark unwatched: back to 0:00): changed in place in its rows now. */
+        fun onContinueChanged(title: Title)
         /** Focus back when what was held is gone: the page's own place. */
         fun takeFocus()
         /** The window opened or closed (the header's rotation holds still while it's open). */
@@ -154,7 +156,10 @@ class HoldWindow(private val t: Tokens, private val root: ViewGroup, private val
         host.onListChanged(title, inList)
     }
 
-    /** Mark watched also takes the title out of Continue Watching (until it's played again): at once, like Remove. */
+    /**
+     * Mark watched also takes the title out of Continue Watching (until it's played again): at once, like Remove. Mark
+     * unwatched clears its history; in Continue Watching its card stays, back at 0:00, at once.
+     */
     fun toggleWatched(title: Title) {
         val r = host.repo ?: return
         markWatched(title, !r.isWatched(title.id))
@@ -165,7 +170,7 @@ class HoldWindow(private val t: Tokens, private val root: ViewGroup, private val
         val r = host.repo ?: return
         popup.close()
         r.setWatched(title, watched)
-        if (watched) host.onLeftContinue(title.id)
+        if (watched) host.onLeftContinue(title.id) else host.onContinueChanged(title)
         host.showNotice(if (watched) MARKED else UNMARKED)
     }
 

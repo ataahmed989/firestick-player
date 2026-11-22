@@ -169,6 +169,11 @@ class SeeAllPage(private val ctx: Context, private val t: Tokens, private val re
         feed?.remove(id)
     }
 
+    /** A title's card changed in place (Mark unwatched in Continue Watching: back to 0:00); the grid redraws it. */
+    fun replace(id: String, change: (Card) -> Card) {
+        feed?.replace(id, change)
+    }
+
     private val syncLater = Runnable { sync(force = false) }
 
     /** Shows the feed's titles: cards filled in place, new posters added only once the grid stands still. */

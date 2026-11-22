@@ -152,6 +152,14 @@ class FakeVodRepository : VodRepository {
         listeners -= listener
     }
 
+    private var version = 0L
+
+    override fun libraryVersion(): Long = version
+
+    override fun continueCard(title: Title): Card? =
+        if (!inContinueWatching(title.id)) null else catalogs.entries.firstOrNull { (source, _) -> source is Source.ContinueWatching }
+            ?.value?.firstOrNull { it.title.id == title.id }
+
     override fun details(title: Title, onDetails: (details: TitleDetails, fresh: Boolean) -> Unit): Cancel {
         detailsAsked += title
         onDetails(titleDetails[title.id] ?: TitleDetails.of(title), true)
@@ -184,6 +192,15 @@ class FakeVodRepository : VodRepository {
         setEpisodesWatched(upToHere, true)
     }
 
+    override fun markUnwatchedUpTo(details: TitleDetails, upTo: Episode) {
+        if (!upTo.aired(now)) return
+        val upToHere = details.episodes.filter {
+            it.isSpecial == upTo.isSpecial && it.aired(now) &&
+                (it.season < upTo.season || (it.season == upTo.season && it.episode <= upTo.episode))
+        }
+        setEpisodesWatched(upToHere, false)
+    }
+
     override fun inContinueWatching(id: String): Boolean =
         id !in continueRemoved && id !in watched &&
             catalogs.any { (source, cards) -> source is Source.ContinueWatching && cards.any { it.title.id == id } }
@@ -203,6 +220,7 @@ class FakeVodRepository : VodRepository {
     val listenerCount: Int get() = listeners.size
 
     private fun changed() {
+        version++
         for (l in ArrayList(listeners)) l()
     }
 

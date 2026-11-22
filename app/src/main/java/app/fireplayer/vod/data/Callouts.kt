@@ -2,6 +2,7 @@ package app.fireplayer.vod.data
 
 import app.fireplayer.vod.Callout
 import app.fireplayer.vod.Episode
+import app.fireplayer.vod.EpisodeRef
 import app.fireplayer.vod.Kind
 import app.fireplayer.vod.PlayTarget
 import app.fireplayer.vod.TitleDetails
@@ -39,8 +40,14 @@ object Callouts {
     }
 }
 
-/** Which episodes "Mark watched up to here" marks (pure; see [app.fireplayer.vod.VodRepository.markWatchedUpTo]). */
+/**
+ * Which episodes "Mark watched up to here" and "Mark unwatched up to here" take (see
+ * [app.fireplayer.vod.VodRepository.markWatchedUpTo]), and which marks an episode's hold window offers. Pure.
+ */
 object EpisodeMarks {
+
+    /** A show's first episode when its episodes aren't known here (Mark unwatched on the whole show). */
+    val FIRST = EpisodeRef(1, 1)
 
     /**
      * [upTo] and the aired episodes before it: for a regular episode every aired regular one up to it, across seasons,
@@ -52,5 +59,37 @@ object EpisodeMarks {
             it.isSpecial == upTo.isSpecial && it.aired(now) &&
                 (it.season < upTo.season || (it.season == upTo.season && it.episode <= upTo.episode))
         }
+    }
+
+    /** A show's first episode (Mark unwatched on the whole show starts it there): its first regular one; null: none known. */
+    fun first(episodes: List<Episode>?): Episode? {
+        val list = episodes.orEmpty()
+        val order = compareBy<Episode>({ it.season }, { it.episode })
+        return list.filter { !it.isSpecial }.minWithOrNull(order) ?: list.minWithOrNull(order)
+    }
+
+    /** The marks an episode's hold window offers ([offer]); each is there only when it would change something. */
+    data class Offer(val watched: Boolean, val unwatched: Boolean, val watchedUpTo: Boolean, val unwatchedUpTo: Boolean)
+
+    /**
+     * What [ep]'s hold window offers, of [episodes] at [now]: Mark watched when it isn't; Mark unwatched when it is, or
+     * has been played some way ([played]); "up to here" only when an episode before it ([upTo]) would change too, so
+     * never on a show's first episode (the one-episode option does the same).
+     */
+    fun offer(
+        episodes: List<Episode>,
+        ep: Episode,
+        now: Long,
+        watched: (Episode) -> Boolean,
+        played: (Episode) -> Boolean,
+    ): Offer {
+        val isWatched = watched(ep)
+        val before = upTo(episodes, ep, now).filter { it.id != ep.id }
+        return Offer(
+            watched = !isWatched,
+            unwatched = isWatched || played(ep),
+            watchedUpTo = before.any { !watched(it) },
+            unwatchedUpTo = before.any { watched(it) || played(it) },
+        )
     }
 }
