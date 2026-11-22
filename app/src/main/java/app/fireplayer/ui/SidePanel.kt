@@ -1065,6 +1065,10 @@ class SidePanel(private val activity: Activity) {
             "Statuses" to R.drawable.ic_head_app,
             // As the Settings tab shows the category.
             "Playlists & EPG" to R.drawable.ic_playlist_add,
+            "Rows" to R.drawable.ic_head_list,
+            // Settings › Rows: Home's services' order, and the rail's shortcuts to them.
+            "Streaming Services" to R.drawable.ic_head_services,
+            "Service shortcuts" to R.drawable.ic_head_pin,
             "Playlist" to R.drawable.ic_head_list,
             "Account" to R.drawable.ic_key,
             "Xtream Codes parameters" to R.drawable.ic_head_tv,

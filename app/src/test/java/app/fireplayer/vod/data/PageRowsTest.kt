@@ -14,7 +14,7 @@ class PageRowsTest {
         val rows = PageRows.rows(Page.HOME, 2026)
         // Streaming Services sits under Continue Watching, a row like any other in Settings › Rows.
         assertEquals(listOf("Continue Watching", "Streaming Services", "My List", "Next Episodes", "Popular Movies", "Popular Shows"), rows.map { it.label })
-        assertEquals(listOf(RowStyle.WIDE, RowStyle.LOGO, RowStyle.POSTER, RowStyle.POSTER, RowStyle.POSTER, RowStyle.POSTER), rows.map { it.style })
+        assertEquals(listOf(RowStyle.WIDE, RowStyle.SERVICES, RowStyle.POSTER, RowStyle.POSTER, RowStyle.POSTER, RowStyle.POSTER), rows.map { it.style })
         assertEquals(
             listOf(Source.ContinueWatching(null), Source.Services, Source.MyList, Source.NextEpisodes(), Source.Catalog(Kind.MOVIE, "top"), Source.Catalog(Kind.SERIES, "top")),
             rows.map { it.source },

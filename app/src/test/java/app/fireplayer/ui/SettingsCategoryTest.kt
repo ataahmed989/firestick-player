@@ -73,6 +73,8 @@ class SettingsCategoryTest {
             "Multiview pictures", "Multiview with 3 or 4",
             // Picture-in-picture: the live picture on Home and Search, and whether it starts with its sound.
             "Keep live TV playing on Home and Search", "Start with sound",
+            // Settings › Rows: the order of Home's streaming services, and the rail's service shortcuts.
+            "Reorder services", "Show streaming services on rail", "First shortcut", "Second shortcut",
         )
         val kept = before.map { renamed[it] ?: it }
         val now = SettingsCategory.entries.flatMap { it.settings }.toSet()

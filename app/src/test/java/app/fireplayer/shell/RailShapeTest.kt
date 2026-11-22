@@ -402,4 +402,21 @@ class RailShapeTest {
         val nextCopy = GlassStyle.nextCaptureAt(now = 1_000L, capturedAt = 1_000L, perSec = 8) - 1_000L
         assertTrue(nextCopy > RailShape.MOVE_MS)
     }
+
+    // ---- The column of tabs -----------------------------------------------------------------------------------------
+
+    @Test fun settingsShowsWholeWithRoomBelowWhenTheRailIsTallest() {
+        val screen = 540f
+        // Search to Live TV, both service shortcuts and Settings: every tab fits on the screen.
+        val column = RailShape.TOP_DP + RailShape.BRAND_DP + RailShape.BRAND_GAP_DP +
+            RailShape.MOST_TABS * (RailShape.TAB_DP + RailShape.TAB_GAP_DP) + RailShape.BOTTOM_DP
+        assertTrue(column <= screen)
+        // Settings' white ends well inside the floating window, never at its edge (it did, cut off, before).
+        val tallest = RailShape.settingsClearanceDp(screen, RailShape.MOST_TABS)
+        assertTrue("$tallest", tallest >= 12f)
+        // Fewer tabs: Settings stays at the bottom, where it is with all of them.
+        assertEquals(tallest, RailShape.settingsClearanceDp(screen, RailShape.MOST_TABS - 2), 0.001f)
+        // The tabs moved up to the brand: closer than they were, and still apart from it.
+        assertTrue(RailShape.BRAND_GAP_DP in 4 until 22)
+    }
 }

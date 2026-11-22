@@ -64,8 +64,13 @@ enum class SettingsCategory(val title: String, val icon: Int, val settings: List
             "Check the keys now",
         ),
     ),
-    // Films & Shows' pages: which rows Home, Movies and TV Shows show, in what order (Settings › Rows).
-    ROWS("Rows", R.drawable.ic_head_list, listOf("Home", "Movies", "TV Shows")),
+    // Films & Shows' pages: which rows Home, Movies and TV Shows show, in what order (Settings › Rows); the order of
+    // Home's streaming services, and the rail's service shortcuts.
+    ROWS(
+        "Rows",
+        R.drawable.ic_head_list,
+        listOf("Home", "Movies", "TV Shows", "Reorder services", "Show streaming services on rail", "First shortcut", "Second shortcut"),
+    ),
     // Home's banner: whether it shows the focused Continue Watching title or always goes through its own; and how long
     // every tab's banner shows each title while idle.
     HOME_HEADER("Home Header", R.drawable.ic_head_banner, listOf("Match the focused Continue Watching title", "Time on each title")),

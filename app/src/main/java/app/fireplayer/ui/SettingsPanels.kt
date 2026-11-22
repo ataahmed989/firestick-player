@@ -93,6 +93,9 @@ class SettingsPanels(
     /** Which info pods show above the time bar was changed. */
     var onChipsChanged: () -> Unit = {}
 
+    /** Settings › Rows › Service shortcuts was changed: the rail shows them again. */
+    var onRailServicesChanged: () -> Unit = {}
+
     /** Called after a font arrives from the phone (or is removed), so the subtitles can switch to it. */
     var onFontChanged: () -> Unit = {}
 
@@ -207,7 +210,7 @@ class SettingsPanels(
             }
             SettingsCategory.LOOK -> lookSection(this)
             SettingsCategory.ACCOUNTS -> credentialsSection(this)
-            SettingsCategory.ROWS -> app.fireplayer.vod.ui.RowsSettings.render(this, activity)
+            SettingsCategory.ROWS -> app.fireplayer.vod.ui.RowsSettings.render(this, activity, prefs) { onRailServicesChanged() }
             SettingsCategory.HOME_HEADER -> homeHeaderSection(this)
             SettingsCategory.ADDONS -> app.fireplayer.vod.ui.AddonsSettings.render(this, activity, app.fireplayer.vod.Sources.get(activity).addons)
             SettingsCategory.THIS_TV -> app.fireplayer.vod.ui.ThisTvSettings.render(this, app.fireplayer.vod.Sources.get(activity).thisTv)
