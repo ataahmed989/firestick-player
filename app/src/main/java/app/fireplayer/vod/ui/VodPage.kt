@@ -891,7 +891,7 @@ class VodPage(
             row.style == RowStyle.GENRES -> row.genres.getOrNull(index)?.let { openSeeAll(row, index, genreSpec(row.spec, it)) }
             // A service's card opens its page; a Disney+ studio's, its page of rows (one without rows, its
             // collection in See all's grid).
-            row.style == RowStyle.LOGO -> row.cards.getOrNull(index)?.title?.id?.let { id ->
+            VodSizes.isLogo(row.style) -> row.cards.getOrNull(index)?.title?.id?.let { id ->
                 Services.serviceOf(id)?.let { host.openService(it) }
                 Services.brandOf(id)?.let { if (Studios.hasPage(it)) host.openStudio(it) else openSeeAll(row, index, Services.collection(it)) }
             }
@@ -903,7 +903,7 @@ class VodPage(
     }
 
     private fun onHold(row: TitleRow, index: Int) {
-        if (row.style == RowStyle.GENRES || row.style == RowStyle.LOGO || row.isSeeAll(index)) return
+        if (row.style == RowStyle.GENRES || VodSizes.isLogo(row.style) || row.isSeeAll(index)) return
         val card = row.cards.getOrNull(index)?.takeIf { it.title.hasImdbId } ?: return
         val anchor = row.cardViewAt(index) ?: return
         // A Continue card's window also opens its title page (its sources looked up after 0.5 s).
@@ -1146,7 +1146,7 @@ class VodPage(
         val r = repo ?: repoOf().also { repoRef = it } ?: return
         rowsBuilt = true
         for (spec in rowSpecs(r)) {
-            val row = TitleRow(ctx, t, spec, this, header = spec.style != RowStyle.LOGO, large = true)
+            val row = TitleRow(ctx, t, spec, this, header = !VodSizes.isLogo(spec.style), large = true)
             rows += row
             // Search's rows wait for words.
             if (search) {
@@ -1169,11 +1169,13 @@ class VodPage(
         if (released || !rowsBuilt || service != null) return
         val r = repo ?: return
         val specs = r.rows(p)
+        // The services' row reads their order again (Settings › Rows › Streaming Services; local, at once).
+        if (lastLoad != 0L) for (row in rows) if (row.spec.source == Source.Services) load(row)
         if (specs == rows.map { it.spec }) return
         val old = rows.associateBy { it.spec }
         val made = ArrayList<TitleRow>()
         val next = specs.map { spec ->
-            old[spec] ?: TitleRow(ctx, t, spec, this, header = spec.style != RowStyle.LOGO, large = true).also { made += it }
+            old[spec] ?: TitleRow(ctx, t, spec, this, header = !VodSizes.isLogo(spec.style), large = true).also { made += it }
         }
         val gone = rows.filter { row -> next.none { it === row } }
         // Focus off a row that goes, before it goes: to the next row shown that stays, else the one before, else the rail.
@@ -1491,8 +1493,8 @@ class VodPage(
         // Genre chips alone are no page (offline, each would open an empty grid): they don't count, and hide with the
         // rest until the next load brings them back with the titles.
         // Nor do logo cards beside rows of titles that didn't come (each would open a page with nothing on it).
-        val titleRows = rows.any { it.style != RowStyle.LOGO }
-        val filler = { r: TitleRow -> r.style == RowStyle.GENRES || (r.style == RowStyle.LOGO && titleRows) }
+        val titleRows = rows.any { !VodSizes.isLogo(it.style) }
+        val filler = { r: TitleRow -> r.style == RowStyle.GENRES || (VodSizes.isLogo(r.style) && titleRows) }
         val nothing = repo == null || (rows.all { it.answered } && rows.none { it.visibility == View.VISIBLE && !filler(it) })
         if (nothing) for (r in rows) if (filler(r)) hideRow(r)
         // Every row switched off in Settings › Rows: say so (there's nothing to try again).

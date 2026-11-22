@@ -15,11 +15,21 @@ interface RowLayoutStore {
     /** Null: the page is back to its default rows. */
     fun write(page: Page, text: String?)
 
+    /** Home's streaming services in the viewer's order ([Services.encode]); null: the default order. */
+    fun readServices(): String?
+
+    fun writeServices(text: String?)
+
     class Memory : RowLayoutStore {
         val saved = EnumMap<Page, String>(Page::class.java)
+        var services: String? = null
         override fun read(page: Page): String? = saved[page]
         override fun write(page: Page, text: String?) {
             if (text == null) saved.remove(page) else saved[page] = text
+        }
+        override fun readServices(): String? = services
+        override fun writeServices(text: String?) {
+            services = text
         }
     }
 }
@@ -249,6 +259,20 @@ class RowSettings(private val store: RowLayoutStore, private val newYear: (Kind)
     fun reset(page: Page) {
         read[page] = null
         store.write(page, null)
+        changed()
+    }
+
+    private var services: List<Service>? = null
+
+    /** Home's streaming services in the viewer's order (Settings › Rows › Streaming Services), every one once. */
+    fun serviceOrder(): List<Service> = services ?: Services.order(store.readServices()).also { services = it }
+
+    /** Stores the services' order; Home's row of them follows at once. */
+    fun setServiceOrder(order: List<Service>) {
+        val next = Services.order(Services.encode(order))
+        if (next == serviceOrder()) return
+        services = next
+        store.writeServices(if (next == Service.entries) null else Services.encode(next))
         changed()
     }
 

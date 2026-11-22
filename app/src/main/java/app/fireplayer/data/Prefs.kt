@@ -36,6 +36,16 @@ class Prefs(context: Context) {
         get() = sp.getString("recent_services", "") ?: ""
         set(v) = sp.edit().putString("recent_services", v).apply()
 
+    /** Settings › Rows › Service shortcuts: whether the rail shows its service shortcuts (on unless switched off). */
+    var serviceShortcuts: Boolean
+        get() = sp.getBoolean("service_shortcuts", true)
+        set(v) = sp.edit().putBoolean("service_shortcuts", v).apply()
+
+    /** The services pinned to the rail's shortcuts, top first ([app.fireplayer.vod.data.Services.pin]). */
+    var pinnedServices: String
+        get() = sp.getString("pinned_services", "") ?: ""
+        set(v) = sp.edit().putString("pinned_services", v).apply()
+
     var dpadStepSec: Int
         get() = sp.getInt("dpad_step", 10)
         set(v) = sp.edit().putInt("dpad_step", v).apply()
