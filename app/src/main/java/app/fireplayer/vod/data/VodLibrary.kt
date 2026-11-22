@@ -216,8 +216,12 @@ class VodLibrary(
             if (show) {
                 val prefix = "${title.id}:"
                 // Each episode's own mark too: the show's covers only episodes with an air date.
-                for (w in watched.values) if (w.watched && w.kind == Kind.SERIES && w.id.startsWith(prefix)) marks += w.copy(at = at, watched = false)
-                for (p in positions.values) if (p.positionMs > 0 && p.id.startsWith(prefix)) cleared += p.copy(positionMs = 0, at = at)
+                for (w in watched.values) {
+                    if (w.watched && w.kind == Kind.SERIES && w.id.startsWith(prefix)) marks += w.copy(at = at, watched = false)
+                }
+                for (p in positions.values) {
+                    if (p.positionMs > 0 && p.id.startsWith(prefix)) cleared += p.copy(positionMs = 0, at = at)
+                }
             }
             val records = listOfNotNull(
                 progress[key(title.kind, title.id)]?.let { p ->
@@ -252,7 +256,8 @@ class VodLibrary(
                 progress[key(Kind.SERIES, showId)]?.let { p ->
                     val about = p.episode?.let { r -> list.any { it.season == r.season && it.episode == r.episode } } == true
                     if (!wasIn && !about) return@let null
-                    val moved = p.copy(episode = at.ref, positionMs = 0, durationMs = lengthOf(showId, at.ref, at.runtimeMin, p), hidden = !wasIn)
+                    val length = lengthOf(showId, at.ref, at.runtimeMin, p)
+                    val moved = p.copy(episode = at.ref, positionMs = 0, durationMs = length, hidden = !wasIn)
                     if (moved == p) return@let null
                     // Its own mark, newer than any of the show's: the record never reads as watched since.
                     if (wasIn && marks.none { it.id == at.id }) marks += Watched(Kind.SERIES, at.id, now, false)

@@ -1109,7 +1109,7 @@ class TitlePage(
                 // Nothing to mark on one that hasn't aired.
                 if (!ep.aired(System.currentTimeMillis())) return
                 val pod = episodes.items.getOrNull(index) ?: return
-                // Only what would change something: no "up to here" on a first episode, or with all before it as it'd make them.
+                // Only what would change something: no "up to here" on a first episode, nor when it'd change only this one.
                 val offer = EpisodeMarks.offer(details.episodes, ep, System.currentTimeMillis(), { r.isEpisodeWatched(it) }) {
                     (r.positionOf(it)?.positionMs ?: 0L) > 0L
                 }

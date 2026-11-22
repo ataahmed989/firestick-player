@@ -194,7 +194,11 @@ class FakeVodRepository : VodRepository {
 
     override fun markUnwatchedUpTo(details: TitleDetails, upTo: Episode) {
         if (!upTo.aired(now)) return
-        setEpisodesWatched(details.episodes.filter { it.isSpecial == upTo.isSpecial && it.aired(now) && it.ref.let { r -> r.season < upTo.season || (r.season == upTo.season && r.episode <= upTo.episode) } }, false)
+        val upToHere = details.episodes.filter {
+            it.isSpecial == upTo.isSpecial && it.aired(now) &&
+                (it.season < upTo.season || (it.season == upTo.season && it.episode <= upTo.episode))
+        }
+        setEpisodesWatched(upToHere, false)
     }
 
     override fun inContinueWatching(id: String): Boolean =

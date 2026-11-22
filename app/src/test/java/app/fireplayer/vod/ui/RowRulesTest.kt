@@ -98,9 +98,10 @@ class RowRulesTest {
 
     @Test
     fun aContinueCardChangedInPlaceKeepsWhatTheRowShowsAndTakesItsNewProgress() {
-        val ref = app.fireplayer.vod.EpisodeRef(2, 5)
-        val shown = Card(Title("tt1", Kind.SERIES, "Korra", poster = "p"), progress = 0.4f, caption = "S2 E5 · 12m left", episode = ref, picture = "still")
-        val now = Card(Title("tt1", Kind.SERIES, "Korra"), progress = 0f, caption = "S1 E1 · 23m left", episode = app.fireplayer.vod.EpisodeRef(1, 1))
+        val korra = Title("tt1", Kind.SERIES, "Korra", poster = "p")
+        val s2e5 = app.fireplayer.vod.EpisodeRef(2, 5)
+        val shown = Card(korra, progress = 0.4f, caption = "S2 E5 · 12m left", episode = s2e5, picture = "still")
+        val now = Card(korra.copy(poster = null), progress = 0f, caption = "S1 E1 · 23m left", episode = app.fireplayer.vod.EpisodeRef(1, 1))
         val card = RowRules.continueChanged(shown, now)
         assertEquals(shown.title, card.title)
         assertEquals("still", card.picture)
