@@ -168,22 +168,6 @@ object Glass {
         }
     }
 
-    /**
-     * [title] (a window's title line, laid out to reach the window's edges) as the window's header band
-     * ([WindowHeader]) in the look now on: glass, a cool blue tint with a bright upper edge over the window's glass;
-     * classic, a flat colour. Call it when the window is made and again when the look changes: nothing is made when
-     * it's already so. The title keeps its padding.
-     */
-    fun header(title: View, kind: Kind) {
-        if ((title.background as? WindowHeader)?.glass == on) return
-        val l = title.paddingLeft
-        val t = title.paddingTop
-        val r = title.paddingRight
-        val b = title.paddingBottom
-        title.background = WindowHeader(title.context, kind, on)
-        title.setPadding(l, t, r, b)
-    }
-
     private fun pageGlassFor(context: Context): GlassSource? {
         var c: Context? = context
         while (c is ContextWrapper) {

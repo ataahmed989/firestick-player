@@ -147,7 +147,7 @@ object FireDialog {
 
     /**
      * A held row's small window in the app's one hold window shape ([HoldShape], as Live TV's and Films & Shows'
-     * [app.fireplayer.live.ui.HoldPopup]): [title] in its header band, then [answers] one per line in a card, beside
+     * [app.fireplayer.live.ui.HoldPopup]): [title] on its glass, then [answers] one per line in a card, beside
      * [anchor] (the row held: what's selected now, unless given), as wide as its widest line, kept on screen. Keys, Back
      * and the menu button ([fromPanel]) as [ask].
      */

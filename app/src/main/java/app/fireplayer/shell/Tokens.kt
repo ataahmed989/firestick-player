@@ -84,12 +84,12 @@ class Tokens(context: Context) {
         // ---- Hold windows ---------------------------------------------------------------------------------------
         // A held OK's small window, one shape everywhere (app.fireplayer.live.ui.HoldShape: HoldPopup in Live TV and
         // Films & Shows, FireDialog.hold for a settings window's row): a narrow vertical list beside what was held, as
-        // wide as its widest line, in the settings windows' look: the name in the window's header band, the options a
-        // card of rows under it. Glass, or classic's solid popup; only the selected option is lit.
+        // wide as its widest line, in the settings windows' look: one frosted pane, the name written on its glass, the
+        // options a card of rows under it. Glass, or classic's solid popup; only the selected option is lit.
 
         /**
-         * Its room round its cards: the options' card sits this far inside the window's sides and foot and under the
-         * header band, the same all round.
+         * Its room of glass: the options' card sits this far inside the window's sides and foot and under the title,
+         * and the title this far under the window's top, the same all round.
          */
         const val HOLD_PAD_DP = 8f
         /** Its width: its widest line (the title's or an option's) and its room, within these (and the area). */
@@ -106,13 +106,13 @@ class Tokens(context: Context) {
         const val HOLD_DETAIL_SP = 11f
         const val HOLD_DETAIL_ALPHA = 0.65f
         /**
-         * The title in the header band: the name held, bright, in line with the options' words, up to two lines and then
-         * cut short; this far from the window's top edge and from the band's foot.
+         * The title on the glass: the name held, bright, up to two lines and then cut short; its words this far in from
+         * the card's edge, and this much further down than the window's room (clear of the bright upper rim).
          */
         val HOLD_TITLE = TextStyle(14f, TextStyle.Weight.BOLD, TextStyle.Ink.TEXT, lineGap = 1f)
         const val HOLD_TITLE_LINES = 2
-        const val HOLD_TITLE_PAD_TOP_DP = 10f
-        const val HOLD_TITLE_PAD_BOTTOM_DP = 8f
+        const val HOLD_TITLE_PAD_X_DP = 6f
+        const val HOLD_TITLE_PAD_TOP_DP = 2f
         /** Beside what was held, this far from it; a settings row's window keeps this far inside the screen. */
         const val HOLD_GAP_DP = 8f
         const val HOLD_EDGE_DP = 12f

@@ -30,8 +30,8 @@ import kotlin.math.roundToInt
  * The small window a held OK opens: in Live TV a channel's in the guide (Favorite, Assign favorites), a group's in the
  * groups column (Move to top, Hide category) and a Multiview picture's; through [app.fireplayer.vod.ui.HoldWindow]
  * Films & Shows' (cards, title pages, Search's history and Live TV results). One look and one behaviour for all, the
- * app's hold window shape ([HoldShape]): a narrow vertical list beside what was held, the full name in the window's
- * header band (up to two lines), then one option per line in a card of rows as in the settings windows (an icon before
+ * app's hold window shape ([HoldShape]): a narrow vertical list beside what was held, the full name written on its
+ * glass (up to two lines), then one option per line in a card of rows as in the settings windows (an icon before
  * its words where it has one), the first selected, and optionally one more in a card of its own under it (a group's
  * Manage groups). Up and Down move between the options; Up past the first, Down past the last, Left, Right and Back
  * close it (LivePage passes Back on), and the selection goes back where it was.
@@ -107,13 +107,12 @@ class HoldPopup(context: Context, private val t: Tokens) : LinearLayout(context)
     }
 
     /**
-     * The look's surfaces: a popup's glass (or the classic popup), its header band, and its options' card with only the
-     * selected option lit (again when the look changes).
+     * The look's surfaces: a popup's glass (or the classic popup) and its options' card with only the selected option
+     * lit (again when the look changes).
      */
     fun applyLook() {
         // A window over the page: its glass shows the page behind it, blurred (copied each time it's shown).
         Glass.overlay(this, Glass.Kind.POPUP)
-        HoldShape.header(title)
         HoldShape.style(card)
         belowCard?.let { HoldShape.style(it) }
     }
@@ -326,38 +325,31 @@ class HoldPopup(context: Context, private val t: Tokens) : LinearLayout(context)
 
 /**
  * The app's one hold window shape ([HoldPopup]; a settings window row's, [app.fireplayer.ui.FireDialog.hold]): a narrow
- * vertical list beside what was held, in the settings windows' look. The name held is in the window's header band
- * across its top ([title]: tinted glass, or classic's flat colour; not selectable); the options are a card of rows under
- * it, as a settings window's grouped rows ([card], [style]): one option per line, an icon before its words where it has
- * one, thin lines between them, only the selected one lit (the settings windows' white with its blue ring); an option of
- * another kind is a card of its own under the first. The cards keep the same small room from the window's sides and
- * foot and from the band. As wide as its widest line ([width]). Its sizes are in [Tokens] (HOLD_*).
+ * vertical list beside what was held, in the settings windows' look: one frosted pane. The name held is written on the
+ * pane's glass across its top ([title]; not selectable); the options are a card of rows under it, as a settings
+ * window's grouped rows ([card], [style]): one option per line, an icon before its words where it has one, thin lines
+ * between them, only the selected one lit (the settings windows' white with its blue ring); an option of another kind
+ * is a card of its own under the first. The cards keep the same room of glass from the window's sides and foot and
+ * from the title. As wide as its widest line ([width]). Its sizes are in [Tokens] (HOLD_*).
  */
 object HoldShape {
-    /** The window's room round its cards ([Tokens.HOLD_PAD_DP]); the title's band reaches past it to the edges. */
-    fun pad(box: ViewGroup, t: Tokens) {
+    /** The window's room of glass round its title and cards ([Tokens.HOLD_PAD_DP]). */
+    fun pad(box: View, t: Tokens) {
         val p = t.dp(Tokens.HOLD_PAD_DP)
         box.setPadding(p, p, p, p)
-        box.clipToPadding = false
     }
 
     /**
-     * The title: the name held, up to [Tokens.HOLD_TITLE_LINES] lines and then cut short, in the window's header band
-     * ([header]). Its margins undo the window's room so the band reaches the window's edges, its padding keeps its words
-     * in line with the options' words, and the card sits the window's room under it.
+     * The title: the name held, written on the glass, up to [Tokens.HOLD_TITLE_LINES] lines and then cut short, a
+     * little in from the card's edge ([Tokens.HOLD_TITLE_PAD_X_DP]); the card sits the window's room under it.
      */
     fun title(context: Context, t: Tokens): TextView = t.label(context, Tokens.HOLD_TITLE).apply {
         maxLines = Tokens.HOLD_TITLE_LINES
-        val p = t.dp(Tokens.HOLD_PAD_DP)
-        val x = p + t.dp(Tokens.HOLD_ROW_PAD_X_DP)
-        setPadding(x, t.dp(Tokens.HOLD_TITLE_PAD_TOP_DP), x, t.dp(Tokens.HOLD_TITLE_PAD_BOTTOM_DP))
+        val x = t.dp(Tokens.HOLD_TITLE_PAD_X_DP)
+        setPadding(x, t.dp(Tokens.HOLD_TITLE_PAD_TOP_DP), x, 0)
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-            .apply { setMargins(-p, -p, -p, p) }
-        header(this)
+            .apply { bottomMargin = t.dp(Tokens.HOLD_PAD_DP) }
     }
-
-    /** The title's header band in the look now on ([Glass.header]); again when the look changes. */
-    fun header(title: View) = Glass.header(title, Glass.Kind.POPUP)
 
     /** A card of options: they touch, full width ([optionParams]); [style] dresses them as its slices. */
     fun card(context: Context): LinearLayout = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
@@ -459,7 +451,7 @@ object HoldShape {
 
     /**
      * How wide [box] (a window of this shape, its words set) is: its widest line as it would be on one line (with its
-     * margins: the title's band reaches past the window's room), and its room, within
+     * margins), and its room, within
      * [Tokens.HOLD_MIN_W_DP]..[Tokens.HOLD_MAX_W_DP] and [max] px (the area). Measures its lines once.
      */
     fun width(box: ViewGroup, t: Tokens, max: Float): Int {

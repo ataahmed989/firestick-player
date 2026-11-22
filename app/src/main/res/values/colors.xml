@@ -13,9 +13,6 @@
     <color name="action_focus_dim">#47000000</color>
     <color name="panel_fill">#D60B0E12</color>
     <color name="panel_stroke">#1FFFFFFF</color>
-    <!-- A window's header band behind its title with the glass look off: one flat cool blue over the window's fill
-         (the glass band is GlassStyle.HEADER_*). Its foot is parted from the rows by group_divider. -->
-    <color name="window_header">#2E467FD6</color>
     <color name="chip_fill">#26FFFFFF</color>
     <color name="tooltip_fill">#B3000000</color>
     <color name="black">#FF000000</color>

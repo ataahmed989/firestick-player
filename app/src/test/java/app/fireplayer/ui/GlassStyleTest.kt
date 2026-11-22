@@ -97,38 +97,56 @@ class GlassStyleTest {
     @Test fun theTintIsTranslucentAndNotBlue() {
         for (tint in intArrayOf(GlassStyle.WINDOW_TINT, GlassStyle.CONTROL_TINT)) {
             val a = tint ushr 24
-            val r = (tint shr 16) and 0xFF
-            val b = tint and 0xFF
             // What's behind shows through, and the glass is dark enough for white words on it.
             assertTrue("alpha $a", a in 0x80..0xD0)
-            // Close to neutral: the colour comes from what's behind, not from a blue wash.
-            assertTrue("blue $b over red $r", b - r <= 12)
         }
+        // The controls' close to neutral: the colour comes from what's behind, not from a blue wash.
+        val c = GlassStyle.CONTROL_TINT
+        assertTrue((c and 0xFF) - ((c shr 16) and 0xFF) <= 12)
+        // The windows' is the wallpaper's own colour, no bluer: over it, a window is the wallpaper frosted.
+        assertEquals(GlassStyle.WALLPAPER, GlassStyle.WINDOW_TINT and 0xFFFFFF)
+        assertEquals(GlassStyle.WALLPAPER or (0xFF shl 24), GlassStyle.WINDOW_SOLID)
     }
 
-    // ---- A window's header band and its cards -----------------------------------------------------------------------------
+    // ---- A window's pane, by what it's over, and its cards -------------------------------------------------------------
 
-    @Test fun theHeaderBandIsACoolBlueTintFadingDownOverTheWindowsGlass() {
-        val top = GlassStyle.HEADER_TINT_TOP
-        val bottom = GlassStyle.HEADER_TINT_BOTTOM
-        for (tint in intArrayOf(top, bottom)) {
-            val a = tint ushr 24
-            val r = (tint shr 16) and 0xFF
-            val b = tint and 0xFF
-            // Blue, and only a tint: the window's dark glass and what's behind it still show through.
-            assertTrue("blue $b over red $r", b - r >= 0x60)
-            assertTrue("alpha $a", a in 0x10..0x60)
-        }
-        // Strongest at the top, fading towards the band's foot; one colour.
-        assertTrue((top ushr 24) > (bottom ushr 24))
-        assertEquals(top and 0xFFFFFF, bottom and 0xFFFFFF)
+    @Test fun overPlaybackAWindowAddsNoTintAndNoDark() {
+        val over = GlassStyle.Over.PLAYBACK
+        // Nothing laid over the frosted picture: no colour, no dark, no light; the screen dimmer alone darkens it.
+        assertEquals(0, GlassStyle.paneTint(over) ushr 24)
+        assertEquals(0, GlassStyle.paneSheen(over) ushr 24)
+        // The film's window picture keeps the film's own light.
+        assertEquals(1f, GlassStyle.PLAYBACK_PANE_LIGHT, 0f)
     }
 
-    @Test fun theHeaderBandsUpperEdgeIsTheGlassReferencesBrightEdge() {
-        // rgba(255,255,255,.42): white at 0x6B.
-        assertEquals(0x6BFFFFFF, GlassStyle.HEADER_EDGE)
-        // Brighter than a window's own top highlight, so it reads as the reflective edge.
-        assertTrue((GlassStyle.HEADER_EDGE ushr 24) > (GlassStyle.HIGHLIGHT ushr 24))
+    @Test fun onPagesAWindowIsTintedWithTheWallpapersColour() {
+        val over = GlassStyle.Over.PAGE
+        assertEquals(GlassStyle.WINDOW_TINT, GlassStyle.paneTint(over))
+        assertEquals(GlassStyle.SHEEN, GlassStyle.paneSheen(over))
+    }
+
+    @Test fun theFilmStylesWindowsArePanesOverPlaybackAndEveryOtherOverThePage() {
+        assertEquals(GlassStyle.Over.PLAYBACK, GlassBakes.over(GlassBakes.FILM))
+        assertEquals(GlassStyle.Over.PAGE, GlassBakes.over(GlassBakes.PANE))
+        assertEquals(
+            listOf(Glass.Kind.PANEL, Glass.Kind.POPUP, Glass.Kind.DIALOG_POPUP),
+            Glass.Kind.entries.filter { GlassBakes.isWindow(it) },
+        )
+        // Its own drawing, kept apart from the other looks' in the drawings' memory.
+        assertEquals(4, setOf(GlassBakes.FILM, GlassBakes.CALM, GlassBakes.EDGE, GlassBakes.PANE).size)
+    }
+
+    @Test fun aPanesRimIsBrightOnTopFaintDownTheSidesAndSofterAtTheFoot() {
+        // rgba(255,255,255,.42): the glass reference's bright upper edge.
+        assertEquals(0x6BFFFFFF, GlassStyle.RIM_TOP)
+        val top = GlassStyle.RIM_TOP ushr 24
+        val side = GlassStyle.RIM_SIDE ushr 24
+        val foot = GlassStyle.RIM_FOOT ushr 24
+        assertTrue("top $top, foot $foot, side $side", top > foot && foot > side)
+        // White light only: the rim takes no colour of its own.
+        for (c in intArrayOf(GlassStyle.RIM_TOP, GlassStyle.RIM_SIDE, GlassStyle.RIM_FOOT, GlassStyle.RIM_GLOW)) {
+            assertEquals(0xFFFFFF, c and 0xFFFFFF)
+        }
     }
 
     @Test fun aCardsRowsKnowWhereTheyAre() {

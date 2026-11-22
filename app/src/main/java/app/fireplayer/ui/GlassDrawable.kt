@@ -37,6 +37,9 @@ import kotlin.math.sqrt
 /**
  * One piece of glass (Glass look): the blurred film behind it ([GlassBackdrop]), a milky glaze, a soft inner
  * bevel, a bright rim and a shadow. Selected controls and rows turn glossy white with the blue ring and glow.
+ * A window (the settings window, a hold window, a small dialog) is a pane instead ([GlassStyle.paneTint]): the blurred
+ * picture behind it with no glaze, tint or darkening of its own over playback (the screen dimmer alone darkens it), a
+ * reflective rim and a soft shadow.
  *
  * Everything but the film is drawn once, in software, into a cached bitmap ([GlassBakes]): the hardware canvas
  * of older Fire OS can't blur or cut shapes. Each frame is then one rounded rectangle of film and one bitmap
@@ -68,8 +71,13 @@ class GlassDrawable(
     private val density = context.resources.displayMetrics.density
     private val focusable = !edgeOnly && (style == Glass.Kind.CIRCLE || style == Glass.Kind.PILL ||
         style == Glass.Kind.MORE_ICON || Glass.isRow(style))
-    /** Which of [GlassBakes]' drawings the plain look is. */
-    private val variant = if (edgeOnly) GlassBakes.EDGE else if (calm) GlassBakes.CALM else GlassBakes.FILM
+    /** Which of [GlassBakes]' drawings the plain look is: a window over the page is a pane ([GlassBakes.PANE]). */
+    private val variant = when {
+        edgeOnly -> GlassBakes.EDGE
+        calm && overlay && GlassBakes.isWindow(style) -> GlassBakes.PANE
+        calm -> GlassBakes.CALM
+        else -> GlassBakes.FILM
+    }
 
     /** Which film this shape shows. Rows have none: they sit on the glass of their window. */
     private val source: GlassBackdrop.Kind? = when (style) {
@@ -488,10 +496,21 @@ internal object GlassBakes {
      */
     fun trim() = cache.evictAll()
 
-    /** The plain look's drawings: the film style's, the calm style's ([GlassStyle]), and the calm outline alone. */
+    /**
+     * The plain look's drawings: the film style's (a window there: its pane over playback), the calm style's
+     * ([GlassStyle]), the calm outline alone, and a window's pane over the page ([GlassStyle.Over]).
+     */
     const val FILM = 0
     const val CALM = 1
     const val EDGE = 2
+    const val PANE = 3
+
+    /** A window: the settings window, a hold window, a small dialog (and the page's own windows, the banner's card). */
+    fun isWindow(kind: Glass.Kind): Boolean =
+        kind == Glass.Kind.PANEL || kind == Glass.Kind.POPUP || kind == Glass.Kind.DIALOG_POPUP
+
+    /** What a window's pane drawn in [variant] is over: the film style's is over playback, every other over the page. */
+    fun over(variant: Int): GlassStyle.Over = if (variant == FILM) GlassStyle.Over.PLAYBACK else GlassStyle.Over.PAGE
 
     /** The glass of [kind] at this size: selected ([focused], the same in every style) or plain, as [variant]. */
     fun glass(kind: Glass.Kind, focused: Boolean, w: Int, h: Int, density: Float, variant: Int = FILM): Bitmap {
@@ -517,7 +536,8 @@ internal object GlassBakes {
     /** How far shadows and glows reach past the shape: the bitmap is that much bigger on every side. */
     fun pad(kind: Glass.Kind, focused: Boolean, density: Float, calm: Boolean = false): Int {
         val dp = when (kind) {
-            Glass.Kind.PANEL, Glass.Kind.POPUP, Glass.Kind.DIALOG_POPUP -> if (calm) CALM_WINDOW_SHADOW.reach else PANEL_SHADOW.reach
+            // A window's pane has the one window shadow, over the page or over playback.
+            Glass.Kind.PANEL, Glass.Kind.POPUP, Glass.Kind.DIALOG_POPUP -> WINDOW_SHADOW_LAYER.reach
             Glass.Kind.CHIP -> if (calm) CALM_CHIP_SHADOW.reach else CHIP_SHADOW.reach
             // The selected row's glow stays inside the row: no room may be added around it.
             Glass.Kind.ROW, Glass.Kind.CELL, Glass.Kind.CELL_BAR -> 0f
@@ -633,6 +653,9 @@ private class Baker(private val density: Float) {
                 outside(c, pad, w, h, rect, r, FOCUS_SHADOW, FOCUS_GLOW)
                 focusedBody(c, pad, w, h, rect, r)
             }
+            // A window over the page, or over playback (the film style's): its pane.
+            variant == GlassBakes.PANE || (variant == GlassBakes.FILM && GlassBakes.isWindow(kind)) ->
+                pane(c, pad, w, h, rect, r, GlassBakes.over(variant))
             variant == GlassBakes.CALM -> calm(c, kind, pad, w, h, rect, r)
             else -> clear(c, kind, pad, w, h, rect, r)
         }
@@ -645,9 +668,9 @@ private class Baker(private val density: Float) {
      * is drawn under this by [GlassDrawable], or is simply there.
      */
     private fun calm(c: Canvas, kind: Glass.Kind, pad: Int, w: Int, h: Int, rect: RectF, r: Float) {
-        val window = kind == Glass.Kind.PANEL || kind == Glass.Kind.POPUP || kind == Glass.Kind.DIALOG_POPUP
+        val window = GlassBakes.isWindow(kind)
         val chip = kind == Glass.Kind.CHIP
-        outside(c, pad, w, h, rect, r, if (window) CALM_WINDOW_SHADOW else if (chip) CALM_CHIP_SHADOW else CALM_CONTROL_SHADOW)
+        outside(c, pad, w, h, rect, r, if (window) WINDOW_SHADOW_LAYER else if (chip) CALM_CHIP_SHADOW else CALM_CONTROL_SHADOW)
         fill(c, rect, r, if (window) GlassStyle.WINDOW_TINT else GlassStyle.CONTROL_TINT)
         val sheen = Paint(Paint.ANTI_ALIAS_FLAG)
         sheen.shader = LinearGradient(
@@ -664,20 +687,64 @@ private class Baker(private val density: Float) {
         crescent(c, rect, r, px(GlassStyle.HIGHLIGHT_DP), GlassStyle.HIGHLIGHT)
     }
 
-    /** Unselected glass: shadow, glaze, bevel and rim over the film. */
+    /**
+     * A window's pane, drawn over what shows through it (the blurred page or film, by [GlassDrawable]): a soft shadow
+     * outside, then what it lays over that by what it's [over] ([GlassStyle.paneTint], [GlassStyle.paneSheen]: the
+     * wallpaper's colour and a faint light from above on pages, nothing over playback), the glow under its top edge and
+     * its reflective rim ([reflectiveRim]).
+     */
+    private fun pane(c: Canvas, pad: Int, w: Int, h: Int, rect: RectF, r: Float, over: GlassStyle.Over) {
+        outside(c, pad, w, h, rect, r, WINDOW_SHADOW_LAYER)
+        val tint = GlassStyle.paneTint(over)
+        if (Color.alpha(tint) > 0) fill(c, rect, r, tint)
+        val sheen = GlassStyle.paneSheen(over)
+        if (Color.alpha(sheen) > 0) {
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+            paint.shader = LinearGradient(
+                0f, rect.top, 0f, rect.top + rect.height() * GlassStyle.SHEEN_SHARE,
+                sheen, sheen and 0x00FFFFFF, Shader.TileMode.CLAMP,
+            )
+            c.drawRoundRect(rect, r, r, paint)
+        }
+        crescent(c, rect, r, px(GlassStyle.RIM_GLOW_DP), GlassStyle.RIM_GLOW)
+        reflectiveRim(c, rect, r)
+    }
+
+    /**
+     * A pane's reflective rim ([GlassStyle] RIM_*): bright along the top and round the top corners, fading down the
+     * sides to a faint line, and a softer catch of light round the foot.
+     */
+    private fun reflectiveRim(c: Canvas, rect: RectF, r: Float) {
+        val h = rect.height()
+        if (h <= 0f) return
+        val width = px(GlassStyle.RIM_DP)
+        val half = width / 2f
+        val corner = (r / h).coerceIn(0f, 0.5f)
+        val fade = ((r + px(GlassStyle.RIM_FADE_DP)) / h).coerceIn(corner, 0.5f)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = width
+        paint.shader = LinearGradient(
+            0f, rect.top, 0f, rect.bottom,
+            intArrayOf(
+                GlassStyle.RIM_TOP, GlassStyle.RIM_TOP, GlassStyle.RIM_SIDE,
+                GlassStyle.RIM_SIDE, GlassStyle.RIM_FOOT, GlassStyle.RIM_FOOT,
+            ),
+            floatArrayOf(0f, corner, fade, 1f - fade, 1f - corner, 1f),
+            Shader.TileMode.CLAMP,
+        )
+        c.drawRoundRect(RectF(rect).apply { inset(half, half) }, max(r - half, 0f), max(r - half, 0f), paint)
+    }
+
+    /** Unselected glass of a control (a button, pill or chip): shadow, glaze, bevel and rim over the film. */
     private fun clear(c: Canvas, kind: Glass.Kind, pad: Int, w: Int, h: Int, rect: RectF, r: Float) {
-        val window = kind == Glass.Kind.PANEL || kind == Glass.Kind.POPUP || kind == Glass.Kind.DIALOG_POPUP
         val chip = kind == Glass.Kind.CHIP
-        outside(c, pad, w, h, rect, r, if (window) PANEL_SHADOW else if (chip) CHIP_SHADOW else CONTROL_SHADOW)
+        outside(c, pad, w, h, rect, r, if (chip) CHIP_SHADOW else CONTROL_SHADOW)
         // Milky white over the film: plain white at an alpha is the same as Screen with white.
         val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-        paint.shader = if (window) css(160f, rect, PANEL_GLAZE, PANEL_GLAZE_STOPS) else css(160f, rect, CONTROL_GLAZE, CONTROL_GLAZE_STOPS)
+        paint.shader = css(160f, rect, CONTROL_GLAZE, CONTROL_GLAZE_STOPS)
         c.drawRoundRect(rect, r, r, paint)
-        val band = when {
-            window -> px(10f)
-            chip -> px(3f)
-            else -> (0.15f * min(w, h)).coerceIn(px(4f), px(7f))
-        }
+        val band = if (chip) px(3f) else (0.15f * min(w, h)).coerceIn(px(4f), px(7f))
         bevel(c, pad, w, h, rect, r, band)
         rim(c, rect, r, if (chip) px(0.75f) else px(1f))
         crescent(c, rect, r, px(0.75f), RIM_CRESCENT)
@@ -899,11 +966,11 @@ private const val PANEL_FALLBACK_ALPHA = 0.89f
 private val CONTROL_FALLBACK = 0x40000000
 private const val DIALOG_LIGHT = 0xBF / 255f
 
-private val PANEL_SHADOW = Shadow(0x59000000, 6f, 12f)
 private val CONTROL_SHADOW = Shadow(0x4D000000, 4f, 6f)
 private val CHIP_SHADOW = Shadow(0x33000000, 2f, 3f)
+/** A window's, its pane's over the page or over playback, and the page's own windows' (the rail, the banner's card). */
+private val WINDOW_SHADOW_LAYER = Shadow(GlassStyle.WINDOW_SHADOW, GlassStyle.WINDOW_SHADOW_DY, GlassStyle.WINDOW_SHADOW_BLUR)
 // The calm style's (the app's own screens'), from the shared style.
-private val CALM_WINDOW_SHADOW = Shadow(GlassStyle.WINDOW_SHADOW, GlassStyle.WINDOW_SHADOW_DY, GlassStyle.WINDOW_SHADOW_BLUR)
 private val CALM_CONTROL_SHADOW = Shadow(GlassStyle.CONTROL_SHADOW, GlassStyle.CONTROL_SHADOW_DY, GlassStyle.CONTROL_SHADOW_BLUR)
 private val CALM_CHIP_SHADOW = Shadow(GlassStyle.CHIP_SHADOW, GlassStyle.CHIP_SHADOW_DY, GlassStyle.CHIP_SHADOW_BLUR)
 // Small and faint: the controls sit just under the time, which a big blue haze would cover.
@@ -912,9 +979,7 @@ private val FOCUS_SHADOW = Shadow(0x59000000, 5f, 7f)
 private val ROW_GLOW = Shadow(0x593D8BFF, 0f, 2f)
 private val TOGGLE_GLOW = Shadow(0x803D8BFF.toInt(), 0f, 3f)
 
-private val PANEL_GLAZE = intArrayOf(0x29FFFFFF, 0x0DFFFFFF, 0x14FFFFFF)
-private val PANEL_GLAZE_STOPS = floatArrayOf(0f, 0.5f, 1f)
-/** A flat strip's glaze: about the window glaze's average, evenly. */
+/** A flat strip's glaze, evenly. */
 private const val FLAT_GLAZE = 0x17FFFFFF
 private val CONTROL_GLAZE = intArrayOf(0x33FFFFFF, 0x0FFFFFFF, 0x1AFFFFFF)
 private val CONTROL_GLAZE_STOPS = floatArrayOf(0f, 0.45f, 1f)

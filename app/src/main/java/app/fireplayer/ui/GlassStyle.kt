@@ -3,14 +3,18 @@ package app.fireplayer.ui
 /**
  * The one glass style of the app's own screens (Home, Movies, TV Shows, My List, Search, Settings, the guide): dark
  * translucent glass. A surface is what's behind it, softly blurred where it's a window over the page ([PageGlass]),
- * under one restrained dark tint, with a fine hairline round it, a subtle highlight along its top edge and a soft
- * shadow outside. No milky glaze, no bevel, no blue wash: the colour comes from what's behind. Text, icons and the
- * selected (white) look are drawn over it at full strength, never faded with it.
+ * under one restrained tint of the wallpaper's own colour, with a fine hairline round it, a subtle highlight along its
+ * top edge and a soft shadow outside. No milky glaze, no bevel, no blue wash: the colour comes from what's behind.
+ * Text, icons and the selected (white) look are drawn over it at full strength, never faded with it.
+ *
+ * A window (the settings window, a hold window, a small dialog) is one frosted pane: what's behind it blurred, its tint
+ * by what it's over ([paneTint]: the wallpaper's colour on pages, nothing over playback), a reflective rim (RIM_*) and
+ * a soft shadow; its title is written on the pane, its options a lighter card of rows on it ([RowGroups]).
  *
  * Every value of that style is here, so tuning it is one edit. The shapes are [Glass.Kind]s and are made through
  * [Glass]: [Glass.background] for a surface in the page, [Glass.overlay] for a window over it, [Glass.edge] for an
- * outline alone. A flat surface's makings are a [Surface]. The player's glass (the film behind it) and full-screen Live TV's keep their own look
- * ([GlassDrawable]'s bright film, glaze, bevel and rim), which this doesn't change.
+ * outline alone. A flat surface's makings are a [Surface]. The player's buttons and pills (the film behind them) keep
+ * their own look ([GlassDrawable]'s bright film, glaze, bevel and rim), which this doesn't change.
  */
 object GlassStyle {
 
@@ -29,8 +33,17 @@ object GlassStyle {
 
     // ---- Tint ---------------------------------------------------------------------------------------------------
 
-    /** Windows: the settings window, hold windows, small dialogs, the rail, Recent channels, the banner's card. */
-    const val WINDOW_TINT = 0x940C0E12.toInt()
+    /**
+     * The glass wallpaper's own colour (wallpaper_glass.png, its average: 15.5, 24.6, 32.9): the windows' tint is this
+     * colour, so glass over the page reads as a frosted continuation of the wallpaper, never as a colour of its own.
+     */
+    const val WALLPAPER = 0x10191F
+    /**
+     * Windows: the settings window, hold windows, small dialogs, the rail, Recent channels, the banner's card. The
+     * wallpaper's colour ([WALLPAPER]), translucent: over the wallpaper a window is the wallpaper frosted, over a picture
+     * it calms it towards the wallpaper so white words read, and what's behind still shows its own colours.
+     */
+    const val WINDOW_TINT = (0x94 shl 24) or WALLPAPER
     /** The windows' colour with nothing showing through: what a banner's picture is eased into, and what backs it. */
     const val WINDOW_SOLID = WINDOW_TINT or 0xFF000000.toInt()
     /** Buttons, pills, circles and chips: a little lighter, so one reads as a surface on the dark wallpaper too. */
@@ -42,25 +55,42 @@ object GlassStyle {
     const val ROW_FILL = 0x12FFFFFF
     const val ROW_HIGHLIGHT = 0x1FFFFFFF
 
-    // ---- A window's header band ([WindowHeader]) ------------------------------------------------------------------
+    // ---- A window's pane (the settings window, hold windows, small dialogs, over the page or over playback) ---------
 
     /**
-     * The band across the top of a settings window and of a hold window, behind its title: a cool blue glass tint
-     * over the window's own glass (stronger at the top, fading towards the band's foot), a light catching its upper
-     * left, a bright reflective upper edge following the window's top corners and a fine line at its foot. Only the
-     * band is blue: the window's tint ([WINDOW_TINT]) stays as dark and neutral as ever, so words read on any picture.
+     * What a window's glass is over, which is all that changes its pane: the app's own pages (the page behind it,
+     * blurred), or full-screen playback (the film player, Live TV full screen: the picture behind it, blurred).
      */
-    const val HEADER_TINT_TOP = 0x47467FD6
-    const val HEADER_TINT_BOTTOM = 0x24467FD6
-    /** The light across its upper left (the glass reference's 135° sheen), gone by the band's middle. */
-    const val HEADER_SHEEN = 0x14FFFFFF
-    /** Its reflective upper edge: the glass reference's bright edge, rgba(255,255,255,.42), this thick. */
-    const val HEADER_EDGE = 0x6BFFFFFF
-    const val HEADER_EDGE_DP = 1f
-    /** The fine line along its foot, parting it from the window's rows. */
-    const val HEADER_LINE = 0x24FFFFFF
-    /** How far inside the window's outline the band sits, so the window's own edge stays crisp. */
-    const val HEADER_INSET_DP = 1f
+    enum class Over { PAGE, PLAYBACK }
+
+    /**
+     * The pane's tint over what's behind it. On pages, the wallpaper's colour ([WINDOW_TINT]). Over playback none at
+     * all, no colour and no dark: the frosted picture as it is, which the screen dimmer alone darkens (its glass amount).
+     */
+    fun paneTint(over: Over): Int = if (over == Over.PLAYBACK) CLEAR else WINDOW_TINT
+
+    /** The faint light from above ([SHEEN]) on pages; over playback nothing is laid over the picture. */
+    fun paneSheen(over: Over): Int = if (over == Over.PLAYBACK) CLEAR else SHEEN
+
+    /** How much of the film's light a window's blurred picture keeps over playback ([GlassBackdrop]): all of it. */
+    const val PLAYBACK_PANE_LIGHT = 1f
+
+    /** Nothing at all. */
+    const val CLEAR = 0x00FFFFFF
+
+    /**
+     * The pane's reflective rim, all round, the same over pages and playback (the glass reference's edge): bright along
+     * the top and round the top corners ([RIM_TOP], its rgba(255,255,255,.42)), fading over [RIM_FADE_DP] to a faint
+     * line down the sides ([RIM_SIDE]), and a softer catch of light round the foot ([RIM_FOOT]); [RIM_DP] thick.
+     */
+    const val RIM_TOP = 0x6BFFFFFF
+    const val RIM_SIDE = 0x1FFFFFFF
+    const val RIM_FOOT = 0x47FFFFFF
+    const val RIM_DP = 1f
+    const val RIM_FADE_DP = 40f
+    /** The glow just inside the top edge, under the rim (the reference's inset 0 1px 0 #ffffff20), this deep. */
+    const val RIM_GLOW = 0x20FFFFFF
+    const val RIM_GLOW_DP = 2f
 
     // ---- Flat surfaces in the page ----------------------------------------------------------------------------------
 
@@ -99,6 +129,7 @@ object GlassStyle {
 
     // ---- Depth: soft shadows outside the shape (colour, how far down, blur; dp) -------------------------------------
 
+    /** A window's, over pages and playback alike (and the rail's and the banner card's, in the page). */
     const val WINDOW_SHADOW = 0x4D000000
     const val WINDOW_SHADOW_DY = 5f
     const val WINDOW_SHADOW_BLUR = 10f
