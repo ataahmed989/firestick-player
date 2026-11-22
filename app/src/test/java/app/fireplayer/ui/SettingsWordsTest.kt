@@ -1,6 +1,7 @@
 package app.fireplayer.ui
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** The words and badge colours every settings window shares, so the same thing reads the same everywhere. */
@@ -38,5 +39,27 @@ class SettingsWordsTest {
     @Test fun everyCategoryHasItsOwnIcon() {
         assertEquals(emptyList<SettingsCategory>(), SettingsCategory.entries.filter { it.icon == 0 })
         assertEquals(SettingsCategory.entries.size, SettingsCategory.entries.map { it.icon }.toSet().size)
+    }
+
+    @Test fun looksAndTheScreenDimmersNotesAreShortAndShowInFull() {
+        // The window's inside width at 960 x 540 dp: 31% of the screen less its 16 dp sides. Notes are 12 sp, about half
+        // an em a character at most (measured, these average under 0.45 em).
+        val inside = 960 * SidePanel.WIDTH_SHARE - 2 * 16
+        val perLine = (inside / (12 * 0.5f)).toInt()
+        val notes = listOf(SettingsPanels.SHADES_NOTE, DimmerWindow.DEFAULT_NOTE, SettingsPanels.customOnNote("Late night"))
+        for (note in notes) assertTrue(note, note.length <= SettingsPanels.NOTE_LINES * perLine)
+        assertEquals(2, SettingsPanels.NOTE_LINES)
+        // Faster downloads': one line, in its card (12 dp in from each side).
+        val inCard = ((inside - 2 * 12) / (12 * 0.5f)).toInt()
+        assertTrue(SettingsPanels.FASTER_DOWNLOADS_NOTE.length <= inCard)
+        // Under the last row, a note shows in full once that row is selected: the list keeps the selected row in its
+        // middle as far as it can scroll, so what's under the row's middle must fit in half the list. The list: 540 dp
+        // less the window's 18 dp margins and 16 dp sides, and its title (17 sp, about 1.3 lines, and 8 dp under it).
+        val list = 540 - 2 * 18 - 2 * 16 - (17 * 1.3f + 8)
+        val note = SettingsPanels.NOTE_LINES * (12 * 1.3f + 2) + 4 + 4
+        // Half a 33 dp row, its card's 2 dp edge, the note, the list's 2 dp foot.
+        val underRowMiddle = 33 / 2f + 2 + note + 2
+        assertTrue("$underRowMiddle dp under the row's middle, ${list / 2} dp to show it", underRowMiddle <= list / 2)
+        assertEquals("Reset to defaults", SettingsPanels.RESET_SHADES)
     }
 }

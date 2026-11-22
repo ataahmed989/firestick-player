@@ -31,8 +31,8 @@ class SidePanel(private val activity: Activity) {
     private val rows = Rows(activity)
 
     // About a third of the screen, as in the design; wide windows (a playlist's groups and channels) show long names.
-    private val normalWidth = (activity.resources.displayMetrics.widthPixels * 0.31f).toInt()
-    private val wideWidth = (activity.resources.displayMetrics.widthPixels * 0.44f).toInt()
+    private val normalWidth = (activity.resources.displayMetrics.widthPixels * WIDTH_SHARE).toInt()
+    private val wideWidth = (activity.resources.displayMetrics.widthPixels * WIDE_WIDTH_SHARE).toInt()
     private var wide = false
 
     /** The long list shown in place of [scroll] by a window that has one ([longList]); made the first time. */
@@ -72,6 +72,12 @@ class SidePanel(private val activity: Activity) {
 
     /** The row last selected, by what it says: the one to come back to after a small window over this one. */
     private var lastKey: Pair<String, Int>? = null
+
+    /**
+     * What the window being shown writes again in place after a step ([stepper]) or a reset ([updateValues]): each
+     * stepper's value, and whatever else the window gave [liveValue]. Made again with the window's rows.
+     */
+    private val liveValues = ArrayList<() -> Unit>()
 
     init {
         root.layoutParams = root.layoutParams.apply { this.width = normalWidth }
@@ -247,6 +253,7 @@ class SidePanel(private val activity: Activity) {
         if (!behind) root.requestFocus()
         val y = scroll.scrollY
         list.removeAllViews()
+        liveValues.clear()
         pendingLong = null
         renderer?.invoke(this)
         val entries = pendingLong
@@ -387,9 +394,35 @@ class SidePanel(private val activity: Activity) {
         list.addView(HeadingLine(activity, rows).apply { set(text, icon) }, rows.listParams(top = 12, bottom = 4))
     }
 
-    /** A note under the rows; [accent] makes it blue, for something that needs doing, such as a change to save. */
-    fun message(text: String, accent: Boolean = false) {
-        list.addView(noteText(activity, rows, accent).apply { this.text = text }, rows.listParams(top = 4, bottom = 4))
+    /**
+     * A note under the rows; [accent] makes it blue, for something that needs doing, such as a change to save. [maxLines]
+     * keeps a note with a name in it (one the viewer typed) as short as it was written to be.
+     */
+    fun message(text: String, accent: Boolean = false, maxLines: Int = Int.MAX_VALUE) {
+        list.addView(noteText(activity, rows, accent).apply {
+            this.text = text
+            if (maxLines != Int.MAX_VALUE) {
+                this.maxLines = maxLines
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            }
+        }, rows.listParams(top = 4, bottom = 4))
+    }
+
+    /**
+     * A short note in the card of the rows above it, in a row's place (what the setting above does, in a line): the
+     * D-pad passes it by, as it does a note under the rows ([message]).
+     */
+    fun cardNote(text: String) {
+        val row = rows.base().apply {
+            isFocusable = false
+            isClickable = false
+        }
+        row.addView(noteText(activity, rows).apply {
+            this.text = text
+            // The note's own muted colour, not the row's text colour.
+            tag = KEEP_COLORS
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        add(row)
     }
 
     /**
@@ -595,7 +628,7 @@ class SidePanel(private val activity: Activity) {
      */
     fun dropdownRow(label: String, badge: String?, style: Rows.Badge, open: Boolean, onClick: () -> Unit): View {
         val row = rows.build(label, null, null)
-        if (badge != null) row.addView(rows.badge(badge, style))
+        if (badge != null) row.addView(rows.badge(badge, style).apply { setTag(R.id.row_badge, style) })
         row.addView(ImageView(activity).apply {
             setImageResource(R.drawable.ic_chevron_down)
             imageTintList = rows.textColors
@@ -605,6 +638,27 @@ class SidePanel(private val activity: Activity) {
         row.setOnClickListener { onClick() }
         add(row)
         return row
+    }
+
+    /**
+     * Rewrites a [dropdownRow]'s badge in place ([badge], drawn as [style]), keeping the row, its focus and its arrow:
+     * for a badge a step changes ([liveValue]). Only a badge whose look changes is made again.
+     */
+    fun setBadge(row: View, badge: String, style: Rows.Badge) {
+        val target = row as? ViewGroup ?: return
+        for (i in 0 until target.childCount) {
+            val old = target.getChildAt(i) as? TextView ?: continue
+            if (old.getTag(R.id.row_badge) == null) continue
+            if (old.getTag(R.id.row_badge) == style) {
+                if (!android.text.TextUtils.equals(old.text, badge)) old.text = badge
+            } else {
+                val params = old.layoutParams
+                target.removeViewAt(i)
+                target.addView(rows.badge(badge, style).apply { setTag(R.id.row_badge, style) }, i, params)
+                target.refreshDrawableState()
+            }
+            return
+        }
     }
 
     /**
@@ -1008,22 +1062,51 @@ class SidePanel(private val activity: Activity) {
         return row
     }
 
-    /** A row adjusted with left / right on the D-pad, like "Delay  ‹ 0 ms ›". */
-    fun stepper(label: String, value: String, onStep: (direction: Int) -> Unit): View {
+    /**
+     * A row adjusted with left / right on the D-pad, like "Delay  ‹ 0 ms ›": [onStep] changes it, then its [value] (and
+     * whatever else the window shows live, [liveValue]) is written again in place. The window isn't drawn again, so the
+     * row keeps the selection however long an arrow is held: a row made anew isn't laid out until the next frame, and
+     * the repeats that come before it would miss it and let Android move focus out of the window. Left and right are
+     * always used up here, at either end too (each value stops at its ends). [redrawOnRelease]: the window is drawn
+     * again once the arrow is let go, for rows the change adds or takes away (Auto sync's, after a subtitle delay).
+     */
+    fun stepper(label: String, value: () -> String, redrawOnRelease: Boolean = false, onStep: (direction: Int) -> Unit): View {
         // The value and its arrows in blue, like the other values that can be changed right here.
-        val row = rows.build(label, "‹  $value  ›", null, valueColors = rows.stepColors)
+        val row = rows.build(label, stepText(value()), null, valueColors = rows.stepColors)
+        val shown = row.getChildAt(row.childCount - 1) as TextView
+        liveValues += {
+            val now = stepText(value())
+            if (!android.text.TextUtils.equals(shown.text, now)) shown.text = now
+        }
         add(row) { keyCode, event ->
             if (keyCode != KeyEvent.KEYCODE_DPAD_LEFT && keyCode != KeyEvent.KEYCODE_DPAD_RIGHT) {
                 false
             } else {
                 if (event.action == KeyEvent.ACTION_DOWN) {
                     onStep(if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) -1 else 1)
+                    updateValues()
+                } else if (event.action == KeyEvent.ACTION_UP && redrawOnRelease) {
                     refresh()
                 }
                 true
             }
         }
         return row
+    }
+
+    private fun stepText(value: String) = "‹  $value  ›"
+
+    /**
+     * [update] writes again, in place, something this window shows that a step ([stepper]) or a reset can change: a
+     * dropdown's badge ([setBadge]), another row's value ([updateRow]). Kept until the window is drawn again.
+     */
+    fun liveValue(update: () -> Unit) {
+        liveValues += update
+    }
+
+    /** Every value this window shows live ([stepper], [liveValue]) written again in place: no row is made again. */
+    fun updateValues() {
+        for (i in liveValues.indices) liveValues[i]()
     }
 
     fun spacer(dp: Int) {
@@ -1042,6 +1125,10 @@ class SidePanel(private val activity: Activity) {
     }
 
     companion object {
+        /** The window's width, as a share of the screen's: the usual third, and a wide window's ([open]'s wide). */
+        const val WIDTH_SHARE = 0.31f
+        const val WIDE_WIDTH_SHARE = 0.44f
+
         /** The icon beside each heading, by its name; headings not listed have none. */
         private val HEADING_ICONS = mapOf(
             "This film" to R.drawable.ic_head_film,

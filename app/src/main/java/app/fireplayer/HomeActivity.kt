@@ -1537,7 +1537,11 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         if (panel.isOpen && !panel.root.hasFocus()) {
             if (before != null && before.isAttachedToWindow) before.requestFocus() else panel.focusRow(0)
         }
-        return handled
+        // Arrows the rows didn't use (a row drawn anew and not laid out yet gets none) would otherwise let Android move
+        // focus out of the window, onto the page behind it, as the player's window keeps them.
+        val arrow = event.keyCode == KeyEvent.KEYCODE_DPAD_LEFT || event.keyCode == KeyEvent.KEYCODE_DPAD_RIGHT ||
+            event.keyCode == KeyEvent.KEYCODE_DPAD_UP || event.keyCode == KeyEvent.KEYCODE_DPAD_DOWN
+        return handled || (panel.isOpen && arrow)
     }
 
     /**

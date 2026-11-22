@@ -4846,7 +4846,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // Named as the window it opens, over this one (Back comes back here).
         row("Find subtitles") { openFindPanel() }
         spacer(6)
-        stepper("Delay", formatDelay(delays.subtitleUs)) { dir ->
+        stepper("Delay", { formatDelay(delays.subtitleUs) }) { dir ->
             delays.subtitleUs += dir * 100_000L
             autoSync.handOff(delays.subtitleUs)
             refreshLabels()
@@ -4856,7 +4856,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private fun openSubtitleDelayPanel(from: View) {
         delayPanelOpen = true
         openPanel("Subtitle delay", from, onClosed = { delayPanelOpen = false }) {
-            stepper("Delay", formatDelay(delays.subtitleUs)) { dir ->
+            // Drawn again once the arrow is let go: a delay set by hand changes Auto sync's rows under it.
+            stepper("Delay", { formatDelay(delays.subtitleUs) }, redrawOnRelease = true) { dir ->
                 delays.subtitleUs += dir * 100_000L
                 autoSync.handOff(delays.subtitleUs)
                 refreshLabels()
@@ -4983,14 +4984,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         if (options.size <= 1) message("No other audio tracks.")
         spacer(6)
-        stepper("Delay", formatDelay(delays.audioUs)) { dir ->
+        stepper("Delay", { formatDelay(delays.audioUs) }) { dir ->
             delays.audioUs = (delays.audioUs + dir * 50_000L).coerceIn(MIN_AUDIO_DELAY_US, MAX_AUDIO_DELAY_US)
             refreshLabels()
         }
     }
 
     private fun openAudioDelayPanel(from: View) = openPanel("Audio delay", from) {
-        stepper("Delay", formatDelay(delays.audioUs)) { dir ->
+        stepper("Delay", { formatDelay(delays.audioUs) }) { dir ->
             delays.audioUs = (delays.audioUs + dir * 50_000L).coerceIn(MIN_AUDIO_DELAY_US, MAX_AUDIO_DELAY_US)
             refreshLabels()
         }

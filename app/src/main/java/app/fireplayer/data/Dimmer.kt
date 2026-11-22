@@ -12,9 +12,10 @@ import org.json.JSONObject
  * how much the picture itself is darkened (0% to [MAX_DISPLAY]; it has no tint), and Glass tint and Glass dimness, the
  * Playback glass while it's on ([glass]: the windows over the picture, [GlassStyle.Shade]; 0% to 100%).
  *
- * - "Default", always first: display 0%, and the glass of Settings › Look › Playback glass. It IS those values: its glass
- *   rows here change Look's at once ([GlassShades]), and Look's change it. A display dimness tried on it is kept with
- *   Save custom, as a new custom.
+ * - "Default", always first: display 0%, and the glass of Settings › Look › Playback glass (5% and 15% until changed,
+ *   [GlassStyle.PLAYBACK_SHADE]). It IS those values: its glass rows here change Look's at once ([GlassShades]), and
+ *   Look's change it; Look's Reset to defaults puts it back ([GlassShades.reset]). A display dimness tried on it is
+ *   kept with Save custom, as a new custom.
  * - Customs, added with Save custom from what's on: arrows change one on screen only until Save custom keeps the change;
  *   each can be renamed and deleted. "Auto" keeps a custom's display dimness and glass dimness the same.
  *
@@ -300,6 +301,11 @@ class Dimmer(private val sp: () -> SharedPreferences) {
         /** As a new run of the app: changes not kept are gone (the tests start each from nothing). */
         internal fun forgetUnsaved() {
             draft = null
+        }
+
+        /** A display dimness tried on Default and not saved goes ([GlassShades.reset]); a custom's changes stay. */
+        internal fun forgetDefaultDraft() {
+            if (draft?.isDefault == true) draft = null
         }
     }
 }
