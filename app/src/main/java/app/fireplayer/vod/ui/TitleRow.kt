@@ -24,7 +24,8 @@ import app.fireplayer.vod.RowStyle
  * on its items go to the page ([Listener]); nothing here asks Android's focus search.
  *
  * Its items: posters, wide cards, Top 10 posters, a show's episode cards ([RowStyle.EPISODE]), or chips (genres; a
- * show's season pills, [RowStyle.SEASONS], one of them shown selected, [markSelected]).
+ * show's season pills, [RowStyle.SEASONS], one of them shown selected, [markSelected]). A row of posters or Top 10 shows
+ * its chosen poster's title under it ([PosterLabel], one for the row), in room its band keeps ([VodSizes.labelRoom]).
  */
 @SuppressLint("ViewConstructor")
 class TitleRow(
@@ -39,6 +40,8 @@ class TitleRow(
     gapBelow: Float = VodSizes.ROW_GAP,
     /** The browse pages' larger cards ([VodSizes.BROWSE_POSTER_W], [VodSizes.BROWSE_WIDE_W]); a title page's rows keep theirs. */
     val large: Boolean = false,
+    /** Whether the page lets a row of posters show its chosen poster's title under it ([VodSizes.labelled]; not My List's). */
+    labels: Boolean = true,
 ) : FrameLayout(context) {
 
     interface Listener {
@@ -70,6 +73,18 @@ class TitleRow(
 
     /** The item chosen in this row (kept while focus is elsewhere). */
     var chosen = 0
+
+    /** Whether its chosen poster shows its title under it: posters and Top 10 ([VodSizes.labelled]). */
+    val labelled = labels && VodSizes.labelled(spec.style)
+
+    /**
+     * The chosen poster's title: one for the row, kept under that poster by the row's motion ([placeLabel]); its words
+     * change once per focus change. Null in a row without one.
+     */
+    private val label: PosterLabel? = if (labelled) PosterLabel(context, t, VodSizes.cardW(spec.style, large)) else null
+    /** From an item's left edge to its poster's (a Top 10 number's slot), and half the poster's growth, px. */
+    private val labelSlot = t.dpf(VodSizes.slot(spec.style, large)).toInt().toFloat()
+    private val labelGrow = t.dp(VodSizes.cardW(spec.style, large)) * VodSizes.grow(spec.style) / 2f
 
     /**
      * How far the strip may move left, px. Unlimited for cards (each chosen one goes to the left edge); a row of season
@@ -117,6 +132,7 @@ class TitleRow(
                 is CardView -> v.focus = share
                 is RankedItem -> v.poster.focus = share
             }
+            if (i == chosen) placeLabel(i, share, shift)
         }
     })
 
@@ -129,7 +145,7 @@ class TitleRow(
 
     private val stripTop = t.dp(VodSizes.stripTop(header))
     private val pageX = t.dp(VodSizes.PAGE_X)
-    private val band = t.dp(VodSizes.bandH(spec.style, header, gapBelow, large))
+    private val band = t.dp(VodSizes.bandH(spec.style, header, gapBelow, large, labelled))
 
     private val focusWatch = OnFocusChangeListener { v, has ->
         val i = items.indexOf(v)
@@ -137,6 +153,11 @@ class TitleRow(
         if (has) {
             chosen = i
             motion.choose(i)
+            if (label != null) {
+                label.show(cards.getOrNull(i)?.title?.name)
+                // Under the new card at once (faded as far as it isn't grown yet), not a frame late under the last.
+                motion.apply()
+            }
             listener.onItemFocused(this, i)
         } else {
             // To the next card: that one takes over at once. Elsewhere: the card shrinks back, the row stays put.
@@ -163,6 +184,13 @@ class TitleRow(
             leftMargin = pageX
             topMargin = stripTop
         })
+        // Under the strip, in the room the band keeps for it: the posters never move for it.
+        label?.let {
+            addView(it, LayoutParams(t.dp(VodSizes.cardW(spec.style, large)), t.dp(VodSizes.labelH(VodSizes.cardW(spec.style, large)))).apply {
+                leftMargin = pageX
+                topMargin = t.dp(VodSizes.labelTop(spec.style, header, large))
+            })
+        }
         // Chips are laid out at their own widths: their places are known once laid out.
         if (VodSizes.isChips(spec.style)) strip.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> motion.apply() }
         visibility = GONE
@@ -171,8 +199,11 @@ class TitleRow(
     /** The band's height: title, cards and the gap under them. */
     val bandHeight: Int get() = band
 
-    /** What the row needs to show whole when chosen, px: its title, a grown card and its ring ([VodSizes.rowShownH]). */
-    val shownHeight: Int = t.dp(VodSizes.rowShownH(spec.style, header, large))
+    /**
+     * What the row needs to show whole when chosen, px: its title, a grown card and its ring, and the chosen poster's
+     * title under it ([VodSizes.rowShownH]).
+     */
+    val shownHeight: Int = t.dp(VodSizes.rowShownH(spec.style, header, large, labelled))
 
     /** The index of the item holding focus, or -1. */
     fun focusedIndex(): Int {
@@ -221,6 +252,7 @@ class TitleRow(
         }
         if (seeAll) (items.last() as CardView).bindSeeAll()
         if (items.isEmpty()) chosen = 0 else chosen = chosen.coerceIn(0, items.size - 1)
+        label?.show(cards.getOrNull(chosen)?.title?.name)
         boundRange = IntRange.EMPTY
         motion.apply()
     }
@@ -266,6 +298,16 @@ class TitleRow(
         strip.moveItem(from, to)
         chosen = ReorderMath.placeAfter(chosen, from, to)
         motion.snap(chosen, focusedIndex() >= 0)
+    }
+
+    /**
+     * The title under chosen item [i], drawn [share] grown and moved along [shift]: centred under the poster as it's
+     * drawn (grown from its left edge), as visible as it is grown. Translations only.
+     */
+    private fun placeLabel(i: Int, share: Float, shift: Float) {
+        val l = label ?: return
+        l.translationX = strip.translationX + strip.itemLeft(i) + shift + labelSlot + labelGrow * share
+        l.alpha = share
     }
 
     /** Item [i] shows as selected (the season shown); the others not. */

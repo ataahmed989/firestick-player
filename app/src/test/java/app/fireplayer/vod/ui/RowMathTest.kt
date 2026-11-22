@@ -75,6 +75,18 @@ class RowMathTest {
     }
 
     @Test
+    fun aFirstRowNeedingMoreThanWhatsAboveCanGiveGoesToItsTop() {
+        val tops = floatArrayOf(422f, 746f, 1210f)
+        // Within what the header can give: just far enough, as before; more: the row's top, as any other row.
+        assertEquals(58f, RowMath.pageTarget(0, 0, need = 628f, viewportH = 992f, give = 58f) { tops[it] }, 0f)
+        assertEquals(422f, RowMath.pageTarget(0, 0, need = 628f, viewportH = 992f, give = 57f) { tops[it] }, 0f)
+        // Nothing to give: a row that fits doesn't move.
+        assertEquals(0f, RowMath.pageTarget(0, 0, need = 500f, viewportH = 992f, give = 0f) { tops[it] }, 0f)
+        // Lower rows don't care.
+        assertEquals(746f, RowMath.pageTarget(1, 0, need = 628f, viewportH = 992f, give = 0f) { tops[it] }, 0f)
+    }
+
+    @Test
     fun pageTargetStopsWithTheLastRowAtTheBottom() {
         val tops = floatArrayOf(422f, 746f, 1210f)
         // The last row ends at 1500: the column stops with that at the screen's bottom, the row above still in view.

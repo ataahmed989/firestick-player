@@ -130,6 +130,14 @@ class VodHeader(
         override fun hasOverlappingRendering() = false
     }
 
+    /**
+     * The words' fade while the page lifts the card further than they can move clear of the cut ([setHiddenTop]), apart
+     * from the other two fades.
+     */
+    private val cutFade = object : FrameLayout(context) {
+        override fun hasOverlappingRendering() = false
+    }
+
     /** The words' column: the title's box, the facts and the story are all this wide. */
     private var textW = t.dp(VodSizes.storyW(cardW))
     /** The logo's box is the same at both of Home's widths ([VodSizes.headerLogoW]): made once. */
@@ -175,11 +183,12 @@ class VodHeader(
         words.addView(facts, LinearLayout.LayoutParams(textW, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = t.dp(VodSizes.HEADER_FACTS_GAP) })
         words.addView(story, LinearLayout.LayoutParams(textW, story.lineHeight * VodSizes.HEADER_STORY_LINES).apply { topMargin = t.dp(VodSizes.HEADER_STORY_GAP) })
         // The words at the card's top left, whatever its height; the buttons at its bottom left.
-        veil.addView(words, LayoutParams(textW, LayoutParams.WRAP_CONTENT).apply {
+        cutFade.addView(words, LayoutParams(textW, LayoutParams.WRAP_CONTENT).apply {
             gravity = Gravity.TOP or Gravity.START
             leftMargin = t.dp(VodSizes.HEADER_INSET)
             topMargin = t.dp(VodSizes.HEADER_TOP)
         })
+        veil.addView(cutFade, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         addView(veil, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         if (actions) {
             buttons.addView(watch, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, t.dp(VodSizes.HEADER_BUTTON_H)))
@@ -348,11 +357,14 @@ class VodHeader(
 
     /**
      * The page has moved the card's top [px] out of view (a first row of posters lifts the page a little): the words
-     * move down to stay clear of the cut ([VodSizes.headerWordsShift]). A translation only; nothing is laid out.
+     * move down to stay clear of the cut ([VodSizes.headerWordsShift]), and fade out once they can't
+     * ([VodSizes.headerWordsAlpha]). A translation and an alpha only; nothing is laid out.
      */
     fun setHiddenTop(px: Float) {
         val y = t.dpf(VodSizes.headerWordsShift(px / t.density))
         if (words.translationY != y) words.translationY = y
+        val a = VodSizes.headerWordsAlpha(px / t.density)
+        if (cutFade.alpha != a) cutFade.alpha = a
     }
 
     /** Whether one of the buttons has focus. */

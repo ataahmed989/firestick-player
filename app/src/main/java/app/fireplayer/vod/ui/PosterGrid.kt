@@ -9,7 +9,8 @@ import app.fireplayer.shell.Tokens
 import kotlin.math.roundToInt
 
 /**
- * See all's posters: 5 across the content's width (154 x 205 dp, 18 dp apart), rows 30 dp apart, each at a fixed cell. Pages of posters are
+ * See all's posters: 5 across the content's width (154 x 205 dp, 18 dp apart), rows apart by room for the chosen one's title
+ * ([VodSizes.GRID_ROW_GAP]), each at a fixed cell. Pages of posters are
  * appended as they come (one layout each); everything else is a translation: the page's Spring moves the grid up and
  * down. All its posters exist (up to See all's cap); only those near the chosen one hold pictures.
  */
