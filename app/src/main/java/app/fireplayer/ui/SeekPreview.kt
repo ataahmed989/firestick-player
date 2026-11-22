@@ -27,9 +27,10 @@ import app.fireplayer.player.RedirectMemoryDataSource
  *
  * A second, video-only player seeks to the keyframe nearest each new target and shows it. It starts
  * on the first press and is released a little after the last ([holdMs]); its connection closes as soon as each
- * picture is loaded. If it can't play the video, previews stop for that video with a short note saying
- * why, and skipping works as before. A server that refuses the second connection (many IPTV accounts
- * allow one at a time) turns previews off until the player is closed, so the film keeps its connection.
+ * picture is loaded. If it can't play the video, previews stop for that video with a short note ([NOTE]; why goes
+ * to the log), and skipping works as before. So they do when the film lags while the preview loads beside it
+ * ([overloaded]). A server that refuses the second connection (many IPTV accounts allow one at a time) turns
+ * previews off until the player is closed, so the film keeps its connection.
  */
 @OptIn(UnstableApi::class)
 class SeekPreview(
@@ -43,7 +44,7 @@ class SeekPreview(
     private val create: (allowLoading: () -> Boolean) -> ExoPlayer,
     /** Called when the card appears (true) and goes away (false), so subtitles can make room. */
     private val onShowing: (Boolean) -> Unit,
-    /** Called once when previews stop, with a short note saying why. */
+    /** Called once when previews stop, with why (for the log; the screen says [NOTE]). */
     private val onFailed: (String) -> Unit,
     /**
      * How long the preview's player is kept after skipping stops, in case it starts again: 15 s, or 3 s on a TV short
@@ -174,7 +175,16 @@ class SeekPreview(
         refused = true
         hide()
         release()
-        onFailed(SERVER_NOTE)
+        onFailed(SERVER_WHY)
+    }
+
+    /**
+     * The film lagged ([why]) while this preview loaded beside it ([app.fireplayer.player.PreviewGuard]): previews stop
+     * for [key], the film's, so it has the TV and the line to itself. Once only.
+     */
+    fun overloaded(key: String, why: String) {
+        if (key == failedKey || refused) return
+        fail(why, key)
     }
 
     fun release() {
@@ -292,17 +302,17 @@ class SeekPreview(
         // HLS and DASH films open a part every few seconds, so "the film just connected" says nothing there.
         val progressive = item?.localConfiguration
             ?.let { Util.inferContentTypeForUriAndMimeType(it.uri, it.mimeType) == C.CONTENT_TYPE_OTHER } == true
-        val note = when {
+        val why = when {
             // Turned away, or cut off for the film's new connection: the film keeps the server to itself from now on.
             isRefusal(error.cause) ||
                 (progressive && isCutOff(error.cause) && RedirectMemoryDataSource.filmOpenedWithin(CUT_OFF_MS)) -> {
                 refused = true
-                SERVER_NOTE
+                SERVER_WHY
             }
-            error.errorCode in 4000..4999 -> "No skip preview for this video: the TV can't decode it twice at once"
-            else -> "No skip preview for this video (error ${error.errorCode})"
+            error.errorCode in 4000..4999 -> "the TV can't decode it twice at once"
+            else -> "error ${error.errorCode}"
         }
-        fail(note)
+        fail(why)
     }
 
     override fun onTracksChanged(tracks: Tracks) {
@@ -310,16 +320,16 @@ class SeekPreview(
         // PlayerFactory.buildPreview), which leaves the preview with no picture at all. No preview for this video then,
         // said once, rather than an empty card on every press; skipping goes on as without previews.
         if (upTo1080pOnly && tooBigToPreview(tracks, PlayerFactory.PREVIEW_MAX_WIDTH, PlayerFactory.PREVIEW_MAX_HEIGHT)) {
-            fail(TOO_BIG_NOTE)
+            fail(TOO_BIG_WHY)
         }
     }
 
-    /** Previews stop for this video, and [note] says why once; skipping goes on as without them. */
-    private fun fail(note: String) {
-        failedKey = itemKey
+    /** Previews stop for the video [key], and [why] is told once; skipping goes on as without them. */
+    private fun fail(why: String, key: String? = itemKey) {
+        failedKey = key
         hide()
         release()
-        onFailed(note)
+        onFailed(why)
     }
 
     private fun reveal() {
@@ -366,8 +376,10 @@ class SeekPreview(
     }
 
     companion object {
-        private const val SERVER_NOTE = "Skip preview off: the server refused a second connection"
-        private const val TOO_BIG_NOTE = "No skip preview for this video: its picture is too big to decode twice on this TV"
+        /** What the screen says when previews stop, whatever the reason: one short line, in the preview's own look. */
+        const val NOTE = "Preview not available"
+        private const val SERVER_WHY = "the server refused a second connection"
+        private const val TOO_BIG_WHY = "its picture is too big to decode twice on this TV"
 
         // What IPTV servers answer when an account already has its connections in use.
         private val REFUSAL_CODES = setOf(401, 403, 429, 456, 458, 503, 509)

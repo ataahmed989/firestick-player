@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The skip preview's note, in the glass look: the preview card's dark face and its glass rim. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@drawable/bg_preview" />
+    <item android:drawable="@drawable/glass_preview_fg" />
+</layer-list>

@@ -74,7 +74,7 @@ class CardView(
     private var imageAlpha = 1f
     private var fader: ValueAnimator? = null
 
-    private val radius = t.dpf(if (kind == Kind.LOGO) VodSizes.logoRadius() else VodSizes.CARD_RADIUS)
+    private val radius = t.dpf(if (kind == Kind.LOGO) VodSizes.logoRadiusFor(pictureH) else VodSizes.CARD_RADIUS)
     private val ringPx = t.dpf(VodSizes.RING)
     /** The picture's box: the whole card, or an episode's still above its captions. */
     private val box = RectF()

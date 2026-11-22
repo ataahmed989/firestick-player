@@ -76,12 +76,14 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
         SHOWS("TV Shows", R.drawable.ic_tv_shows),
         MY_LIST("My List", R.drawable.ic_my_list),
         LIVE("Live TV", R.drawable.ic_live),
-        /** The two streaming-service pages visited last, newest first ([setServices]); not shown until one has been. */
+        /** The two service shortcuts ([setServices]); each shown only while it has a service. */
         SERVICE_1("", 0),
         SERVICE_2("", 0),
+        /** A service's page with no shortcut on the rail (opened from its card): never shown; Home stands in for it. */
+        SERVICE_PAGE("", 0),
         SETTINGS("Settings", R.drawable.ic_settings);
 
-        val isService: Boolean get() = this == SERVICE_1 || this == SERVICE_2
+        val isService: Boolean get() = this == SERVICE_1 || this == SERVICE_2 || this == SERVICE_PAGE
     }
 
     var onTab: ((Tab) -> Unit)? = null
@@ -163,7 +165,7 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
         descendantFocusability = FOCUS_AFTER_DESCENDANTS
         // Laid out once, as the widened strip's tabs lie: SIDE_DP from the widened rail's edges. Every other state is
         // drawn.
-        setPadding(t.dp(SIDE_DP), t.dp(22), viewWidth - t.dp(EXPANDED_DP) + t.dp(SIDE_DP), t.dp(22))
+        setPadding(t.dp(SIDE_DP), t.dp(RailShape.TOP_DP), viewWidth - t.dp(EXPANDED_DP) + t.dp(SIDE_DP), t.dp(RailShape.BOTTOM_DP))
 
         val brand = LinearLayout(context).apply {
             orientation = HORIZONTAL
@@ -187,7 +189,7 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
         val name = t.label(context, RailShape.NAME_SP, t.bold).apply { text = "FirePlayer" }
         words += name
         brand.addView(name, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply { leftMargin = t.dp(12) })
-        addView(brand, LayoutParams(LayoutParams.MATCH_PARENT, t.dp(44)).apply { bottomMargin = t.dp(22) })
+        addView(brand, LayoutParams(LayoutParams.MATCH_PARENT, t.dp(RailShape.BRAND_DP)).apply { bottomMargin = t.dp(RailShape.BRAND_GAP_DP) })
 
         for (tab in Tab.values()) {
             if (tab == Tab.SETTINGS) addView(View(context), LayoutParams(1, 0, 1f)) // Settings at the bottom
@@ -195,7 +197,7 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
             if (tab.isService) row.visibility = GONE
             items[tab] = row
             rows += row
-            addView(row, LayoutParams(LayoutParams.MATCH_PARENT, t.dp(44)).apply { bottomMargin = t.dp(6) })
+            addView(row, LayoutParams(LayoutParams.MATCH_PARENT, t.dp(RailShape.TAB_DP)).apply { bottomMargin = t.dp(RailShape.TAB_GAP_DP) })
         }
         glow = FloatArray(rows.size)
         background = surface
@@ -309,8 +311,11 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
      */
     override fun addFocusables(views: ArrayList<View>, direction: Int, focusableMode: Int) {
         if (hasFocus()) return super.addFocusables(views, direction, focusableMode)
-        items[selected]?.let { if (it.isShown && it.isFocusable) views.add(it) }
+        selectedRow()?.let { if (it.isShown && it.isFocusable) views.add(it) }
     }
+
+    /** The selected tab's row; Home's for a service page with no shortcut on the rail (opened from its card on Home). */
+    private fun selectedRow(): TabRow? = items[selected]?.takeIf { it.visibility == VISIBLE } ?: items[Tab.HOME]
 
     /** A touch right of where the rail is drawn just now is the page's (the view is always the widened rail's width). */
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean = ev.x <= boxRight && super.dispatchTouchEvent(ev)
@@ -321,24 +326,29 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
     }
 
     /**
-     * The streaming-service pages visited last, newest first: a tab each under Live TV, with the rail's own focus,
-     * labels and motion. Tabs beyond those given stay as they are (the list only grows).
+     * The service shortcuts, top first: a tab each under Live TV, with the rail's own focus, labels and motion. A slot
+     * with no service (null, or none given) has no tab. Only a change is laid out.
      */
-    fun setServices(services: List<ServiceTab>) {
+    fun setServices(services: List<ServiceTab?>) {
         for ((i, tab) in SERVICE_TABS.withIndex()) {
             val row = items[tab] ?: continue
-            val s = services.getOrNull(i) ?: continue
-            if (row.service == s) continue
-            row.service = s
-            row.contentDescription = s.name
-            row.label.text = s.name
-            row.showIcon()
-            row.visibility = VISIBLE
+            val s = services.getOrNull(i)
+            if (s == null) {
+                if (row.visibility != GONE) row.visibility = GONE
+                continue
+            }
+            if (row.service != s) {
+                row.service = s
+                row.contentDescription = s.name
+                row.label.text = s.name
+                row.showIcon()
+            }
+            if (row.visibility != VISIBLE) row.visibility = VISIBLE
         }
     }
 
     fun focusSelected() {
-        items[selected]?.requestFocus()
+        selectedRow()?.requestFocus()
     }
 
     /**
@@ -958,7 +968,7 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
     data class ServiceTab(val name: String, val icon: Int, val focusedIcon: Int?)
 
     companion object {
-        /** The tabs of the streaming-service pages visited last, newest first. */
+        /** The service shortcuts' tabs, top first ([app.fireplayer.vod.data.Services.railSlots]). */
         val SERVICE_TABS = listOf(Tab.SERVICE_1, Tab.SERVICE_2)
 
         /**
@@ -990,6 +1000,30 @@ object RailShape {
     const val RADIUS_DP = GlassStyle.RADIUS_POPUP
     /** The chosen tab's white. */
     const val TAB_RADIUS_DP = 12f
+    // The column, from the top: the brand's row, the gap under it, then each tab and the gap under it, Settings' at
+    // the bottom. With every tab there (both service shortcuts too) it fills the screen's height to the dp, Settings'
+    // white [settingsClearanceDp] clear of the floating window's bottom edge.
+    const val TOP_DP = 22
+    const val BRAND_DP = 44
+    const val BRAND_GAP_DP = 8
+    const val TAB_DP = 44
+    const val TAB_GAP_DP = 6
+    const val BOTTOM_DP = 16
+
+    /** The tabs there are at most: Search to Live TV, the two service shortcuts and Settings. */
+    const val MOST_TABS = 9
+
+    /**
+     * How far above the floating window's bottom edge the Settings tab (and its white, as tall as the tab) ends, dp,
+     * on a rail [heightDp] tall with [tabs] tabs shown: at the bottom, or, if the tabs above it need more room than
+     * there is, straight under them.
+     */
+    fun settingsClearanceDp(heightDp: Float, tabs: Int): Float {
+        val atBottom = heightDp - BOTTOM_DP - TAB_GAP_DP
+        val underTabs = (TOP_DP + BRAND_DP + BRAND_GAP_DP + (tabs - 1) * (TAB_DP + TAB_GAP_DP) + TAB_DP).toFloat()
+        return heightDp - FLOAT_END_DP - max(atBottom, underTabs)
+    }
+
     /** The brand mark's box collapsed and widened, and the name beside it (shown only widened). */
     const val MARK_DP = 30
     const val MARK_WIDE_DP = 38

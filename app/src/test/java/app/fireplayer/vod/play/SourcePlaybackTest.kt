@@ -205,6 +205,18 @@ class SourcePlaybackTest {
     }
 
     @Test
+    fun aStallWhileTheSkipPreviewLoadsIsExcusedFromTheStallWatch() {
+        val (p, s) = play()
+        s.ready(Fixtures.source(1))
+        p.firstFrame()
+        s.stallEvents.clear()
+        p.buffering(true, excused = true)
+        p.buffering(false)
+        p.buffering(true)
+        assertEquals(listOf("buffering true", "excused", "buffering false", "playing", "buffering true"), s.stallEvents)
+    }
+
+    @Test
     fun stallsBeforeTheFirstFrameAreStageThrees() {
         val (p, s) = play()
         s.ready(Fixtures.source(1))

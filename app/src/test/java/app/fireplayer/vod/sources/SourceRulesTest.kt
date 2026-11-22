@@ -199,6 +199,28 @@ class SourceRulesTest {
     }
 
     @Test
+    fun aStallTheSkipPreviewExcusedIsNeverCounted() {
+        val w = Stalls()
+        w.playing(0)
+        // Three stalls in two minutes, each while the preview loaded beside the film: none counts.
+        for (start in listOf(60_000L, 80_000L, 100_000L)) {
+            w.buffering(start, true)
+            w.excuse(start)
+            w.buffering(start + 2_000, false)
+        }
+        assertFalse(w.shouldSwitch(105_000))
+        // Nor one that goes on long past the limit.
+        w.buffering(110_000, true)
+        w.excuse(110_000)
+        assertFalse(w.shouldSwitch(150_000))
+        w.buffering(150_000, false)
+        // An excuse with no stall under way changes nothing: the next one counts as ever.
+        w.excuse(160_000)
+        w.buffering(170_000, true)
+        assertTrue(w.shouldSwitch(191_000))
+    }
+
+    @Test
     fun oneLongStallOrAQuarterOfTwoMinutesBuffering() {
         val w = Stalls()
         w.playing(0)

@@ -5,7 +5,8 @@ import app.fireplayer.vod.StallWatch
 /**
  * Stage 4's watch (design-brief §6.5): after [SETTLE_MS] of playing, switch on [MAX_STALLS] stalls within [WINDOW_MS],
  * one stall over [LONG_MS], or more than a quarter of [WINDOW_MS] spent buffering. A stall starting within [JUMP_MS] of
- * a seek, a source change or a resume doesn't count. Times are elapsedRealtime ms; main thread.
+ * a seek, a source change or a resume doesn't count, nor one [excuse]d (the skip preview's doing). Times are
+ * elapsedRealtime ms; main thread.
  */
 class Stalls : StallWatch {
 
@@ -47,6 +48,10 @@ class Stalls : StallWatch {
         if (stallStart >= 0) return
         stallStart = now
         stallCounts = playingSince >= 0 && now - playingSince >= SETTLE_MS && now - lastJump > JUMP_MS
+    }
+
+    override fun excuse(now: Long) {
+        if (stallStart >= 0) stallCounts = false
     }
 
     override fun shouldSwitch(now: Long): Boolean {

@@ -61,7 +61,16 @@ object VodRepositories {
             sp.edit().apply { if (text == null) remove(key(page)) else putString(key(page), text) }.apply()
         }
 
+        override fun readServices(): String? = sp.getString(SERVICES, null)
+        override fun writeServices(text: String?) {
+            sp.edit().apply { if (text == null) remove(SERVICES) else putString(SERVICES, text) }.apply()
+        }
+
         private fun key(page: Page) = "vod_rows_" + RowLayouts.prefix(page)
+
+        private companion object {
+            const val SERVICES = "vod_services_order"
+        }
     }
 
     /** Daemon threads below the UI's priority, so rows never compete with the UI or a playing film. */

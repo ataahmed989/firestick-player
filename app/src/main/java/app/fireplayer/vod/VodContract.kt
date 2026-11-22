@@ -80,8 +80,13 @@ enum class RowStyle {
     EPISODE,
     /** A show's season pills on the title page: chips drawn like GENRES, the season shown selected. */
     SEASONS,
-    /** Five rounded cards across with a wordmark each and no title line: Home's streaming services, Disney+'s brands. */
+    /** Five rounded cards across with a wordmark each and no title line, in fixed slots: Disney+'s studios. */
     LOGO,
+    /**
+     * Home's streaming services: the [LOGO] cards, a card per service across the content's width in fixed slots
+     * ([app.fireplayer.vod.ui.VodSizes.SERVICES_ACROSS]); Disney+'s studios keep five.
+     */
+    SERVICES,
 }
 
 /** Where a row's cards come from. */
@@ -132,7 +137,8 @@ sealed class Source {
      * brand's titles; [genres] and [withoutGenres] (TMDB's genre ids) and [maxRuntime] (minutes: shorts) narrow it
      * further. A row takes the first page only; [full] (a brand's collection) goes on page after page, and so does
      * [paged] (a studio page's row, which takes more as the viewer nears its end and whose titles are whole, as a
-     * row's are). Needs the user's TMDB key; empty without it.
+     * row's are). [alsoProvider]: a second provider whose titles count too (TMDB's either-or: Prime Video's with-ads
+     * tier). Needs the user's TMDB key; empty without it.
      */
     data class Discover(
         val kind: Kind?,
@@ -144,6 +150,7 @@ sealed class Source {
         val withoutGenres: String? = null,
         val maxRuntime: Int? = null,
         val paged: Boolean = false,
+        val alsoProvider: Int? = null,
     ) : Source()
 
     /**

@@ -180,10 +180,10 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         rail.onTab = { tab ->
             // Chosen in the rail: Back from it goes to the rail, as from any tab.
             serviceFrom = null
-            val picked = recentServices.getOrNull(NavRail.SERVICE_TABS.indexOf(tab))
+            val picked = railServices.getOrNull(NavRail.SERVICE_TABS.indexOf(tab))
             if (picked != null) showService(picked) else showTab(tab)
         }
-        showRecentServices()
+        showRailServices()
         rail.onEnterPage = { focusPage() }
         root.viewTreeObserver.addOnGlobalFocusChangeListener(focusWatcher)
 
@@ -200,6 +200,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         lookOn = Glass.on
         clipForLook()
         settingsPanels.onLookChanged = { applyLook() }
+        // Settings › Rows › Service shortcuts: the rail follows at once.
+        settingsPanels.onRailServicesChanged = { showRailServices() }
         // Subtitle style changed in a settings window: the live captions follow at once, as the film player's do.
         settingsPanels.onSubtitleStyleChanged = { applyCaptionStyle() }
         settingsPanels.onAssStylingChanged = { applyCaptionStyle() }
@@ -473,7 +475,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         NavRail.Tab.LIVE -> PipRules.Page.LIVE
         NavRail.Tab.SETTINGS -> PipRules.Page.SETTINGS
         // A service's page is Home's layout: the picture stays there the same way.
-        NavRail.Tab.SERVICE_1, NavRail.Tab.SERVICE_2 -> PipRules.Page.HOME
+        NavRail.Tab.SERVICE_1, NavRail.Tab.SERVICE_2, NavRail.Tab.SERVICE_PAGE -> PipRules.Page.HOME
     }
 
     /**
@@ -697,6 +699,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
 
     override fun onRestart() {
         super.onRestart()
+        // Service shortcuts may have been changed in the player's settings meanwhile.
+        showRailServices()
         if (lookOn == Glass.on) return
         // The look was switched in the player while this screen was behind it.
         applyLook()
@@ -708,17 +712,32 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
 
     // ---- Streaming services ---------------------------------------------------------------------------------------
 
-    /** The service pages visited last, newest first: the rail's two tabs under Live TV, kept across restarts. */
+    /** The service pages visited last, newest first, kept across restarts: they fill the shortcuts not pinned. */
     private var recentServices: List<Service> = emptyList()
+    /** What the rail's two service shortcuts under Live TV show, top first (null: none there; empty: switched off). */
+    private var railServices: List<Service?> = emptyList()
     /** The service whose page shows on a service tab. */
     private var service: Service? = null
     /** The tab a service's page was opened from by a card: Back on the page goes back there. */
     private var serviceFrom: NavRail.Tab? = null
 
-    private fun showRecentServices() {
-        recentServices = Services.decode(Prefs(this).recentServices)
-        rail.setServices(recentServices.map { NavRail.ServiceTab(it.label, iconOf(it), focusedIconOf(it)) })
+    /**
+     * The rail's service shortcuts as Settings › Rows › Service shortcuts has them ([Services.railSlots]): pinned
+     * services in their slots, the ones visited last in the others. A service page shown just now moves to its
+     * shortcut's tab, or to the tab of a page with none.
+     */
+    private fun showRailServices() {
+        val prefs = Prefs(this)
+        recentServices = Services.decode(prefs.recentServices)
+        railServices = Services.railSlots(prefs.serviceShortcuts, Services.decode(prefs.pinnedServices), recentServices)
+        rail.setServices(railServices.map { s -> s?.let { NavRail.ServiceTab(it.label, iconOf(it), focusedIconOf(it)) } })
+        val s = service
+        if (s != null && rail.selected.isService) rail.setSelected(tabOf(s))
     }
+
+    /** The tab [s]'s page shows on: its shortcut's, or the one for a page with no shortcut. */
+    private fun tabOf(s: Service): NavRail.Tab =
+        NavRail.SERVICE_TABS.getOrNull(railServices.indexOf(s)) ?: NavRail.Tab.SERVICE_PAGE
 
     private fun iconOf(service: Service): Int = when (service) {
         Service.DISNEY -> R.drawable.ic_service_disney_plus
@@ -726,6 +745,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         Service.NETFLIX -> R.drawable.ic_service_netflix
         Service.HBO_MAX -> R.drawable.ic_service_hbo_max
         Service.APPLE_TV -> R.drawable.ic_service_apple_tv
+        Service.PRIME_VIDEO -> R.drawable.ic_service_prime_video
     }
 
     /** A service's dark rail icon, for the light highlight while its tab holds focus; Hulu and Netflix keep their one icon. */
@@ -733,16 +753,20 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         Service.DISNEY -> R.drawable.ic_service_disney_plus_focused
         Service.HBO_MAX -> R.drawable.ic_service_hbo_max_focused
         Service.APPLE_TV -> R.drawable.ic_service_apple_tv_focused
+        Service.PRIME_VIDEO -> R.drawable.ic_service_prime_video_focused
         Service.HULU, Service.NETFLIX -> null
     }
 
-    /** [s]'s page, on the rail's first service tab: it becomes the service visited last (once in the list). */
+    /**
+     * [s]'s page opens: a visit, so it becomes the service visited last (once in the list; focus on its card is
+     * none). It shows on its shortcut's tab, or, with no shortcut on the rail, on the tab of a page with none.
+     */
     private fun showService(s: Service) {
         recentServices = Services.visited(recentServices, s)
         Prefs(this).recentServices = Services.encode(recentServices)
-        rail.setServices(recentServices.map { NavRail.ServiceTab(it.label, iconOf(it), focusedIconOf(it)) })
         service = s
-        showTab(NavRail.Tab.SERVICE_1)
+        showRailServices()
+        showTab(tabOf(s))
     }
 
     /** OK on a service's card (Home's Streaming Services row): its page opens, and Back on it comes back here. */

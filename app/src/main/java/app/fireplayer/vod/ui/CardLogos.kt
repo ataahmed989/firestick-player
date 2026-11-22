@@ -10,9 +10,9 @@ import app.fireplayer.vod.data.Service
 import app.fireplayer.vod.data.Services
 
 /**
- * The logo cards' logos (Home's five streaming services, Disney+'s five studios): the app's own pictures
+ * The logo cards' logos (Home's six streaming services, Disney+'s five studios): the app's own pictures
  * (res/drawable-nodpi/card_logo_*.png, each a mark in its own colours with clear room round it), so nothing is
- * fetched for them. Each is read once, near the size it's drawn at, and kept (ten small bitmaps). Main thread.
+ * fetched for them. Each is read once, near the size it's drawn at, and kept (eleven small bitmaps). Main thread.
  */
 internal object CardLogos {
 
@@ -40,7 +40,7 @@ internal object CardLogos {
     /**
      * [service]'s logo for its page's name line: its card's own picture, cut to its visible part (the clear room
      * round it is the card's, and would set it off the line) and fitted inside [maxW] x [maxH] px, never enlarged.
-     * Made once per service and kept (five small bitmaps); null if it can't be read.
+     * Made once per service and kept (six small bitmaps); null if it can't be read.
      */
     fun header(context: Context, service: Service, maxW: Int, maxH: Int): Bitmap? =
         header(context, service, resOf(service), maxW, maxH)
@@ -80,6 +80,7 @@ internal object CardLogos {
         Service.NETFLIX -> R.drawable.card_logo_netflix
         Service.HBO_MAX -> R.drawable.card_logo_hbo_max
         Service.APPLE_TV -> R.drawable.card_logo_apple_tv
+        Service.PRIME_VIDEO -> R.drawable.card_logo_prime_video
     }
 
     private fun resOf(brand: Brand): Int = when (brand) {

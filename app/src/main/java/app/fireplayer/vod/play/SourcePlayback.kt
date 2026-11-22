@@ -321,8 +321,11 @@ class SourcePlayback(
 
     // ---- Stage 4: while playing -------------------------------------------------------------------------------------
 
-    /** The player started or stopped loading while playing. */
-    fun buffering(on: Boolean) {
+    /**
+     * The player started or stopped loading while playing. [excused]: the skip preview was loading beside the film (or
+     * just had), so this wait isn't counted toward a switch.
+     */
+    fun buffering(on: Boolean, excused: Boolean = false) {
         if (!playing) return
         val now = ticker.now()
         if (on && !stalled) stalledAt = now
@@ -330,6 +333,7 @@ class SourcePlayback(
         stalled = on
         aid.stalled(now, on)
         session.stalls.buffering(now, on)
+        if (on && excused) session.stalls.excuse(now)
         if (!on) session.stalls.playing(now)
         checkStalls(now)
     }

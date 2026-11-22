@@ -205,6 +205,14 @@
                 android:textSize="13sp"
                 android:visibility="invisible"
                 tools:text="+4:00" />
+
+            <!-- The skip preview's note when previews stop for a film: its own look, where the "+4:00" card shows. -->
+            <TextView
+                android:id="@+id/preview_note"
+                style="@style/PreviewNote"
+                android:layout_gravity="bottom|start"
+                android:visibility="invisible"
+                tools:text="Preview not available" />
         </FrameLayout>
 
         <LinearLayout
@@ -524,16 +532,15 @@
 
         <TextView
             android:id="@+id/preview_time"
+            style="@style/PreviewText"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="bottom|center_horizontal"
             android:layout_marginBottom="6dp"
-            android:fontFamily="@font/figtree_700"
             android:fontFeatureSettings="tnum"
             android:shadowColor="#99000000"
             android:shadowDy="1"
             android:shadowRadius="3"
-            android:textColor="@color/text"
             android:textSize="12sp"
             tools:text="1:12:48" />
     </FrameLayout>

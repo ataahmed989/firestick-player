@@ -216,4 +216,6 @@ object Glass {
     val panel get() = if (on) R.drawable.glass_panel else R.drawable.bg_panel
     val popup get() = if (on) R.drawable.glass_popup else R.drawable.bg_popup
     val previewEdge get() = if (on) R.drawable.glass_preview_fg else R.drawable.fg_preview
+    /** The skip preview's note ("Preview not available"): the card's face with [previewEdge]. */
+    val previewNote get() = if (on) R.drawable.glass_preview_note else R.drawable.bg_preview_note
 }
