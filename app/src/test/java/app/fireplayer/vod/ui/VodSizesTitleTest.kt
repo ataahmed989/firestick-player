@@ -23,7 +23,7 @@ class VodSizesTitleTest {
         near(12.96f, VodSizes.cardTop(RowStyle.POSTER))
         near(8.16f, VodSizes.cardTop(RowStyle.WIDE))
         near(0.72f, VodSizes.cardTop(RowStyle.GENRES))
-        near(231.92f, VodSizes.bandH(RowStyle.POSTER))
+        near(262.98f, VodSizes.bandH(RowStyle.POSTER))
         near(162.32f, VodSizes.bandH(RowStyle.WIDE))
         near(81.44f, VodSizes.bandH(RowStyle.GENRES))
         // Each card grows about the middle of its picture (the measured height's half, as before).

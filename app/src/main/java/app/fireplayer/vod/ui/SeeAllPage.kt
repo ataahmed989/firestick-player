@@ -14,6 +14,7 @@ import app.fireplayer.ui.Spring
 import app.fireplayer.vod.Card
 import app.fireplayer.vod.RowSpec
 import app.fireplayer.vod.VodRepository
+import kotlin.math.roundToInt
 
 /**
  * "See all": every title of one row's source in a grid of posters ([PosterGrid]) shown in place of the page's rows,
@@ -42,8 +43,28 @@ class SeeAllPage(private val ctx: Context, private val t: Tokens, private val re
         isFocusable = true
     }
     private val grid = PosterGrid(ctx, t)
+
+    /**
+     * The chosen poster's title under it ([PosterLabel]): one for the grid, in a layer that moves with it, gliding from
+     * poster to poster (the posters stay put); the grid's row gap keeps its room ([VodSizes.GRID_ROW_GAP]).
+     */
+    private val label = PosterLabel(ctx, t, VodSizes.GRID_POSTER_W)
+    private val labelLayer = FrameLayout(ctx).apply {
+        clipChildren = false
+        addView(label, FrameLayout.LayoutParams(t.dp(VodSizes.GRID_POSTER_W), t.dp(VodSizes.labelH(VodSizes.GRID_POSTER_W))))
+    }
+    private val labelTop = t.dp(VodSizes.GRID_TOP) + t.dp(VodSizes.gridLabelTop())
+    private val pitchX = t.dpf(VodSizes.gridPitchX())
+    /** Focus left the grid's posters altogether (not to the next one): the title fades. */
+    private val labelOut = Runnable {
+        if (!grid.hasFocus()) label.glideTo(label.translationX, label.translationY, 0f)
+    }
+
     private val main = Handler(Looper.getMainLooper())
-    private val spring = Spring(omega = VodSizes.PAGE_OMEGA, settle = VodSizes.PAGE_SETTLE) { grid.translationY = -it }
+    private val spring = Spring(omega = VodSizes.PAGE_OMEGA, settle = VodSizes.PAGE_SETTLE) {
+        grid.translationY = -it
+        labelLayer.translationY = -it
+    }
     private val press = PressHold(ViewConfiguration.getLongPressTimeout().toLong())
     private val pitchY = t.dpf(VodSizes.gridPitchY())
 
@@ -59,6 +80,9 @@ class SeeAllPage(private val ctx: Context, private val t: Tokens, private val re
 
     init {
         root.addView(grid, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+            leftMargin = t.dp(VodSizes.PAGE_X)
+        })
+        root.addView(labelLayer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT).apply {
             leftMargin = t.dp(VodSizes.PAGE_X)
         })
         root.setOnKeyListener { _, keyCode, event ->
@@ -91,6 +115,9 @@ class SeeAllPage(private val ctx: Context, private val t: Tokens, private val re
         main.removeCallbacks(syncLater)
         spring.stop()
         press.cancel()
+        root.removeCallbacks(labelOut)
+        label.show(null)
+        label.glideTo(0f, 0f, 0f, now = true)
         for (i in 0 until grid.childCount) (grid.getChildAt(i) as? CardView)?.releaseImage()
         grid.removeAllViews()
         cards = emptyList()
@@ -169,6 +196,7 @@ class SeeAllPage(private val ctx: Context, private val t: Tokens, private val re
         }
         while (grid.childCount < list.size) grid.addView(poster())
         list.forEachIndexed { i, c -> (grid.getChildAt(i) as CardView).bind(c) }
+        if (grid.hasFocus()) label.show(list.getOrNull(chosen)?.title?.name)
         if (list.isEmpty() && grid.hasFocus()) root.requestFocus()
         // The first posters came while the grid held focus itself: into them.
         if (root.isFocused && grid.childCount > 0) takeFocus()
@@ -187,10 +215,16 @@ class SeeAllPage(private val ctx: Context, private val t: Tokens, private val re
             card.animateFocus(has)
             if (!has) {
                 press.cancel()
+                root.removeCallbacks(labelOut)
+                root.post(labelOut)
                 return@setOnFocusChangeListener
             }
             chosen = grid.indexOfChild(v)
             val row = RowMath.gridRow(chosen, grid.columns)
+            // The title goes to the new poster: its words once, then a glide (Glass Home's focus curve).
+            label.show(cards.getOrNull(chosen)?.title?.name)
+            val x = (RowMath.gridColumn(chosen, grid.columns) * pitchX).roundToInt().toFloat()
+            label.glideTo(x, (labelTop + (row * pitchY).roundToInt()).toFloat(), 1f)
             spring.glideTo(RowMath.gridTarget(row, pitchY))
             bindImages()
             val f = feed ?: return@setOnFocusChangeListener

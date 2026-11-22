@@ -45,8 +45,10 @@ class VodSizesTest {
         near(195.32f, VodSizes.pitch(RowStyle.RANKED), 0.01f)
         near(19.36f, VodSizes.extra(RowStyle.POSTER), 0.001f)
         near(29.12f, VodSizes.extra(RowStyle.WIDE), 0.001f)
-        near(231.92f, VodSizes.bandH(RowStyle.POSTER), 0.01f)
-        near(231.92f, VodSizes.bandH(RowStyle.RANKED), 0.01f)
+        // Posters and Top 10 keep room under the strip for the chosen one's title (31.06 dp at More Like This's size).
+        near(262.98f, VodSizes.bandH(RowStyle.POSTER), 0.01f)
+        near(262.98f, VodSizes.bandH(RowStyle.RANKED), 0.01f)
+        near(231.92f, VodSizes.bandH(RowStyle.POSTER, true, VodSizes.ROW_GAP, labelled = false), 0.01f)
         near(162.32f, VodSizes.bandH(RowStyle.WIDE), 0.01f)
         near(81.44f, VodSizes.bandH(RowStyle.GENRES), 0.01f)
         near(12.96f, VodSizes.cardTop(RowStyle.POSTER), 0.001f)
@@ -95,8 +97,10 @@ class VodSizesTest {
 
     @Test
     fun browseBandHeights() {
-        near(306.16f, VodSizes.bandH(RowStyle.POSTER, true, VodSizes.ROW_GAP, large = true), 0.01f)
-        near(306.16f, VodSizes.bandH(RowStyle.RANKED, true, VodSizes.ROW_GAP, large = true), 0.01f)
+        // Posters and Top 10: and the chosen one's title under them (40.6 dp: ring, gap, two lines of 14 sp).
+        near(346.76f, VodSizes.bandH(RowStyle.POSTER, true, VodSizes.ROW_GAP, large = true), 0.01f)
+        near(346.76f, VodSizes.bandH(RowStyle.RANKED, true, VodSizes.ROW_GAP, large = true), 0.01f)
+        near(306.16f, VodSizes.bandH(RowStyle.POSTER, true, VodSizes.ROW_GAP, large = true, labelled = false), 0.01f)
         near(208.72f, VodSizes.bandH(RowStyle.WIDE, true, VodSizes.ROW_GAP, large = true), 0.01f)
         // Chips keep their size.
         near(81.44f, VodSizes.bandH(RowStyle.GENRES, true, VodSizes.ROW_GAP, large = true), 0.01f)
@@ -192,9 +196,24 @@ class VodSizesTest {
     @Test
     fun aFirstRowOfPostersMovesUpJustFarEnoughToShowWhole() {
         val top = VodSizes.firstRowTop()
-        val posters = VodSizes.rowShownH(RowStyle.POSTER, header = true, large = true)
+        // With its chosen poster's title under it: the page moves up 77 dp, the title's last line at the screen's bottom.
+        val titled = VodSizes.rowShownH(RowStyle.POSTER, header = true, large = true)
+        near(328.76f, titled, 0.01f)
+        val lift = RowMath.pageTarget(0, 0, titled, VodSizes.VIEWPORT_H) { top }
+        near(76.76f, lift, 0.01f)
+        val titleBottom = VodSizes.VIEWPORT_TOP + top - lift + VodSizes.labelTop(RowStyle.POSTER, true, true) + VodSizes.labelH(VodSizes.BROWSE_POSTER_W)
+        assertTrue("title ends at $titleBottom", titleBottom <= VodSizes.SCREEN_H + 0.01f)
+        // The banner's buttons still show; its words can't move clear of a cut that deep, so they fade out rather than
+        // be cut through. They show whole as far as they can move.
+        assertTrue(lift < VodSizes.headerButtonsTop())
+        assertEquals(0f, VodSizes.headerWordsAlpha(lift), 0f)
+        assertEquals(1f, VodSizes.headerWordsAlpha(0f), 0f)
+        assertEquals(1f, VodSizes.headerWordsAlpha(VodSizes.HEADER_TOP - VodSizes.HEADER_TOP_KEEP + VodSizes.headerWordsShift(1_000f)), 0.001f)
+        // A row without a title under it (as before): just far enough for the grown card and its ring.
+        val posters = VodSizes.rowShownH(RowStyle.POSTER, header = true, large = true, labelled = false)
         near(292.16f, posters, 0.01f)
         near(40.16f, RowMath.pageTarget(0, 0, posters, VodSizes.VIEWPORT_H) { top }, 0.01f)
+        assertEquals(1f, VodSizes.headerWordsAlpha(40.16f), 0.001f)
         // Most of the banner still shows (188 dp of it, as before it was taller), its words and buttons with it: the
         // words, which start nearer the card's top than that, move down to stay whole under the cut, and still keep
         // off the buttons.
@@ -391,7 +410,9 @@ class VodSizesTest {
     fun myListsBannerLeavesARowOfPostersWholeUnderIt() {
         assertEquals(246f, VodSizes.fixedRowsTop())
         val room = VodSizes.SCREEN_H - VodSizes.fixedRowsTop()
-        assertTrue(room >= VodSizes.rowShownH(RowStyle.POSTER, header = true, large = true))
+        assertTrue(room >= VodSizes.rowShownH(RowStyle.POSTER, header = true, large = true, labelled = false))
+        // Which is why My List's rows show no title under the chosen poster (its banner names it): it wouldn't fit.
+        assertTrue(room < VodSizes.rowShownH(RowStyle.POSTER, header = true, large = true))
         // Without buttons its words (the same block at its top left) end well inside the shorter card.
         assertTrue(VodSizes.headerWordsEnd() <= VodSizes.MY_LIST_HEADER_H - VodSizes.HEADER_INSET)
     }
@@ -431,12 +452,13 @@ class VodSizesTest {
         // It ends at the content's right margin, as the banner does.
         assertEquals(VodSizes.tabHeaderW(), VodSizes.gridW())
         assertEquals(172f, VodSizes.gridPitchX())
-        assertEquals(235f, VodSizes.gridPitchY())
-        // The grown poster (about its middle) and its ring stay inside the gaps.
+        assertEquals(268f, VodSizes.gridPitchY())
+        // The grown poster (about its middle) and its ring stay inside the gaps; under it, its title too.
         assertTrue(VodSizes.GRID_POSTER_W * VodSizes.GROW / 2 + VodSizes.RING < VodSizes.GRID_GAP)
-        assertTrue(VodSizes.GRID_POSTER_H * VodSizes.GROW / 2 + VodSizes.RING < VodSizes.GRID_ROW_GAP)
-        // Two rows of posters fill the viewport under the name line.
-        assertTrue(VodSizes.GRID_TOP + 2 * VodSizes.gridPitchY() <= VodSizes.VIEWPORT_H)
+        assertTrue(VodSizes.GRID_POSTER_H * VodSizes.GROW / 2 + VodSizes.labelRoom(VodSizes.GRID_POSTER_W) + VodSizes.LABEL_CLEAR <= VodSizes.GRID_ROW_GAP)
+        near(VodSizes.GRID_POSTER_H * VodSizes.GROW / 2 + VodSizes.labelRoom(VodSizes.GRID_POSTER_W), VodSizes.gridLabelTop() - VodSizes.GRID_POSTER_H + VodSizes.labelH(VodSizes.GRID_POSTER_W), 0.001f)
+        // The chosen row at the top, its title under it; the next row's posters show whole below.
+        assertTrue(VodSizes.GRID_TOP + VodSizes.gridPitchY() + VodSizes.GRID_POSTER_H <= VodSizes.VIEWPORT_H)
         // The first row's chosen poster, grown, and its ring show whole under the name line.
         assertTrue(VodSizes.GRID_TOP >= VodSizes.GRID_POSTER_H * VodSizes.GROW / 2 + VodSizes.RING)
     }

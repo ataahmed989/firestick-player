@@ -49,8 +49,18 @@ class VodSizesPipTest {
         assertEquals(pip.b + VodSizes.SEARCH_GAP, results.t, 0.001f)
         // Readable: the bar keeps 400 dp; a first row of posters shows whole under the picture, its chosen card grown.
         assertTrue(VodSizes.searchBarW(pip = true) >= 400f)
-        val row = VodSizes.rowShownH(app.fireplayer.vod.RowStyle.POSTER, header = true, large = true)
+        val row = VodSizes.rowShownH(app.fireplayer.vod.RowStyle.POSTER, header = true, large = true, labelled = false)
         assertTrue("first row ends at ${results.t + row}", results.t + row <= VodSizes.SCREEN_H)
+        // With its chosen poster's title it needs more: the bar and pills can't give way in part, so chosen, the row
+        // goes to its top (as the rows after it do) and its title shows whole.
+        val titled = VodSizes.rowShownH(app.fireplayer.vod.RowStyle.POSTER, header = true, large = true)
+        val top = results.t - VodSizes.VIEWPORT_TOP
+        assertTrue(results.t + titled > VodSizes.SCREEN_H)
+        assertEquals(top, RowMath.pageTarget(0, 0, titled, VodSizes.VIEWPORT_H, give = 0f) { top }, 0.001f)
+        assertTrue(VodSizes.VIEWPORT_TOP + titled <= VodSizes.SCREEN_H)
+        // Without the picture it fits under them: nothing moves.
+        val plain = VodSizes.searchResultsTop(pip = false) - VodSizes.VIEWPORT_TOP
+        assertEquals(0f, RowMath.pageTarget(0, 0, titled, VodSizes.VIEWPORT_H, give = 0f) { plain }, 0f)
     }
 
     @Test fun searchWithoutThePictureIsUnchanged() {
