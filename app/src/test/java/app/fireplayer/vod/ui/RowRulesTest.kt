@@ -95,4 +95,19 @@ class RowRulesTest {
         assertEquals("Continue Watching · Series", shows.first().label)
         assertTrue(shows.first().continueRow)
     }
+
+    @Test
+    fun aContinueCardChangedInPlaceKeepsWhatTheRowShowsAndTakesItsNewProgress() {
+        val ref = app.fireplayer.vod.EpisodeRef(2, 5)
+        val shown = Card(Title("tt1", Kind.SERIES, "Korra", poster = "p"), progress = 0.4f, caption = "S2 E5 · 12m left", episode = ref, picture = "still")
+        val now = Card(Title("tt1", Kind.SERIES, "Korra"), progress = 0f, caption = "S1 E1 · 23m left", episode = app.fireplayer.vod.EpisodeRef(1, 1))
+        val card = RowRules.continueChanged(shown, now)
+        assertEquals(shown.title, card.title)
+        assertEquals("still", card.picture)
+        assertEquals(0f, card.progress!!, 0f)
+        assertEquals("S1 E1 · 23m left", card.caption)
+        assertEquals(app.fireplayer.vod.EpisodeRef(1, 1), card.episode)
+        // Nothing new: the same card (the row isn't redrawn).
+        assertEquals(card, RowRules.continueChanged(card, now))
+    }
 }

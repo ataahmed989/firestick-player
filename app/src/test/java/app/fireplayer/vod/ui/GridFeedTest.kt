@@ -162,4 +162,20 @@ class GridFeedTest {
         assertEquals(14, feed.cards.size)
         assertEquals(1, changes)
     }
+
+    @Test
+    fun aCardChangedInPlaceStaysWhereItIs() {
+        val repo = FakeVodRepository()
+        val first = FakeVodRepository.films(5)
+        var changes = 0
+        val feed = GridFeed(repo, spec, first) { changes++ }
+        feed.replace(first[2].title.id) { it.copy(progress = 0f, caption = "2h left") }
+        assertEquals(5, feed.cards.size)
+        assertEquals(first[2].title, feed.cards[2].title)
+        assertEquals("2h left", feed.cards[2].caption)
+        assertEquals(1, changes)
+        // Not in the grid: nothing changes.
+        feed.replace("tt0") { it.copy(caption = "x") }
+        assertEquals(1, changes)
+    }
 }
