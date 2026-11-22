@@ -70,6 +70,7 @@ class GlassShades(private val sp: () -> SharedPreferences) {
 
     /** [kind]'s tint and its second control as saved (its defaults until changed). */
     operator fun get(kind: Kind): GlassStyle.Shade {
+        if (kind == Kind.PLAYBACK) movePlaybackDefaults()
         val tint = read(kind.tintKey, kind.default.tint)
         val second = read(kind.secondKey, kind.second.of(kind.default))
         return if (kind.second == Control.CHARCOAL) GlassStyle.Shade(tint, charcoal = second) else GlassStyle.Shade(tint, dim = second)
@@ -83,6 +84,41 @@ class GlassShades(private val sp: () -> SharedPreferences) {
         write(kind.keyOf(control), GlassStyle.stepShade(control.of(get(kind)), direction, stop = control.of(kind.default)))
         return get(kind)
     }
+
+    /**
+     * Reset to defaults: all three glasses back to their defaults ([Kind.default]), as if never changed. Playback glass is
+     * the players' Default preset, so Default is back to its defaults too, with no display dimness (one tried on it and
+     * not saved goes). The customs stay as they are, and so does the preset on: a custom picked stays picked.
+     */
+    fun reset() {
+        movePlaybackDefaults()
+        val edit = sp().edit()
+        for (kind in Kind.entries) edit.remove(kind.tintKey).remove(kind.secondKey)
+        edit.apply()
+        Dimmer.forgetDefaultDraft()
+    }
+
+    /**
+     * Once: Playback glass's defaults were no tint and no dimness ([OLD_PLAYBACK]) before [GlassStyle.PLAYBACK_SHADE]. A
+     * Playback glass never changed (nothing saved, or still those) takes the new defaults; one the viewer changed keeps
+     * their values, each as it showed (one never saved was the old default).
+     */
+    private fun movePlaybackDefaults() {
+        if (playbackMoved) return
+        playbackMoved = true
+        val saved = sp()
+        if (saved.getBoolean(PLAYBACK_MOVED_KEY, false)) return
+        val kind = Kind.PLAYBACK
+        val tint = GlassStyle.clampShade(saved.getInt(kind.tintKey, OLD_PLAYBACK.tint))
+        val dim = GlassStyle.clampShade(saved.getInt(kind.secondKey, OLD_PLAYBACK.dim))
+        val edit = saved.edit().putBoolean(PLAYBACK_MOVED_KEY, true)
+        if (tint == OLD_PLAYBACK.tint && dim == OLD_PLAYBACK.dim) edit.remove(kind.tintKey).remove(kind.secondKey)
+        else edit.putInt(kind.tintKey, tint).putInt(kind.secondKey, dim)
+        edit.apply()
+    }
+
+    /** [movePlaybackDefaults] done, by this reader. */
+    private var playbackMoved = false
 
     /**
      * Puts all three on the glass ([Glass.useShades]), Playback glass as the players' preset on has it ([Dimmer.glass]:
@@ -112,6 +148,12 @@ class GlassShades(private val sp: () -> SharedPreferences) {
 
         /** "Clear": a glass with nothing laid over it, the frosted picture as it is. */
         const val CLEAR = "Clear"
+
+        /** Playback glass's defaults before it had a tint and a dimness of its own: none ([movePlaybackDefaults]). */
+        internal val OLD_PLAYBACK = GlassStyle.Shade(0, dim = 0)
+
+        /** Saved once Playback glass's values were looked at against its new defaults ([movePlaybackDefaults]). */
+        internal const val PLAYBACK_MOVED_KEY = "glass_playback_defaults_moved"
 
         /** The settings file ([Prefs], [Dimmer]'s too). */
         internal fun settingsOf(context: Context): () -> SharedPreferences {

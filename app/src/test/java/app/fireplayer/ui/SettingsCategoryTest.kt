@@ -75,8 +75,8 @@ class SettingsCategoryTest {
             "Keep live TV playing on Home and Search", "Start with sound",
             // Settings › Rows: the order of Home's streaming services, and the rail's service shortcuts.
             "Reorder services", "Show streaming services on rail", "First shortcut", "Second shortcut",
-            // Look: the three glasses, each a dropdown of its Tint and Dimness.
-            "App glass", "Rail, cards & header", "Playback glass",
+            // Look: the three glasses, each a dropdown of its Tint and Dimness, and the row that puts them back.
+            "App glass", "Rail, cards & header", "Playback glass", "Reset to defaults",
         )
         val kept = before.map { renamed[it] ?: it }
         val now = SettingsCategory.entries.flatMap { it.settings }.toSet()

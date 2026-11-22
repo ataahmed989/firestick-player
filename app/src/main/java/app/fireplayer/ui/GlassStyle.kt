@@ -113,10 +113,11 @@ object GlassStyle {
      */
     val RAIL_SHADE = Shade(tint = 58, charcoal = 100)
     /**
-     * Playback glass: windows over full-screen films and Live TV. No tint and no darkening: the frosted picture as it is.
-     * It's the players' dimness settings' Default preset; a custom there has its own glass tint and glass dimness.
+     * Playback glass: windows over full-screen films and Live TV. A faint tint of the background's own colour (5%), then
+     * darkened by 15%: the frosted picture a little deeper, so the words on it stand out. It's the players' dimness
+     * settings' Default preset (with no display dimness); a custom there has its own glass tint and glass dimness.
      */
-    val PLAYBACK_SHADE = Shade(tint = 0, dim = 0)
+    val PLAYBACK_SHADE = Shade(tint = 5, dim = 15)
 
     /** A tint, dimness or charcoal kept within 0% and [SHADE_MAX]. */
     fun clampShade(percent: Int): Int = percent.coerceIn(0, SHADE_MAX)
