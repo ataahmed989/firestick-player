@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import app.fireplayer.subs.Tmdb
 import app.fireplayer.titles.TitleMatcher
+import app.fireplayer.vod.play.VodFix
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -512,7 +513,8 @@ class ShowGuide(
 
 /**
  * Matches put right by hand in Settings (Fix match, Looks right), kept for good. A show's fixes win over the automatic
- * pairing in [ShowGuide.build]; a film's picks its name on screen.
+ * pairing in [ShowGuide.build]; a film's picks its name on screen; a Films & Shows title's ([vodTitle]) what the player
+ * shows and asks about it.
  */
 class MatchFixes(context: Context) {
 
@@ -603,6 +605,13 @@ class MatchFixes(context: Context) {
         prefs.edit().putString("film|$portal|$id", title).apply {
             if (tmdbId > 0) putString("filmtmdb|$portal|$id", "$tmdbId\t$year\t${name.replace('\t', ' ')}")
         }.apply()
+    }
+
+    /** A title from Films & Shows put right by hand, by the title's own id ("tt0133093"); null for none. */
+    fun vodTitle(titleId: String): VodFix? = VodFix.fromLine(prefs.getString("vod|$titleId", null))
+
+    fun setVodTitle(titleId: String, fix: VodFix) {
+        prefs.edit().putString("vod|$titleId", fix.toLine()).apply()
     }
 
     /** Forgets every fix made for a provider (when its playlist is gone from TiviMate). */

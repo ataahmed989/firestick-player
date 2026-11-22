@@ -9,7 +9,30 @@ import app.fireplayer.vod.PlayRequest
 import app.fireplayer.vod.Position
 import app.fireplayer.vod.Title
 import app.fireplayer.vod.TitleDetails
+import app.fireplayer.vod.standInId
 import java.util.Locale
+
+/**
+ * A title from Films & Shows put right by hand in the player's Fix match: the TMDB film or show it really is, for what
+ * the player shows and asks about it ([PlayerMeta.fixed]). The add-ons still find its sources by the title's own id.
+ * Kept per title, for every later play of it ([app.fireplayer.player.MatchFixes.vodTitle]).
+ */
+data class VodFix(val tmdbId: Int, val show: Boolean, val name: String, val year: Int) {
+    /** "The Odyssey (1997)", or the name alone without a year. */
+    val label: String get() = if (year > 0) "$name ($year)" else name
+
+    /** How it is kept: "1234\t0\t1997\tThe Odyssey" (TMDB id, 1 for a show, year, name). */
+    fun toLine(): String = "$tmdbId\t${if (show) 1 else 0}\t$year\t${name.replace('\t', ' ')}"
+
+    companion object {
+        /** The fix a kept line holds; null for none, or a line that names no TMDB title. */
+        fun fromLine(line: String?): VodFix? {
+            val p = line?.split('\t', limit = 4)?.takeIf { it.size == 4 } ?: return null
+            val id = p[0].toIntOrNull()?.takeIf { it > 0 } ?: return null
+            return VodFix(id, p[1] == "1", p[3], p[2].toIntOrNull() ?: 0)
+        }
+    }
+}
 
 /**
  * What FirePlayer's player shows of a film or episode played from Films & Shows, made from what was handed over with
@@ -35,6 +58,40 @@ object PlayerMeta {
     /** "The Matrix (1999)", "Severance (2022)": the name with its (first) year, as the player shows a title. */
     fun shownName(title: Title): String =
         listOfNotNull(title.name, title.year?.take(4)?.takeIf { y -> y.length == 4 && y.all { it.isDigit() } }?.let { "($it)" }).joinToString(" ")
+
+    /**
+     * What the player shows and asks about for [request] once it was put right by hand ([fix]): the same play with
+     * TMDB's film or show as its title (by its stand-in id, [standInId], so Skip intro's times are asked by the IMDb id
+     * TMDB gives for it), the season and episode kept. [request] itself without a fix. Only for its name, Film details /
+     * Show details, Skip intro's times and the subtitles search: the sources, the library and Next episode keep [request].
+     */
+    fun fixed(request: PlayRequest, fix: VodFix?): PlayRequest {
+        if (fix == null) return request
+        val kind = if (fix.show) Kind.SERIES else Kind.MOVIE
+        val title = Title(standInId(kind, fix.tmdbId), kind, fix.name, year = fix.year.takeIf { it > 0 }?.toString(), tmdbId = fix.tmdbId)
+        return request.copy(target = request.target.copy(title = title))
+    }
+
+    /** This film / This episode's name in the player's Settings: "The Matrix (1999)", "Severance · S2 E5"; the fix's once fixed. */
+    fun thisTitleName(request: PlayRequest, fix: VodFix?): String {
+        val t = fixed(request, fix).target.title
+        val ref = request.target.episode ?: return shownName(t)
+        return "${t.name} · S${ref.season} E${ref.episode}"
+    }
+
+    /**
+     * The note in This film / This episode's dropdown, under Source and Fix match: matched by the IMDb id handed over
+     * ([episode]: "S2 E5 · Name", the guide's, when known), or, once put right by hand, as which TMDB title and what goes
+     * by it, the sources still found by the id.
+     */
+    fun matchNote(request: PlayRequest, fix: VodFix?, episode: String?): String {
+        val whose = if (request.target.episode != null) "the show's" else "its"
+        if (fix != null) {
+            return "Fixed by hand as ${fix.label} on TMDB: details, Skip intro and subtitles go by it. " +
+                "Sources still come by $whose IMDb id."
+        }
+        return "Matched by $whose IMDb id from $PORTAL" + (episode?.takeIf { request.target.episode != null }?.let { ": $it." } ?: ".")
+    }
 
     /** A title's year as a number, 0 when unknown ("2012–2014" is 2012). */
     fun year(title: Title): Int = title.year?.take(4)?.toIntOrNull() ?: 0

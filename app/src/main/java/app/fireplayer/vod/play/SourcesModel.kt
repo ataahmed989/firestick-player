@@ -1,5 +1,6 @@
 package app.fireplayer.vod.play
 
+import app.fireplayer.player.CopyLanguage
 import app.fireplayer.vod.Addon
 import app.fireplayer.vod.Attempt
 import app.fireplayer.vod.PlaybackSource
@@ -8,6 +9,7 @@ import app.fireplayer.vod.SourceGroup
 import app.fireplayer.vod.SourceList
 import app.fireplayer.vod.TvFit
 import app.fireplayer.vod.sources.SourceRank
+import java.util.Locale
 
 /**
  * What the Sources panel lists (design-brief.md §6.5, r3_sources-organize §4), pure: at the top the add-ons' states and
@@ -224,7 +226,10 @@ object SourcesModel {
         f.avgMbps?.let { out += "Data rate" to "≈${it.toInt()} Mb/s (average, from size)" }
         f.origin?.let { out += "Source" to it }
         f.group?.let { out += "Release group" to it }
-        if (f.languages.isNotEmpty()) out += "Languages" to f.languages.joinToString(", ") { it.uppercase() }
+        // Its tracks' once it played here, else the add-ons' (as the row's second line says them).
+        PlayRules.languageCodes(s).takeIf { it.isNotEmpty() }?.let { codes ->
+            out += "Audio languages" to codes.joinToString(", ") { if (it == CopyLanguage.MULTI) "Multi" else it.uppercase(Locale.ROOT) }
+        }
         f.seeders?.let { out += "Seeders" to "$it" }
         out += "Debrid" to when (s.readiness) {
             Readiness.PROBABLY_READY -> "Probably on your debrid service (the add-on's guess)"
