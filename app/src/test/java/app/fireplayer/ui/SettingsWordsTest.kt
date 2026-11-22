@@ -31,8 +31,6 @@ class SettingsWordsTest {
             "Presets", "Storage", "On this channel", "EPG sources", "Updates", "Account", "Guide",
             // Settings › Rows: its window's own heading, and its two sections.
             "Rows", "Streaming Services", "Service shortcuts",
-            // The Screen dimmer's Tint, under its glass's name (Settings › Look › Playback glass).
-            "Playback glass",
         )
         assertEquals(emptyList<String>(), headings.filter { SidePanel.headingIcon(it) == null })
     }

@@ -5031,33 +5031,25 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     /**
-     * Screen dimmer: the customs, then the one on, with its display amount (the film) and glass amount (all glass,
-     * Glass look) set with arrows. Custom 1 keeps changes at once, the others when Save custom is pressed. Whatever is
-     * picked or saved stays on for every video. The rows are shared with full-screen Live TV ([DimmerWindow]).
+     * Screen dimmer: the presets (Default, then the customs), then the one on, with its display dimness (the film), glass
+     * tint and glass dimness (the Playback glass) set with arrows. Whatever is picked or saved stays on for every video.
+     * The rows are shared with full-screen Live TV ([DimmerWindow]).
      */
     private fun openDimPanel(from: View) = openPanel("Screen dimmer", from) {
         DimmerWindow.render(this, this@PlayerActivity, dimmer, applyDim = { applyDim() }, refreshLabels = { refreshLabels() })
     }
 
     /**
-     * Darkens the film by the display amount, and every piece of glass by the glass amount (Glass look). The
-     * glass shows a copy of the film taken from under the dimmer, so it's dimmed on its own.
+     * Darkens the film by the preset's display dimness, and gives the glass over it the preset's glass tint and glass
+     * dimness (Glass look: Playback glass, [GlassShades.apply]). The glass shows a copy of the film taken from under the
+     * dimmer, so it's darkened on its own.
      */
     private fun applyDim() {
-        val amounts = dimmer.amounts()
-        dimmerView.alpha = amounts.display / 100f
-        dimmerView.visibility = if (amounts.display == 0) View.GONE else View.VISIBLE
-        val glass = amounts.glass / 100f
-        if (Glass.dim != glass) {
-            Glass.dim = glass
-            // Every glass shape reads it as it draws: draw them all again.
-            redrawAll(window.decorView)
-        }
-    }
-
-    private fun redrawAll(view: View) {
-        view.invalidate()
-        if (view is ViewGroup) for (i in 0 until view.childCount) redrawAll(view.getChildAt(i))
+        val display = dimmer.display()
+        dimmerView.alpha = display / 100f
+        dimmerView.visibility = if (display == 0) View.GONE else View.VISIBLE
+        // Every glass shape reads it as it draws: all drawn again, once, if it changed.
+        GlassShades(this).applyTo(this)
     }
 
     private fun openSleepPanel(from: View) = openPanel("Sleep timer", from) {

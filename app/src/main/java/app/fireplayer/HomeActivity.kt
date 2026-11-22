@@ -707,7 +707,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         super.onRestart()
         // Service shortcuts may have been changed in the player's settings meanwhile.
         showRailServices()
-        // So may the user's glass (Settings › Look, the Screen dimmer's Tint): everything drawn again with it, once.
+        // So may the user's glass (Settings › Look, the players' dimness presets): everything drawn again with it, once.
         if (shadesSeen != Glass.shadeChanges) {
             shadesSeen = Glass.shadeChanges
             Glass.redraw(window.decorView)
@@ -1376,25 +1376,17 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
     }
 
     /**
-     * Screen dimmer, as the VOD player's applyDim: the full-screen live picture and its captions darken by the
-     * display amount (never the miniature, the controls or the windows), and glass by the glass amount. Only glass
-     * showing the live picture is dimmed ([glassShowsFilm]); the guide's glass over the wallpaper never is.
+     * Screen dimmer, as the VOD player's applyDim: the full-screen live picture and its captions darken by the preset's
+     * display dimness (never the miniature, the controls or the windows), and the glass over it takes the preset's glass
+     * tint and glass dimness (Playback glass, [GlassShades.apply]). Only glass showing the live picture is dimmed
+     * ([glassShowsFilm]); the guide's glass over the wallpaper never is.
      */
     private fun applyLiveDim() {
-        val amounts = dimmer.amounts()
-        dimDisplay = amounts.display / 100f
+        dimDisplay = dimmer.display() / 100f
         showDimmer()
-        val glass = amounts.glass / 100f
-        if (Glass.dim != glass) {
-            Glass.dim = glass
-            // Every glass shape reads it as it draws: draw them all again.
-            redrawAll(window.decorView)
-        }
-    }
-
-    private fun redrawAll(view: View) {
-        view.invalidate()
-        if (view is ViewGroup) for (i in 0 until view.childCount) redrawAll(view.getChildAt(i))
+        // Every glass shape reads it as it draws: all drawn again, once, if it changed.
+        GlassShades(this).applyTo(this)
+        shadesSeen = Glass.shadeChanges
     }
 
     private var lastSize: VideoSize = VideoSize.UNKNOWN

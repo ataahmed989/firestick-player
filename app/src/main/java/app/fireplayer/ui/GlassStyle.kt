@@ -112,7 +112,10 @@ object GlassStyle {
      * the glass took the wallpaper's colour.
      */
     val RAIL_SHADE = Shade(tint = 58, charcoal = 100)
-    /** Playback glass: windows over full-screen films and Live TV. No tint and no darkening: the frosted picture as it is. */
+    /**
+     * Playback glass: windows over full-screen films and Live TV. No tint and no darkening: the frosted picture as it is.
+     * It's the players' dimness settings' Default preset; a custom there has its own glass tint and glass dimness.
+     */
     val PLAYBACK_SHADE = Shade(tint = 0, dim = 0)
 
     /** A tint, dimness or charcoal kept within 0% and [SHADE_MAX]. */
@@ -179,8 +182,8 @@ object GlassStyle {
 
     /**
      * The pane's colour layer over what's behind it ([Shade.color]): on pages the App glass's ([app]), over playback
-     * the Playback glass's ([playback]; by default none at all, no colour and no dark: the frosted picture as it is,
-     * which the screen dimmer alone darkens, its glass amount).
+     * the Playback glass's ([playback]: the players' dimness preset on, its glass tint and glass dimness; by default none
+     * at all, no colour and no dark: the frosted picture as it is).
      */
     fun paneTint(over: Over, app: Shade, playback: Shade): Int = if (over == Over.PLAYBACK) playback.color else app.color
 

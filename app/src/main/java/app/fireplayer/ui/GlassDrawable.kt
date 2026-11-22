@@ -38,8 +38,9 @@ import kotlin.math.sqrt
  * One piece of glass (Glass look): the blurred film behind it ([GlassBackdrop]), a milky glaze, a soft inner
  * bevel, a bright rim and a shadow. Selected controls and rows turn glossy white with the blue ring and glow.
  * A window (the settings window, a hold window, a small dialog) is a pane instead ([GlassStyle.paneTint]): the blurred
- * picture behind it with no glaze, under only the user's Playback glass colour layer over playback (none by default: the
- * screen dimmer alone darkens it), a reflective rim and a soft shadow.
+ * picture behind it with no glaze, under only the Playback glass layer over playback (the players' dimness preset on:
+ * its glass tint, then its glass dimness; none by default), a reflective rim and a soft shadow. The player's other glass
+ * is darkened by that glass dimness as it's drawn ([Glass.dim]), never its selected look.
  *
  * Everything but the film is drawn once, in software, into a cached bitmap ([GlassBakes]): the hardware canvas
  * of older Fire OS can't blur or cut shapes. Each frame is then one rounded rectangle of film and one bitmap
@@ -170,8 +171,9 @@ class GlassDrawable(
             invalidateSelf()
         }
 
-    // The dimming the filters were made for, so they're made again only when it changes.
-    private val dimmable = Glass.inPlayer(context)
+    // The dimming the filters were made for, so they're made again only when it changes. A window over playback isn't
+    // darkened by them: its Playback glass layer, baked in, darkens it ([GlassBakes.tintOf]).
+    private val dimmable = Glass.inPlayer(context) && !GlassBakes.playbackPane(style, variant)
     private var filtersFor = Float.NaN
     private var filtersForBackdrop = Float.NaN
 
@@ -183,8 +185,8 @@ class GlassDrawable(
         // A FireDialog dims what's behind it by a quarter, so its glass shows the film dimmed the same.
         val dialog = if (style == Glass.Kind.DIALOG_POPUP) DIALOG_LIGHT else 1f
         filmPaint.colorFilter = light((1f - glass) * (1f - backdropDim) * dialog)
+        // The selected look is never darkened: only the glass under it.
         bakePaint.colorFilter = light(1f - glass)
-        bakeFocusedPaint.colorFilter = light(1f - glass / 2f)
     }
 
     /** A filter keeping [share] of the light (colour only; see-through parts stay as see-through). */
@@ -507,7 +509,7 @@ internal object GlassBakes {
     fun trim() = cache.evictAll()
 
     /**
-     * The user's glass was changed (Settings › Look, the Screen dimmer's Tint: [Glass.useShades]): the window
+     * The user's glass was changed (Settings › Look, the players' dimness presets: [Glass.useShades]): the window
      * drawings made with a colour layer no longer theirs go at once, and only those ([tintOf]); each is made again once,
      * when next needed. The rest (the rows, the controls, the windows whose glass didn't change) are kept.
      */
@@ -530,6 +532,9 @@ internal object GlassBakes {
     /** A window: the settings window, a hold window, a small dialog (and the page's own windows, the banner's card). */
     fun isWindow(kind: Glass.Kind): Boolean =
         kind == Glass.Kind.PANEL || kind == Glass.Kind.POPUP || kind == Glass.Kind.DIALOG_POPUP
+
+    /** A window over playback (the film style's): its pane has the Playback glass layer, tint and dimness both. */
+    fun playbackPane(kind: Glass.Kind, variant: Int): Boolean = variant == FILM && isWindow(kind)
 
     /** What a window's pane drawn in [variant] is over: the film style's is over playback, every other over the page. */
     fun over(variant: Int): GlassStyle.Over = if (variant == FILM) GlassStyle.Over.PLAYBACK else GlassStyle.Over.PAGE
@@ -696,7 +701,7 @@ private class Baker(private val density: Float) {
                 focusedBody(c, pad, w, h, rect, r)
             }
             // A window over the page, or over playback (the film style's): its pane.
-            variant == GlassBakes.PANE || (variant == GlassBakes.FILM && GlassBakes.isWindow(kind)) ->
+            variant == GlassBakes.PANE || GlassBakes.playbackPane(kind, variant) ->
                 pane(c, pad, w, h, rect, r, tint, GlassStyle.paneSheen(GlassBakes.over(variant)))
             variant == GlassBakes.CALM -> calm(c, kind, pad, w, h, rect, r, tint)
             else -> clear(c, kind, pad, w, h, rect, r)

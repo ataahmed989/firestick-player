@@ -24,17 +24,19 @@ object Glass {
     @Volatile var on = false
 
     /**
-     * How much every piece of glass is darkened (Screen dimmer, a custom's glass amount): 0 not at all, 0.8 to a
-     * fifth of its light. The film inside and the milky glaze dim; the selected look dims half as much, so it
-     * still stands out. A window's colour layer over playback ([playbackShade]) is darkened with it.
+     * How much the player's own glass over the picture is darkened (its buttons, pills, chips and rows, which show the
+     * film; not its windows, whose Playback glass layer darkens them, [playbackShade]): the Playback glass's dimness in
+     * use, the players' preset on ([app.fireplayer.data.Dimmer]). 0 not at all, 1 black. The film inside and the milky
+     * glaze dim; the selected look, the text and the icons never do.
      */
-    @Volatile var dim = 0f
+    val dim: Float get() = playbackShade.dim / GlassStyle.SHADE_MAX.toFloat()
 
     /**
      * The user's three glasses' layers (Settings › Look, saved by [app.fireplayer.data.GlassShades], [GlassStyle.Shade]):
      * App glass on the windows over the app's pages and Playback glass on the windows over full-screen playback, each a
-     * tint and a dimness; Rail, cards & header on the glass in the pages themselves, a tint and its charcoal. Set by
-     * [useShades]; each piece of glass reads its own as it's drawn, under whatever is drawn on it.
+     * tint and a dimness; Rail, cards & header on the glass in the pages themselves, a tint and its charcoal. Playback
+     * glass is the players' dimness preset on (Default: Look's own). Set by [useShades]; each piece of glass reads its
+     * own as it's drawn, under whatever is drawn on it.
      */
     @Volatile var appShade: GlassStyle.Shade = GlassStyle.APP_SHADE
         private set

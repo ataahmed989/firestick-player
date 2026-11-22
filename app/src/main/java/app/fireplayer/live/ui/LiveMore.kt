@@ -17,7 +17,7 @@ import java.util.Date
 /**
  * The windows the full-screen extra row opens, in the settings window on the right, made like the VOD player's own
  * and keeping the same saved values: Audio (the channel's audio tracks, and the delay), Audio delay, Display size
- * ([Prefs.displayMode], the VOD player's choices), Screen dimmer ([DimmerWindow], the VOD player's customs) and Sleep
+ * ([Prefs.displayMode], the VOD player's choices), Screen dimmer ([DimmerWindow], the VOD player's presets) and Sleep
  * timer; and Captions, from its button beside Favorite. Also the values shown under those buttons, and the sleep timer
  * itself, which keeps running in the guide.
  *

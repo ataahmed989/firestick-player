@@ -170,10 +170,11 @@ class GlassStyleTest {
     @Test fun dimnessDarkensTheTintedGlassWhateverTheTint() {
         for (tint in 0..100 step GlassStyle.SHADE_STEP) for (dim in 0..100 step GlassStyle.SHADE_STEP) {
             // The tinted glass first, then the dimness on it: the same share of light taken from whatever the tint left.
-            val tinted = GlassStyle.Shade(tint, 0).color
+            // The tinted glass as it really is (each stored colour is rounded to whole steps, so two of them can differ by
+            // more than the one step allowed).
             val both = GlassStyle.Shade(tint, dim).color
             for (b in intArrayOf(0, 128, 255)) {
-                val first = shows(tinted, b)
+                val first = model(tint, 0, 0, b)
                 assertShows("$tint% $dim% over $b", FloatArray(3) { first[it] * (1f - dim / 100f) }, shows(both, b))
             }
         }
@@ -326,6 +327,14 @@ class GlassStyleTest {
             // Playback glass: windows over full-screen films and Live TV.
             assertEquals(p.color, GlassBakes.tintOf(Glass.Kind.PANEL, GlassBakes.FILM))
             assertEquals(p.color, GlassBakes.tintOf(Glass.Kind.DIALOG_POPUP, GlassBakes.FILM))
+            // Those windows have Playback glass's layer baked in; the player's other glass (buttons, chips, rows) is
+            // darkened by its dimness as it's drawn ([Glass.dim]): none here.
+            assertTrue(GlassBakes.playbackPane(Glass.Kind.PANEL, GlassBakes.FILM))
+            assertTrue(GlassBakes.playbackPane(Glass.Kind.POPUP, GlassBakes.FILM))
+            assertFalse(GlassBakes.playbackPane(Glass.Kind.PANEL, GlassBakes.PANE))
+            assertFalse(GlassBakes.playbackPane(Glass.Kind.PILL, GlassBakes.FILM))
+            assertFalse(GlassBakes.playbackPane(Glass.Kind.ROW, GlassBakes.FILM))
+            assertEquals(0f, Glass.dim, 0f)
             // The banner's backing and shading follow the card's glass (Classic keeps its own).
             val look = Glass.on
             try {
@@ -349,6 +358,7 @@ class GlassStyleTest {
             assertTrue(Glass.useShades(a, r, dark))
             assertEquals(dark.color, GlassBakes.tintOf(Glass.Kind.PANEL, GlassBakes.FILM))
             assertNotEquals(GlassStyle.CLEAR, GlassBakes.tintOf(Glass.Kind.PANEL, GlassBakes.FILM))
+            assertEquals(0.25f, Glass.dim, 0.0001f)
         } finally {
             Glass.useShades(app, rail, playback)
         }

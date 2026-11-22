@@ -49,9 +49,8 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
     }
 
     /**
-     * Two looks of the film: very soft for windows, at the film's own light (a window's pane over playback adds no tint
-     * and no dark of its own, [GlassStyle.paneTint]: the screen dimmer alone darkens it), and less blurred and brighter
-     * for the controls.
+     * Two looks of the film: very soft for windows, at the film's own light (a window's pane over playback adds only the
+     * Playback glass layer, [GlassStyle.paneTint]: none by default), and less blurred and brighter for the controls.
      */
     enum class Kind { PANEL, CONTROL }
 
@@ -1330,8 +1329,8 @@ class GlassBackdrop(private val activity: Activity, private val surfaceView: Sur
         const val CONTROL_BLUR_DP = 11f
         const val PANEL_SATURATION = 1843 // 1.8
         /**
-         * The film's own light ([GlassStyle.PLAYBACK_PANE_LIGHT]): a window over playback is darkened by the screen dimmer
-         * alone.
+         * The film's own light ([GlassStyle.PLAYBACK_PANE_LIGHT]): a window over playback is darkened by its Playback glass
+         * layer alone (the players' dimness preset on).
          */
         val PANEL_BRIGHTNESS = (GlassStyle.PLAYBACK_PANE_LIGHT * 1024f).toInt()
         const val CONTROL_SATURATION = 1946 // 1.9

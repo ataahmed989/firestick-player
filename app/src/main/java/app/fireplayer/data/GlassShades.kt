@@ -10,10 +10,10 @@ import app.fireplayer.ui.GlassStyle
  * Settings › Look's three glasses, saved with the other settings, one value each wherever its row shows: App glass (the
  * windows over the app's pages) and Playback glass (windows over full-screen films and Live TV), each with its Tint and
  * its Dimness, and Rail, cards & header (the glass in the pages themselves), with its Tint and its Charcoal; 0% to 100%
- * in 5% steps ([GlassStyle.Shade]). The players' Screen dimmer windows' Tint is Playback glass's Tint
- * ([app.fireplayer.ui.DimmerWindow.TINT_GLASS]): the same saved value, so a change in one shows in the other and in Look.
- * [apply] puts them on the glass ([Glass.useShades]). Only the glass's own layers change: never text, icons or the focus
- * highlight drawn on it.
+ * in 5% steps ([GlassStyle.Shade]). Playback glass is the players' dimness settings' Default preset ([Dimmer.default]):
+ * the same saved values, so a change in one shows in the other. The Playback glass in use is the preset on there
+ * ([Dimmer.glass]: Default's, Look's, until a custom is picked). [apply] puts them on the glass ([Glass.useShades]). Only
+ * the glass's own layers change: never text, icons or the focus highlight drawn on it.
  */
 class GlassShades(private val sp: () -> SharedPreferences) {
 
@@ -84,8 +84,11 @@ class GlassShades(private val sp: () -> SharedPreferences) {
         return get(kind)
     }
 
-    /** Puts all three on the glass ([Glass.useShades]): true when that changed it. */
-    fun apply(): Boolean = Glass.useShades(get(Kind.APP), get(Kind.RAIL), get(Kind.PLAYBACK))
+    /**
+     * Puts all three on the glass ([Glass.useShades]), Playback glass as the players' preset on has it ([Dimmer.glass]:
+     * Look's own with Default on): true when that changed it.
+     */
+    fun apply(): Boolean = Glass.useShades(get(Kind.APP), get(Kind.RAIL), Dimmer(sp).glass())
 
     /** [apply], and if that changed the glass every view of [activity]'s window is drawn again with it, once. */
     fun applyTo(activity: Activity) {
@@ -111,7 +114,7 @@ class GlassShades(private val sp: () -> SharedPreferences) {
         const val CLEAR = "Clear"
 
         /** The settings file ([Prefs], [Dimmer]'s too). */
-        private fun settingsOf(context: Context): () -> SharedPreferences {
+        internal fun settingsOf(context: Context): () -> SharedPreferences {
             val app = context.applicationContext
             return { app.getSharedPreferences(KeyStore.OLD_FILE, Context.MODE_PRIVATE) }
         }

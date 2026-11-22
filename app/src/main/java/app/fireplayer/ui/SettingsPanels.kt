@@ -18,6 +18,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.res.ResourcesCompat
 import app.fireplayer.R
 import app.fireplayer.data.CredentialChecks
+import app.fireplayer.data.Dimmer
 import app.fireplayer.data.GlassShades
 import app.fireplayer.data.KeyStore
 import app.fireplayer.data.Prefs
@@ -352,8 +353,9 @@ class SettingsPanels(
      * is (0% clear frosted glass, 100% solid), then for App glass and Playback glass Dimness, how much the glass is
      * darkened after that (even with no tint), and for Rail, cards & header Charcoal, where its tint's colour sits
      * between the background's own (0%) and charcoal (100%). 0% to 100% in 5% steps with left / right, applied at once
-     * and saved ([GlassStyle.Shade]). Only the glass changes, never the words or icons on it. Playback glass's Tint is
-     * the players' Screen dimmer's Tint too.
+     * and saved ([GlassStyle.Shade]). Only the glass changes, never the words or icons on it. Playback glass is the
+     * players' dimness settings' Default preset ([Dimmer]): while a custom is on there, its own glass shows over playback,
+     * which Playback glass's rows say.
      */
     private fun glassShadesSection(panel: SidePanel): Unit = with(panel) {
         for (kind in GlassShades.Kind.entries) {
@@ -370,6 +372,10 @@ class SettingsPanels(
                     shades.step(kind, control, dir)
                     shades.applyTo(activity)
                 }.asSubRow()
+            }
+            if (kind == GlassShades.Kind.PLAYBACK) {
+                val preset = Dimmer(activity).active()
+                if (!preset.isDefault) message(customOnNote(preset.name))
             }
         }
         message(SHADES_NOTE)
@@ -981,7 +987,11 @@ class SettingsPanels(
             "background's own (0%) to charcoal (100%), darker and more neutral. Only the glass changes: words and icons " +
             "stay as they are. App glass: Settings and the other windows on the app's pages. Rail, cards & header: the " +
             "rail, the service and studio cards, Recent channels and the banner. Playback glass: windows over a film or " +
-            "full-screen channel (its Tint is in the Screen dimmer too)."
+            "full-screen channel; it's the Default preset of the players' Screen dimmer, where customs can be added."
+
+        /** Under Playback glass's rows while the players' Screen dimmer has a custom on: whose glass shows over playback. */
+        fun customOnNote(name: String) = "The players' Screen dimmer has \"$name\" on: its own glass shows over playback " +
+            "until Default is picked there."
 
         private const val ACTIVE = "Active"
         private const val INACTIVE = "Inactive"

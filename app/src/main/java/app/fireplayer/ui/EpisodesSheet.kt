@@ -145,7 +145,7 @@ class EpisodesSheet(private val activity: Activity, private val host: ViewGroup)
     /**
      * Glass look: the film in each glass pod is darkened as much as the shade around it (the sheet's dark wash and
      * its gradient at that height), so the pods sit in the dimmed picture instead of glowing out of it. This is
-     * the sheet's own shade, whatever the Screen dimmer is set to; the dimmer's glass amount still applies on top.
+     * the sheet's own shade, whatever the Screen dimmer is set to; the dimmer preset's glass dimness still applies on top.
      */
     private fun dimGlass() {
         if (!Glass.on) return

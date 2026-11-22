@@ -1,17 +1,16 @@
 package app.fireplayer.data
 
-import android.content.SharedPreferences
 import app.fireplayer.data.GlassShades.Control
 import app.fireplayer.data.GlassShades.Kind
-import app.fireplayer.ui.DimmerWindow
 import app.fireplayer.ui.GlassStyle
 import app.fireplayer.ui.SettingsCategory
 import app.fireplayer.ui.SettingsPanels
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** Settings › Look's three glasses as saved, their dropdowns' rows, and the players' Screen dimmer's Tint. */
+/** Settings › Look's three glasses as saved, and their dropdowns' rows. */
 class GlassShadesTest {
 
     @Test fun theThreeGlassesAreLooksDropdownsInOrder() {
@@ -24,132 +23,84 @@ class GlassShadesTest {
         assertEquals(Kind.entries.size, Kind.entries.map { it.part }.toSet().size)
     }
 
-    @Test fun eachDropdownOpensToTintAndDimness() {
-        assertEquals(listOf("Tint", "Dimness"), Control.entries.map { it.label })
-        val shade = GlassStyle.Shade(58, 30)
+    @Test fun eachDropdownOpensToItsTwoRows() {
+        assertEquals(listOf("Tint", "Dimness"), Kind.APP.controls.map { it.label })
+        assertEquals(listOf("Tint", "Charcoal"), Kind.RAIL.controls.map { it.label })
+        assertEquals(listOf("Tint", "Dimness"), Kind.PLAYBACK.controls.map { it.label })
+        val shade = GlassStyle.Shade(58, dim = 30, charcoal = 75)
         assertEquals(58, Control.TINT.of(shade))
         assertEquals(30, Control.DIMNESS.of(shade))
+        assertEquals(75, Control.CHARCOAL.of(shade))
         // Shown as percentages.
         assertEquals("58%", SettingsPanels.percent(Control.TINT.of(shade)))
         assertEquals("0%", SettingsPanels.percent(0))
+        assertEquals("100%", SettingsPanels.percent(100))
         // Six values, six keys of their own.
-        val keys = Kind.entries.flatMap { k -> Control.entries.map { it.keyOf(k) } }
+        val keys = Kind.entries.flatMap { k -> k.controls.map { k.keyOf(it) } }
         assertEquals(6, keys.toSet().size)
-        assertEquals(listOf("glass_app_tint", "glass_app_dimness"), Control.entries.map { it.keyOf(Kind.APP) })
+        assertEquals(listOf("glass_app_tint", "glass_app_dim"), Kind.APP.controls.map { Kind.APP.keyOf(it) })
+        assertEquals(listOf("glass_rail_tint", "glass_rail_charcoal"), Kind.RAIL.controls.map { Kind.RAIL.keyOf(it) })
+        assertEquals(listOf("glass_playback_tint", "glass_playback_dim"), Kind.PLAYBACK.controls.map { Kind.PLAYBACK.keyOf(it) })
+        // A glass has no row it doesn't show.
+        assertTrue(runCatching { Kind.RAIL.keyOf(Control.DIMNESS) }.isFailure)
+        assertTrue(runCatching { Kind.APP.keyOf(Control.CHARCOAL) }.isFailure)
     }
 
     @Test fun eachDropdownSaysHowItsGlassStands() {
-        assertEquals("58% · 30%", GlassShades.badge(GlassStyle.APP_SHADE))
-        assertEquals("58% · 100%", GlassShades.badge(GlassStyle.RAIL_SHADE))
-        // No tint is no colour layer at all, whatever the dimness.
-        assertEquals("Clear", GlassShades.badge(GlassStyle.PLAYBACK_SHADE))
-        assertEquals("Clear", GlassShades.badge(GlassStyle.Shade(0, 70)))
-        assertEquals("5% · 0%", GlassShades.badge(GlassStyle.Shade(5, 0)))
+        assertEquals("58% · 15%", GlassShades.badge(Kind.APP, GlassStyle.APP_SHADE))
+        assertEquals("58% · 100%", GlassShades.badge(Kind.RAIL, GlassStyle.RAIL_SHADE))
+        // Nothing laid over the frosted glass at all: Clear.
+        assertEquals("Clear", GlassShades.badge(Kind.PLAYBACK, GlassStyle.PLAYBACK_SHADE))
+        assertTrue(GlassShades.isClear(GlassStyle.PLAYBACK_SHADE))
+        // No tint is no colour, but a dimness alone still darkens the glass.
+        assertEquals("0% · 70%", GlassShades.badge(Kind.PLAYBACK, GlassStyle.Shade(0, dim = 70)))
+        assertFalse(GlassShades.isClear(GlassStyle.Shade(0, dim = 70)))
+        // Charcoal is only the tint's colour: with no tint it lays nothing.
+        assertEquals("Clear", GlassShades.badge(Kind.RAIL, GlassStyle.Shade(0, charcoal = 100)))
+        assertEquals("5% · 0%", GlassShades.badge(Kind.APP, GlassStyle.Shade(5, dim = 0)))
     }
 
     @Test fun eachGlassStartsAtItsDefaults() {
         val shades = GlassShades(sp = { MemoryPrefs() })
-        assertEquals(GlassStyle.Shade(58, 30), shades[Kind.APP])
-        assertEquals(GlassStyle.Shade(58, 100), shades[Kind.RAIL])
-        assertEquals(GlassStyle.Shade(0, 0), shades[Kind.PLAYBACK])
+        // App glass: Tint 58%, Dimness 15%. Rail, cards & header: Tint 58%, Charcoal 100%. Playback glass: none.
+        assertEquals(GlassStyle.Shade(58, dim = 15), shades[Kind.APP])
+        assertEquals(GlassStyle.Shade(58, charcoal = 100), shades[Kind.RAIL])
+        assertEquals(GlassStyle.Shade(0, dim = 0), shades[Kind.PLAYBACK])
         for (kind in Kind.entries) assertEquals(kind.default, shades[kind])
         assertEquals(listOf(GlassStyle.APP_SHADE, GlassStyle.RAIL_SHADE, GlassStyle.PLAYBACK_SHADE), Kind.entries.map { it.default })
     }
 
-    @Test fun theScreenDimmersTintIsPlaybackGlasssTint() {
-        // The players' Screen dimmer window (films and full-screen Live TV alike, through LiveMore) shows Playback glass's
-        // Tint, under that glass's name.
-        assertEquals(Kind.PLAYBACK, DimmerWindow.TINT_GLASS)
-        assertEquals("Playback glass", DimmerWindow.TINT_GLASS.title)
-        val saved = MemoryPrefs()
-        val look = GlassShades(sp = { saved })
-        val film = GlassShades(sp = { saved })
-        val live = GlassShades(sp = { saved })
-        // Changed in a player: Look and the other player show it.
-        film.step(DimmerWindow.TINT_GLASS, Control.TINT, 1)
-        film.step(DimmerWindow.TINT_GLASS, Control.TINT, 1)
-        assertEquals(10, look[Kind.PLAYBACK].tint)
-        assertEquals(10, live[DimmerWindow.TINT_GLASS].tint)
-        // Changed in Look: the players show it.
-        look.step(Kind.PLAYBACK, Control.TINT, -1)
-        assertEquals(5, film[DimmerWindow.TINT_GLASS].tint)
-        assertEquals(5, live[DimmerWindow.TINT_GLASS].tint)
-        // Only that one value: Playback glass's dimness and the other two glasses are as they were.
-        assertEquals(0, look[Kind.PLAYBACK].dim)
-        assertEquals(GlassStyle.APP_SHADE, look[Kind.APP])
-        assertEquals(GlassStyle.RAIL_SHADE, look[Kind.RAIL])
-        assertEquals(setOf("glass_playback_tint"), saved.values.keys)
-    }
-
-    @Test fun tintAndDimnessAreSavedApartAndStepWithinNoneAndAll() {
+    @Test fun eachValueIsSavedApartAndStepsWithinNoneAndAll() {
         val saved = MemoryPrefs()
         val shades = GlassShades(sp = { saved })
-        // App glass from 58% and 30%: the tint onto the 5% steps and back onto its default; the dimness down to none.
-        assertEquals(GlassStyle.Shade(60, 30), shades.step(Kind.APP, Control.TINT, 1))
-        assertEquals(GlassStyle.Shade(58, 30), shades.step(Kind.APP, Control.TINT, -1))
-        assertEquals(GlassStyle.Shade(55, 30), shades.step(Kind.APP, Control.TINT, -1))
-        repeat(6) { shades.step(Kind.APP, Control.DIMNESS, -1) }
-        assertEquals(GlassStyle.Shade(55, 0), shades.step(Kind.APP, Control.DIMNESS, -1))
+        // App glass from 58% and 15%: the tint onto the 5% steps and back onto its default; the dimness down to none.
+        assertEquals(GlassStyle.Shade(60, dim = 15), shades.step(Kind.APP, Control.TINT, 1))
+        assertEquals(GlassStyle.Shade(58, dim = 15), shades.step(Kind.APP, Control.TINT, -1))
+        assertEquals(GlassStyle.Shade(55, dim = 15), shades.step(Kind.APP, Control.TINT, -1))
+        repeat(2) { shades.step(Kind.APP, Control.DIMNESS, -1) }
+        assertEquals(GlassStyle.Shade(55, dim = 0), shades.step(Kind.APP, Control.DIMNESS, -1))
         repeat(12) { shades.step(Kind.APP, Control.TINT, 1) }
-        assertEquals(GlassStyle.Shade(100, 0), shades[Kind.APP])
+        assertEquals(GlassStyle.Shade(100, dim = 0), shades[Kind.APP])
         repeat(25) { shades.step(Kind.APP, Control.TINT, -1) }
-        assertEquals(GlassStyle.Shade(0, 0), shades[Kind.APP])
-        // Rail, cards & header's dimness is at the top already; down a step is 95%.
-        assertEquals(GlassStyle.Shade(58, 100), shades.step(Kind.RAIL, Control.DIMNESS, 1))
-        assertEquals(GlassStyle.Shade(58, 95), shades.step(Kind.RAIL, Control.DIMNESS, -1))
-        // Playback glass's own values were never touched.
+        assertEquals(GlassStyle.Shade(0, dim = 0), shades[Kind.APP])
+        // Rail, cards & header's charcoal is at the top already; down a step is 95%.
+        assertEquals(GlassStyle.Shade(58, charcoal = 100), shades.step(Kind.RAIL, Control.CHARCOAL, 1))
+        assertEquals(GlassStyle.Shade(58, charcoal = 95), shades.step(Kind.RAIL, Control.CHARCOAL, -1))
+        // Playback glass's own values only change by its own rows.
         assertEquals(GlassStyle.PLAYBACK_SHADE, shades[Kind.PLAYBACK])
-        shades.step(Kind.PLAYBACK, Control.DIMNESS, 1)
-        assertEquals(GlassStyle.Shade(0, 5), shades[Kind.PLAYBACK])
+        assertEquals(GlassStyle.Shade(0, dim = 5), shades.step(Kind.PLAYBACK, Control.DIMNESS, 1))
         // Each value under its own key, read back by a fresh reader of the same settings.
-        assertEquals(setOf("glass_app_tint", "glass_app_dimness", "glass_rail_dimness", "glass_playback_dimness"), saved.values.keys)
+        assertEquals(setOf("glass_app_tint", "glass_app_dim", "glass_rail_charcoal", "glass_playback_dim"), saved.values.keys)
         val again = GlassShades(sp = { saved })
-        assertEquals(GlassStyle.Shade(0, 0), again[Kind.APP])
-        assertEquals(GlassStyle.Shade(58, 95), again[Kind.RAIL])
-        assertEquals(GlassStyle.Shade(0, 5), again[Kind.PLAYBACK])
+        assertEquals(GlassStyle.Shade(0, dim = 0), again[Kind.APP])
+        assertEquals(GlassStyle.Shade(58, charcoal = 95), again[Kind.RAIL])
+        assertEquals(GlassStyle.Shade(0, dim = 5), again[Kind.PLAYBACK])
     }
 
     @Test fun aSavedValueOutOfRangeIsReadAsTheNearestEnd() {
-        val saved = MemoryPrefs("glass_app_tint" to 250, "glass_app_dimness" to -40)
-        assertEquals(GlassStyle.Shade(100, 0), GlassShades(sp = { saved })[Kind.APP])
-    }
-
-    /** SharedPreferences in memory. */
-    private class MemoryPrefs(vararg initial: Pair<String, Any?>) : SharedPreferences {
-        val values = linkedMapOf(*initial)
-
-        override fun getAll(): MutableMap<String, *> = values.toMutableMap()
-        override fun getString(key: String, defValue: String?) = values[key] as String? ?: defValue
-        @Suppress("UNCHECKED_CAST")
-        override fun getStringSet(key: String, defValues: MutableSet<String>?) = values[key] as MutableSet<String>? ?: defValues
-        override fun getInt(key: String, defValue: Int) = values[key] as Int? ?: defValue
-        override fun getLong(key: String, defValue: Long) = values[key] as Long? ?: defValue
-        override fun getFloat(key: String, defValue: Float) = values[key] as Float? ?: defValue
-        override fun getBoolean(key: String, defValue: Boolean) = values[key] as Boolean? ?: defValue
-        override fun contains(key: String) = values.containsKey(key)
-        override fun registerOnSharedPreferenceChangeListener(l: SharedPreferences.OnSharedPreferenceChangeListener?) {}
-        override fun unregisterOnSharedPreferenceChangeListener(l: SharedPreferences.OnSharedPreferenceChangeListener?) {}
-
-        override fun edit(): SharedPreferences.Editor = object : SharedPreferences.Editor {
-            val changes = linkedMapOf<String, Any?>()
-            var clear = false
-            override fun putString(key: String, value: String?) = apply { changes[key] = value }
-            override fun putStringSet(key: String, values: MutableSet<String>?) = apply { changes[key] = values }
-            override fun putInt(key: String, value: Int) = apply { changes[key] = value }
-            override fun putLong(key: String, value: Long) = apply { changes[key] = value }
-            override fun putFloat(key: String, value: Float) = apply { changes[key] = value }
-            override fun putBoolean(key: String, value: Boolean) = apply { changes[key] = value }
-            override fun remove(key: String) = apply { changes[key] = null }
-            override fun clear() = apply { clear = true }
-            private fun write() {
-                if (clear) values.clear()
-                changes.forEach { (k, v) -> if (v == null) values.remove(k) else values[k] = v }
-            }
-            override fun commit(): Boolean {
-                write()
-                return true
-            }
-            override fun apply() = write()
-        }
+        val saved = MemoryPrefs("glass_app_tint" to 250, "glass_app_dim" to -40, "glass_rail_charcoal" to 130)
+        val shades = GlassShades(sp = { saved })
+        assertEquals(GlassStyle.Shade(100, dim = 0), shades[Kind.APP])
+        assertEquals(GlassStyle.Shade(58, charcoal = 100), shades[Kind.RAIL])
     }
 }
