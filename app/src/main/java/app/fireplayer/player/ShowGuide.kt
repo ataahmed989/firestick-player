@@ -59,8 +59,13 @@ class ShowGuide(
          * Empty for an episode that is one of TMDB's (or none), whose [season] and [number] are TMDB's own.
          */
         val parts: List<Part> = emptyList(),
+        /** TMDB's score for it (0 to 10); 0 when unknown. */
+        val rating: Double = 0.0,
     ) {
         val label: String get() = "S$season E$number"
+
+        /** Its numbers as the Episode details window heads it: "S1 · E2" (its name follows, [name]). */
+        val numbers: String get() = "S$season · E$number"
 
         /** Whether it is two (or more) of TMDB's episodes joined, numbered as the provider does rather than as TMDB. */
         val joined: Boolean get() = parts.isNotEmpty()
@@ -87,7 +92,7 @@ class ShowGuide(
                 put(JSONObject().put("id", e.id).put("ext", e.extension).put("ps", e.providerSeason).put("pn", e.providerNumber)
                     .put("pt", e.providerTitle).put("s", e.season).put("n", e.number).put("name", e.name).put("ov", e.overview)
                     .put("img", e.image ?: "").put("rt", e.runtimeMin).put("air", e.airDate).put("m", e.match.name)
-                    .put("why", e.why ?: "").put("tm", e.tmdbMin)
+                    .put("why", e.why ?: "").put("tm", e.tmdbMin).put("va", e.rating)
                     .apply {
                         if (e.parts.isNotEmpty()) put("parts", JSONArray().apply {
                             e.parts.forEach { p -> put(JSONObject().put("s", p.season).put("n", p.number).put("name", p.name)) }
@@ -125,6 +130,7 @@ class ShowGuide(
                     parts = e.optJSONArray("parts")?.let { a ->
                         (0 until a.length()).mapNotNull { a.optJSONObject(it) }.map { p -> Part(p.optInt("s"), p.optInt("n"), p.optString("name")) }
                     }.orEmpty(),
+                    rating = e.optDouble("va", 0.0),
                 )
             }
             ShowGuide(key, o.optString("series"), o.optString("portal"), o.optString("show"), o.optString("search"), o.optInt("tmdb"), episodes)
@@ -330,7 +336,7 @@ class ShowGuide(
                     Ep(e.id, e.extension, e.season, e.number, title, picked.season, picked.number, picked.name,
                         picked.overview.ifEmpty { e.plot }, picked.still ?: e.image,
                         picked.runtime.takeIf { it > 0 } ?: (e.durationSecs / 60), picked.airDate.ifEmpty { e.airDate }, match, why,
-                        picked.runtime)
+                        picked.runtime, rating = picked.rating)
                 }
             }
         }
@@ -437,8 +443,11 @@ class ShowGuide(
             return fresh
         }
 
-        /** A season from TMDB, kept for a few days in the cache folder. */
-        private fun season(context: Context, tmdb: Tmdb, id: Int, season: Int): List<Tmdb.TvEpisode> {
+        /**
+         * A season from TMDB, kept for a few days in the cache folder (also what an episode put right by hand in Films &
+         * Shows shows, and Fix match's lists of seasons and episodes). Blocks.
+         */
+        fun season(context: Context, tmdb: Tmdb, id: Int, season: Int): List<Tmdb.TvEpisode> {
             val file = File(File(context.cacheDir, "tmdb").apply { mkdirs() }, "tv-$id-s$season.json")
             if (file.exists() && System.currentTimeMillis() - file.lastModified() < SEASON_KEPT_MS) {
                 runCatching {
@@ -446,7 +455,7 @@ class ShowGuide(
                     return (0 until list.length()).map { i ->
                         val e = list.getJSONObject(i)
                         Tmdb.TvEpisode(e.optInt("id"), e.optInt("s"), e.optInt("n"), e.optString("name"), e.optString("ov"),
-                            e.optString("still").ifEmpty { null }, e.optInt("rt"), e.optString("air"))
+                            e.optString("still").ifEmpty { null }, e.optInt("rt"), e.optString("air"), e.optDouble("va", 0.0))
                     }
                 }
             }
@@ -455,7 +464,8 @@ class ShowGuide(
                 file.writeText(JSONArray().apply {
                     fresh.forEach { e ->
                         put(JSONObject().put("id", e.id).put("s", e.season).put("n", e.number).put("name", e.name)
-                            .put("ov", e.overview).put("still", e.still ?: "").put("rt", e.runtime).put("air", e.airDate))
+                            .put("ov", e.overview).put("still", e.still ?: "").put("rt", e.runtime).put("air", e.airDate)
+                            .put("va", e.rating))
                     }
                 }.toString())
             }
@@ -575,17 +585,13 @@ class MatchFixes(context: Context) {
     }
 
     /**
-     * Fix match: the show is TMDB's [tmdbId], and this episode (the provider's [season] / [number]) is TMDB's
-     * [toSeason] / [toNumber]; with [restOfSeason], the provider's later episodes of that season move the same way.
-     * Another TMDB show than before drops the fixes made for the old one.
+     * Fix match: the show is TMDB's [tmdbId], and this episode (by its source's id for it) is TMDB's [toSeason] /
+     * [toNumber]; with [align] ([alignShift]), the source's other episodes of that season move the same way. Kept by
+     * [key], the identity the source's fixes are already kept by: a playlist's show ([NextEpisode.showKey]), or a title
+     * from Films & Shows by its own id ("vod|tt…"); never a link.
      */
-    fun place(key: String, tmdbId: Int, episodeId: String, season: Int, number: Int, toSeason: Int, toNumber: Int, restOfSeason: Boolean) {
-        val old = show(key)?.takeIf { it.tmdbId == 0 || it.tmdbId == tmdbId }
-        val picks = HashMap(old?.picks.orEmpty())
-        picks[episodeId] = toSeason to toNumber
-        val shifts = old?.shifts.orEmpty().filterNot { restOfSeason && it.season == season && it.from >= number }.toMutableList()
-        if (restOfSeason) shifts += Show.Shift(season, number, toSeason, toNumber - number)
-        saveShow(key, Show(tmdbId, picks, shifts, old?.confirmed.orEmpty() - episodeId))
+    fun place(key: String, tmdbId: Int, episodeId: String, toSeason: Int, toNumber: Int, align: Show.Shift?) {
+        saveShow(key, placed(show(key), tmdbId, episodeId, toSeason, toNumber, align))
     }
 
     /** Fix match on a film: the name it goes by, by the provider and its id for it. */
@@ -620,5 +626,45 @@ class MatchFixes(context: Context) {
         prefs.all.keys.filter { it.startsWith("film|$portal|") || it.startsWith("filmtmdb|$portal|") || (it.startsWith("show|") && it.contains("/$portal|")) }
             .forEach { editor.remove(it) }
         editor.apply()
+    }
+
+    companion object {
+        /** Where a Films & Shows title's episodes put right by hand are kept ([show], [place]): by the title's own id. */
+        fun vodKey(titleId: String): String = "vod|$titleId"
+
+        /**
+         * [old] with one more episode put right ([place]): it is TMDB's [toSeason] / [toNumber] of the show [tmdbId],
+         * and with [align] the rest of its source's season moves the same way (a run aligned before from there on gives
+         * way to it). Another TMDB show than before drops the fixes made for the old one. Pure.
+         */
+        fun placed(old: Show?, tmdbId: Int, episodeId: String, toSeason: Int, toNumber: Int, align: Show.Shift?): Show {
+            val same = old?.takeIf { it.tmdbId == 0 || it.tmdbId == tmdbId }
+            val picks = HashMap(same?.picks.orEmpty())
+            picks[episodeId] = toSeason to toNumber
+            val shifts = same?.shifts.orEmpty().filterNot { align != null && it.season == align.season && it.from >= align.from }.toMutableList()
+            if (align != null) shifts += align
+            return Show(tmdbId, picks, shifts, same?.confirmed.orEmpty() - episodeId)
+        }
+
+        /**
+         * How the rest of [ep]'s season in its source lines up once [ep] is TMDB's [toSeason] / [toNumber]: each of its
+         * episodes moved as [ep] was (into [toSeason], by the same count), from the first one that still lands on an
+         * episode 1 or later (a source numbering a show straight through keeps its earlier seasons as they are). Pure.
+         */
+        fun alignShift(episodes: List<ShowGuide.Ep>, ep: ShowGuide.Ep, toSeason: Int, toNumber: Int): Show.Shift {
+            val delta = toNumber - ep.providerNumber
+            val first = episodes.filter { it.providerSeason == ep.providerSeason }.minOfOrNull { it.providerNumber } ?: ep.providerNumber
+            return Show.Shift(ep.providerSeason, maxOf(first, 1 - delta, 0), toSeason, delta)
+        }
+
+        /**
+         * How many of the source's other episodes [shift] would put somewhere new: "Also fix 9 other episodes from this
+         * source". Not [ep] itself, nor one already put right one by one ([picked]), nor one already where it would go.
+         */
+        fun alignCount(episodes: List<ShowGuide.Ep>, ep: ShowGuide.Ep, shift: Show.Shift, picked: Set<String>): Int =
+            episodes.count {
+                it.id != ep.id && it.id !in picked && it.providerSeason == shift.season && it.providerNumber >= shift.from &&
+                    (it.season != shift.toSeason || it.number != it.providerNumber + shift.delta)
+            }
     }
 }
