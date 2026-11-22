@@ -38,8 +38,8 @@ import kotlin.math.sqrt
  * One piece of glass (Glass look): the blurred film behind it ([GlassBackdrop]), a milky glaze, a soft inner
  * bevel, a bright rim and a shadow. Selected controls and rows turn glossy white with the blue ring and glow.
  * A window (the settings window, a hold window, a small dialog) is a pane instead ([GlassStyle.paneTint]): the blurred
- * picture behind it with no glaze, under only the user's Playback glass tint and dimness over playback (none by default:
- * the screen dimmer alone darkens it), a reflective rim and a soft shadow.
+ * picture behind it with no glaze, under only the user's Playback glass colour layer over playback (none by default: the
+ * screen dimmer alone darkens it), a reflective rim and a soft shadow.
  *
  * Everything but the film is drawn once, in software, into a cached bitmap ([GlassBakes]): the hardware canvas
  * of older Fire OS can't blur or cut shapes. Each frame is then one rounded rectangle of film and one bitmap
@@ -134,7 +134,7 @@ class GlassDrawable(
     private var radius = 0f
     private var bakePlain: Bitmap? = null
     private var bakeFocused: Bitmap? = null
-    /** The tint and dimness ([Glass.shadeChanges]) its plain drawing was made with: one made before a change goes. */
+    /** The tints and dimnesses ([Glass.shadeChanges]) its plain drawing was made with: one made before a change goes. */
     private var shadesFor = Glass.shadeChanges
     private val bakePaint = Paint(Paint.FILTER_BITMAP_FLAG)
     private val bakeFocusedPaint = Paint(Paint.FILTER_BITMAP_FLAG)
@@ -215,7 +215,8 @@ class GlassDrawable(
         // The film style always shows its film; the calm style only as a window over the page.
         if (source != null && !edgeOnly && (!calm || (overlay && backdropOn))) drawFilm(canvas, source, a)
         if (flat) {
-            val flatColor = if (calm) Glass.appShade.color else FLAT_GLAZE
+            // The strip along the screen's edge is the rail's glass (Rail, cards & header).
+            val flatColor = if (calm) Glass.railShade.color else FLAT_GLAZE
             flatGlaze.color = flatColor
             flatGlaze.alpha = (Color.alpha(flatColor) * a).roundToInt()
             canvas.drawRect(shape, flatGlaze)
@@ -506,6 +507,18 @@ internal object GlassBakes {
     fun trim() = cache.evictAll()
 
     /**
+     * The tints or dimnesses were changed (Settings › Look, the Screen dimmer's Tint: [Glass.useShades]): the window
+     * drawings made with a colour layer no longer theirs go at once, and only those ([tintOf]); each is made again once,
+     * when next needed. The rest (the rows, the controls, the windows whose glass didn't change) are kept.
+     */
+    fun dropStale() {
+        val all = cache.snapshot() ?: return
+        for (key in all.keys) {
+            if (key.tint != 0 && key.tint != tintOf(Glass.Kind.entries[key.style], key.variant)) cache.remove(key)
+        }
+    }
+
+    /**
      * The plain look's drawings: the film style's (a window there: its pane over playback), the calm style's
      * ([GlassStyle]), the calm outline alone, and a window's pane over the page ([GlassStyle.Over]).
      */
@@ -534,19 +547,20 @@ internal object GlassBakes {
     }
 
     /**
-     * Whether [kind]'s plain glass in [variant] has the user's tint and dimness in it ([Glass.appShade],
-     * [Glass.playbackShade]): a window's, over the page or over playback.
+     * Whether [kind]'s plain glass in [variant] has one of the user's colour layers in it (Settings › Look: a tint and a
+     * dimness, [GlassStyle.Shade]): a window's, over the page or over playback, or a window-shaped surface in the page.
      */
     fun shaded(kind: Glass.Kind, variant: Int): Boolean = isWindow(kind) && variant != EDGE
 
     /**
-     * The colour [kind]'s plain glass in [variant] lays over what shows through it ([GlassStyle.Shade.color]): a window's
-     * pane by what it's over ([GlassStyle.paneTint]), a window in the page the app glass's; 0 for the rest, whose drawing
-     * has none.
+     * The colour layer [kind]'s plain glass in [variant] lays over what shows through it ([GlassStyle.Shade.color]), by
+     * which of the three glasses it is: a window over the page App glass's ([PANE]), a window over playback Playback
+     * glass's ([FILM]; both [GlassStyle.paneTint]), and a window-shaped surface in the page itself (Recent channels, the
+     * banner's card: [CALM]) Rail, cards & header's. 0 for the rest, whose drawing has none.
      */
     fun tintOf(kind: Glass.Kind, variant: Int): Int = when {
         !shaded(kind, variant) -> 0
-        variant == CALM -> Glass.appShade.color
+        variant == CALM -> Glass.railShade.color
         else -> GlassStyle.paneTint(over(variant), Glass.appShade, Glass.playbackShade)
     }
 
@@ -691,9 +705,10 @@ private class Baker(private val density: Float) {
     }
 
     /**
-     * Unselected glass in the calm style ([GlassStyle]): a soft shadow outside, then one dark tint (a window's: the app
-     * glass's tint and dimness, [windowTint]), a faint light from above, the hairline and the top highlight. What shows
-     * through the tint (the blurred page, or whatever is behind) is drawn under this by [GlassDrawable], or is simply there.
+     * Unselected glass in the calm style ([GlassStyle]): a soft shadow outside, then one dark tint (a window-shaped
+     * surface's: Rail, cards & header's colour layer, [windowTint]), a faint light from above, the hairline and the top
+     * highlight. What shows through the tint (the blurred page, or whatever is behind) is drawn under this by
+     * [GlassDrawable], or is simply there.
      */
     private fun calm(c: Canvas, kind: Glass.Kind, pad: Int, w: Int, h: Int, rect: RectF, r: Float, windowTint: Int) {
         val window = GlassBakes.isWindow(kind)
@@ -718,9 +733,9 @@ private class Baker(private val density: Float) {
 
     /**
      * A window's pane, drawn over what shows through it (the blurred page or film, by [GlassDrawable]): a soft shadow
-     * outside, then what it lays over that by what it's over ([tint], [GlassStyle.paneTint]: the app glass's tint and
-     * dimness on pages, the playback glass's over playback, none by default; [sheen], [GlassStyle.paneSheen]: a faint
-     * light from above on pages only), the glow under its top edge and its reflective rim ([reflectiveRim]).
+     * outside, then what it lays over that by what it's over ([tint], [GlassStyle.paneTint]: App glass's colour layer on
+     * pages, Playback glass's over playback, none by default; [sheen], [GlassStyle.paneSheen]: a faint light from above
+     * on pages only), the glow under its top edge and its reflective rim ([reflectiveRim]).
      */
     private fun pane(c: Canvas, pad: Int, w: Int, h: Int, rect: RectF, r: Float, tint: Int, sheen: Int) {
         outside(c, pad, w, h, rect, r, WINDOW_SHADOW_LAYER)

@@ -57,7 +57,7 @@ class SettingsPanels(
     private var updateStatus: String? = null
     /** Whether the OpenSubtitles and TMDB keys work (saved results, shared by every window). */
     private val checks = CredentialChecks(prefs)
-    /** Settings › Look's tint and dimness of the two glasses (saved; the players' Screen dimmer shares Playback glass's Tint). */
+    /** Settings › Look's tint and dimness of the three glasses (saved; the players' Screen dimmer shares Playback glass's Tint). */
     private val shades = GlassShades(activity)
 
     // TiviMate titles, for one opening of the window: whether the set-up details are shown (hidden at first), and
@@ -213,7 +213,7 @@ class SettingsPanels(
             }
             SettingsCategory.LOOK -> {
                 lookSection(this)
-                // App settings' Look only: the players' Look (their menu's settings) leaves the glasses' shades out.
+                // App settings' Look only: the players' Look (their menu's settings) leaves the three glasses out.
                 if (prefs.glassLook) glassShadesSection(this)
             }
             SettingsCategory.ACCOUNTS -> credentialsSection(this)
@@ -346,26 +346,30 @@ class SettingsPanels(
     }
 
     /**
-     * Settings › Look's two glasses, under the look's own rows (App settings only; Glass look): App glass, every glass
-     * surface of the app's pages and the windows over them, and Playback glass, the windows over full-screen films and
-     * Live TV. Each has its Tint (the wallpaper's own colour over the frosted glass; dark, so more of it darkens a little
-     * too) and its Dimness (black over that), 0% to 100% in 5% steps with left / right, applied at once and saved
-     * ([GlassShades], [GlassStyle.Shade]). Playback glass's Tint is the players' Screen dimmer's Tint too.
+     * Settings › Look's three glasses, under the look's own rows (App settings only; Glass look), each a dropdown row like
+     * Info pods ([GlassShades.Kind]: App glass, Rail, cards & header, Playback glass) saying how it stands
+     * ([GlassShades.badge]) and opening to its two rows: Tint, how strong its colour layer is (0% clear frosted glass,
+     * 100% solid), and Dimness, where that colour sits between the background's own (0%) and charcoal (100%). 0% to 100%
+     * in 5% steps with left / right, applied at once and saved ([GlassStyle.Shade]). Playback glass's Tint is the players'
+     * Screen dimmer's Tint too.
      */
     private fun glassShadesSection(panel: SidePanel): Unit = with(panel) {
         for (kind in GlassShades.Kind.entries) {
-            header(kind.title)
+            val open = isPartOpen(kind.part)
             val shade = shades[kind]
-            stepper(SHADE_TINT, percent(shade.tint)) { dir ->
-                shades.stepTint(kind, dir)
-                shades.applyTo(activity)
+            dropdownRow(kind.title, GlassShades.badge(shade), if (shade.tint == 0) Rows.Badge.INACTIVE else Rows.Badge.LIGHT, open) {
+                togglePart(kind.part)
+                refresh()
             }
-            stepper(SHADE_DIM, percent(shade.dim)) { dir ->
-                shades.stepDim(kind, dir)
-                shades.applyTo(activity)
+            if (!open) continue
+            for (control in GlassShades.Control.entries) {
+                stepper(control.label, percent(control.of(shade))) { dir ->
+                    shades.step(kind, control, dir)
+                    shades.applyTo(activity)
+                }.asSubRow()
             }
         }
-        message(shadesNote())
+        message(SHADES_NOTE)
     }
 
     /**
@@ -968,15 +972,12 @@ class SettingsPanels(
         /** A tint, dimness or dimmer amount as its row shows it: "55%". */
         fun percent(value: Int) = "$value%"
 
-        /** Settings › Look: each glass's two rows. */
-        const val SHADE_TINT = "Tint"
-        const val SHADE_DIM = "Dimness"
-        private fun shadesNote(): String {
-            val app = GlassStyle.APP_SHADE
-            return "Tint lays the wallpaper's own colour over the glass, so it darkens a little too; Dimness darkens it. " +
-                "App glass: the pages and their windows (${percent(app.tint)} and ${percent(app.dim)} to start). Playback " +
-                "glass: the windows over a film or full-screen channel (none to start; its Tint is also in the Screen dimmer)."
-        }
+        /** Settings › Look: what the three glasses' rows mean. */
+        private const val SHADES_NOTE = "Tint: how strongly the glass is coloured, from clear frosted glass (0%) to solid " +
+            "(100%). Dimness: its colour, from the background's own (0%) to charcoal (100%), darker and more neutral. App " +
+            "glass: Settings and the other windows on the app's pages. Rail, cards & header: the rail, the service and " +
+            "studio cards, Recent channels and the banner. Playback glass: windows over a film or full-screen channel " +
+            "(its Tint is in the Screen dimmer too)."
 
         private const val ACTIVE = "Active"
         private const val INACTIVE = "Inactive"

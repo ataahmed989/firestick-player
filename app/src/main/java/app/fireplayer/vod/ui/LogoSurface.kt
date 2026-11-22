@@ -19,7 +19,7 @@ import kotlin.math.max
  * through it, as the rail at rest; on Classic the rail's solid colour), and over that, the same on both looks, a faint
  * broad reflection over its upper left, a fine light rim that fades toward the bottom and a soft close shadow just
  * outside it (outside only, so the glass isn't darkened by it). Its look is [VodSizes]' (LOGO_*). It's drawn once per
- * card size, look and fill (the app glass's tint and dimness, Settings › Look), at the chosen card's size so that one is
+ * card size, look and fill (Rail, cards & header's tint and dimness, Settings › Look), at the chosen card's size so that one is
  * sharp, and every card of that size draws the same picture: nothing is built, copied or blurred while drawing. Main
  * thread.
  */
@@ -32,7 +32,7 @@ internal class LogoSurface private constructor(
 
     fun draw(canvas: Canvas, paint: Paint) = canvas.drawBitmap(bitmap, null, box, paint)
 
-    /** Whether it's the surface of the look [glass] as that look is now (its fill: the app glass's tint and dimness). */
+    /** Whether it's the surface of the look [glass] as that look is now (its fill: Rail, cards & header's colour layer). */
     fun isFor(glass: Boolean): Boolean = this.glass == glass && fill == VodSizes.logoFill(glass)
 
     companion object {

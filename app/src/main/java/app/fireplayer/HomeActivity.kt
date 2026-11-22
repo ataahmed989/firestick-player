@@ -140,7 +140,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         super.onCreate(savedInstanceState)
         val prefs = Prefs(this)
         Glass.on = prefs.glassLook
-        // Settings › Look's tint and dimness of the app's glass and of the windows over full screen.
+        // Settings › Look's tint and dimness of the three glasses (App glass, Rail, cards & header, Playback glass).
         GlassShades(this).apply()
         shadesSeen = Glass.shadeChanges
         shellTokens = Tokens(this)

@@ -693,7 +693,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // A wider or narrower window opened over another (or come back to): the subtitles move aside by as much.
         panel.onWidthChanged = { w -> if (panel.isOpen) subtitlesBeside(w) }
         buildMoreRow()
-        // Settings › Look's tint and dimness of the windows over the film (and of the app's glass).
+        // Settings › Look's tint and dimness of the windows over the film (Playback glass), and of the app's other two.
         GlassShades(this).apply()
         applyLook()
         settingsPanels.onLookChanged = { applyLook() }

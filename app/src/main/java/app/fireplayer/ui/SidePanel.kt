@@ -1052,8 +1052,7 @@ class SidePanel(private val activity: Activity) {
             "Copies" to R.drawable.ic_head_list,
             "Remote" to R.drawable.ic_head_remote,
             "Look" to R.drawable.ic_head_look,
-            // Settings › Look's two glasses (the Playback glass one in the Screen dimmer too).
-            "App glass" to R.drawable.ic_head_look,
+            // The Screen dimmer's Tint, under its glass's name (Settings › Look › Playback glass).
             "Playback glass" to R.drawable.ic_head_play,
             "Skipping" to R.drawable.ic_head_skip,
             "Defaults" to R.drawable.ic_head_lang,

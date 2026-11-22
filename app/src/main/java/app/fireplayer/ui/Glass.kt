@@ -26,42 +26,47 @@ object Glass {
     /**
      * How much every piece of glass is darkened (Screen dimmer, a custom's glass amount): 0 not at all, 0.8 to a
      * fifth of its light. The film inside and the milky glaze dim; the selected look dims half as much, so it
-     * still stands out. Apart from the windows' own dimness ([playbackShade]), which this darkens too.
+     * still stands out. A window's colour layer over playback ([playbackShade]) is darkened with it.
      */
     @Volatile var dim = 0f
 
     /**
-     * The user's tint and dimness of the two glasses (Settings › Look, saved by [app.fireplayer.data.GlassShades]): App
-     * glass on the app's pages and the windows over them, Playback glass on windows over full-screen playback. Set by
-     * [useShades]; each piece of glass reads them as it's drawn.
+     * The user's three glasses' colour layers (Settings › Look, saved by [app.fireplayer.data.GlassShades]), each a tint
+     * and a dimness ([GlassStyle.Shade]): App glass on the windows over the app's pages, Rail, cards & header on the
+     * glass in the pages themselves, Playback glass on the windows over full-screen playback. Set by [useShades]; each
+     * piece of glass reads its own as it's drawn.
      */
     @Volatile var appShade: GlassStyle.Shade = GlassStyle.APP_SHADE
+        private set
+    @Volatile var railShade: GlassStyle.Shade = GlassStyle.RAIL_SHADE
         private set
     @Volatile var playbackShade: GlassStyle.Shade = GlassStyle.PLAYBACK_SHADE
         private set
 
-    /** Counts the changes to [appShade] and [playbackShade]: glass drawn before one draws its tint again, once. */
+    /** Counts the changes to the three: glass drawn before one draws its colour layer again, once. */
     @Volatile var shadeChanges = 0
         private set
 
     /**
-     * Puts these shades on the glass: true when that changed them, and glass on screen is then to be drawn again
-     * ([redraw]). The drawings made with the old ones go ([GlassBakes.trim]); each is made again once, when next needed.
+     * Puts these on the glass: true when that changed them, and glass on screen is then to be drawn again ([redraw]).
+     * The drawings made with a colour no longer on go ([GlassBakes.dropStale]); each is made again once, when next needed.
      */
-    fun useShades(app: GlassStyle.Shade, playback: GlassStyle.Shade): Boolean {
-        if (app == appShade && playback == playbackShade) return false
+    fun useShades(app: GlassStyle.Shade, rail: GlassStyle.Shade, playback: GlassStyle.Shade): Boolean {
+        if (app == appShade && rail == railShade && playback == playbackShade) return false
         appShade = app
+        railShade = rail
         playbackShade = playback
         shadeChanges++
-        GlassBakes.trim()
+        GlassBakes.dropStale()
         return true
     }
 
     /**
-     * The colour a banner's picture is eased into and what backs it, in the look on: the app glass with only the
-     * wallpaper behind it ([GlassStyle.Shade.solid]), or Classic's own ([GlassStyle.WINDOW_SOLID]).
+     * The colour a banner's picture is eased into and what backs it, in the look on: the banner card's glass (Rail,
+     * cards & header) with only the wallpaper behind it ([GlassStyle.Shade.solid]), or Classic's own
+     * ([GlassStyle.WINDOW_SOLID]).
      */
-    val windowSolid: Int get() = if (on) appShade.solid else GlassStyle.WINDOW_SOLID
+    val windowSolid: Int get() = if (on) railShade.solid else GlassStyle.WINDOW_SOLID
 
     /** [view] and everything in it drawn again: each piece of glass then reads the shades (or the dimmer) as it draws. */
     fun redraw(view: View) {

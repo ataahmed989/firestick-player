@@ -726,10 +726,10 @@ internal object VodSizes {
     const val LOGO_SHADOW_BLUR = 4f
 
     /**
-     * A logo card's fill: the rail's window's. Glass: the app glass's tint and dimness ([Glass.appShade]) over the
-     * wallpaper as it is, as the rail at rest and every glass surface in the page. Classic: the rail's solid colour.
+     * A logo card's fill: the rail's window's. Glass: Rail, cards & header's colour layer ([Glass.railShade], Settings ›
+     * Look) over the wallpaper as it is, as the rail at rest. Classic: the rail's solid colour.
      */
-    fun logoFill(glass: Boolean): Int = if (glass) Glass.appShade.color else RailShape.CLASSIC_FILL
+    fun logoFill(glass: Boolean): Int = if (glass) Glass.railShade.color else RailShape.CLASSIC_FILL
 
     /** A logo card's corner radius, dp: the same share of its height at either size. */
     fun logoRadius(style: RowStyle = RowStyle.LOGO): Float = logoRadiusFor(cardH(style))

@@ -109,7 +109,7 @@ class VodHeader(
 
     /**
      * The card left of the picture's box, in the one colour the picture's left edge is eased into ([HeaderArt.leftFade],
-     * [Glass.windowSolid]: the app glass over the wallpaper): the see-through panel there would meet that colour in a
+     * [Glass.windowSolid]: the card's glass over the wallpaper): the see-through panel there would meet that colour in a
      * faint line where the box begins. It reaches two corners' width under the box, so it's whole behind the picture's
      * own rounded corners.
      */
@@ -605,7 +605,7 @@ class VodHeader(
         private var across = 1f
         /** How much wider (px; narrower below 0) than its bounds it's drawn. */
         private var shift = 0f
-        /** The colour its shaders were made in: made again, once, when the app glass's dimness changes (Settings › Look). */
+        /** The colour its shaders were made in: made again, once, when the card's tint or dimness changes (Settings › Look). */
         private var shadeColor = 0
 
         /**

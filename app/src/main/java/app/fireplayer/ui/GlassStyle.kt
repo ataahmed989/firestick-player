@@ -5,15 +5,18 @@ import kotlin.math.roundToInt
 /**
  * The one glass style of the app's own screens (Home, Movies, TV Shows, My List, Search, Settings, the guide): dark
  * translucent glass. A surface is what's behind it, softly blurred where it's a window over the page ([PageGlass]),
- * under one restrained tint of the wallpaper's own colour (the user's App glass tint and dimness, [Shade]), with a fine
- * hairline round it, a subtle highlight along its top edge and a soft shadow outside. No milky glaze, no bevel, no blue
- * wash: the colour comes from what's behind. Text, icons and the selected (white) look are drawn over it at full
- * strength, never faded with it.
+ * under one restrained colour layer (the user's tint and dimness, [Shade]), with a fine hairline round it, a subtle
+ * highlight along its top edge and a soft shadow outside. No milky glaze, no bevel, no blue wash: the colour comes from
+ * what's behind. Text, icons and the selected (white) look are drawn over it at full strength, never faded with it.
  *
- * A window (the settings window, a hold window, a small dialog) is one frosted pane: what's behind it blurred, its tint
- * and dimness by what it's over ([paneTint]: App glass on pages, Playback glass over playback, none by default), a
- * reflective rim (RIM_*) and a soft shadow; its title is written on the pane, its options a lighter card of rows on it
- * ([RowGroups]).
+ * Three glasses take their colour layer from Settings › Look, each its own Tint and Dimness ([Shade]): App glass (the
+ * windows over the app's pages: the settings window, hold windows, pickers, notices), Rail, cards & header (the glass in
+ * the pages themselves: the rail, the logo cards, Recent channels, the banner's card and its shading) and Playback glass
+ * (the windows over full-screen films and Live TV).
+ *
+ * A window (the settings window, a hold window, a small dialog) is one frosted pane: what's behind it blurred, its colour
+ * layer by what it's over ([paneTint]: App glass on pages, Playback glass over playback), a reflective rim (RIM_*) and a
+ * soft shadow; its title is written on the pane, its options a lighter card of rows on it ([RowGroups]).
  *
  * Every value of that style is here, so tuning it is one edit. The shapes are [Glass.Kind]s and are made through
  * [Glass]: [Glass.background] for a surface in the page, [Glass.overlay] for a window over it, [Glass.edge] for an
@@ -38,15 +41,20 @@ object GlassStyle {
     // ---- Tint ---------------------------------------------------------------------------------------------------
 
     /**
-     * The glass wallpaper's own colour (wallpaper_glass.png, its average: 15.5, 24.6, 32.9): the windows' tint is this
-     * colour ([Shade]), so glass over the page reads as a frosted continuation of the wallpaper, never as a colour of its
-     * own: over the wallpaper a window is the wallpaper frosted, over a picture it calms it towards the wallpaper so white
+     * The background's own colour: the glass wallpaper's (wallpaper_glass.png, its average: 15.5, 24.6, 32.9). A glass
+     * at no Dimness is tinted with this colour ([Shade]), so over the page it reads as a frosted continuation of the
+     * wallpaper: over the wallpaper it's the wallpaper frosted, over a picture it calms it towards the wallpaper so white
      * words read, and what's behind still shows its own colours.
      */
     const val WALLPAPER = 0x10191F
     /**
+     * Charcoal: the neutral dark the glass was tinted with before it took the wallpaper's colour, and the colour of a
+     * glass at full Dimness ([Shade]): darker than the wallpaper and with none of its blue.
+     */
+    const val CHARCOAL = 0x0C0E12
+    /**
      * The wallpaper's colour with nothing showing through: Classic's banner backing and its picture's eased edge (Glass
-     * has the app glass's own, [Shade.solid]), and where glass has no picture to show (the widened rail's fallback).
+     * has the banner card's own, [Shade.solid]), and where glass has no picture to show (the widened rail's fallback).
      */
     const val WINDOW_SOLID = WALLPAPER or 0xFF000000.toInt()
     /** Buttons, pills, circles and chips: a little lighter, so one reads as a surface on the dark wallpaper too. */
@@ -58,19 +66,19 @@ object GlassStyle {
     const val ROW_FILL = 0x12FFFFFF
     const val ROW_HIGHLIGHT = 0x1FFFFFFF
 
-    // ---- The user's tint and dimness (Settings › Look: App glass, Playback glass) -----------------------------------
+    // ---- The user's tint and dimness (Settings › Look: App glass, Rail, cards & header, Playback glass) -------------
 
     /**
-     * How a glass is shaded, in percent (0 to [SHADE_MAX], in [SHADE_STEP]s): [tint], the wallpaper's own colour
-     * ([WALLPAPER]) laid over the frosted glass at that strength, then [dim], black laid over that. The wallpaper's colour
-     * is dark, so more tint also darkens a little: tint calms what shows through towards the wallpaper, dimness darkens
-     * all of it. Per colour channel, with t = tint / 100, d = dim / 100, B what shows through and W the wallpaper's colour:
+     * A glass's colour layer, in percent (0 to [SHADE_MAX], in [SHADE_STEP]s), laid over the frosted glass (what's
+     * behind it, blurred or as it is) under the glass's own rim, sheen and option cards:
      *
-     *     out = ((1 − t)·B + t·W)·(1 − d) = (1 − A)·B + A·C,   A = 1 − (1 − t)(1 − d),   C = W·t(1 − d) / A
+     * - [tint], how strong the layer is: 0% none at all (clear frosted glass), 100% solid (nothing shows through).
+     * - [dim], where its colour sits on the gradient from the background's own colour ([WALLPAPER], at 0%) to charcoal
+     *   ([CHARCOAL], at 100%): more is darker and more neutral, less blends with the background ([dimColor]).
      *
-     * so the two layers are laid as one colour, [color]: C at alpha A (nothing at all at 0% and 0%; the wallpaper's colour,
-     * solid, at 100% tint; black at 100% dimness). [solid] is that glass with only the wallpaper behind it, W·(1 − d)
-     * whatever the tint: the colour a banner's picture is eased into, and what backs it. Both are worked out once, here.
+     * So [color] is lerp(WALLPAPER, CHARCOAL, dim) at alpha tint, worked out once here. [solid] is that layer over the
+     * wallpaper with nothing else behind it: the colour a banner's picture is eased into, and what backs it, so they meet
+     * the card's see-through glass round them without a line.
      */
     data class Shade(val tint: Int, val dim: Int) {
         val color: Int = shadeColor(tint, dim)
@@ -82,31 +90,50 @@ object GlassStyle {
     const val SHADE_MAX = 100
 
     /**
-     * App glass: every glass surface of the app's pages and every window over them (the rail, Recent channels, the
-     * banner's card, the settings window, hold windows, pickers, notices). 55% tint and 5% dimness are the look it had as
-     * one tint, the wallpaper's colour at 0x94 (58%), within two levels over anything from black to white: that kept
-     * 0.420 of what showed through and laid 0.580 of W over it; this keeps (1 − 0.55)(1 − 0.05) = 0.4275 of it and lays
-     * 0.55 × 0.95 = 0.5225 of W (stored as #920F171C). Of the 5% steps with both above 0, the nearest by far.
+     * App glass: the windows over the app's pages (the settings window, hold windows for titles and channels, pickers,
+     * notices). A proper tint (58%, 0x94, as strong as the glass has always been), mostly the background's own colour
+     * (30% of the way to charcoal: #0F161B), so a window is the wallpaper frosted, a little deeper.
      */
-    val APP_SHADE = Shade(55, 5)
-    /** Playback glass: windows over full-screen films and Live TV. None of either: the frosted picture as it is. */
+    val APP_SHADE = Shade(58, 30)
+    /**
+     * Rail, cards & header: the glass in the pages themselves (the rail, the logo and studio cards, Recent channels, the
+     * banner's card and its shading, the episode pods). Charcoal at 58%, 0x940C0E12: exactly the look they had before
+     * the glass took the wallpaper's colour.
+     */
+    val RAIL_SHADE = Shade(58, 100)
+    /** Playback glass: windows over full-screen films and Live TV. No tint: the frosted picture as it is. */
     val PLAYBACK_SHADE = Shade(0, 0)
 
     /** A tint or dimness kept within 0% and [SHADE_MAX]. */
     fun clampShade(percent: Int): Int = percent.coerceIn(0, SHADE_MAX)
 
-    /** [percent] one step up ([direction] 1) or down (-1), within 0% and [SHADE_MAX]. */
-    fun stepShade(percent: Int, direction: Int): Int = clampShade(percent + direction.coerceIn(-1, 1) * SHADE_STEP)
+    /**
+     * [percent] one step up ([direction] above 0) or down (below 0), within 0% and [SHADE_MAX]: to the next [SHADE_STEP]
+     * on that side, or to [stop] on the way (a glass's own default between two steps, 58%), so a value off the steps
+     * comes back onto them and the default can always be stepped back to.
+     */
+    fun stepShade(percent: Int, direction: Int, stop: Int = -1): Int {
+        val p = clampShade(percent)
+        if (direction == 0) return p
+        val next = if (direction > 0) (p / SHADE_STEP + 1) * SHADE_STEP else ((p + SHADE_STEP - 1) / SHADE_STEP - 1) * SHADE_STEP
+        val onTheWay = if (direction > 0) stop in (p + 1) until next else stop in (next + 1) until p
+        return clampShade(if (onTheWay) stop else next)
+    }
 
-    /** [Shade.color]: the one colour (ARGB) laid over the frosted glass for [tint]% and [dim]% (see [Shade]). */
+    /**
+     * [Shade.color]: the colour layer (ARGB) for [tint]% and [dim]%: [dimColor] at the tint's alpha, nothing at all
+     * ([CLEAR]) at no tint.
+     */
     fun shadeColor(tint: Int, dim: Int): Int {
-        val t = clampShade(tint) / 100f
-        val d = clampShade(dim) / 100f
-        val alpha = ((1f - (1f - t) * (1f - d)) * 255f).roundToInt()
+        val alpha = (clampShade(tint) * 255f / SHADE_MAX).roundToInt()
         if (alpha == 0) return CLEAR
-        // C against the alpha as it's stored, so what the screen shows is the sum above to the level.
-        val k = t * (1f - d) * 255f / alpha
-        return (alpha shl 24) or (channel(WALLPAPER, 16, k) shl 16) or (channel(WALLPAPER, 8, k) shl 8) or channel(WALLPAPER, 0, k)
+        return (alpha shl 24) or dimColor(dim)
+    }
+
+    /** The colour (RGB) [dim]% of the way from the background's own ([WALLPAPER]) to charcoal ([CHARCOAL]). */
+    fun dimColor(dim: Int): Int {
+        val d = clampShade(dim) / SHADE_MAX.toFloat()
+        return (lerp(WALLPAPER, CHARCOAL, d, 16) shl 16) or (lerp(WALLPAPER, CHARCOAL, d, 8) shl 8) or lerp(WALLPAPER, CHARCOAL, d, 0)
     }
 
     /** [top] (ARGB) laid over [base] (opaque): the colour that shows, opaque. */
@@ -115,7 +142,11 @@ object GlassStyle {
         return (0xFF shl 24) or (mix(top, base, a, 16) shl 16) or (mix(top, base, a, 8) shl 8) or mix(top, base, a, 0)
     }
 
-    private fun channel(rgb: Int, shift: Int, k: Float): Int = (((rgb shr shift) and 0xFF) * k).roundToInt().coerceIn(0, 255)
+    private fun lerp(from: Int, to: Int, d: Float, shift: Int): Int {
+        val a = (from shr shift) and 0xFF
+        val b = (to shr shift) and 0xFF
+        return (a + (b - a) * d).roundToInt().coerceIn(0, 255)
+    }
 
     private fun mix(top: Int, base: Int, a: Int, shift: Int): Int =
         (((top shr shift) and 0xFF) * a + ((base shr shift) and 0xFF) * (255 - a) + 127) / 255
@@ -129,9 +160,9 @@ object GlassStyle {
     enum class Over { PAGE, PLAYBACK }
 
     /**
-     * The pane's tint and dimness over what's behind it, as one colour ([Shade.color]): on pages the app glass's
-     * ([app]), over playback the playback glass's ([playback]; by default none at all, no colour and no dark: the frosted
-     * picture as it is, which the screen dimmer alone darkens, its glass amount).
+     * The pane's colour layer over what's behind it ([Shade.color]): on pages the App glass's ([app]), over playback
+     * the Playback glass's ([playback]; by default none at all, no colour and no dark: the frosted picture as it is,
+     * which the screen dimmer alone darkens, its glass amount).
      */
     fun paneTint(over: Over, app: Shade, playback: Shade): Int = if (over == Over.PLAYBACK) playback.color else app.color
 
