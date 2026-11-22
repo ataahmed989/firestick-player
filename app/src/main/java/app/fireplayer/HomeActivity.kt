@@ -24,6 +24,7 @@ import androidx.media3.common.VideoSize
 import androidx.media3.common.text.Cue
 import androidx.media3.ui.SubtitleView
 import app.fireplayer.data.Dimmer
+import app.fireplayer.data.GlassShades
 import app.fireplayer.data.Prefs
 import app.fireplayer.live.ChannelKey
 import app.fireplayer.live.LiveSync
@@ -112,6 +113,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
     private lateinit var settingsPage: LinearLayout
     private var consumeBackUp = false
     private var lookOn = false
+    /** The user's glass (Settings › Look) this screen was last drawn with ([Glass.shadeChanges]). */
+    private var shadesSeen = 0
     private var videoTarget: RectF? = null
     private var videoFull = false
     private var videoRadius = 0f
@@ -137,6 +140,9 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         super.onCreate(savedInstanceState)
         val prefs = Prefs(this)
         Glass.on = prefs.glassLook
+        // Settings › Look's three glasses (App glass, Rail, cards & header, Playback glass).
+        GlassShades(this).apply()
+        shadesSeen = Glass.shadeChanges
         shellTokens = Tokens(this)
         // Pictures keep on disk across runs (posters, backdrops).
         ImageLoader.init(applicationContext)
@@ -701,6 +707,11 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         super.onRestart()
         // Service shortcuts may have been changed in the player's settings meanwhile.
         showRailServices()
+        // So may the user's glass (Settings › Look, the players' dimness presets): everything drawn again with it, once.
+        if (shadesSeen != Glass.shadeChanges) {
+            shadesSeen = Glass.shadeChanges
+            Glass.redraw(window.decorView)
+        }
         if (lookOn == Glass.on) return
         // The look was switched in the player while this screen was behind it.
         applyLook()
@@ -1365,25 +1376,17 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
     }
 
     /**
-     * Screen dimmer, as the VOD player's applyDim: the full-screen live picture and its captions darken by the
-     * display amount (never the miniature, the controls or the windows), and glass by the glass amount. Only glass
-     * showing the live picture is dimmed ([glassShowsFilm]); the guide's glass over the wallpaper never is.
+     * Screen dimmer, as the VOD player's applyDim: the full-screen live picture and its captions darken by the preset's
+     * display dimness (never the miniature, the controls or the windows), and the glass over it takes the preset's glass
+     * tint and glass dimness (Playback glass, [GlassShades.apply]). Only glass showing the live picture is dimmed
+     * ([glassShowsFilm]); the guide's glass over the wallpaper never is.
      */
     private fun applyLiveDim() {
-        val amounts = dimmer.amounts()
-        dimDisplay = amounts.display / 100f
+        dimDisplay = dimmer.display() / 100f
         showDimmer()
-        val glass = amounts.glass / 100f
-        if (Glass.dim != glass) {
-            Glass.dim = glass
-            // Every glass shape reads it as it draws: draw them all again.
-            redrawAll(window.decorView)
-        }
-    }
-
-    private fun redrawAll(view: View) {
-        view.invalidate()
-        if (view is ViewGroup) for (i in 0 until view.childCount) redrawAll(view.getChildAt(i))
+        // Every glass shape reads it as it draws: all drawn again, once, if it changed.
+        GlassShades(this).applyTo(this)
+        shadesSeen = Glass.shadeChanges
     }
 
     private var lastSize: VideoSize = VideoSize.UNKNOWN

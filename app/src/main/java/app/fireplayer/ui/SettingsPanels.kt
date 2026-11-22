@@ -18,6 +18,8 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.res.ResourcesCompat
 import app.fireplayer.R
 import app.fireplayer.data.CredentialChecks
+import app.fireplayer.data.Dimmer
+import app.fireplayer.data.GlassShades
 import app.fireplayer.data.KeyStore
 import app.fireplayer.data.Prefs
 import app.fireplayer.live.ui.PipRules
@@ -56,6 +58,8 @@ class SettingsPanels(
     private var updateStatus: String? = null
     /** Whether the OpenSubtitles and TMDB keys work (saved results, shared by every window). */
     private val checks = CredentialChecks(prefs)
+    /** Settings › Look's tint and dimness of the three glasses (saved; the players' Screen dimmer shares Playback glass's Tint). */
+    private val shades = GlassShades(activity)
 
     // TiviMate titles, for one opening of the window: whether the set-up details are shown (hidden at first), and
     // what "Check playlists now" said.
@@ -208,7 +212,11 @@ class SettingsPanels(
                 }
                 fontSection(this)
             }
-            SettingsCategory.LOOK -> lookSection(this)
+            SettingsCategory.LOOK -> {
+                lookSection(this)
+                // App settings' Look only: the players' Look (their menu's settings) leaves the three glasses out.
+                if (prefs.glassLook) glassShadesSection(this)
+            }
             SettingsCategory.ACCOUNTS -> credentialsSection(this)
             SettingsCategory.ROWS -> app.fireplayer.vod.ui.RowsSettings.render(this, activity, prefs) { onRailServicesChanged() }
             SettingsCategory.HOME_HEADER -> homeHeaderSection(this)
@@ -336,6 +344,41 @@ class SettingsPanels(
                 prefs.glassRefreshPerSec = rates[it]
             }.asSubRow()
         }
+    }
+
+    /**
+     * Settings › Look's three glasses, under the look's own rows (App settings only; Glass look), each a dropdown row like
+     * Info pods ([GlassShades.Kind]: App glass, Rail, cards & header, Playback glass) saying how it stands
+     * ([GlassShades.badge]) and opening to its two rows ([GlassShades.Kind.controls]): Tint, how strong its colour layer
+     * is (0% clear frosted glass, 100% solid), then for App glass and Playback glass Dimness, how much the glass is
+     * darkened after that (even with no tint), and for Rail, cards & header Charcoal, where its tint's colour sits
+     * between the background's own (0%) and charcoal (100%). 0% to 100% in 5% steps with left / right, applied at once
+     * and saved ([GlassStyle.Shade]). Only the glass changes, never the words or icons on it. Playback glass is the
+     * players' dimness settings' Default preset ([Dimmer]): while a custom is on there, its own glass shows over playback,
+     * which Playback glass's rows say.
+     */
+    private fun glassShadesSection(panel: SidePanel): Unit = with(panel) {
+        for (kind in GlassShades.Kind.entries) {
+            val open = isPartOpen(kind.part)
+            val shade = shades[kind]
+            val badge = if (GlassShades.isClear(shade)) Rows.Badge.INACTIVE else Rows.Badge.LIGHT
+            dropdownRow(kind.title, GlassShades.badge(kind, shade), badge, open) {
+                togglePart(kind.part)
+                refresh()
+            }
+            if (!open) continue
+            for (control in kind.controls) {
+                stepper(control.label, percent(control.of(shade))) { dir ->
+                    shades.step(kind, control, dir)
+                    shades.applyTo(activity)
+                }.asSubRow()
+            }
+            if (kind == GlassShades.Kind.PLAYBACK) {
+                val preset = Dimmer(activity).active()
+                if (!preset.isDefault) message(customOnNote(preset.name))
+            }
+        }
+        message(SHADES_NOTE)
     }
 
     /**
@@ -934,6 +977,21 @@ class SettingsPanels(
             "sound" to "Sound", "source" to "Source",
         )
         fun onOff(on: Boolean) = if (on) "On" else "Off"
+
+        /** A tint, dimness or charcoal as its row shows it: "55%". */
+        fun percent(value: Int) = "$value%"
+
+        /** Settings › Look: what the three glasses' rows mean. */
+        private const val SHADES_NOTE = "Tint: how strongly the glass is coloured, from clear frosted glass (0%) to solid " +
+            "(100%). Dimness: how much darker the glass is made, after its tint. Charcoal: the tint's colour, from the " +
+            "background's own (0%) to charcoal (100%), darker and more neutral. Only the glass changes: words and icons " +
+            "stay as they are. App glass: Settings and the other windows on the app's pages. Rail, cards & header: the " +
+            "rail, the service and studio cards, Recent channels and the banner. Playback glass: windows over a film or " +
+            "full-screen channel; it's the Default preset of the players' Screen dimmer, where customs can be added."
+
+        /** Under Playback glass's rows while the players' Screen dimmer has a custom on: whose glass shows over playback. */
+        fun customOnNote(name: String) = "The players' Screen dimmer has \"$name\" on: its own glass shows over playback " +
+            "until Default is picked there."
 
         private const val ACTIVE = "Active"
         private const val INACTIVE = "Inactive"

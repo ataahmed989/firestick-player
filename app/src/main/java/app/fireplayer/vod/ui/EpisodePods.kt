@@ -209,7 +209,8 @@ class EpisodePod(context: Context, private val t: Tokens) : View(context), Image
         val f = focus
 
         // The base: the pod's rounded shape below the still.
-        basePaint.color = if (glass) GlassStyle.WINDOW_TINT else t.rowFill
+        // Glass: a card in the page, as the logo cards (Settings › Look, Rail, cards & header).
+        basePaint.color = if (glass) Glass.railShade.color else t.rowFill
         canvas.save()
         canvas.clipRect(0f, pictureH, w, h)
         canvas.drawRoundRect(0f, pictureH - radius, w, h, radius, radius, basePaint)

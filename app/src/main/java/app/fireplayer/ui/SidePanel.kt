@@ -15,7 +15,9 @@ import androidx.core.content.res.ResourcesCompat
 import app.fireplayer.R
 
 /**
- * The see-through settings window on the right third of the screen (or wider: [open]'s wide, for long names).
+ * The see-through settings window on the right third of the screen (or wider: [open]'s wide, for long names): one
+ * frosted pane ([Glass.overlay]) with its title written on it and its rows in cards on it ([RowGroups]), the same room
+ * of glass round them (side_panel.xml).
  * Each window is drawn by a render function; [refresh] redraws it in place
  * and keeps the focused row and scroll position.
  * A window of hundreds of rows is a long list instead ([longList]): only the rows on screen are made.

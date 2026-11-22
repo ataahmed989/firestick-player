@@ -14,7 +14,7 @@ import android.graphics.PorterDuffXfermode
 import android.graphics.RectF
 import android.graphics.Shader
 import android.view.View
-import app.fireplayer.ui.GlassStyle
+import app.fireplayer.ui.Glass
 import app.fireplayer.ui.ImageLoader
 import app.fireplayer.ui.ImageTarget
 
@@ -134,6 +134,8 @@ class HeaderArt(context: Context, private val spec: ArtSpec = ArtSpec.HEADER) : 
             invalidate()
         }
     private val coverPaint = Paint()
+    /** The colour the cover was made in ([Glass.windowSolid]): made again, once, when that changes (Settings › Look). */
+    private var coverColor = 0
 
     private var shown: Bitmap? = null
     private var shownShader: BitmapShader? = null
@@ -230,12 +232,13 @@ class HeaderArt(context: Context, private val spec: ArtSpec = ArtSpec.HEADER) : 
     }
 
     private fun makeCover() {
+        coverColor = Glass.windowSolid
         val w = (frame ?: box).width() * leftFade
         if (w <= 0f) {
             coverPaint.shader = null
             return
         }
-        val rgb = GlassStyle.WINDOW_SOLID and 0x00FFFFFF
+        val rgb = coverColor and 0x00FFFFFF
         val n = VodSizes.FADE_ALPHAS.size
         val left = (frame ?: box).left
         // The baked fades' easing, the other way round: solid at the edge, clear at the end.
@@ -312,6 +315,7 @@ class HeaderArt(context: Context, private val spec: ArtSpec = ArtSpec.HEADER) : 
         if (b != null && fade < 1f) draw(canvas, b, beforeShader, if (spec.opaque) 1f else 1f - fade, beforeCover)
         shown?.let { draw(canvas, it, shownShader, fade, shownCover) }
         // With or without a picture: the card's dark side (the banner's backing) always eases out the same way.
+        if (leftFade > 0f && coverColor != Glass.windowSolid) makeCover()
         if (leftFade > 0f && coverPaint.shader != null) {
             val f = frame ?: box
             canvas.drawRect(f.left, f.top, f.left + f.width() * leftFade, f.bottom, coverPaint)

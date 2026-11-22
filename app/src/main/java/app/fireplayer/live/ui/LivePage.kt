@@ -2099,7 +2099,7 @@ class LivePage(private val activity: Activity, private val host: Host) {
         val area = inRoot(guide, RectF(0f, 0f, guide.width.toFloat(), guide.height.toFloat()))
         // The guide runs down to the screen's edge: the window keeps a margin from it.
         area.intersect(0f, 0f, root.width.toFloat(), root.height - gap.toFloat())
-        popup.open(channel.name, listOf(starButton(channel.favorite), HoldPopup.Button("Assign favorites") { popupAssign() }), inRoot(guide, row), area)
+        popup.open(channel.name, listOf(starButton(channel.favorite), HoldPopup.Button("Assign favorites", app.fireplayer.R.drawable.ic_playlist_add) { popupAssign() }), inRoot(guide, row), area)
     }
 
     private fun starButton(favorite: Boolean) = HoldPopup.Button(
@@ -2136,10 +2136,10 @@ class LivePage(private val activity: Activity, private val host: Host) {
         val m = gap.toFloat()
         val area = RectF(m, m, root.width - m, root.height - m)
         popup.open(name, listOf(
-            HoldPopup.Button("Move to top") { moveGroupToTop(scope) },
+            HoldPopup.Button("Move to top", app.fireplayer.R.drawable.ic_move_top) { moveGroupToTop(scope) },
             HoldPopup.Button("Hide category") { hideGroup(scope) },
         ), inRoot(row, RectF(0f, 0f, row.width.toFloat(), row.height.toFloat())), area,
-            under = HoldPopup.Button("Manage groups") { popupManage(scope) })
+            under = HoldPopup.Button("Manage groups", app.fireplayer.R.drawable.ic_settings) { popupManage(scope) })
     }
 
     /** Manage groups: the window gives way to Manage groups for the group's playlist, that group's row selected. */

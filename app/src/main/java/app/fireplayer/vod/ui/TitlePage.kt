@@ -1096,12 +1096,12 @@ class TitlePage(
                 val pod = episodes.items.getOrNull(index) ?: return
                 val watched = r.isEpisodeWatched(ep)
                 val actions = listOf(
-                    HoldPopup.Button(if (watched) "Mark unwatched" else "Mark watched") {
+                    HoldPopup.Button(if (watched) "Mark unwatched" else "Mark watched", HoldWindow.watchedIcon(watched)) {
                         hold.close()
                         r.setEpisodesWatched(listOf(ep), !watched)
                         host.showNotice(if (watched) HoldWindow.UNMARKED else HoldWindow.MARKED)
                     },
-                    HoldPopup.Button("Mark watched up to here") {
+                    HoldPopup.Button("Mark watched up to here", HoldWindow.watchedIcon(false)) {
                         hold.close()
                         r.markWatchedUpTo(details, ep)
                         host.showNotice(HoldWindow.MARKED)
@@ -1225,9 +1225,13 @@ class TitlePage(
             r.isWatched(opened.id)
         }
         val actions = ArrayList<HoldPopup.Button>(3)
-        actions += HoldPopup.Button(if (watched) "Mark unwatched" else "Mark watched") { hold.markWatched(title, !watched) }
-        if (r.inContinueWatching(opened.id)) actions += HoldPopup.Button("Remove from Continue Watching") { hold.removeFromContinue(title) }
-        actions += HoldPopup.Button("Details") { openDetails() }
+        actions += HoldPopup.Button(if (watched) "Mark unwatched" else "Mark watched", HoldWindow.watchedIcon(watched)) {
+            hold.markWatched(title, !watched)
+        }
+        if (r.inContinueWatching(opened.id)) {
+            actions += HoldPopup.Button("Remove from Continue Watching", HoldWindow.REMOVE_ICON) { hold.removeFromContinue(title) }
+        }
+        actions += HoldPopup.Button("Details", HoldWindow.DETAILS_ICON) { openDetails() }
         val anchor = buttons.moreButton
         hold.open(title.name, actions, anchor, anchor, hold.area(VodSizes.HOLD_INSET)) { takeFocusBack() }
     }

@@ -23,6 +23,7 @@ import app.fireplayer.vod.play.PlayRules
 import app.fireplayer.vod.play.PlayerMeta
 import app.fireplayer.vod.play.Recovery
 import app.fireplayer.vod.play.SourcePlayback
+import app.fireplayer.vod.play.VodFix
 import app.fireplayer.vod.ui.SourcesPanel
 import android.os.Build
 import android.os.Bundle
@@ -73,6 +74,7 @@ import androidx.media3.exoplayer.source.MediaLoadData
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.SubtitleView
 import app.fireplayer.data.Dimmer
+import app.fireplayer.data.GlassShades
 import app.fireplayer.data.Prefs
 import app.fireplayer.history.ContinueWatching
 import app.fireplayer.history.LibraryContinue
@@ -559,6 +561,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
      * asking again. Null until read (from the store: at once).
      */
     private var vodDetails: TitleDetails? = null
+    /**
+     * A film or show from Films & Shows as put right by hand in Fix match (kept per title): its name, Film details /
+     * Show details, Skip intro's times and the subtitles search go by it ([vodMeta]). Null: as handed over.
+     */
+    private var vodFix: VodFix? = null
     private var nextSkipWarmed = false
     /** How long this start takes, step by step, for one "FirePlayerDiag: start …" line at the first picture. */
     private var launch = LaunchLog(SystemClock.elapsedRealtime())
@@ -686,6 +693,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // A wider or narrower window opened over another (or come back to): the subtitles move aside by as much.
         panel.onWidthChanged = { w -> if (panel.isOpen) subtitlesBeside(w) }
         buildMoreRow()
+        // Settings › Look's glass: the windows over the film's (Playback glass), and the app's other two.
+        GlassShades(this).apply()
         applyLook()
         settingsPanels.onLookChanged = { applyLook() }
         settingsPanels.onChipsChanged = { updateChips() }
@@ -2801,7 +2810,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                     val n = s.next
                     if (n != null && !nextSkipWarmed && it.duration - it.currentPosition <= PlayRules.NEXT_LOOKUP_MS) {
                         nextSkipWarmed = true
-                        warmSkipTimes(s.request.imdbId, n.season, n.episode, 0L)
+                        warmSkipTimes(vodMeta(s.request).imdbId, n.season, n.episode, 0L)
                     }
                 }
                 // Stage 4: a stall that goes on is judged while it lasts (the same source reopened first, then the rules).
@@ -3186,8 +3195,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private fun lookUpSegments(entry: Entry, duration: Long, again: Boolean = false) {
         val g = guide
         // From the add-ons: the IMDb id and the season and episode handed over say which film or episode this is
-        // (no name, no TMDB key and no guide needed to ask SkipDB / IntroDB), whatever else is known by now.
-        val vod = source?.request?.takeIf { entry.storeKey != null }
+        // (no name, no TMDB key and no guide needed to ask SkipDB / IntroDB), whatever else is known by now. Put right
+        // by hand in Fix match: TMDB's title as fixed.
+        val vod = source?.request?.takeIf { entry.storeKey != null }?.let { vodMeta(it) }
+        val vodFixed = vod != null && vodFix != null
         // Not for a half-hour joined from two of TMDB's episodes: the times known are each one's alone.
         val ep = if (vod != null) null
         else guideEpisode(entry)?.takeIf { g != null && g.tmdbId > 0 && it.match == ShowGuide.Match.SURE && !it.joined }
@@ -3226,17 +3237,20 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val fixed = if (film) matchFor(entry)?.tmdbId else null
         // From the add-ons: the length to weigh IntroDB's times against is the episode's own where the show's details
         // give it (the show's usual length otherwise), or the film's.
-        val vodMinutes = if (vod == null) 0 else PlayerMeta.runtimeMinutes(vod, vodDetails)
+        // (A fixed film's comes from TMDB below: the details handed over may be another film's.)
+        val vodMinutes = if (vod == null || vodFixed) 0 else PlayerMeta.runtimeMinutes(vod, vodDetails)
         val tmdbReady = tmdb.isConfigured
         if (segmentWorker.isShutdown) return
         segmentWorker.execute {
             if (segmentsFor != want || segmentsAsked != asked) return@execute
             fun askDatabases(): Segments? = runCatching {
                 if (vod != null) {
-                    // A title the catalogue only has TMDB's id for: its IMDb id is TMDB's to give.
-                    val imdb = if (SkipTimes.isImdbId(vod.imdbId)) vod.imdbId
-                    else vod.tmdbId?.takeIf { tmdbReady }?.let { tmdb.ids(it, vod.season != null)?.imdb }
-                    imdb?.let { SkipTimes.find(app, it, vod.season, vod.episode, duration, vodMinutes, sync) }
+                    // A title the catalogue only has TMDB's id for, or one put right by hand: its IMDb id is TMDB's to
+                    // give (and a fixed film's length).
+                    val ids = if (SkipTimes.isImdbId(vod.imdbId)) null
+                    else vod.tmdbId?.takeIf { tmdbReady }?.let { tmdb.ids(it, vod.season != null) }
+                    val imdb = if (SkipTimes.isImdbId(vod.imdbId)) vod.imdbId else ids?.imdb
+                    imdb?.let { SkipTimes.find(app, it, vod.season, vod.episode, duration, if (vodFixed) ids?.runtime ?: 0 else vodMinutes, sync) }
                 } else if (ep != null) {
                     tmdb.ids(showId, true)?.let { SkipTimes.find(app, it.imdb, ep.season, ep.number, duration, ep.tmdbMin, sync) }
                 } else {
@@ -3411,7 +3425,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             }
             else -> null
         }
-        titleView.text = vod?.let { PlayerMeta.shownName(it.request.target.title) } ?: ep?.let { guide?.show } ?: filmFix(entry) ?: info.title
+        titleView.text = vod?.let { PlayerMeta.shownName(vodMeta(it.request).target.title) } ?: ep?.let { guide?.show } ?: filmFix(entry) ?: info.title
         subtitleView.text = line
         subtitleView.visibility = if (line != null) View.VISIBLE else View.GONE
         // Episodes: for a show's episode handed over on its own, whose provider can be asked for the rest; or an
@@ -5017,33 +5031,25 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     /**
-     * Screen dimmer: the customs, then the one on, with its display amount (the film) and glass amount (all glass,
-     * Glass look) set with arrows. Custom 1 keeps changes at once, the others when Save custom is pressed. Whatever is
-     * picked or saved stays on for every video. The rows are shared with full-screen Live TV ([DimmerWindow]).
+     * Screen dimmer: the presets (Default, then the customs), then the one on, with its display dimness (the film), glass
+     * tint and glass dimness (the Playback glass) set with arrows. Whatever is picked or saved stays on for every video.
+     * The rows are shared with full-screen Live TV ([DimmerWindow]).
      */
     private fun openDimPanel(from: View) = openPanel("Screen dimmer", from) {
         DimmerWindow.render(this, this@PlayerActivity, dimmer, applyDim = { applyDim() }, refreshLabels = { refreshLabels() })
     }
 
     /**
-     * Darkens the film by the display amount, and every piece of glass by the glass amount (Glass look). The
-     * glass shows a copy of the film taken from under the dimmer, so it's dimmed on its own.
+     * Darkens the film by the preset's display dimness, and gives the glass over it the preset's glass tint and glass
+     * dimness (Glass look: Playback glass, [GlassShades.apply]). The glass shows a copy of the film taken from under the
+     * dimmer, so it's darkened on its own.
      */
     private fun applyDim() {
-        val amounts = dimmer.amounts()
-        dimmerView.alpha = amounts.display / 100f
-        dimmerView.visibility = if (amounts.display == 0) View.GONE else View.VISIBLE
-        val glass = amounts.glass / 100f
-        if (Glass.dim != glass) {
-            Glass.dim = glass
-            // Every glass shape reads it as it draws: draw them all again.
-            redrawAll(window.decorView)
-        }
-    }
-
-    private fun redrawAll(view: View) {
-        view.invalidate()
-        if (view is ViewGroup) for (i in 0 until view.childCount) redrawAll(view.getChildAt(i))
+        val display = dimmer.display()
+        dimmerView.alpha = display / 100f
+        dimmerView.visibility = if (display == 0) View.GONE else View.VISIBLE
+        // Every glass shape reads it as it draws: all drawn again, once, if it changed.
+        GlassShades(this).applyTo(this)
     }
 
     private fun openSleepPanel(from: View) = openPanel("Sleep timer", from) {
@@ -5312,24 +5318,22 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val vod = source?.takeIf { entry.storeKey != null }
         if (vod != null) {
             // From Films & Shows: the film or episode came with its IMDb id (and season and number), so it is matched;
-            // there is nothing to look up by name and nothing to fix.
-            val t = vod.request.target.title
+            // nothing is looked up by name. Fix match puts right what the player shows and asks about it (its name,
+            // details, Skip intro and subtitles), kept for the title; the sources still come by the id.
             val ref = vod.request.target.episode
             val ep = guideEpisode(entry)
             header(if (ref != null) "This episode" else "This film")
-            val name = if (ref != null) "${t.name} · S${ref.season} E${ref.episode}" else PlayerMeta.shownName(t)
-            dropdownRow(name, "Matched", Rows.Badge.ACTIVE, thisTitleOpen) {
+            dropdownRow(PlayerMeta.thisTitleName(vod.request, vodFix), "Matched", Rows.Badge.ACTIVE, thisTitleOpen) {
                 thisTitleOpen = !thisTitleOpen
                 refresh()
             }
-            // The user's order: the matched title (its dropdown holds the source), then details, then Picture & sound.
+            // The user's order: the matched title (its dropdown holds the source and Fix match), then details, then
+            // Picture & sound.
             if (thisTitleOpen) {
                 row("Source", vod.addon?.label ?: PlayerMeta.PORTAL) {}.asSubRow()
-                message(
-                    if (ref != null) "Matched by the show's IMDb id from ${PlayerMeta.PORTAL}" +
-                        (ep?.name?.takeIf { it.isNotEmpty() }?.let { n -> ": ${ep.label} · $n." } ?: ".")
-                    else "Matched by its IMDb id from ${PlayerMeta.PORTAL}.",
-                )
+                if (tmdb.isConfigured) row("Fix match") { openFixVod(show = ref != null) }.asSubRow()
+                message(PlayerMeta.matchNote(vod.request, vodFix, ep?.name?.takeIf { it.isNotEmpty() }?.let { n -> "${ep.label} · $n" }))
+                if (!tmdb.isConfigured) message("Needs a TMDB API key (Statuses, below) to fix this ${if (ref != null) "show" else "film"}'s match.")
             }
             row(if (ref != null) "Show details" else "Film details") { openDetails(show = ref != null) }.asSubRow()
             row("Picture & sound") { openQuality(show = ref != null) }.asSubRow()
@@ -5408,8 +5412,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     private fun openDetails(show: Boolean) {
         val entry = currentEntry() ?: return
-        if (entry.storeKey != null && source != null) {
+        if (entry.storeKey != null && source != null && vodFix == null) {
             // From Films & Shows: what the title page loaded, at once (onVodDetails fills it in if it's still coming).
+            // Put right by hand: TMDB's for the title as fixed, below.
             aboutFor = entry.key
             about = vodDetails?.let { PlayerMeta.about(it) }
             aboutStatus = if (about == null) LOADING else null
@@ -6084,13 +6089,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         launchNote = if (early != null) "link check began ${now - early.startedAt} ms before the screen" else ""
         val s = SourcePlayback(request, early?.session ?: repo.session(request), repo.library, MainTicker, sourceHost, early)
         source = s
+        vodFix = matchFixes.vodTitle(request.target.title.id)
         buffering.visibility = View.VISIBLE
         bufferingInfo.visibility = View.GONE
         warmDecoders()
         launchMark(LaunchLog.SOURCES)
         s.start()
         // Skip intro's times are asked for now, while the sources are found: ready when the film starts (SkipTimes.warm).
-        warmSkipTimes(request.imdbId, request.season, request.episode, lastDurationOf(request))
+        // A title put right by hand has no IMDb id here: its times are asked once it plays, by TMDB's.
+        warmSkipTimes(vodMeta(request).imdbId, request.season, request.episode, lastDurationOf(request))
         // What the title page loaded (stored: it comes at once, then again if a fresher copy arrives): the show's
         // episodes for the Episodes sheet and Next episode, and Film details / Show details.
         nextLookup = VodRepositories.get(this).details(request.target.title) { d, _ ->
@@ -6125,8 +6132,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             }
         }
         updateTitle()
-        // Film details / Show details open on "Loading…" until this.
-        if (aboutFor == currentEntry()?.key && about == null) {
+        // Film details / Show details open on "Loading…" until this (TMDB's, for a title put right by hand).
+        if (aboutFor == currentEntry()?.key && about == null && vodFix == null) {
             about = PlayerMeta.about(d)
             aboutStatus = null
         }
@@ -6152,6 +6159,24 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val app = applicationContext
         runCatching { segmentWorker.execute { SkipTimes.warm(app, imdbId, season, episode, durationMs) } }
     }
+
+    /**
+     * What the player shows and asks about for [r]: as put right by hand in Fix match ([vodFix]), else [r] itself. Made
+     * once per request and fix (Skip intro asks on every tick).
+     */
+    private fun vodMeta(r: PlayRequest): PlayRequest {
+        val fix = vodFix ?: return r
+        val made = vodMetaMade
+        if (made != null && vodMetaOf === r && vodMetaFix === fix) return made
+        return PlayerMeta.fixed(r, fix).also {
+            vodMetaOf = r
+            vodMetaFix = fix
+            vodMetaMade = it
+        }
+    }
+    private var vodMetaOf: PlayRequest? = null
+    private var vodMetaFix: VodFix? = null
+    private var vodMetaMade: PlayRequest? = null
 
     /** How the player names a film or episode from the add-ons, as a video's title is read ("Show S02E05"). */
     private fun vodRawTitle(r: PlayRequest): String = PlayerMeta.rawTitle(r)
@@ -6338,9 +6363,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val key = entry.key
         val showId = guide?.tmdbId ?: 0
         val film = if (show) null else matchFor(entry)?.tmdbId
+        // From Films & Shows, put right by hand in Fix match: TMDB's title as fixed.
+        val fixed = vodFix?.tmdbId?.takeIf { entry.storeKey != null }
         io.execute {
             val found = runCatching {
-                val id = if (show) showId else film ?: filmTmdbId(entry)
+                val id = fixed ?: if (show) showId else film ?: filmTmdbId(entry)
                 if (id > 0) tmdb.about(id, show) else null
             }
             handler.post {
@@ -6577,10 +6604,21 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         openFixSearch(shows = true)
     }
 
+    /**
+     * Fix match for a film or show from Films & Shows: TMDB's search by its name, then OK on the right one keeps it for
+     * the title ([saveVodFix]). No episode to pick: the season and number handed over stay.
+     */
+    private fun openFixVod(show: Boolean) {
+        val r = source?.request ?: return
+        fixQuery = vodMeta(r).target.title.name
+        openFixSearch(shows = show)
+    }
+
     private fun openFixSearch(shows: Boolean) {
         fixHits = emptyList()
         fixStatus = "Searching…"
         runFixSearch(shows)
+        val vod = currentEntry()?.storeKey != null && source != null
         // Over the window it was opened from (Back comes back to it).
         panel.openSub(if (shows) "Fix match · Find the show" else "Fix match · Find the film") {
             searchBox(fixQuery, "TMDB") {
@@ -6594,10 +6632,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             fixHits.forEach { hit ->
                 resultRow(hit.name, listOfNotNull(hit.year, if (hit.show) "TV show" else "Film").joinToString(" · "), null,
                     poster = hit.poster, withPoster = true) {
-                    if (hit.show) pickFixShow(hit) else saveFixFilm(hit)
+                    when {
+                        vod -> saveVodFix(hit)
+                        hit.show -> pickFixShow(hit)
+                        else -> saveFixFilm(hit)
+                    }
                 }
             }
-            message("Press OK on the search box to type. FirePlayer starts it with the name your provider gave.")
+            message("Press OK on the search box to type. FirePlayer starts it with the name " +
+                if (vod) "${PlayerMeta.PORTAL} gave." else "your provider gave.")
         }
     }
 
@@ -6631,6 +6674,26 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         panel.close()
         updateTitle()
         showNotice("Saved: ${hit.label}", 2_500)
+    }
+
+    /**
+     * Fix match on a film or show from Films & Shows: TMDB's [hit] is what it is, for this play and every later one of
+     * the title (kept by its id). Its name, Film details / Show details, Skip intro's times and the subtitles search go by
+     * it from now; the sources, the library and Next episode go on by the title's own id, as matched before.
+     */
+    private fun saveVodFix(hit: Tmdb.Hit) {
+        val s = source ?: return
+        val fix = VodFix(hit.id, hit.show, hit.name, hit.year?.take(4)?.toIntOrNull() ?: 0)
+        matchFixes.setVodTitle(s.request.target.title.id, fix)
+        vodFix = fix
+        // What the old match showed or found is asked again by the new one: details, the subtitles search, Skip intro.
+        aboutFor = null
+        about = null
+        findFor = null
+        panel.close()
+        updateTitle()
+        updateSkip()
+        showNotice("Saved: ${fix.label}", 2_500)
     }
 
     /** Step two for a show: which of its episodes this is. Starts on where it's paired now. */
@@ -6757,9 +6820,21 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             findLoaded = 0L
             findLoadedSubId = null
             findTmdb = 0
+            // From Films & Shows, put right by hand in Fix match: TMDB's film or show as fixed, by its id, at the
+            // season and episode handed over.
+            val fix = vodFix?.takeIf { entry.storeKey != null && source != null }
+            if (fix != null) {
+                findQuery = fix.name
+                findIsShow = fix.show
+                findTmdb = fix.tmdbId
+                source?.request?.target?.episode?.let { e ->
+                    findSeason = e.season
+                    findEpisode = e.episode
+                }
+            }
             // The show as matched for its guide: TMDB's name, numbers and id.
             val g = guide
-            guideEpisode(entry)?.let { e ->
+            if (fix == null) guideEpisode(entry)?.let { e ->
                 if (g != null && g.tmdbId > 0) {
                     findQuery = g.searchName
                     findIsShow = true
@@ -6906,9 +6981,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         findResults = emptyList()
         findMatch = null
         panel.refresh()
-        val guideTmdb = findTmdb.takeIf { it > 0 && show && query == guide?.searchName }
-        // From the add-ons: the title's own TMDB id (the show's for an episode), while the search is for its name.
-        val vodTmdb = source?.request?.tmdbId?.takeIf { query == entry.info.searchQuery }
+        val guideTmdb = findTmdb.takeIf { it > 0 && show && query == guide?.searchName && vodFix == null }
+        // From the add-ons: the title's own TMDB id (the show's for an episode), while the search is for its name; once
+        // put right by hand in Fix match, the fixed title's, while the search is for its name.
+        val fixed = vodFix?.takeIf { entry.storeKey != null && query == it.name && show == it.show }
+        val vodTmdb = source?.request?.tmdbId?.takeIf { vodFix == null && query == entry.info.searchQuery }
         val hashable = prefs.seekPreviews && entry.uri.scheme?.startsWith("http") == true
         val headers = headersFromIntent()
         // The release the file is: the provider's file name, else the name it came with.
@@ -6924,7 +7001,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         io.execute {
             // With a TMDB key, the search asks for the exact film or show instead of anything with that name.
             // The show as its guide matched it, else asked of TMDB by name.
-            val known = guideTmdb?.let { Tmdb.Match(it, query, null) } ?: vodTmdb?.let { Tmdb.Match(it, query, null) }
+            val known = fixed?.let { Tmdb.Match(it.tmdbId, query, null) } ?: guideTmdb?.let { Tmdb.Match(it, query, null) }
+                ?: vodTmdb?.let { Tmdb.Match(it, query, null) }
             val match = if (known != null) Result.success(known) else if (tmdb.isConfigured) runCatching { tmdb.find(query, year, show) } else null
             val found = match?.getOrNull()
             // The file's fingerprint marks subtitles made for it; read only where a second connection is fine.
@@ -6943,7 +7021,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             handler.post {
                 if (isFinishing || player == null) return@post
                 findMatch = when {
-                    known != null -> "Matched on TMDB: ${guide?.show ?: query}"
+                    known != null -> "Matched on TMDB: ${fixed?.label ?: guide?.show ?: query}"
                     match == null -> null
                     found != null -> "Matched on TMDB: ${found.label}"
                     match.isFailure -> "Couldn't ask TMDB (check its key in Settings), so the search went by name."

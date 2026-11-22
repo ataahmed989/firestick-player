@@ -1,5 +1,6 @@
 package app.fireplayer.vod.play
 
+import app.fireplayer.player.MediaSpec
 import app.fireplayer.vod.Addon
 import app.fireplayer.vod.AddonState
 import app.fireplayer.vod.Episode
@@ -7,6 +8,7 @@ import app.fireplayer.vod.EpisodeRef
 import app.fireplayer.vod.Hdr
 import app.fireplayer.vod.LastPlayed
 import app.fireplayer.vod.LookupWhy
+import app.fireplayer.vod.Measured
 import app.fireplayer.vod.Position
 import app.fireplayer.vod.Readiness
 import app.fireplayer.vod.SourceGroup
@@ -151,10 +153,45 @@ class PlayRulesTest {
         }
         val full = "⚠ Needs 69 Mb/s · this connection brought 72 · HEVC 10-bit · TrueHD Atmos 7.1 · EN + FR + DE + 2 more · Both add-ons"
         assertEquals(full, PlayRules.detailLine(s))
-        // Languages go first, then the codec; the warning and the add-on stay.
-        assertEquals("⚠ Needs 69 Mb/s · this connection brought 72 · HEVC 10-bit · TrueHD Atmos 7.1 · Both add-ons", PlayRules.detailLine(s, chars = 92))
-        assertEquals("⚠ Needs 69 Mb/s · this connection brought 72 · TrueHD Atmos 7.1 · Both add-ons", PlayRules.detailLine(s, chars = 80))
+        // The languages shorten first, then the codec and the sound go, the languages last; the warning and the add-on stay.
+        assertEquals("⚠ Needs 69 Mb/s · this connection brought 72 · HEVC 10-bit · TrueHD Atmos 7.1 · EN + 4 more · Both add-ons",
+            PlayRules.detailLine(s, chars = 110))
+        assertEquals("⚠ Needs 69 Mb/s · this connection brought 72 · TrueHD Atmos 7.1 · EN + 4 more · Both add-ons", PlayRules.detailLine(s, chars = 92))
+        assertEquals("⚠ Needs 69 Mb/s · this connection brought 72 · EN + 4 more · Both add-ons", PlayRules.detailLine(s, chars = 80))
         assertEquals("⚠ Needs 69 Mb/s · this connection brought 72 · Both add-ons", PlayRules.detailLine(s, chars = 10))
+        // At the Sources panel's width, a copy with a warning and a pack still says its language: the codec goes first.
+        val dv = Fixtures.source(2).let {
+            it.copy(facts = it.facts.copy(pack = true), warning = "Dolby Vision 7: may not play here")
+        }
+        assertEquals("⚠ Dolby Vision 7: may not play here · DD+ 5.1 · EN · Pack · Torrentio", PlayRules.detailLine(dv, chars = 80))
+    }
+
+    @Test
+    fun aRowSaysItsAudioLanguagesMeasuredFirst() {
+        fun of(vararg langs: String, measured: String? = null) = Fixtures.source(1).let {
+            it.copy(facts = it.facts.copy(languages = langs.toList()),
+                measured = measured?.let { m -> Measured(MediaSpec(audioLangs = m), null, 1L) })
+        }
+        assertEquals("EN", PlayRules.audioLanguages(of("en")))
+        assertEquals("EN + FR", PlayRules.audioLanguages(of("en", "fr")))
+        assertEquals("EN + FR + DE", PlayRules.audioLanguages(of("en", "fr", "de")))
+        assertEquals("EN + FR + DE + 2 more", PlayRules.audioLanguages(of("en", "fr", "de", "es", "it")))
+        assertEquals("EN + 4 more", PlayRules.audioLanguages(of("en", "fr", "de", "es", "it"), short = true))
+        // Two stay as they are when short: nothing shorter says as much.
+        assertEquals("EN + FR", PlayRules.audioLanguages(of("en", "fr"), short = true))
+        // "Multi Audio" alone, with one language named, and with several (which say it already).
+        assertEquals("Multi", PlayRules.audioLanguages(of("multi")))
+        assertEquals("EN + more", PlayRules.audioLanguages(of("multi", "en")))
+        assertEquals("EN + FR", PlayRules.audioLanguages(of("multi", "en", "fr")))
+        assertNull(PlayRules.audioLanguages(of()))
+        // Once played here, the file's own tracks (three-letter codes, "und" left out) say it, not the add-on's guess.
+        assertEquals("FR + EN", PlayRules.audioLanguages(of("multi", measured = "fre,eng,und,fra")))
+        assertEquals("JA", PlayRules.audioLanguages(of(measured = "jpn")))
+        // Tracks that name no language: the add-on's word again.
+        assertEquals("EN", PlayRules.audioLanguages(of("en", measured = "und")))
+        // The row's second line carries it in place of the add-on's.
+        assertEquals("HEVC 10-bit · DD+ 5.1 · FR · Torrentio", PlayRules.detailLine(of("en", measured = "fre")))
+        assertEquals(listOf("fr"), PlayRules.languageCodes(of("en", measured = "fre")))
     }
 
     @Test

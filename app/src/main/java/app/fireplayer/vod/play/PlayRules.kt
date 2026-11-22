@@ -1,5 +1,6 @@
 package app.fireplayer.vod.play
 
+import app.fireplayer.player.CopyLanguage
 import app.fireplayer.vod.Addon
 import app.fireplayer.vod.AddonState
 import app.fireplayer.vod.Episode
@@ -211,40 +212,74 @@ object PlayRules {
     }
 
     /**
-     * A Sources row's quieter second line: the one warning, codec, sound, languages, pack, seeders (copies not cached
-     * yet) and the add-on ("HEVC 10-bit · TrueHD Atmos 7.1 · EN + FR · Torrentio"). Over [chars] characters (its two
-     * lines), the languages go first, then the codec, pack and sound; the warning, seeders and add-on stay.
+     * A Sources row's quieter second line: the one warning, codec, sound, audio languages, pack, seeders (copies not
+     * cached yet) and the add-on ("HEVC 10-bit · TrueHD Atmos 7.1 · EN + FR · Torrentio"). Over [chars] characters (its
+     * two lines), the languages first shorten to the first and a count ("EN + 4 more"), then the codec, pack and sound
+     * go, the languages last; the warning, seeders and add-on stay.
      */
     fun detailLine(s: PlaybackSource, chars: Int = Int.MAX_VALUE): String {
         val f = s.facts
         val codec = listOfNotNull(f.codec, f.bitDepth?.takeIf { it > 8 }?.let { "$it-bit" }).joinToString(" ").ifEmpty { null }
         val sound = listOfNotNull(f.audio, f.channels).joinToString(" ").ifEmpty { null }
-        val langs = f.languages.takeIf { it.isNotEmpty() }?.let { all ->
-            val named = all.take(LANGUAGES).joinToString(" + ") { it.uppercase(Locale.ROOT) }
-            if (all.size > LANGUAGES) "$named + ${all.size - LANGUAGES} more" else named
-        }
         val seeds = if (s.readiness == Readiness.NOT_READY) f.seeders?.let { "$it seeders" } else null
         // Each part, and how long it stays when the line is too long (KEEP: always).
         val parts = listOf(
             s.warning?.let { "⚠ $it" } to KEEP,
             codec to 1,
             sound to 3,
-            langs to 0,
+            audioLanguages(s) to LANGS,
             (if (f.pack) "Pack" else null) to 2,
             seeds to KEEP,
             addonsOf(s).ifEmpty { null } to KEEP,
         ).mapNotNull { (text, stays) -> text?.let { it to stays } }.toMutableList()
         fun joined() = parts.joinToString(" · ") { it.first }
+        val short = audioLanguages(s, short = true)
         while (joined().length > chars) {
+            val at = parts.indexOfFirst { it.second == LANGS }
+            if (at >= 0 && short != null && parts[at].first != short) {
+                parts[at] = short to LANGS
+                continue
+            }
             val drop = parts.filter { it.second < KEEP }.minByOrNull { it.second } ?: break
             parts.remove(drop)
         }
         return joined()
     }
 
+    /**
+     * A copy's sound languages, short, for its row: what FirePlayer measured of its tracks once it played here, else
+     * what the add-ons say ([languageCodes]). "EN", "EN + FR", "EN + FR + DE + 2 more"; "Multi" when an add-on says only
+     * that there are several, "EN + more" when it names just one of them. With [short], three or more come as the first
+     * and a count ("EN + 4 more"). Null when nothing is known.
+     */
+    fun audioLanguages(s: PlaybackSource, short: Boolean = false): String? {
+        val codes = languageCodes(s)
+        val named = codes.filter { it != CopyLanguage.MULTI }.map { it.uppercase(Locale.ROOT) }
+        val multi = named.size < 2 && CopyLanguage.MULTI in codes
+        return when {
+            named.isEmpty() -> if (multi) MULTI_WORD else null
+            multi -> "${named[0]} + more"
+            short && named.size > 2 -> "${named[0]} + ${named.size - 1} more"
+            named.size > LANGUAGES -> named.take(LANGUAGES).joinToString(" + ") + " + ${named.size - LANGUAGES} more"
+            else -> named.joinToString(" + ")
+        }
+    }
+
+    /**
+     * A copy's sound languages as codes ("en", "fr", or [CopyLanguage.MULTI]): its tracks' once FirePlayer has played it
+     * ([PlaybackSource.measured]), else the add-ons' ([SourceFacts.languages]); empty when neither says.
+     */
+    fun languageCodes(s: PlaybackSource): List<String> {
+        val measured = s.measured?.spec?.audioLangs.orEmpty().split(',').mapNotNull { CopyLanguage.code(it) }.distinct()
+        return measured.ifEmpty { s.facts.languages }
+    }
+
     /** Languages a row names before "+ N more". */
     private const val LANGUAGES = 3
+    /** How long the languages stay on a long line: after the codec, pack and sound. */
+    private const val LANGS = 4
     private const val KEEP = Int.MAX_VALUE
+    private const val MULTI_WORD = "Multi"
 
     /** "Torrentio", "MediaFusion", or "Both add-ons". */
     fun addonsOf(s: PlaybackSource): String = when {

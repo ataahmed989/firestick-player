@@ -6,7 +6,7 @@ import app.fireplayer.shell.TextStyle
 import app.fireplayer.shell.TextStyle.Ink
 import app.fireplayer.shell.TextStyle.Weight
 import app.fireplayer.shell.Tokens
-import app.fireplayer.ui.GlassStyle
+import app.fireplayer.ui.Glass
 import app.fireplayer.ui.PageRow
 import app.fireplayer.vod.RowStyle
 import app.fireplayer.vod.data.Brand
@@ -336,9 +336,10 @@ internal object VodSizes {
     // The See all grid: 5 posters across the content's width (to the right margin), near the rows' poster size.
     const val GRID_COLUMNS = 5
     const val GRID_GAP = 18f
-    const val GRID_ROW_GAP = 30f
     val GRID_POSTER_W: Float = ((SCREEN_W - CONTENT_SCREEN_X - RIGHT_MARGIN - (GRID_COLUMNS - 1) * GRID_GAP) / GRID_COLUMNS).roundToInt().toFloat()
     val GRID_POSTER_H: Float = (GRID_POSTER_W * 4f / 3f).roundToInt().toFloat()
+    /** Under a grid row's posters: the chosen one's growth (about its middle), its title ([labelRoom]) and [LABEL_CLEAR]. */
+    val GRID_ROW_GAP: Float = ceil(GRID_POSTER_H * GROW / 2f + labelRoom(GRID_POSTER_W) + LABEL_CLEAR)
     /** Above the first row of posters: the chosen one's growth (about its middle) and its ring show whole under the name line. */
     val GRID_TOP: Float = ceil(GRID_POSTER_H * GROW / 2f + RING + 1f)
 
@@ -725,10 +726,10 @@ internal object VodSizes {
     const val LOGO_SHADOW_BLUR = 4f
 
     /**
-     * A logo card's fill: the rail's window's. Glass: the windows' tint ([GlassStyle.WINDOW_TINT]) over the wallpaper
-     * as it is, as the rail at rest and every glass surface in the page. Classic: the rail's solid colour.
+     * A logo card's fill: the rail's window's. Glass: Rail, cards & header's colour layer ([Glass.railShade], Settings ›
+     * Look) over the wallpaper as it is, as the rail at rest. Classic: the rail's solid colour.
      */
-    fun logoFill(glass: Boolean): Int = if (glass) GlassStyle.WINDOW_TINT else RailShape.CLASSIC_FILL
+    fun logoFill(glass: Boolean): Int = if (glass) Glass.railShade.color else RailShape.CLASSIC_FILL
 
     /** A logo card's corner radius, dp: the same share of its height at either size. */
     fun logoRadius(style: RowStyle = RowStyle.LOGO): Float = logoRadiusFor(cardH(style))
@@ -887,13 +888,63 @@ internal object VodSizes {
     /** A row's band: title, gap, strip and the gap under it. */
     fun bandH(style: RowStyle): Float = bandH(style, header = true, gapBelow = ROW_GAP)
 
-    /** A row's band with or without its title line ([header]), and [gapBelow] under it. */
-    fun bandH(style: RowStyle, header: Boolean, gapBelow: Float, large: Boolean = false): Float =
-        stripTop(header) + stripH(style, large) + gapBelow
+    /** A row's band with or without its title line ([header]), the chosen poster's title in a [labelled] row, and [gapBelow] under it. */
+    fun bandH(style: RowStyle, header: Boolean, gapBelow: Float, large: Boolean = false, labelled: Boolean = VodSizes.labelled(style)): Float =
+        stripTop(header) + stripH(style, large) + (if (labelled) labelRoom(cardW(style, large)) else 0f) + gapBelow
 
-    /** What a chosen row needs to show whole: its title, its strip (a grown card) and the card's ring just outside it. */
-    fun rowShownH(style: RowStyle, header: Boolean, large: Boolean): Float =
-        stripTop(header) + stripH(style, large) + RING + 1f
+    /**
+     * What a chosen row needs to show whole: its title, its strip (a grown card) and the card's ring just outside it,
+     * or, in a [labelled] row, down to its chosen poster's title under that ([labelRoom]).
+     */
+    fun rowShownH(style: RowStyle, header: Boolean, large: Boolean, labelled: Boolean = VodSizes.labelled(style)): Float =
+        stripTop(header) + stripH(style, large) + if (labelled) labelRoom(cardW(style, large)) else RING + 1f
+
+    // ---- The chosen poster's title under it (Glass Home's focused app name: AppAdapter, Ui) -------------------------
+
+    /**
+     * Rows whose chosen poster shows its title under it: posters and Top 10. Not Continue Watching (its cards hold their
+     * names), chips, a show's episodes (captioned under each), nor the logo cards (Streaming Services, a studio's).
+     */
+    fun labelled(style: RowStyle): Boolean = style == RowStyle.POSTER || style == RowStyle.RANKED
+
+    /** The title's size under the browse pages' posters ([BROWSE_POSTER_W]); under smaller posters in proportion. */
+    const val LABEL_SP = 14f
+    /** Wrapped at word boundaries to the poster's width, in at most this many lines, then an ellipsis ([PosterLabelText]). */
+    const val LABEL_LINES = 2
+    /** From the chosen poster's ring to the title's first line. */
+    const val LABEL_GAP = 3f
+    /** Room for the face's line metrics, rounded to whole pixels. */
+    const val LABEL_SLACK = 1f
+    /** Under a grid's title, before the next grid row's posters. */
+    const val LABEL_CLEAR = 8f
+    /** Glass Home's name: 500 weight, white at 95%, a soft shadow under it (8 design px blur, 1 down, black at 60%). */
+    const val LABEL_COLOR = 0xF2FFFFFF.toInt()
+    const val LABEL_SHADOW = 4f
+    const val LABEL_SHADOW_DY = 0.5f
+    const val LABEL_SHADOW_COLOR = 0x99000000.toInt()
+    /** In a grid it glides from poster to poster with Glass Home's focus time and curve (Ui.FOCUS_MS, Ui.EASE). */
+    const val LABEL_MS = 180L
+    const val LABEL_EASE_X1 = 0.2f
+    const val LABEL_EASE_Y1 = 0f
+    const val LABEL_EASE_X2 = 0f
+    const val LABEL_EASE_Y2 = 1f
+
+    /** The title's size under a poster [posterW] dp wide: [LABEL_SP] in proportion (More Like This's: about 10 sp). */
+    fun labelSp(posterW: Float): Float = LABEL_SP * posterW / BROWSE_POSTER_W
+
+    fun labelStyle(posterW: Float): TextStyle = TextStyle(labelSp(posterW), Weight.REGULAR, Ink.OWN, LABEL_COLOR)
+
+    /** The title's box: [LABEL_LINES] lines. */
+    fun labelH(posterW: Float): Float = LABEL_LINES * labelSp(posterW) * TextStyle.LINE + LABEL_SLACK
+
+    /** Under a grown poster [posterW] dp wide: its ring, the gap and the title's box. */
+    fun labelRoom(posterW: Float): Float = RING + LABEL_GAP + labelH(posterW)
+
+    /** The title's top in its row: under the strip (a grown card), its ring and the gap. */
+    fun labelTop(style: RowStyle, header: Boolean, large: Boolean): Float = stripTop(header) + stripH(style, large) + RING + LABEL_GAP
+
+    /** A grid row's title's top, from that row's top: under the grown poster (about its middle), its ring and the gap. */
+    fun gridLabelTop(): Float = GRID_POSTER_H * (1f + GROW / 2f) + RING + LABEL_GAP
 
     /**
      * How many cards after the chosen one hold pictures in a row: those that show (the chosen one grown at the
@@ -993,6 +1044,14 @@ internal object VodSizes {
         val most = (headerButtonsTop() - HEADER_WORDS_MIN_GAP - headerWordsEnd()).coerceAtLeast(0f)
         return (hidden - (HEADER_TOP - HEADER_TOP_KEEP)).coerceIn(0f, most)
     }
+
+    /**
+     * How much of the banner's words shows while the page hides the top [hidden] dp of the card: all of them while they
+     * can move clear of the cut ([headerWordsShift]). A first row of posters lifts the page further to show its chosen
+     * title ([rowShownH]): the words then fade out as the cut nears them, rather than be cut through.
+     */
+    fun headerWordsAlpha(hidden: Float): Float =
+        ((HEADER_TOP + headerWordsShift(hidden) - hidden) / HEADER_TOP_KEEP).coerceIn(0f, 1f)
 
     /** The banner's name: [HEADER_TITLE_SP], or [HEADER_TITLE_LONG_SP] for a name [measured] wider than [room] at that size. */
     fun headerTitleSp(measured: Float, room: Float): Float = if (measured > room) HEADER_TITLE_LONG_SP else HEADER_TITLE_SP

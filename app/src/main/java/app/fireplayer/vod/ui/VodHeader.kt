@@ -24,7 +24,6 @@ import app.fireplayer.shell.Tokens
 import app.fireplayer.ui.Buttons
 import app.fireplayer.ui.DrawnSpan
 import app.fireplayer.ui.Glass
-import app.fireplayer.ui.GlassStyle
 import app.fireplayer.ui.ImageLoader
 import app.fireplayer.vod.Card
 import app.fireplayer.vod.Title
@@ -109,12 +108,13 @@ class VodHeader(
     private val backingNow = RectF()
 
     /**
-     * The card left of the picture's box, in the one colour the picture's left edge is eased into ([HeaderArt.leftFade]):
-     * the see-through panel there would meet that colour in a faint line where the box begins. It reaches two corners'
-     * width under the box, so it's whole behind the picture's own rounded corners.
+     * The card left of the picture's box, in the one colour the picture's left edge is eased into ([HeaderArt.leftFade],
+     * [Glass.windowSolid]: the card's glass over the wallpaper): the see-through panel there would meet that colour in a
+     * faint line where the box begins. It reaches two corners' width under the box, so it's whole behind the picture's
+     * own rounded corners.
      */
     private val backing = RectF()
-    private val backingPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = GlassStyle.WINDOW_SOLID }
+    private val backingPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private var backingRadius = 0f
 
     /** Fades as one without an offscreen layer: its texts don't overlap. */
@@ -127,6 +127,14 @@ class VodHeader(
      * neither undoes the other. The whole card, so the words move inside it as they always did ([setHiddenTop]).
      */
     private val veil = object : FrameLayout(context) {
+        override fun hasOverlappingRendering() = false
+    }
+
+    /**
+     * The words' fade while the page lifts the card further than they can move clear of the cut ([setHiddenTop]), apart
+     * from the other two fades.
+     */
+    private val cutFade = object : FrameLayout(context) {
         override fun hasOverlappingRendering() = false
     }
 
@@ -175,11 +183,12 @@ class VodHeader(
         words.addView(facts, LinearLayout.LayoutParams(textW, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = t.dp(VodSizes.HEADER_FACTS_GAP) })
         words.addView(story, LinearLayout.LayoutParams(textW, story.lineHeight * VodSizes.HEADER_STORY_LINES).apply { topMargin = t.dp(VodSizes.HEADER_STORY_GAP) })
         // The words at the card's top left, whatever its height; the buttons at its bottom left.
-        veil.addView(words, LayoutParams(textW, LayoutParams.WRAP_CONTENT).apply {
+        cutFade.addView(words, LayoutParams(textW, LayoutParams.WRAP_CONTENT).apply {
             gravity = Gravity.TOP or Gravity.START
             leftMargin = t.dp(VodSizes.HEADER_INSET)
             topMargin = t.dp(VodSizes.HEADER_TOP)
         })
+        veil.addView(cutFade, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         addView(veil, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         if (actions) {
             buttons.addView(watch, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, t.dp(VodSizes.HEADER_BUTTON_H)))
@@ -265,6 +274,7 @@ class VodHeader(
         // It ends under the picture's box, so it moves with it.
         backingNow.set(backing)
         backingNow.right += drawnShift
+        backingPaint.color = Glass.windowSolid
         if (backingNow.right > backingNow.left) canvas.drawRoundRect(backingNow, backingRadius, backingRadius, backingPaint)
     }
 
@@ -348,11 +358,14 @@ class VodHeader(
 
     /**
      * The page has moved the card's top [px] out of view (a first row of posters lifts the page a little): the words
-     * move down to stay clear of the cut ([VodSizes.headerWordsShift]). A translation only; nothing is laid out.
+     * move down to stay clear of the cut ([VodSizes.headerWordsShift]), and fade out once they can't
+     * ([VodSizes.headerWordsAlpha]). A translation and an alpha only; nothing is laid out.
      */
     fun setHiddenTop(px: Float) {
         val y = t.dpf(VodSizes.headerWordsShift(px / t.density))
         if (words.translationY != y) words.translationY = y
+        val a = VodSizes.headerWordsAlpha(px / t.density)
+        if (cutFade.alpha != a) cutFade.alpha = a
     }
 
     /** Whether one of the buttons has focus. */
@@ -571,10 +584,10 @@ class VodHeader(
 
     /**
      * The banner's dark shading, a layer of its own over the picture (which stays sharp and whole under it), in the
-     * glass style's window colour: an oval of shade round the words at the top left, reaching down the left side behind
-     * the buttons, and a second layer rising towards the bottom for the dots ([VodSizes.HEADER_SHADE_ALPHAS],
+     * card's own colour ([Glass.windowSolid]): an oval of shade round the words at the top left, reaching down the left
+     * side behind the buttons, and a second layer rising towards the bottom for the dots ([VodSizes.HEADER_SHADE_ALPHAS],
      * [VodSizes.HEADER_SHADE_BOTTOM_ALPHAS]). Both ease out to nothing and are dithered, so neither ends in a line and
-     * the rest of the picture is left clear. Its shaders are made once per size; it never moves.
+     * the rest of the picture is left clear. Its shaders are made once per size and colour; it never moves.
      */
     private class Shade(context: Context, private val t: Tokens, var cardW: Float) : View(context) {
         var radius = 0f
@@ -592,6 +605,8 @@ class VodHeader(
         private var across = 1f
         /** How much wider (px; narrower below 0) than its bounds it's drawn. */
         private var shift = 0f
+        /** The colour its shaders were made in: made again, once, when the card's tint or charcoal changes (Settings › Look). */
+        private var shadeColor = 0
 
         /**
          * Drawn [shift] px wider than it's laid out (narrower below 0), with its oval round the words [across] times as
@@ -616,7 +631,12 @@ class VodHeader(
 
         override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
             box.set(0f, 0f, w + shift, h.toFloat())
-            val rgb = GlassStyle.WINDOW_SOLID and 0x00FFFFFF
+            makeShaders(h)
+        }
+
+        private fun makeShaders(h: Int) {
+            shadeColor = Glass.windowSolid
+            val rgb = shadeColor and 0x00FFFFFF
             // The oval: a circle of shade about its centre, stretched down to its reach ([VodSizes.headerShadeAt]).
             val bx = t.dpf(VodSizes.headerShadeX(cardW))
             val by = t.dpf(VodSizes.headerShadeY())
@@ -639,6 +659,7 @@ class VodHeader(
 
         override fun onDraw(canvas: Canvas) {
             if (width <= 0) return
+            if (shadeColor != Glass.windowSolid) makeShaders(height)
             canvas.drawRoundRect(box, radius, radius, round)
             canvas.drawRoundRect(box, radius, radius, below)
         }

@@ -135,6 +135,67 @@ class PlaybackPassTest {
         assertEquals(0f, PlayerMeta.watchedShare(Position(5_000, 0, 1L)))
     }
 
+    // ---- Fix match on a title from Films & Shows (VodFix) ----
+
+    private val odyssey = Title("tt0133093", Kind.MOVIE, "The Odyssey", year = "2026", tmdbId = 77)
+    private fun filmRequest() = PlayRequest(SourceTarget(odyssey), StartAt.Beginning, PlayOrigin.TITLE_PAGE)
+
+    @Test
+    fun aFixedTitleIsShownAndAskedAboutAsTmdbsWhileItsSourcesKeepTheId() {
+        val fix = VodFix(1234, show = false, name = "The Odyssey", year = 1997)
+        val r = filmRequest()
+        val meta = PlayerMeta.fixed(r, fix)
+        // TMDB's film, by its stand-in id: Skip intro then asks by the IMDb id TMDB gives for it, under its own key.
+        assertEquals("tmdb:movie:1234", meta.imdbId)
+        assertEquals(1234, meta.tmdbId)
+        assertEquals(Kind.MOVIE, meta.target.title.kind)
+        assertEquals("tmdb:movie:1234/film", PlayerMeta.skipKey(meta))
+        assertEquals("The Odyssey (1997)", PlayerMeta.shownName(meta.target.title))
+        // The play itself is untouched (its sources and the library go by the id), and no fix changes nothing.
+        assertEquals("tt0133093", r.imdbId)
+        assertEquals(odyssey, r.target.title)
+        assertTrue(PlayerMeta.fixed(r, null) === r)
+        assertEquals("The Odyssey (2026)", PlayerMeta.thisTitleName(r, null))
+        assertEquals("The Odyssey (1997)", PlayerMeta.thisTitleName(r, fix))
+        // An episode keeps its season and number under the fixed show.
+        val ep = request(2, 5)
+        val shown = PlayerMeta.fixed(ep, VodFix(99, show = true, name = "Other Show", year = 2019))
+        assertEquals(Kind.SERIES, shown.target.title.kind)
+        assertEquals(2, shown.season)
+        assertEquals(5, shown.episode)
+        assertEquals("tmdb:series:99/2/5", PlayerMeta.skipKey(shown))
+        assertEquals("Show · S2 E5", PlayerMeta.thisTitleName(ep, null))
+        assertEquals("Other Show · S2 E5", PlayerMeta.thisTitleName(ep, VodFix(99, true, "Other Show", 2019)))
+    }
+
+    @Test
+    fun theDropdownsNoteSaysHowItWasMatchedOrFixed() {
+        assertEquals("Matched by its IMDb id from Films & Shows.", PlayerMeta.matchNote(filmRequest(), null, null))
+        assertEquals("Matched by the show's IMDb id from Films & Shows: S2 E5 · Back.", PlayerMeta.matchNote(request(2, 5), null, "S2 E5 · Back"))
+        assertEquals("Matched by the show's IMDb id from Films & Shows.", PlayerMeta.matchNote(request(2, 5), null, null))
+        assertEquals(
+            "Fixed by hand as The Odyssey (1997) on TMDB: details, Skip intro and subtitles go by it. Sources still come by its IMDb id.",
+            PlayerMeta.matchNote(filmRequest(), VodFix(1234, false, "The Odyssey", 1997), null),
+        )
+        assertEquals(
+            "Fixed by hand as Other Show on TMDB: details, Skip intro and subtitles go by it. Sources still come by the show's IMDb id.",
+            PlayerMeta.matchNote(request(2, 5), VodFix(99, true, "Other Show", 0), "S2 E5 · Back"),
+        )
+    }
+
+    @Test
+    fun aFixIsKeptAsOneLineAndReadBack() {
+        val fix = VodFix(1234, show = true, name = "Tab\tName", year = 2019)
+        assertEquals("1234\t1\t2019\tTab Name", fix.toLine())
+        assertEquals(VodFix(1234, true, "Tab Name", 2019), VodFix.fromLine(fix.toLine()))
+        assertEquals(VodFix(5, false, "Film", 0), VodFix.fromLine(VodFix(5, false, "Film", 0).toLine()))
+        assertEquals("Film", VodFix(5, false, "Film", 0).label)
+        assertNull(VodFix.fromLine(null))
+        assertNull(VodFix.fromLine(""))
+        assertNull(VodFix.fromLine("0\t0\t0\tNo id"))
+        assertNull(VodFix.fromLine("12\t0\t1999"))
+    }
+
     // ---- Another episode from the player's Episodes sheet ----
 
     private val library = FakeLibrary()

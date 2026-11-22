@@ -739,8 +739,13 @@ class VodPage(
 
     /**
      * Where the column goes with [row] chosen: 0 on the first row (the header shows), else that row's top. A first row
-     * of posters is too tall to show whole under the banner: the column then moves up just as far as it needs. Never
-     * past the last row sitting at the bottom of the screen (the row above it stays in view).
+     * of posters is too tall to show whole under the banner (with its chosen poster's title, [TitleRow.shownHeight]):
+     * the column then moves up just as far as it needs. Search's bar and pills can't give way in part: there a first
+     * row that doesn't fit under them goes to its top, as the others do. Never past the last row sitting at the bottom
+     * of the screen (the row above it stays in view).
+     *
+     * My List's rows show no titles under their posters: its banner holds still above them and names the chosen
+     * title, and the room under it holds a grown row of posters with nothing to spare.
      */
     private fun targetFor(row: TitleRow?): Float {
         if (row == null) return 0f
@@ -750,7 +755,8 @@ class VodPage(
         val viewH = if (myList) VodSizes.SCREEN_H - VodSizes.fixedRowsTop() else VodSizes.VIEWPORT_H
         val last = vis.last()
         val end = column.topOf(last).coerceAtLeast(0) + last.shownHeight + t.dpf(VodSizes.ROW_GAP)
-        return RowMath.pageTarget(k, 0, row.shownHeight.toFloat(), t.dpf(viewH), end) { column.topOf(vis[it]).coerceAtLeast(0).toFloat() }
+        val give = if (search) 0f else Float.MAX_VALUE
+        return RowMath.pageTarget(k, 0, row.shownHeight.toFloat(), t.dpf(viewH), end, give) { column.topOf(vis[it]).coerceAtLeast(0).toFloat() }
     }
 
     /** The first row shown that has something to focus (where Down from the banner or Recent channels goes). */
@@ -1262,7 +1268,7 @@ class VodPage(
         val r = repo ?: repoOf().also { repoRef = it } ?: return
         rowsBuilt = true
         for (spec in rowSpecs(r)) {
-            val row = TitleRow(ctx, t, spec, this, header = !VodSizes.isLogo(spec.style), large = true)
+            val row = TitleRow(ctx, t, spec, this, header = !VodSizes.isLogo(spec.style), large = true, labels = !myList)
             rows += row
             // Search's rows wait for words.
             if (search) {
@@ -1291,7 +1297,7 @@ class VodPage(
         val old = rows.associateBy { it.spec }
         val made = ArrayList<TitleRow>()
         val next = specs.map { spec ->
-            old[spec] ?: TitleRow(ctx, t, spec, this, header = !VodSizes.isLogo(spec.style), large = true).also { made += it }
+            old[spec] ?: TitleRow(ctx, t, spec, this, header = !VodSizes.isLogo(spec.style), large = true, labels = !myList).also { made += it }
         }
         val gone = rows.filter { row -> next.none { it === row } }
         // Focus off a row that goes, before it goes: to the next row shown that stays, else the one before, else the rail.
@@ -1867,7 +1873,7 @@ class VodPage(
             hold.close()
             showNotice(if (fav) "Added to Favorites" else "Removed from Favorites")
         }
-        val assign = HoldPopup.Button("Assign favorites") {
+        val assign = HoldPopup.Button("Assign favorites", R.drawable.ic_playlist_add) {
             hold.close(fade = false)
             host.openAssignFavorites(hit.key.playlistId, hit.groupId, hit.key)
         }
@@ -1993,7 +1999,7 @@ class VodPage(
     private fun onHistoryHold(words: String, row: View) {
         val list = historyList ?: return
         val at = list.indexOf(row)
-        val remove = HoldPopup.Button("Remove") {
+        val remove = HoldPopup.Button("Remove", R.drawable.ic_trash) {
             history?.let {
                 it.remove(words)
                 list.show(it.entries)

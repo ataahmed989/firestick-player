@@ -24,11 +24,57 @@ object Glass {
     @Volatile var on = false
 
     /**
-     * How much every piece of glass is darkened (Screen dimmer, a custom's glass amount): 0 not at all, 0.8 to a
-     * fifth of its light. The film inside and the milky glaze dim; the selected look dims half as much, so it
-     * still stands out.
+     * How much the player's own glass over the picture is darkened (its buttons, pills, chips and rows, which show the
+     * film; not its windows, whose Playback glass layer darkens them, [playbackShade]): the Playback glass's dimness in
+     * use, the players' preset on ([app.fireplayer.data.Dimmer]). 0 not at all, 1 black. The film inside and the milky
+     * glaze dim; the selected look, the text and the icons never do.
      */
-    @Volatile var dim = 0f
+    val dim: Float get() = playbackShade.dim / GlassStyle.SHADE_MAX.toFloat()
+
+    /**
+     * The user's three glasses' layers (Settings › Look, saved by [app.fireplayer.data.GlassShades], [GlassStyle.Shade]):
+     * App glass on the windows over the app's pages and Playback glass on the windows over full-screen playback, each a
+     * tint and a dimness; Rail, cards & header on the glass in the pages themselves, a tint and its charcoal. Playback
+     * glass is the players' dimness preset on (Default: Look's own). Set by [useShades]; each piece of glass reads its
+     * own as it's drawn, under whatever is drawn on it.
+     */
+    @Volatile var appShade: GlassStyle.Shade = GlassStyle.APP_SHADE
+        private set
+    @Volatile var railShade: GlassStyle.Shade = GlassStyle.RAIL_SHADE
+        private set
+    @Volatile var playbackShade: GlassStyle.Shade = GlassStyle.PLAYBACK_SHADE
+        private set
+
+    /** Counts the changes to the three: glass drawn before one draws its colour layer again, once. */
+    @Volatile var shadeChanges = 0
+        private set
+
+    /**
+     * Puts these on the glass: true when that changed them, and glass on screen is then to be drawn again ([redraw]).
+     * The drawings made with a colour no longer on go ([GlassBakes.dropStale]); each is made again once, when next needed.
+     */
+    fun useShades(app: GlassStyle.Shade, rail: GlassStyle.Shade, playback: GlassStyle.Shade): Boolean {
+        if (app == appShade && rail == railShade && playback == playbackShade) return false
+        appShade = app
+        railShade = rail
+        playbackShade = playback
+        shadeChanges++
+        GlassBakes.dropStale()
+        return true
+    }
+
+    /**
+     * The colour a banner's picture is eased into and what backs it, in the look on: the banner card's glass (Rail,
+     * cards & header) with only the wallpaper behind it ([GlassStyle.Shade.solid]), or Classic's own
+     * ([GlassStyle.WINDOW_SOLID]).
+     */
+    val windowSolid: Int get() = if (on) railShade.solid else GlassStyle.WINDOW_SOLID
+
+    /** [view] and everything in it drawn again: each piece of glass then reads the shades (or the dimmer) as it draws. */
+    fun redraw(view: View) {
+        view.invalidate()
+        if (view is ViewGroup) for (i in 0 until view.childCount) redraw(view.getChildAt(i))
+    }
 
     /**
      * The shapes that can be glass. Each replaces one classic background ([classicRes]). [CELL] and [CELL_BAR] are
@@ -93,14 +139,14 @@ object Glass {
         if (on) drawable(context, kind) else requireNotNull(context.getDrawable(classic))
 
     /**
-     * The corner radius, px, a [kind] surface [w] x [h] px has in the look now on: the glass shape's own
+     * The corner radius, px, a [kind] surface [w] x [h] px has in the look now on ([glass]): the glass shape's own
      * ([GlassBakes.radius]) or the classic drawable's (res/drawable/bg_*.xml, whose corners are the radius_* dimens read
      * here: panels and popups 15 dp, pills 20 dp, chips 5 dp, rows 9 dp; circles round; never more than half the
      * shorter side). For something drawn to follow a surface's corners (a header's picture inside its card).
      */
-    fun cornerRadius(context: Context, kind: Kind, w: Int, h: Int): Float {
+    fun cornerRadius(context: Context, kind: Kind, w: Int, h: Int, glass: Boolean = on): Float {
         val res = context.resources
-        if (on) return GlassBakes.radius(kind, w, h, res.displayMetrics.density)
+        if (glass) return GlassBakes.radius(kind, w, h, res.displayMetrics.density)
         val half = minOf(w, h) / 2f
         val classic = when (kind) {
             Kind.PANEL -> R.dimen.radius_panel
