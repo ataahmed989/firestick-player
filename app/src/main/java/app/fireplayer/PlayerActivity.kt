@@ -94,6 +94,8 @@ import app.fireplayer.player.GraphicsTrim
 import app.fireplayer.player.JumpFrameCheck
 import app.fireplayer.player.FrameRateMatcher
 import app.fireplayer.player.FreezeWatch
+import app.fireplayer.player.FrameTally
+import app.fireplayer.player.PreviewGuard
 import app.fireplayer.player.IdleCloseDataSource
 import app.fireplayer.player.NextEpisode
 import app.fireplayer.player.MatchFixes
@@ -359,6 +361,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private lateinit var episodesGroup: View
     private lateinit var seekBubble: TextView
     private lateinit var seekPreview: SeekPreview
+    // The skip preview's own short note, shown in the "+4:00" card's place when previews stop for a film.
+    private lateinit var previewNote: TextView
+    // Keeps the skip preview's load off the film's source, and stops previews for a film they make lag.
+    private val previewGuard = PreviewGuard()
     private lateinit var seekRow: View
     private lateinit var timeElapsed: TextView
     private lateinit var seekBar: SeekBarView
@@ -569,6 +575,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private var replaced = false
     private var pendingAudioId: String? = null
     private var notice = false
+    // The notice on show is the skip preview's (previewNote), not one in the "+4:00" card.
+    private var previewNotice = false
     private var pendingNotice: String? = null
 
     // Subtitle style preview
@@ -1250,6 +1258,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         source?.jumped()
         cannotOpen = false
         previewCutOffs = 0
+        previewGuard.reset()
         // TIME_UNSET starts VOD at the beginning and live at the live edge.
         try {
             p.setMediaItems(items, index, position)
@@ -1775,10 +1784,17 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         handler.removeCallbacks(showBuffering)
         updateKeepScreenOn()
         noteStall(state)
-        // Stage 4's watch: stalls while playing (after the first frame).
+        val now = SystemClock.elapsedRealtime()
+        // Stage 4's watch: stalls while playing (after the first frame). One while the skip preview loads beside the
+        // film, or just did, is the preview's: not counted toward a switch.
         source?.let { s ->
-            if (state == Player.STATE_BUFFERING) s.buffering(true) else if (state == Player.STATE_READY) s.buffering(false)
+            if (state == Player.STATE_BUFFERING) s.buffering(true, excused = previewGuard.covers(now))
+            else if (state == Player.STATE_READY) s.buffering(false)
         }
+        // The film stopped to load while the preview ran (or just after, with no jump since): previews stop for it.
+        if (state == Player.STATE_BUFFERING && readyOnce && player?.playWhenReady == true &&
+            previewGuard.stalled(now, jumpedAt)
+        ) previewOverloaded("stopped to load")
         if (state == Player.STATE_BUFFERING) {
             shownPercent = 0
             handler.postDelayed(showBuffering, 400)
@@ -2153,7 +2169,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val permanent = (status == 404 || status == 410) && !p.isCurrentMediaItemLive
         // From the add-ons, a refused link (401, 403 too: expired, or made for another address) stays refused: the
         // failure table asks the add-on for a fresh one at once, instead of this link again for up to a minute.
-        val refusedLink = source != null && Recovery.linkRefused(status)
+        // Not while the skip preview loads beside the film, or just did: a refusal then is its second connection's
+        // doing (a server allowing one), so the same link is tried again quietly instead.
+        val refusedLink = source != null && Recovery.linkRefused(status) && !previewGuard.covers(now)
         val network = error.errorCode in 2000..2999 && error.errorCode !in NOT_RETRIED && !permanent && !refusedLink
         // The player has already tried a few times by the time an error comes, so the time counts from when the
         // viewer started waiting, not from the error.
@@ -2510,6 +2528,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         chipFormat = findViewById(R.id.chip_format)
         chipPortal = findViewById(R.id.chip_portal)
         seekBubble = findViewById(R.id.seek_bubble)
+        previewNote = findViewById(R.id.preview_note)
         seekPreview = SeekPreview(
             card = findViewById(R.id.preview_card),
             frame = findViewById(R.id.preview_frame),
@@ -2525,8 +2544,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 screenSubtitles.animate().alpha(alpha).setDuration(150).start()
                 frameSubtitles.animate().alpha(alpha).setDuration(150).start()
             },
-            // Mid-skip the card shows the "+4:00"; the note waits for the jump.
-            onFailed = { note -> if (seeking) pendingNotice = note else showNotice(note, NOTE_MS) },
+            // Mid-skip the card shows the "+4:00"; the note waits for the jump. The screen gets the preview's one short
+            // line, the log why.
+            onFailed = { why ->
+                android.util.Log.i(TAG, "Skip preview off for this video: $why")
+                if (seeking) pendingNotice = SeekPreview.NOTE else showNotice(SeekPreview.NOTE, NOTE_MS, preview = true)
+            },
             // On a TV short of memory (under 2.6 GiB) the preview's player goes 3 s after skipping stops, and a video
             // with only pictures bigger than 1080p gets no preview (see PlayerFactory.buildPreview).
             holdMs = FilmMemory.tier(this).previewHoldMs,
@@ -2786,6 +2809,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             }
             checkFreeze()
             tellDamageSkip()
+            // What the film has loaded ahead running low while the skip preview loads beside it: previews stop for it.
+            if (previewGuard.active) player?.let {
+                val ahead = it.bufferedPosition - it.currentPosition
+                if (it.isPlaying && previewGuard.bufferFell(ahead)) previewOverloaded("ran low on film")
+            }
             // The pods' data rates firm up as the film loads.
             chipTicks++
             if (chipTicks % FRAME_COUNT_TICKS == 0) countFrames()
@@ -3892,6 +3920,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             pill.pod = Glass.on
         }
         (findViewById<FrameLayout>(R.id.preview_card)).foreground = ContextCompat.getDrawable(this, Glass.previewEdge)
+        previewNote.setBackgroundResource(Glass.previewNote)
     }
 
     /** Which parts of the overlay show: everything, just the time bar while seeking, or nothing. */
@@ -3904,7 +3933,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // While seeking without controls, keep the same layout so the bar doesn't move.
         buttonsArea.visibility = if (controlsShown) View.VISIBLE else View.INVISIBLE
         chips.visibility = if (controlsShown && !seeking && !notice) View.VISIBLE else View.INVISIBLE
-        seekBubble.visibility = if (seeking || notice) View.VISIBLE else View.INVISIBLE
+        seekBubble.visibility = if (seeking || (notice && !previewNotice)) View.VISIBLE else View.INVISIBLE
+        previewNote.visibility = if (notice && previewNotice && !seeking) View.VISIBLE else View.INVISIBLE
         handler.removeCallbacks(progressTick)
         if (bottomVisible) handler.post(progressTick)
         liftSubtitles()
@@ -3930,7 +3960,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (bottomVisible) {
             val density = resources.displayMetrics.density
             // The lowest subtitles may reach: a little above the chips, or the "+4:00" card in their place.
-            val infoTop = if (seekBubble.visibility == View.VISIBLE) minOf(chips.top, seekBubble.top) else chips.top
+            val card = if (seekBubble.visibility == View.VISIBLE) seekBubble
+                else previewNote.takeIf { it.visibility == View.VISIBLE }
+            val infoTop = if (card != null) minOf(chips.top, card.top) else chips.top
             val limit = bottomBlock.top + (chips.parent as View).top + infoTop - SUBTITLE_CLEAR_DP * density
             // With only the time bar showing, subtitles entirely below it can stay where they are.
             val floor = if (controlsShown) Float.MAX_VALUE else bottomBlock.top + seekRow.bottom + 6f * density
@@ -4199,6 +4231,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             else -> if (previews) 1_400L else 900L
         }
         if (previews && entry != null) {
+            // The preview loads beside the film from here to a few seconds after the jump: watched by previewGuard.
+            previewGuard.started((p.bufferedPosition - p.currentPosition).coerceAtLeast(0L))
             // Video only: the preview needs no subtitles.
             val item = mediaItem(entry).buildUpon().setSubtitleConfigurations(emptyList()).build()
             seekPreview.update(entry.key, item, seekTarget(), SystemClock.uptimeMillis() + delay)
@@ -4210,10 +4244,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (controlsShown) scheduleHide()
     }
 
-    /** A short message in the seek card, such as "Can't skip in this video". */
-    private fun showNotice(text: String, durationMs: Long = 1_800) {
+    /**
+     * A short message in the seek card, such as "Can't skip in this video"; [preview]: the skip preview's note, in the
+     * preview's own look (previewNote) in the card's place.
+     */
+    private fun showNotice(text: String, durationMs: Long = 1_800, preview: Boolean = false) {
         notice = true
-        seekBubble.text = text
+        previewNotice = preview
+        if (preview) previewNote.text = text else seekBubble.text = text
         updateOverlay()
         positionBubble()
         handler.removeCallbacks(clearNoticeRunnable)
@@ -4223,7 +4261,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private fun showPendingNotice() {
         val note = pendingNotice ?: return
         pendingNotice = null
-        showNotice(note, NOTE_MS)
+        showNotice(note, NOTE_MS, preview = true)
     }
 
     private val clearNoticeRunnable = Runnable { clearNotice() }
@@ -4253,6 +4291,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // Past what's loaded (ahead, or further back than is kept): the film loads again from there.
         val keptMs = builtPlayer?.keptBehindMs?.invoke()?.takeIf { it > 0 }?.coerceAtMost(KEPT_BEHIND_MS) ?: KEPT_BEHIND_MS
         val reloads = p != null && (target > p.bufferedPosition || target < p.currentPosition - keptMs)
+        // Before the jump: a wait after it is the jump's, not the preview's.
+        previewGuard.ended(SystemClock.elapsedRealtime())
         seekPreview.hide(filmReloads = reloads)
         handler.removeCallbacks(commitSeekRunnable)
         // What was lined up to read past what's loaded is stale.
@@ -4272,12 +4312,23 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     private fun cancelSeek() {
+        previewGuard.ended(SystemClock.elapsedRealtime())
         seekPreview.hide()
         handler.removeCallbacks(commitSeekRunnable)
         seeking = false
         updateOverlay()
         updateProgress()
         showPendingNotice()
+    }
+
+    /**
+     * The film lagged ([why]) while the skip preview loaded beside it ([PreviewGuard]): previews stop for this film, with
+     * the preview's short note, and nothing is held against the source.
+     */
+    private fun previewOverloaded(why: String) {
+        val p = player ?: return
+        val entry = entries.getOrNull(p.currentMediaItemIndex) ?: return
+        seekPreview.overloaded(entry.key, why)
     }
 
     /** Keeps the "+4:00" card centred over the thumb on the time bar. */
@@ -4289,6 +4340,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val layer = seekBubble.parent as View
         val x = seekRow.left + seekBar.left + seekBar.thumbX() - seekBubble.width / 2f
         seekBubble.translationX = x.coerceIn(0f, (layer.width - seekBubble.width).toFloat().coerceAtLeast(0f))
+        // The preview's note over the same spot.
+        val noteX = x + (seekBubble.width - previewNote.width) / 2f
+        previewNote.translationX = noteX.coerceIn(0f, (layer.width - previewNote.width).toFloat().coerceAtLeast(0f))
         // The preview sits just above the "+4:00" card, over the same spot on the bar.
         val thumbX = bottomBlock.left + seekRow.left + seekBar.left + seekBar.thumbX()
         val bubbleTop = bottomBlock.top + layer.top + seekBubble.top
@@ -5570,8 +5624,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private fun countFrames() {
         val p = player ?: return
         diag.second(p)
-        // Frames dropped while the film catches up after a jump are the jump's, not the copy's (as with its waits).
-        val lost = if (SystemClock.elapsedRealtime() - jumpedAt < JUMP_WAIT_MS) 0L else diag.tally.addedLost
+        val now = SystemClock.elapsedRealtime()
+        // Frames dropped while the film catches up after a jump are the jump's, and while the skip preview loads beside
+        // it (or just did) the preview's: not the copy's (as with its waits).
+        val jumped = now - jumpedAt < JUMP_WAIT_MS
+        val lost = if (jumped || previewGuard.covers(now)) 0L else diag.tally.addedLost
+        // The film's decoder losing frames while the preview decodes beside it (not catching up after a jump): previews
+        // stop for it.
+        val late = if (jumped) 0L else diag.tally.added(FrameTally.DROPPED) + diag.tally.added(FrameTally.NEVER)
+        if (previewGuard.framesDropped(late)) previewOverloaded("dropped frames")
         val shown = diag.tally.addedRendered
         if (lost > 0 || shown > 0) {
             healthFor(p.currentMediaItem?.localConfiguration?.uri)
@@ -5701,8 +5762,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         healthFor(p.currentMediaItem?.localConfiguration?.uri)
         val now = SystemClock.elapsedRealtime()
         when (state) {
+            // Nor while the skip preview loads beside it, or just did: that wait is the preview's.
             Player.STATE_BUFFERING ->
-                if (readyOnce && p.playWhenReady && now - jumpedAt > JUMP_WAIT_MS && !retryPending && stallSince == 0L) stallSince = now
+                if (readyOnce && p.playWhenReady && now - jumpedAt > JUMP_WAIT_MS && !retryPending && stallSince == 0L &&
+                    !previewGuard.covers(now)
+                ) stallSince = now
             Player.STATE_READY -> {
                 readyOnce = true
                 if (stallSince > 0) health = health.copy(stalls = health.stalls + 1, stallMs = health.stallMs + now - stallSince)

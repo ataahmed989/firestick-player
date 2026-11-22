@@ -147,6 +147,7 @@ class FakeSession(override val request: PlayRequest) : SourceSession {
         override fun playing(now: Long) { stallEvents += "playing" }
         override fun jumped(now: Long) { stallEvents += "jumped" }
         override fun buffering(now: Long, on: Boolean) { stallEvents += "buffering $on" }
+        override fun excuse(now: Long) { stallEvents += "excused" }
         override fun shouldSwitch(now: Long) = switchNow
     }
 

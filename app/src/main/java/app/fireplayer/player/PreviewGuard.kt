@@ -38,6 +38,8 @@ class PreviewGuard {
     fun reset() {
         active = false
         endedAt = NEVER
+        startAheadMs = 0L
+        dropped = 0L
     }
 
     /** Whether what the film does at [now] may be the preview's doing, so isn't held against the source. */
@@ -51,7 +53,10 @@ class PreviewGuard {
     fun stalled(now: Long, lastJumpAt: Long): Boolean =
         if (active) now - lastJumpAt > JUMP_MS else covers(now) && lastJumpAt < endedAt
 
-    /** The film lost [count] more frames. True once it has lost [DROPPED_LIMIT] in one round with the preview running. */
+    /**
+     * The film's decoder lost [count] more frames (too late, or never decoded). True once it has lost [DROPPED_LIMIT] in
+     * one round with the preview running.
+     */
     fun framesDropped(count: Long): Boolean {
         if (!active || count <= 0L) return false
         dropped += count

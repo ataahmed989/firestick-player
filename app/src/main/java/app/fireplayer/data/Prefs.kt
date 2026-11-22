@@ -14,6 +14,7 @@ class Prefs(context: Context) {
 
     init {
         forgetPlayerMatches()
+        previewsOffOnce()
     }
 
     enum class Resume(val label: String) { ASK("Ask"), ALWAYS("Always"), NEVER("Never") }
@@ -67,9 +68,9 @@ class Prefs(context: Context) {
             .getOrDefault(Resume.ASK)
         set(v) = sp.edit().putString("resume", v.name).apply()
 
-    /** A picture of where a jump will land, shown above the time bar while skipping. */
+    /** A picture of where a jump will land, shown above the time bar while skipping. Off unless turned on. */
     var seekPreviews: Boolean
-        get() = sp.getBoolean("seek_previews", true)
+        get() = sp.getBoolean("seek_previews", app.fireplayer.player.PreviewGuard.DEFAULT_ON)
         set(v) = sp.edit().putBoolean("seek_previews", v).apply()
 
     /** Finds the episode after the one TiviMate opened, from the provider, and plays it next. */
@@ -171,6 +172,19 @@ class Prefs(context: Context) {
         val edit = sp.edit()
         sp.all.keys.filter { it.startsWith("tmdb|") }.forEach { edit.remove(it) }
         edit.putInt("tmdb_rules", PLAYER_MATCHES_GONE).apply()
+    }
+
+    /**
+     * Preview while skipping was On by default and is Off now ([app.fireplayer.player.PreviewGuard.DEFAULT_ON]): where it
+     * was left On it's turned Off once, so the new default shows ([app.fireplayer.player.PreviewGuard.offOnce]). It's the
+     * viewer's to turn back on.
+     */
+    private fun previewsOffOnce() {
+        if (sp.getBoolean(PREVIEWS_OFF_ONCE, false)) return
+        val stored = if (sp.contains("seek_previews")) sp.getBoolean("seek_previews", false) else null
+        val edit = sp.edit().putBoolean(PREVIEWS_OFF_ONCE, true)
+        if (app.fireplayer.player.PreviewGuard.offOnce(stored, done = false)) edit.putBoolean("seek_previews", false)
+        edit.apply()
     }
 
     /** Whether TiviMate's films and shows are renamed with TMDB (see [app.fireplayer.titles.TitleService]). */
@@ -333,6 +347,7 @@ class Prefs(context: Context) {
 
     companion object {
         private const val PLAYER_MATCHES_GONE = 100
+        private const val PREVIEWS_OFF_ONCE = "seek_previews_off_once"
 
         /**
          * Of the settings' [keys], those kept for a downloaded subtitle file not in [files] ("sync|<file>|…" and

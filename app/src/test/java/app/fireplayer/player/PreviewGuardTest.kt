@@ -81,6 +81,18 @@ class PreviewGuardTest {
         assertFalse(g.bufferFell(0L))
     }
 
+    @Test fun moreSkippingInOneRoundKeepsItsStart() {
+        val g = PreviewGuard()
+        g.started(aheadMs = 30_000L)
+        // A later press, the film having played on with less loaded: still the round that began healthy.
+        g.started(aheadMs = 1_000L)
+        assertTrue(g.bufferFell(PreviewGuard.LOW_MS - 1))
+        // Ending twice keeps the first end.
+        g.ended(10_000L)
+        g.ended(20_000L)
+        assertFalse(g.covers(10_000L + PreviewGuard.AFTER_MS))
+    }
+
     @Test fun aNewFilmStartsClean() {
         val g = PreviewGuard()
         g.started(30_000L)
