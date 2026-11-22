@@ -19,22 +19,28 @@ import kotlin.math.max
  * through it, as the rail at rest; on Classic the rail's solid colour), and over that, the same on both looks, a faint
  * broad reflection over its upper left, a fine light rim that fades toward the bottom and a soft close shadow just
  * outside it (outside only, so the glass isn't darkened by it). Its look is [VodSizes]' (LOGO_*). It's drawn once per
- * card size and look, at the chosen card's size so that one is sharp, and every card of that size draws the same
- * picture: nothing is built, copied or blurred while drawing. Main thread.
+ * card size, look and fill (the app glass's tint and dimness, Settings › Look), at the chosen card's size so that one is
+ * sharp, and every card of that size draws the same picture: nothing is built, copied or blurred while drawing. Main
+ * thread.
  */
-internal class LogoSurface private constructor(private val bitmap: Bitmap, private val w: Int, private val h: Int, pad: Float, val glass: Boolean) {
+internal class LogoSurface private constructor(
+    private val bitmap: Bitmap, private val w: Int, private val h: Int, pad: Float, val glass: Boolean, private val fill: Int,
+) {
 
     /** Where the picture goes for a card at 0, 0: the card and the shadow's room round it. */
     private val box = RectF(-pad, -pad, w + pad, h + pad)
 
     fun draw(canvas: Canvas, paint: Paint) = canvas.drawBitmap(bitmap, null, box, paint)
 
+    /** Whether it's the surface of the look [glass] as that look is now (its fill: the app glass's tint and dimness). */
+    fun isFor(glass: Boolean): Boolean = this.glass == glass && fill == VodSizes.logoFill(glass)
+
     companion object {
         private var last: LogoSurface? = null
 
         /** The surface of a card [w] x [h] px on a screen of [density], in the Glass look ([glass]) or the Classic. */
         fun of(w: Int, h: Int, density: Float, glass: Boolean): LogoSurface {
-            last?.let { if (it.w == w && it.h == h && it.glass == glass) return it }
+            last?.let { if (it.w == w && it.h == h && it.isFor(glass)) return it }
             return make(w, h, density, glass).also { last = it }
         }
 
@@ -61,7 +67,8 @@ internal class LogoSurface private constructor(private val bitmap: Bitmap, priva
             c.drawRoundRect(card, r, r, paint)
             paint.xfermode = null
 
-            paint.color = VodSizes.logoFill(glass)
+            val fill = VodSizes.logoFill(glass)
+            paint.color = fill
             c.drawRoundRect(card, r, r, paint)
 
             // The reflection: light from the upper left corner, gone well before the card's middle.
@@ -76,7 +83,7 @@ internal class LogoSurface private constructor(private val bitmap: Bitmap, priva
             paint.shader = LinearGradient(0f, 0f, 0f, h.toFloat(), VodSizes.LOGO_RIM_TOP, VodSizes.LOGO_RIM_BOTTOM, Shader.TileMode.CLAMP)
             card.inset(stroke / 2f, stroke / 2f)
             c.drawRoundRect(card, r - stroke / 2f, r - stroke / 2f, paint)
-            return LogoSurface(bitmap, w, h, pad, glass)
+            return LogoSurface(bitmap, w, h, pad, glass, fill)
         }
     }
 }

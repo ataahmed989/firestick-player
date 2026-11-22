@@ -6,7 +6,7 @@ import app.fireplayer.shell.TextStyle
 import app.fireplayer.shell.TextStyle.Ink
 import app.fireplayer.shell.TextStyle.Weight
 import app.fireplayer.shell.Tokens
-import app.fireplayer.ui.GlassStyle
+import app.fireplayer.ui.Glass
 import app.fireplayer.ui.PageRow
 import app.fireplayer.vod.RowStyle
 import app.fireplayer.vod.data.Brand
@@ -726,10 +726,10 @@ internal object VodSizes {
     const val LOGO_SHADOW_BLUR = 4f
 
     /**
-     * A logo card's fill: the rail's window's. Glass: the windows' tint ([GlassStyle.WINDOW_TINT]) over the wallpaper
-     * as it is, as the rail at rest and every glass surface in the page. Classic: the rail's solid colour.
+     * A logo card's fill: the rail's window's. Glass: the app glass's tint and dimness ([Glass.appShade]) over the
+     * wallpaper as it is, as the rail at rest and every glass surface in the page. Classic: the rail's solid colour.
      */
-    fun logoFill(glass: Boolean): Int = if (glass) GlassStyle.WINDOW_TINT else RailShape.CLASSIC_FILL
+    fun logoFill(glass: Boolean): Int = if (glass) Glass.appShade.color else RailShape.CLASSIC_FILL
 
     /** A logo card's corner radius, dp: the same share of its height at either size. */
     fun logoRadius(style: RowStyle = RowStyle.LOGO): Float = logoRadiusFor(cardH(style))

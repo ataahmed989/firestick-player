@@ -38,8 +38,8 @@ import kotlin.math.sqrt
  * One piece of glass (Glass look): the blurred film behind it ([GlassBackdrop]), a milky glaze, a soft inner
  * bevel, a bright rim and a shadow. Selected controls and rows turn glossy white with the blue ring and glow.
  * A window (the settings window, a hold window, a small dialog) is a pane instead ([GlassStyle.paneTint]): the blurred
- * picture behind it with no glaze, tint or darkening of its own over playback (the screen dimmer alone darkens it), a
- * reflective rim and a soft shadow.
+ * picture behind it with no glaze, under only the user's Playback glass tint and dimness over playback (none by default:
+ * the screen dimmer alone darkens it), a reflective rim and a soft shadow.
  *
  * Everything but the film is drawn once, in software, into a cached bitmap ([GlassBakes]): the hardware canvas
  * of older Fire OS can't blur or cut shapes. Each frame is then one rounded rectangle of film and one bitmap
@@ -127,14 +127,15 @@ class GlassDrawable(
             laidOut.setEmpty()
             invalidateSelf()
         }
-    private val flatColor = if (calm) GlassStyle.WINDOW_TINT else FLAT_GLAZE
-    private val flatGlaze = Paint().apply { color = flatColor }
+    private val flatGlaze = Paint()
 
     private val laidOut = Rect()
     private val shape = RectF()
     private var radius = 0f
     private var bakePlain: Bitmap? = null
     private var bakeFocused: Bitmap? = null
+    /** The tint and dimness ([Glass.shadeChanges]) its plain drawing was made with: one made before a change goes. */
+    private var shadesFor = Glass.shadeChanges
     private val bakePaint = Paint(Paint.FILTER_BITMAP_FLAG)
     private val bakeFocusedPaint = Paint(Paint.FILTER_BITMAP_FLAG)
     private val filmPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
@@ -204,12 +205,18 @@ class GlassDrawable(
             return
         }
         if (b != laidOut) layOut(b)
+        if (shadesFor != Glass.shadeChanges) {
+            shadesFor = Glass.shadeChanges
+            if (GlassBakes.shaded(style, variant)) bakePlain = null
+        }
         updateFilters()
         val now = SystemClock.uptimeMillis()
         val a = alphaValue / 255f
         // The film style always shows its film; the calm style only as a window over the page.
         if (source != null && !edgeOnly && (!calm || (overlay && backdropOn))) drawFilm(canvas, source, a)
         if (flat) {
+            val flatColor = if (calm) Glass.appShade.color else FLAT_GLAZE
+            flatGlaze.color = flatColor
             flatGlaze.alpha = (Color.alpha(flatColor) * a).roundToInt()
             canvas.drawRect(shape, flatGlaze)
             return
@@ -481,7 +488,9 @@ internal object GlassBakes {
 
     private const val TOGGLE = -1
 
-    private data class Key(val style: Int, val focused: Boolean, val width: Int, val height: Int, val variant: Int, val density: Float)
+    private data class Key(
+        val style: Int, val focused: Boolean, val width: Int, val height: Int, val variant: Int, val density: Float, val tint: Int,
+    )
 
     private val cache = object : LruCache<Key, Bitmap>(cacheBytes()) {
         override fun sizeOf(key: Key, value: Bitmap): Int = value.byteCount
@@ -515,18 +524,36 @@ internal object GlassBakes {
     /** The glass of [kind] at this size: selected ([focused], the same in every style) or plain, as [variant]. */
     fun glass(kind: Glass.Kind, focused: Boolean, w: Int, h: Int, density: Float, variant: Int = FILM): Bitmap {
         val look = if (focused) FILM else variant
-        val key = Key(kind.ordinal, focused, w, h, look, density)
+        val tint = if (focused) 0 else tintOf(kind, look)
+        val key = Key(kind.ordinal, focused, w, h, look, density, tint)
         cache.get(key)?.let { return it }
         val pad = if (look == EDGE) 0 else pad(kind, focused, density, look == CALM)
-        val bitmap = Baker(density).glass(kind, focused, w, h, pad, look)
+        val bitmap = Baker(density).glass(kind, focused, w, h, pad, look, tint)
         cache.put(key, bitmap)
         return bitmap
+    }
+
+    /**
+     * Whether [kind]'s plain glass in [variant] has the user's tint and dimness in it ([Glass.appShade],
+     * [Glass.playbackShade]): a window's, over the page or over playback.
+     */
+    fun shaded(kind: Glass.Kind, variant: Int): Boolean = isWindow(kind) && variant != EDGE
+
+    /**
+     * The colour [kind]'s plain glass in [variant] lays over what shows through it ([GlassStyle.Shade.color]): a window's
+     * pane by what it's over ([GlassStyle.paneTint]), a window in the page the app glass's; 0 for the rest, whose drawing
+     * has none.
+     */
+    fun tintOf(kind: Glass.Kind, variant: Int): Int = when {
+        !shaded(kind, variant) -> 0
+        variant == CALM -> Glass.appShade.color
+        else -> GlassStyle.paneTint(over(variant), Glass.appShade, Glass.playbackShade)
     }
 
     fun toggle(on: Boolean, rowFocused: Boolean, w: Int, h: Int, density: Float): Bitmap {
         // An on switch looks the same on the selected row.
         val variant = if (on) 1 else if (rowFocused) 2 else 0
-        val key = Key(TOGGLE, false, w, h, variant, density)
+        val key = Key(TOGGLE, false, w, h, variant, density, 0)
         cache.get(key)?.let { return it }
         val bitmap = Baker(density).toggle(on, rowFocused && !on, w, h, togglePad(density))
         cache.put(key, bitmap)
@@ -623,7 +650,8 @@ private class Baker(private val density: Float) {
 
     private fun px(dp: Float) = dp * density
 
-    fun glass(kind: Glass.Kind, focused: Boolean, w: Int, h: Int, pad: Int, variant: Int): Bitmap {
+    /** [tint]: what a window lays over what shows through it ([GlassBakes.tintOf]). */
+    fun glass(kind: Glass.Kind, focused: Boolean, w: Int, h: Int, pad: Int, variant: Int, tint: Int): Bitmap {
         val bitmap = Bitmap.createBitmap(w + 2 * pad, h + 2 * pad, Bitmap.Config.ARGB_8888)
         val c = Canvas(bitmap)
         c.translate(pad.toFloat(), pad.toFloat())
@@ -655,23 +683,24 @@ private class Baker(private val density: Float) {
             }
             // A window over the page, or over playback (the film style's): its pane.
             variant == GlassBakes.PANE || (variant == GlassBakes.FILM && GlassBakes.isWindow(kind)) ->
-                pane(c, pad, w, h, rect, r, GlassBakes.over(variant))
-            variant == GlassBakes.CALM -> calm(c, kind, pad, w, h, rect, r)
+                pane(c, pad, w, h, rect, r, tint, GlassStyle.paneSheen(GlassBakes.over(variant)))
+            variant == GlassBakes.CALM -> calm(c, kind, pad, w, h, rect, r, tint)
             else -> clear(c, kind, pad, w, h, rect, r)
         }
         return bitmap
     }
 
     /**
-     * Unselected glass in the calm style ([GlassStyle]): a soft shadow outside, then one dark tint, a faint light from
-     * above, the hairline and the top highlight. What shows through the tint (the blurred page, or whatever is behind)
-     * is drawn under this by [GlassDrawable], or is simply there.
+     * Unselected glass in the calm style ([GlassStyle]): a soft shadow outside, then one dark tint (a window's: the app
+     * glass's tint and dimness, [windowTint]), a faint light from above, the hairline and the top highlight. What shows
+     * through the tint (the blurred page, or whatever is behind) is drawn under this by [GlassDrawable], or is simply there.
      */
-    private fun calm(c: Canvas, kind: Glass.Kind, pad: Int, w: Int, h: Int, rect: RectF, r: Float) {
+    private fun calm(c: Canvas, kind: Glass.Kind, pad: Int, w: Int, h: Int, rect: RectF, r: Float, windowTint: Int) {
         val window = GlassBakes.isWindow(kind)
         val chip = kind == Glass.Kind.CHIP
         outside(c, pad, w, h, rect, r, if (window) WINDOW_SHADOW_LAYER else if (chip) CALM_CHIP_SHADOW else CALM_CONTROL_SHADOW)
-        fill(c, rect, r, if (window) GlassStyle.WINDOW_TINT else GlassStyle.CONTROL_TINT)
+        val tint = if (window) windowTint else GlassStyle.CONTROL_TINT
+        if (Color.alpha(tint) > 0) fill(c, rect, r, tint)
         val sheen = Paint(Paint.ANTI_ALIAS_FLAG)
         sheen.shader = LinearGradient(
             0f, rect.top, 0f, rect.top + rect.height() * GlassStyle.SHEEN_SHARE,
@@ -689,15 +718,13 @@ private class Baker(private val density: Float) {
 
     /**
      * A window's pane, drawn over what shows through it (the blurred page or film, by [GlassDrawable]): a soft shadow
-     * outside, then what it lays over that by what it's [over] ([GlassStyle.paneTint], [GlassStyle.paneSheen]: the
-     * wallpaper's colour and a faint light from above on pages, nothing over playback), the glow under its top edge and
-     * its reflective rim ([reflectiveRim]).
+     * outside, then what it lays over that by what it's over ([tint], [GlassStyle.paneTint]: the app glass's tint and
+     * dimness on pages, the playback glass's over playback, none by default; [sheen], [GlassStyle.paneSheen]: a faint
+     * light from above on pages only), the glow under its top edge and its reflective rim ([reflectiveRim]).
      */
-    private fun pane(c: Canvas, pad: Int, w: Int, h: Int, rect: RectF, r: Float, over: GlassStyle.Over) {
+    private fun pane(c: Canvas, pad: Int, w: Int, h: Int, rect: RectF, r: Float, tint: Int, sheen: Int) {
         outside(c, pad, w, h, rect, r, WINDOW_SHADOW_LAYER)
-        val tint = GlassStyle.paneTint(over)
         if (Color.alpha(tint) > 0) fill(c, rect, r, tint)
-        val sheen = GlassStyle.paneSheen(over)
         if (Color.alpha(sheen) > 0) {
             val paint = Paint(Paint.ANTI_ALIAS_FLAG)
             paint.shader = LinearGradient(

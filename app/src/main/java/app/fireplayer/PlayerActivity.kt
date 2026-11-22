@@ -74,6 +74,7 @@ import androidx.media3.exoplayer.source.MediaLoadData
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.SubtitleView
 import app.fireplayer.data.Dimmer
+import app.fireplayer.data.GlassShades
 import app.fireplayer.data.Prefs
 import app.fireplayer.history.ContinueWatching
 import app.fireplayer.history.LibraryContinue
@@ -692,6 +693,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // A wider or narrower window opened over another (or come back to): the subtitles move aside by as much.
         panel.onWidthChanged = { w -> if (panel.isOpen) subtitlesBeside(w) }
         buildMoreRow()
+        // Settings › Look's tint and dimness of the windows over the film (and of the app's glass).
+        GlassShades(this).apply()
         applyLook()
         settingsPanels.onLookChanged = { applyLook() }
         settingsPanels.onChipsChanged = { updateChips() }

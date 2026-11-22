@@ -18,6 +18,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.res.ResourcesCompat
 import app.fireplayer.R
 import app.fireplayer.data.CredentialChecks
+import app.fireplayer.data.GlassShades
 import app.fireplayer.data.KeyStore
 import app.fireplayer.data.Prefs
 import app.fireplayer.live.ui.PipRules
@@ -56,6 +57,8 @@ class SettingsPanels(
     private var updateStatus: String? = null
     /** Whether the OpenSubtitles and TMDB keys work (saved results, shared by every window). */
     private val checks = CredentialChecks(prefs)
+    /** Settings › Look's tint and dimness of the two glasses (saved; the players' Screen dimmer shares Playback glass's Tint). */
+    private val shades = GlassShades(activity)
 
     // TiviMate titles, for one opening of the window: whether the set-up details are shown (hidden at first), and
     // what "Check playlists now" said.
@@ -208,7 +211,11 @@ class SettingsPanels(
                 }
                 fontSection(this)
             }
-            SettingsCategory.LOOK -> lookSection(this)
+            SettingsCategory.LOOK -> {
+                lookSection(this)
+                // App settings' Look only: the players' Look (their menu's settings) leaves the glasses' shades out.
+                if (prefs.glassLook) glassShadesSection(this)
+            }
             SettingsCategory.ACCOUNTS -> credentialsSection(this)
             SettingsCategory.ROWS -> app.fireplayer.vod.ui.RowsSettings.render(this, activity, prefs) { onRailServicesChanged() }
             SettingsCategory.HOME_HEADER -> homeHeaderSection(this)
@@ -336,6 +343,29 @@ class SettingsPanels(
                 prefs.glassRefreshPerSec = rates[it]
             }.asSubRow()
         }
+    }
+
+    /**
+     * Settings › Look's two glasses, under the look's own rows (App settings only; Glass look): App glass, every glass
+     * surface of the app's pages and the windows over them, and Playback glass, the windows over full-screen films and
+     * Live TV. Each has its Tint (the wallpaper's own colour over the frosted glass; dark, so more of it darkens a little
+     * too) and its Dimness (black over that), 0% to 100% in 5% steps with left / right, applied at once and saved
+     * ([GlassShades], [GlassStyle.Shade]). Playback glass's Tint is the players' Screen dimmer's Tint too.
+     */
+    private fun glassShadesSection(panel: SidePanel): Unit = with(panel) {
+        for (kind in GlassShades.Kind.entries) {
+            header(kind.title)
+            val shade = shades[kind]
+            stepper(SHADE_TINT, percent(shade.tint)) { dir ->
+                shades.stepTint(kind, dir)
+                shades.applyTo(activity)
+            }
+            stepper(SHADE_DIM, percent(shade.dim)) { dir ->
+                shades.stepDim(kind, dir)
+                shades.applyTo(activity)
+            }
+        }
+        message(shadesNote())
     }
 
     /**
@@ -934,6 +964,19 @@ class SettingsPanels(
             "sound" to "Sound", "source" to "Source",
         )
         fun onOff(on: Boolean) = if (on) "On" else "Off"
+
+        /** A tint, dimness or dimmer amount as its row shows it: "55%". */
+        fun percent(value: Int) = "$value%"
+
+        /** Settings › Look: each glass's two rows. */
+        const val SHADE_TINT = "Tint"
+        const val SHADE_DIM = "Dimness"
+        private fun shadesNote(): String {
+            val app = GlassStyle.APP_SHADE
+            return "Tint lays the wallpaper's own colour over the glass, so it darkens a little too; Dimness darkens it. " +
+                "App glass: the pages and their windows (${percent(app.tint)} and ${percent(app.dim)} to start). Playback " +
+                "glass: the windows over a film or full-screen channel (none to start; its Tint is also in the Screen dimmer)."
+        }
 
         private const val ACTIVE = "Active"
         private const val INACTIVE = "Inactive"

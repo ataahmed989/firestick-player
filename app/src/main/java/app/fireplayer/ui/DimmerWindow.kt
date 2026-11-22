@@ -3,12 +3,15 @@ package app.fireplayer.ui
 import android.app.Activity
 import app.fireplayer.R
 import app.fireplayer.data.Dimmer
+import app.fireplayer.data.GlassShades
 
 /**
  * The Screen dimmer window's rows, shared by the VOD player and full-screen Live TV so both show the same customs
  * and keep the same saved values ([Dimmer]): the customs, then the one on, with its display amount (the picture) and
  * glass amount (all glass, Glass look) set with arrows. Custom 1 keeps changes at once, the others when Save custom is
- * pressed. Whatever is picked or saved stays on for every video and channel.
+ * pressed. Whatever is picked or saved stays on for every video and channel. Under them (Glass look), the windows'
+ * Tint over playback: Settings › Look › Playback glass's Tint, the same saved value ([TINT], [GlassShades]), applied
+ * at once and not part of a custom.
  *
  * [applyDim] puts the amounts on screen; [refreshLabels] updates the value under the dimmer's button.
  */
@@ -61,7 +64,21 @@ object DimmerWindow {
                 )
             }
         }
+        if (Glass.on) {
+            // Its own heading: the windows' tint isn't a custom's, and Save custom doesn't keep it.
+            header(TINT.title)
+            val shades = GlassShades(activity)
+            stepper(SettingsPanels.SHADE_TINT, SettingsPanels.percent(shades[TINT].tint)) { dir ->
+                shades.stepTint(TINT, dir)
+                shades.applyTo(activity)
+            }
+            message(TINT_NOTE)
+        }
     }
+
+    /** The glass whose Tint this window shows: Playback glass's, the one saved value Settings › Look shows too. */
+    val TINT = GlassShades.Kind.PLAYBACK
+    private const val TINT_NOTE = "The windows' tint over a film or full-screen channel, as in Settings › Look › Playback glass."
 
     /**
      * Save custom: keeps the changes to the custom on, renames it, or saves what's on as a new custom. Custom 1

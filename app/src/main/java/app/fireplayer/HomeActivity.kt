@@ -24,6 +24,7 @@ import androidx.media3.common.VideoSize
 import androidx.media3.common.text.Cue
 import androidx.media3.ui.SubtitleView
 import app.fireplayer.data.Dimmer
+import app.fireplayer.data.GlassShades
 import app.fireplayer.data.Prefs
 import app.fireplayer.live.ChannelKey
 import app.fireplayer.live.LiveSync
@@ -112,6 +113,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
     private lateinit var settingsPage: LinearLayout
     private var consumeBackUp = false
     private var lookOn = false
+    /** The glass's tint and dimness this screen was last drawn with ([Glass.shadeChanges]). */
+    private var shadesSeen = 0
     private var videoTarget: RectF? = null
     private var videoFull = false
     private var videoRadius = 0f
@@ -137,6 +140,9 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         super.onCreate(savedInstanceState)
         val prefs = Prefs(this)
         Glass.on = prefs.glassLook
+        // Settings › Look's tint and dimness of the app's glass and of the windows over full screen.
+        GlassShades(this).apply()
+        shadesSeen = Glass.shadeChanges
         shellTokens = Tokens(this)
         // Pictures keep on disk across runs (posters, backdrops).
         ImageLoader.init(applicationContext)
@@ -701,6 +707,11 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         super.onRestart()
         // Service shortcuts may have been changed in the player's settings meanwhile.
         showRailServices()
+        // So may the glass's tint or dimness (Settings › Look, the Screen dimmer): everything drawn again with it, once.
+        if (shadesSeen != Glass.shadeChanges) {
+            shadesSeen = Glass.shadeChanges
+            Glass.redraw(window.decorView)
+        }
         if (lookOn == Glass.on) return
         // The look was switched in the player while this screen was behind it.
         applyLook()

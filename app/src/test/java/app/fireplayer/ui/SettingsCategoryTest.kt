@@ -75,6 +75,8 @@ class SettingsCategoryTest {
             "Keep live TV playing on Home and Search", "Start with sound",
             // Settings › Rows: the order of Home's streaming services, and the rail's service shortcuts.
             "Reorder services", "Show streaming services on rail", "First shortcut", "Second shortcut",
+            // Look: each glass's Tint and Dimness.
+            "App glass", "Playback glass",
         )
         val kept = before.map { renamed[it] ?: it }
         val now = SettingsCategory.entries.flatMap { it.settings }.toSet()
@@ -92,6 +94,8 @@ class SettingsCategoryTest {
         assertEquals(SettingsCategory.REMOTE, where("Hold to speed up"))
         assertEquals(SettingsCategory.ACCOUNTS, where("TMDB API key"))
         assertEquals(SettingsCategory.LOOK, where("Info pods"))
+        assertEquals(SettingsCategory.LOOK, where("App glass"))
+        assertEquals(SettingsCategory.LOOK, where("Playback glass"))
         assertEquals(SettingsCategory.LIVE_TV, where("Live TV buffer"))
         assertEquals(SettingsCategory.PLAYLISTS_EPG, where("Manage EPG sources"))
         assertEquals(SettingsCategory.ADDONS, where("MediaFusion"))

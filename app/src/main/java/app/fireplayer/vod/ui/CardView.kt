@@ -298,8 +298,8 @@ class CardView(
 
     /** A logo card: the shared surface, and its logo's whole picture in the middle (its name if it can't be read). */
     private fun drawLogo(canvas: Canvas) {
-        // The look changed under a card that's kept: its surface is the other look's, made once.
-        if (surface?.let { it.glass != Glass.on } == true) surface = LogoSurface.of(width, height, t.density, Glass.on)
+        // The look (or the app glass's tint and dimness) changed under a card that's kept: its surface is made again, once.
+        if (surface?.isFor(Glass.on) == false) surface = LogoSurface.of(width, height, t.density, Glass.on)
         surface?.draw(canvas, imagePaint)
         val l = logo
         if (l != null) {

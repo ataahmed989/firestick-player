@@ -26,9 +26,48 @@ object Glass {
     /**
      * How much every piece of glass is darkened (Screen dimmer, a custom's glass amount): 0 not at all, 0.8 to a
      * fifth of its light. The film inside and the milky glaze dim; the selected look dims half as much, so it
-     * still stands out.
+     * still stands out. Apart from the windows' own dimness ([playbackShade]), which this darkens too.
      */
     @Volatile var dim = 0f
+
+    /**
+     * The user's tint and dimness of the two glasses (Settings › Look, saved by [app.fireplayer.data.GlassShades]): App
+     * glass on the app's pages and the windows over them, Playback glass on windows over full-screen playback. Set by
+     * [useShades]; each piece of glass reads them as it's drawn.
+     */
+    @Volatile var appShade: GlassStyle.Shade = GlassStyle.APP_SHADE
+        private set
+    @Volatile var playbackShade: GlassStyle.Shade = GlassStyle.PLAYBACK_SHADE
+        private set
+
+    /** Counts the changes to [appShade] and [playbackShade]: glass drawn before one draws its tint again, once. */
+    @Volatile var shadeChanges = 0
+        private set
+
+    /**
+     * Puts these shades on the glass: true when that changed them, and glass on screen is then to be drawn again
+     * ([redraw]). The drawings made with the old ones go ([GlassBakes.trim]); each is made again once, when next needed.
+     */
+    fun useShades(app: GlassStyle.Shade, playback: GlassStyle.Shade): Boolean {
+        if (app == appShade && playback == playbackShade) return false
+        appShade = app
+        playbackShade = playback
+        shadeChanges++
+        GlassBakes.trim()
+        return true
+    }
+
+    /**
+     * The colour a banner's picture is eased into and what backs it, in the look on: the app glass with only the
+     * wallpaper behind it ([GlassStyle.Shade.solid]), or Classic's own ([GlassStyle.WINDOW_SOLID]).
+     */
+    val windowSolid: Int get() = if (on) appShade.solid else GlassStyle.WINDOW_SOLID
+
+    /** [view] and everything in it drawn again: each piece of glass then reads the shades (or the dimmer) as it draws. */
+    fun redraw(view: View) {
+        view.invalidate()
+        if (view is ViewGroup) for (i in 0 until view.childCount) redraw(view.getChildAt(i))
+    }
 
     /**
      * The shapes that can be glass. Each replaces one classic background ([classicRes]). [CELL] and [CELL_BAR] are

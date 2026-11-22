@@ -55,7 +55,8 @@ enum class SettingsCategory(val title: String, val icon: Int, val settings: List
         R.drawable.ic_subtitles,
         listOf("Subtitle language", "Audio language", "Auto sync subtitles", "Subtitle style", "Font from your phone"),
     ),
-    LOOK("Look", R.drawable.ic_head_look, listOf("Glass look", "Glass refresh", "Info pods")),
+    // App glass and Playback glass: each glass's Tint and Dimness (App settings' Look only, not the players' menus).
+    LOOK("Look", R.drawable.ic_head_look, listOf("Glass look", "Glass refresh", "Info pods", "App glass", "Playback glass")),
     ACCOUNTS(
         "Accounts & services",
         R.drawable.ic_key,

@@ -638,7 +638,7 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
             liveAtRest = false
             forgetFilm()
             if (glass) {
-                fill.color = GlassStyle.WINDOW_TINT
+                fill.color = Glass.appShade.color
                 line.color = GlassStyle.HAIRLINE
                 line.strokeWidth = GlassStyle.hairlinePx(t.density)
                 rule.color = RailShape.GLASS_RULE
@@ -761,6 +761,8 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
             val r = boxRadius
             val edge = outline
             if (glass) {
+                // The app glass's tint and dimness as they are now (Settings › Look): a change shows at the next drawing.
+                fill.color = Glass.appShade.color
                 if (edge > 0f) drawShade(canvas, edge)
                 if (filmShare > 0f) drawFilm(canvas, r, filmShare)
             }
