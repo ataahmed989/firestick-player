@@ -5268,15 +5268,17 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 thisTitleOpen = !thisTitleOpen
                 refresh()
             }
-            if (!thisTitleOpen) return
-            row(if (ref != null) "Show details" else "Film details") { openDetails(show = ref != null) }.asSubRow()
-            row("Picture & sound") { openQuality(show = ref != null) }.asSubRow()
-            row("Source", vod.addon?.label ?: PlayerMeta.PORTAL) {}.asSubRow()
-            message(
-                if (ref != null) "Matched by the show's IMDb id from ${PlayerMeta.PORTAL}" +
-                    (ep?.name?.takeIf { it.isNotEmpty() }?.let { n -> ": ${ep.label} · $n." } ?: ".")
-                else "Matched by its IMDb id from ${PlayerMeta.PORTAL}.",
-            )
+            // The user's order: the matched title (its dropdown holds the source), then details, then Picture & sound.
+            if (thisTitleOpen) {
+                row("Source", vod.addon?.label ?: PlayerMeta.PORTAL) {}.asSubRow()
+                message(
+                    if (ref != null) "Matched by the show's IMDb id from ${PlayerMeta.PORTAL}" +
+                        (ep?.name?.takeIf { it.isNotEmpty() }?.let { n -> ": ${ep.label} · $n." } ?: ".")
+                    else "Matched by its IMDb id from ${PlayerMeta.PORTAL}.",
+                )
+            }
+            row(if (ref != null) "Show details" else "Film details") { openDetails(show = ref != null) }
+            row("Picture & sound") { openQuality(show = ref != null) }
             return
         }
         val portal = NextEpisode.portal(entry.uri)
@@ -5299,7 +5301,32 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 thisTitleOpen = !thisTitleOpen
                 refresh()
             }
-            if (!thisTitleOpen) return
+            if (thisTitleOpen) episodeMatchRows(g, ep, portal)
+            if (tmdb.isConfigured && g.tmdbId > 0) row("Show details") { openDetails(show = true) }
+            row("Picture & sound") { openQuality(show = true) }
+        } else if (portal != null && entry.info.episode == null) {
+            header("This film")
+            val fixed = filmFix(entry)
+            val (badge, style) = when {
+                fixed != null || entry.english != null -> "Matched" to Rows.Badge.ACTIVE
+                else -> "Not matched" to Rows.Badge.INACTIVE
+            }
+            dropdownRow(fixed ?: entry.info.title, badge, style, thisTitleOpen) {
+                thisTitleOpen = !thisTitleOpen
+                refresh()
+            }
+            if (thisTitleOpen) {
+                row("Source", portal) {}.asSubRow()
+                if (tmdb.isConfigured) row("Fix match") { openFixFilm() }.asSubRow()
+                if (!tmdb.isConfigured) message("Needs a TMDB API key (Statuses, below) to fix this film's name.")
+            }
+            if (tmdb.isConfigured) row("Film details") { openDetails(show = false) }
+            row("Picture & sound") { openQuality(show = false) }
+        }
+    }
+
+    /** Inside This episode's dropdown (a playlist's episode): its source, and how its match can be confirmed or fixed. */
+    private fun SidePanel.episodeMatchRows(g: ShowGuide, ep: ShowGuide.Ep, portal: String?) {
             val why = when {
                 !tmdb.isConfigured -> "Needs a TMDB API key (Statuses, below) to match episodes with TMDB's names and numbers."
                 ep.why != null && ep.joined -> ep.why + " TMDB's: " + ep.parts.joinToString(" and ") { "S${it.season} E${it.number}" } + "."
@@ -5314,30 +5341,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 rebuildFromFix()
                 refresh()
             }.asSubRow()
-            if (tmdb.isConfigured && g.tmdbId > 0) row("Show details") { openDetails(show = true) }.asSubRow()
-            row("Picture & sound") { openQuality(show = true) }.asSubRow()
-            if (tmdb.isConfigured) row("Fix match") { openFixShow() }.asSubRow()
             if (portal != null) row("Source", portal) {}.asSubRow()
+            if (tmdb.isConfigured) row("Fix match") { openFixShow() }.asSubRow()
             // Why it was matched so, under the card, so the card stays whole.
             message(why)
-        } else if (portal != null && entry.info.episode == null) {
-            header("This film")
-            val fixed = filmFix(entry)
-            val (badge, style) = when {
-                fixed != null || entry.english != null -> "Matched" to Rows.Badge.ACTIVE
-                else -> "Not matched" to Rows.Badge.INACTIVE
-            }
-            dropdownRow(fixed ?: entry.info.title, badge, style, thisTitleOpen) {
-                thisTitleOpen = !thisTitleOpen
-                refresh()
-            }
-            if (!thisTitleOpen) return
-            if (tmdb.isConfigured) row("Film details") { openDetails(show = false) }.asSubRow()
-            row("Picture & sound") { openQuality(show = false) }.asSubRow()
-            if (tmdb.isConfigured) row("Fix match") { openFixFilm() }.asSubRow()
-            row("Source", portal) {}.asSubRow()
-            if (!tmdb.isConfigured) message("Needs a TMDB API key (Statuses, below) to fix this film's name.")
-        }
     }
 
     // Show details / Film details: TMDB's cover and story for the video they were asked for.
