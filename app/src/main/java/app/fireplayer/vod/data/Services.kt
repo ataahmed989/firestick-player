@@ -56,8 +56,8 @@ object Services {
         (Service.entries.filter { it.mono }.map { it.logo } + Brand.entries.filter { it.mono }.mapNotNull { it.logo }).map { LOGOS + it }.toSet()
 
     /**
-     * Home's row of services in [order] (the viewer's, [order]): a card each, its logo one of the app's own pictures
-     * (nothing is fetched for it).
+     * Home's row of services in [order] (the viewer's: [Services.order]): a card each, its logo one of the app's own
+     * pictures (nothing is fetched for it).
      */
     fun cards(order: List<Service> = Service.entries): List<Card> = order.map { logoCard(SERVICE_ID + it.key, it.label) }
 
