@@ -27,9 +27,8 @@ import kotlin.math.roundToInt
  * Its shapes and gradients are made when its size changes (the window laid out), never while it's drawn: a frame
  * draws two or three paths and a line.
  */
-class WindowHeader(context: Context, private val kind: Glass.Kind, val glass: Boolean) : Drawable() {
+class WindowHeader(private val context: Context, private val kind: Glass.Kind, val glass: Boolean) : Drawable() {
 
-    private val context = context
     private val density = context.resources.displayMetrics.density
     private val tint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val sheen = Paint(Paint.ANTI_ALIAS_FLAG)

@@ -117,13 +117,14 @@ class HoldWindow(private val t: Tokens, private val root: ViewGroup, private val
         val r = host.repo ?: return
         val title = card.title
         val buttons = ArrayList<HoldPopup.Button>(4)
-        if (onTitlePage != null) buttons += HoldPopup.Button("Title page") {
+        if (onTitlePage != null) buttons += HoldPopup.Button("Title page", DETAILS_ICON) {
             close(fade = false, focusBack = false)
             onTitlePage()
         }
         buttons += listButton(title, r.inMyList(title.id))
-        buttons += HoldPopup.Button(if (r.isWatched(title.id)) "Mark unwatched" else "Mark watched") { toggleWatched(title) }
-        if (continueRow) buttons += HoldPopup.Button("Remove") { removeFromContinue(title) }
+        val watched = r.isWatched(title.id)
+        buttons += HoldPopup.Button(if (watched) "Mark unwatched" else "Mark watched", watchedIcon(watched)) { toggleWatched(title) }
+        if (continueRow) buttons += HoldPopup.Button("Remove", REMOVE_ICON) { removeFromContinue(title) }
         open(title.name, buttons, anchor, focusBack, area, row, listener, otherwise)
     }
 
@@ -196,5 +197,14 @@ class HoldWindow(private val t: Tokens, private val root: ViewGroup, private val
     companion object {
         const val MARKED = "Marked as watched"
         const val UNMARKED = "Marked as not watched"
+
+        // The options' icons, the same wherever a hold window offers them (the list's sign is [listButton]'s).
+        /** Title page, Details: an "i". */
+        val DETAILS_ICON = R.drawable.ic_info
+        /** Remove (from Continue Watching): a cross, as Settings › Rows' Remove. */
+        val REMOVE_ICON = R.drawable.ic_close
+
+        /** Mark watched (a tick), or for one [watched] already, Mark unwatched (back to the start). */
+        fun watchedIcon(watched: Boolean): Int = if (watched) R.drawable.ic_restart else R.drawable.ic_check
     }
 }

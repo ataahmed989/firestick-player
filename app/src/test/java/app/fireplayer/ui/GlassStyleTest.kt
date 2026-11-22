@@ -106,6 +106,40 @@ class GlassStyleTest {
         }
     }
 
+    // ---- A window's header band and its cards -----------------------------------------------------------------------------
+
+    @Test fun theHeaderBandIsACoolBlueTintFadingDownOverTheWindowsGlass() {
+        val top = GlassStyle.HEADER_TINT_TOP
+        val bottom = GlassStyle.HEADER_TINT_BOTTOM
+        for (tint in intArrayOf(top, bottom)) {
+            val a = tint ushr 24
+            val r = (tint shr 16) and 0xFF
+            val b = tint and 0xFF
+            // Blue, and only a tint: the window's dark glass and what's behind it still show through.
+            assertTrue("blue $b over red $r", b - r >= 0x60)
+            assertTrue("alpha $a", a in 0x10..0x60)
+        }
+        // Strongest at the top, fading towards the band's foot; one colour.
+        assertTrue((top ushr 24) > (bottom ushr 24))
+        assertEquals(top and 0xFFFFFF, bottom and 0xFFFFFF)
+    }
+
+    @Test fun theHeaderBandsUpperEdgeIsTheGlassReferencesBrightEdge() {
+        // rgba(255,255,255,.42): white at 0x6B.
+        assertEquals(0x6BFFFFFF, GlassStyle.HEADER_EDGE)
+        // Brighter than a window's own top highlight, so it reads as the reflective edge.
+        assertTrue((GlassStyle.HEADER_EDGE ushr 24) > (GlassStyle.HIGHLIGHT ushr 24))
+    }
+
+    @Test fun aCardsRowsKnowWhereTheyAre() {
+        assertEquals(RowGroups.Pos.SINGLE, RowGroups.posOf(0, 1))
+        assertEquals(RowGroups.Pos.FIRST, RowGroups.posOf(0, 3))
+        assertEquals(RowGroups.Pos.MIDDLE, RowGroups.posOf(1, 3))
+        assertEquals(RowGroups.Pos.LAST, RowGroups.posOf(2, 3))
+        assertEquals(RowGroups.Pos.FIRST, RowGroups.posOf(0, 2))
+        assertEquals(RowGroups.Pos.LAST, RowGroups.posOf(1, 2))
+    }
+
     // ---- The blur, with the caller's arrays -----------------------------------------------------------------------------
 
     /** A box blur worked out the plain way (sums divided by the window), to compare against. */
