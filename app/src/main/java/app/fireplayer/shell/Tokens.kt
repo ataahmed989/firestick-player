@@ -84,17 +84,20 @@ class Tokens(context: Context) {
         // ---- Hold windows ---------------------------------------------------------------------------------------
         // A held OK's small window, one shape everywhere (app.fireplayer.live.ui.HoldShape: HoldPopup in Live TV and
         // Films & Shows, FireDialog.hold for a settings window's row): a narrow vertical list beside what was held, as
-        // wide as its widest line. Glass, or classic's solid popup; only the selected option is lit.
+        // wide as its widest line, in the settings windows' look: the name in the window's header band, the options a
+        // card of rows under it. Glass, or classic's solid popup; only the selected option is lit.
 
-        /** Its room round the list: the selected option's white sits this far inside the window's edge. */
-        const val HOLD_PAD_DP = 6f
+        /**
+         * Its room round its cards: the options' card sits this far inside the window's sides and foot and under the
+         * header band, the same all round.
+         */
+        const val HOLD_PAD_DP = 8f
         /** Its width: its widest line (the title's or an option's) and its room, within these (and the area). */
         const val HOLD_MIN_W_DP = 150f
         const val HOLD_MAX_W_DP = 240f
-        /** An option: this tall, its icon and words this far in from the row's ends, the options this far apart. */
+        /** An option: this tall, its icon and words this far in from the card's sides (the options touch in it). */
         const val HOLD_ROW_H_DP = 32f
         const val HOLD_ROW_PAD_X_DP = 12f
-        const val HOLD_ROW_GAP_DP = 2f
         /** An option's icon (the guide's star) and the room between it and its words. */
         const val HOLD_ICON_DP = 16f
         const val HOLD_ICON_GAP_DP = 10f
@@ -102,13 +105,14 @@ class Tokens(context: Context) {
         const val HOLD_ROW_TALL_H_DP = 44f
         const val HOLD_DETAIL_SP = 11f
         const val HOLD_DETAIL_ALPHA = 0.65f
-        /** The title line: the name held, quieter than the options, in line with their words, up to two lines. */
-        val HOLD_TITLE = TextStyle(13f, TextStyle.Weight.BOLD, TextStyle.Ink.MUTED, lineGap = 1f)
+        /**
+         * The title in the header band: the name held, bright, in line with the options' words, up to two lines and then
+         * cut short; this far from the window's top edge and from the band's foot.
+         */
+        val HOLD_TITLE = TextStyle(14f, TextStyle.Weight.BOLD, TextStyle.Ink.TEXT, lineGap = 1f)
         const val HOLD_TITLE_LINES = 2
-        const val HOLD_TITLE_PAD_TOP_DP = 6f
-        const val HOLD_TITLE_PAD_BOTTOM_DP = 5f
-        /** The thin line before an option of another kind (a group's Manage groups), with this room above and below. */
-        const val HOLD_LINE_GAP_DP = 3f
+        const val HOLD_TITLE_PAD_TOP_DP = 10f
+        const val HOLD_TITLE_PAD_BOTTOM_DP = 8f
         /** Beside what was held, this far from it; a settings row's window keeps this far inside the screen. */
         const val HOLD_GAP_DP = 8f
         const val HOLD_EDGE_DP = 12f

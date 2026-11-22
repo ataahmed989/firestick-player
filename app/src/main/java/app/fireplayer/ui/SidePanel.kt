@@ -15,7 +15,9 @@ import androidx.core.content.res.ResourcesCompat
 import app.fireplayer.R
 
 /**
- * The see-through settings window on the right third of the screen (or wider: [open]'s wide, for long names).
+ * The see-through settings window on the right third of the screen (or wider: [open]'s wide, for long names). Its
+ * title sits in the window's header band ([Glass.header]: glass, a cool blue tint with a bright upper edge across the
+ * window's top; side_panel.xml lays the title out to reach the window's edges, its words where they were).
  * Each window is drawn by a render function; [refresh] redraws it in place
  * and keeps the focused row and scroll position.
  * A window of hundreds of rows is a long list instead ([longList]): only the rows on screen are made.
@@ -227,6 +229,8 @@ class SidePanel(private val activity: Activity) {
     }
 
     private fun rebuild(focusIndex: Int, key: Pair<String, Int>? = null, entry: String? = null, keepPlace: Boolean = false) {
+        // The title's header band, in the look now on (made again only when the look has changed: Glass look).
+        Glass.header(title, Glass.Kind.PANEL)
         val started = android.os.SystemClock.elapsedRealtime()
         try {
             rebuildRows(focusIndex, key, entry, keepPlace)

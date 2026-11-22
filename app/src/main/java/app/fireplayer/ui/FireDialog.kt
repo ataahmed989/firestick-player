@@ -147,9 +147,9 @@ object FireDialog {
 
     /**
      * A held row's small window in the app's one hold window shape ([HoldShape], as Live TV's and Films & Shows'
-     * [app.fireplayer.live.ui.HoldPopup]): [title] on its line, then [answers] one per line, beside [anchor] (the row
-     * held: what's selected now, unless given), as wide as its widest line, kept on screen. Keys, Back and the menu
-     * button ([fromPanel]) as [ask].
+     * [app.fireplayer.live.ui.HoldPopup]): [title] in its header band, then [answers] one per line in a card, beside
+     * [anchor] (the row held: what's selected now, unless given), as wide as its widest line, kept on screen. Keys, Back
+     * and the menu button ([fromPanel]) as [ask].
      */
     fun hold(
         activity: Activity,
@@ -170,6 +170,8 @@ object FireDialog {
             text = title
             if (title.isBlank()) visibility = View.GONE
         })
+        val card = HoldShape.card(activity)
+        box.addView(card, HoldShape.cardParams(t, after = false))
         var first: View? = null
         answers.forEachIndexed { i, (label, action) ->
             val row = HoldShape.option(rows, t)
@@ -178,10 +180,11 @@ object FireDialog {
                 dialog.dismiss()
                 action()
             }
-            row.setOnKeyListener { v, keyCode, event -> Rows.verticalNav(box, v, keyCode, event) }
-            box.addView(row, HoldShape.optionParams(t, first = i == 0))
+            row.setOnKeyListener { v, keyCode, event -> Rows.verticalNav(card, v, keyCode, event) }
+            card.addView(row, HoldShape.optionParams(t))
             if (i == 0) first = row
         }
+        HoldShape.style(card)
         // Sized to its words and put beside the row held, inside the screen, before it's shown.
         val edge = t.dpf(Tokens.HOLD_EDGE_DP)
         val area = RectF(edge, edge, content.width - edge, content.height - edge)

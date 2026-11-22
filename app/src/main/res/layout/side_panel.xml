@@ -6,6 +6,7 @@
     android:layout_gravity="end"
     android:layout_margin="18dp"
     android:background="@drawable/bg_panel"
+    android:clipToPadding="false"
     android:orientation="vertical"
     android:paddingStart="16dp"
     android:paddingTop="18dp"
@@ -13,11 +14,20 @@
     android:paddingBottom="16dp"
     android:visibility="gone">
 
+    <!-- The window's header band (Glass.header): the title reaches the window's edges (its margins undo the window's
+         padding) and its own padding keeps the words in from them. 14 + 10 dp round the words is the window's 18 dp
+         and the 6 dp under the title that were there before, so the rows stay where they were. -->
     <TextView
         android:id="@+id/panel_title"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginBottom="6dp"
+        android:layout_marginStart="-16dp"
+        android:layout_marginTop="-18dp"
+        android:layout_marginEnd="-16dp"
+        android:paddingStart="16dp"
+        android:paddingTop="14dp"
+        android:paddingEnd="16dp"
+        android:paddingBottom="10dp"
         android:fontFamily="@font/figtree_700"
         android:textColor="@color/text"
         android:textSize="17sp" />

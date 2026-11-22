@@ -1867,7 +1867,7 @@ class VodPage(
             hold.close()
             showNotice(if (fav) "Added to Favorites" else "Removed from Favorites")
         }
-        val assign = HoldPopup.Button("Assign favorites") {
+        val assign = HoldPopup.Button("Assign favorites", R.drawable.ic_playlist_add) {
             hold.close(fade = false)
             host.openAssignFavorites(hit.key.playlistId, hit.groupId, hit.key)
         }
@@ -1993,7 +1993,7 @@ class VodPage(
     private fun onHistoryHold(words: String, row: View) {
         val list = historyList ?: return
         val at = list.indexOf(row)
-        val remove = HoldPopup.Button("Remove") {
+        val remove = HoldPopup.Button("Remove", R.drawable.ic_trash) {
             history?.let {
                 it.remove(words)
                 list.show(it.entries)
