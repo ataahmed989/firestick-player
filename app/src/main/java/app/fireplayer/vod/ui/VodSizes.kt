@@ -695,6 +695,13 @@ internal object VodSizes {
     /** Logo cards across the page: all five show at once and stay where they are (the row never moves sideways). */
     const val LOGO_ACROSS = 5
     /**
+     * Home's streaming services: a card per service ([Service]), all six across in their slots the same way. The
+     * first is in line with the rows below, the five gaps are the rows' [GAP], and the last ends at the rows' right
+     * margin, so the chosen card's growth and ring ([logoReach]) have room at both ends and the screen's edge stays
+     * clear of it ([logoSlotLeft]).
+     */
+    const val SERVICES_ACROSS = 6
+    /**
      * How much bigger the chosen logo card is. It grows about its middle, so less than [GROW]: its growth and its ring
      * stay inside the [GAP] to the cards beside it (and clear of the rail and the screen's right edge).
      */
@@ -723,8 +730,11 @@ internal object VodSizes {
      */
     fun logoFill(glass: Boolean): Int = if (glass) GlassStyle.WINDOW_TINT else RailShape.CLASSIC_FILL
 
-    /** A logo card's corner radius, dp. */
-    fun logoRadius(): Float = cardH(RowStyle.LOGO) * LOGO_RADIUS_SHARE
+    /** A logo card's corner radius, dp: the same share of its height at either size. */
+    fun logoRadius(style: RowStyle = RowStyle.LOGO): Float = logoRadiusFor(cardH(style))
+
+    /** The corner radius of a logo card [cardH] dp tall. */
+    fun logoRadiusFor(cardH: Float): Float = cardH * LOGO_RADIUS_SHARE
 
     /** How far the shadow may show outside a logo card, dp (the room [LogoSurface]'s picture keeps round the card). */
     fun logoShadowReach(): Float = LOGO_SHADOW_DY + LOGO_SHADOW_BLUR
@@ -740,6 +750,8 @@ internal object VodSizes {
         Service.NETFLIX -> 0.777f
         Service.HBO_MAX -> 0.906f
         Service.APPLE_TV -> 0.642f
+        // The other long wordmark's (HBO Max's): the same clear room either side of the mark.
+        Service.PRIME_VIDEO -> 0.906f
     }
 
     fun logoShare(brand: Brand): Float = when (brand) {
@@ -789,14 +801,29 @@ internal object VodSizes {
     /** A logo card's name, shown only if its logo can't be read. */
     val LOGO_NAME = TextStyle(16f, Weight.BOLD)
 
-    /** A logo card's width: [LOGO_ACROSS] share the rows' width (the content's left edge to the right margin), [GAP] apart. */
-    fun logoW(): Float = (tabHeaderW() - (LOGO_ACROSS - 1) * GAP) / LOGO_ACROSS
+    /**
+     * A logo card's width: [across] share the rows' width (the content's left edge to the right margin), [GAP] apart,
+     * all the same width.
+     */
+    fun logoW(across: Int = LOGO_ACROSS): Float = (tabHeaderW() - (across - 1) * GAP) / across
+
+    /** Whether a row is of logo cards: Disney+'s studios ([RowStyle.LOGO]) or Home's services ([RowStyle.SERVICES]). */
+    fun isLogo(style: RowStyle): Boolean = style == RowStyle.LOGO || style == RowStyle.SERVICES
+
+    /** How many logo cards share a row's width. */
+    fun logoAcross(style: RowStyle): Int = if (style == RowStyle.SERVICES) SERVICES_ACROSS else LOGO_ACROSS
+
+    /** Card [i]'s slot in a row of logo cards: its left edge, dp from the content's left edge (the rows' first card). */
+    fun logoSlotLeft(style: RowStyle, i: Int): Float = i * pitch(style)
+
+    /** How far past a logo card's edges the chosen one reaches, grown about its middle with its ring round it, dp. */
+    fun logoReach(style: RowStyle): Float = cardW(style) * LOGO_GROW / 2f + RING
 
     /**
      * A row whose cards stay where they are: all of them show at once, Left and Right only move focus, and the chosen
      * one grows about its middle with nothing moving along for it.
      */
-    fun still(style: RowStyle): Boolean = style == RowStyle.LOGO
+    fun still(style: RowStyle): Boolean = isLogo(style)
 
     // ---- Per row style ----
     // [large]: the browse pages' cards ([BROWSE_POSTER_W], [BROWSE_WIDE_W]); else the title page's.
@@ -805,7 +832,7 @@ internal object VodSizes {
     fun posterH(large: Boolean): Float = if (large) BROWSE_POSTER_H else POSTER_H
 
     fun cardW(style: RowStyle, large: Boolean = false): Float = when {
-        style == RowStyle.LOGO -> logoW()
+        isLogo(style) -> logoW(logoAcross(style))
         style == RowStyle.EPISODE -> WIDE_W
         style == RowStyle.WIDE -> if (large) BROWSE_WIDE_W else WIDE_W
         else -> posterW(large)
@@ -816,7 +843,7 @@ internal object VodSizes {
         RowStyle.WIDE -> if (large) BROWSE_WIDE_H else WIDE_H
         RowStyle.EPISODE -> EPISODE_ITEM_H
         RowStyle.GENRES, RowStyle.SEASONS -> CHIP_H
-        RowStyle.LOGO -> logoW() * LOGO_SHAPE
+        RowStyle.LOGO, RowStyle.SERVICES -> cardW(style) * LOGO_SHAPE
         else -> posterH(large)
     }
 
@@ -837,7 +864,7 @@ internal object VodSizes {
 
     fun grow(style: RowStyle): Float = when {
         isChips(style) -> GROW_CHIP
-        style == RowStyle.LOGO -> LOGO_GROW
+        isLogo(style) -> LOGO_GROW
         else -> GROW
     }
 

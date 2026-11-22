@@ -39,8 +39,9 @@ class ServicesTest {
     }
 
     @Test
-    fun homeShowsTheFiveServicesInOrderUnderContinueWatching() {
-        assertEquals(listOf("Disney+", "Hulu", "Netflix", "HBO Max", "Apple TV"), Services.cards().map { it.title.name })
+    fun homeShowsTheSixServicesInOrderUnderContinueWatching() {
+        assertEquals(listOf("Disney+", "Hulu", "Netflix", "HBO Max", "Apple TV", "Prime Video"), Services.cards().map { it.title.name })
+        assertEquals(RowStyle.SERVICES, Services.homeRow().style)
         val home = PageRows.rows(Page.HOME, 2026).map { it.key }
         assertEquals(home.indexOf("home.continue") + 1, home.indexOf("home.services"))
         assertTrue(home.indexOf("home.services") < home.indexOf("home.popular_movies"))
@@ -75,7 +76,138 @@ class ServicesTest {
         assertEquals(Brand.PIXAR, Services.brandOf(Services.brandCards()[1].title.id))
         // A brand's collection: films and series, on Disney+, page after page.
         assertEquals(Source.Discover(null, 337, "3", null, full = true), Services.collection(Brand.PIXAR).source)
-        assertEquals(setOf(337, 15, 8, 1899, 350), Service.entries.map { it.providerId }.toSet())
+        assertEquals(setOf(337, 15, 8, 1899, 350, 9), Service.entries.map { it.providerId }.toSet())
+    }
+
+    @Test
+    fun primeVideosPageHasItsUsSubscriptionTitlesWithAdsOrNot() {
+        val prime = Services.rows(Service.PRIME_VIDEO)
+        assertEquals(listOf("Popular Movies", "Popular Shows"), prime.map { it.label })
+        val movies = prime[0].source as Source.Discover
+        assertEquals(Source.Discover(Kind.MOVIE, 9, alsoProvider = 2100), movies)
+        val q = Discover.params(movies, Kind.MOVIE, 1).toMap()
+        // Amazon Prime Video or its with-ads tier, on a US subscription.
+        assertEquals("9|2100", q["with_watch_providers"])
+        assertEquals("US", q["watch_region"])
+        assertEquals("flatrate", q["with_watch_monetization_types"])
+        // Kept apart from a row of provider 9 alone; the other services' rows ask as before.
+        assertFalse(Discover.key(movies, Kind.MOVIE, 1) == Discover.key(Source.Discover(Kind.MOVIE, 9), Kind.MOVIE, 1))
+        assertEquals("8", Discover.params(Services.rows(Service.NETFLIX)[0].source as Source.Discover, Kind.MOVIE, 1).toMap()["with_watch_providers"])
+        assertEquals(
+            "tmdb|discover|v1|${Kind.MOVIE.type}|8|||1",
+            Discover.key(Source.Discover(Kind.MOVIE, 8), Kind.MOVIE, 1),
+        )
+        assertEquals(Service.PRIME_VIDEO, Services.serviceOf(Services.cards().last().title.id))
+    }
+
+    // ---- Home's order ---------------------------------------------------------------------------------------------
+
+    @Test
+    fun homesServiceOrderIsTheDefaultUntilTheViewerSetsOne() {
+        val default = listOf(Service.DISNEY, Service.HULU, Service.NETFLIX, Service.HBO_MAX, Service.APPLE_TV, Service.PRIME_VIDEO)
+        assertEquals(default, Services.order(null))
+        assertEquals(default, Services.order(""))
+        // The viewer's order, read back.
+        val mine = listOf(Service.PRIME_VIDEO, Service.NETFLIX, Service.DISNEY, Service.APPLE_TV, Service.HULU, Service.HBO_MAX)
+        assertEquals(mine, Services.order(Services.encode(mine)))
+        assertEquals(mine.map { it.label }, Services.cards(mine).map { it.title.name })
+        // Unknown names and repeats left out; every service once.
+        assertEquals(default, Services.order("gone,disney,disney,hulu"))
+    }
+
+    @Test
+    fun aServiceNewToTheAppJoinsASavedOrderAtTheEnd() {
+        // Saved before Prime Video came: the viewer's five as they were, Prime Video after them.
+        val saved = "netflix,hbo_max,disney,apple_tv,hulu"
+        assertEquals(
+            listOf(Service.NETFLIX, Service.HBO_MAX, Service.DISNEY, Service.APPLE_TV, Service.HULU, Service.PRIME_VIDEO),
+            Services.order(saved),
+        )
+        // Two missing: after the rest, in their default order.
+        assertEquals(
+            listOf(Service.APPLE_TV, Service.NETFLIX, Service.DISNEY, Service.HULU, Service.HBO_MAX, Service.PRIME_VIDEO),
+            Services.order("apple_tv,netflix"),
+        )
+    }
+
+    @Test
+    fun theViewersServiceOrderIsStoredAndHomeIsTold() {
+        val store = RowLayoutStore.Memory()
+        var told = 0
+        val rows = RowSettings(store) { 2026 }.apply { addListener { told++ } }
+        assertEquals(Service.entries, rows.serviceOrder())
+        val mine = listOf(Service.PRIME_VIDEO) + Service.entries.dropLast(1)
+        rows.setServiceOrder(mine)
+        assertEquals(mine, rows.serviceOrder())
+        assertEquals("prime_video,disney,hulu,netflix,hbo_max,apple_tv", store.services)
+        assertEquals(1, told)
+        // The same order again changes nothing; read again after a restart, it's the viewer's.
+        rows.setServiceOrder(mine)
+        assertEquals(1, told)
+        assertEquals(mine, RowSettings(store) { 2026 }.serviceOrder())
+        // Back to the default: nothing stored.
+        rows.setServiceOrder(Service.entries)
+        assertNull(store.services)
+        assertEquals(2, told)
+    }
+
+    // ---- The rail's service shortcuts -------------------------------------------------------------------------------
+
+    @Test
+    fun withNothingPinnedTheShortcutsAreTheTwoServicesOpenedLastNewestFirst() {
+        assertEquals(listOf<Service?>(null, null), Services.railSlots(true, emptyList(), emptyList()))
+        assertEquals(listOf(Service.HULU, null), Services.railSlots(true, emptyList(), listOf(Service.HULU)))
+        assertEquals(listOf(Service.HULU, Service.NETFLIX), Services.railSlots(true, emptyList(), listOf(Service.HULU, Service.NETFLIX)))
+        // A visit is a page opening: the one opened last comes first.
+        var recent = Services.visited(listOf(Service.HULU, Service.NETFLIX), Service.PRIME_VIDEO)
+        assertEquals(listOf(Service.PRIME_VIDEO, Service.HULU), Services.railSlots(true, emptyList(), recent))
+        recent = Services.visited(recent, Service.HULU)
+        assertEquals(listOf(Service.HULU, Service.PRIME_VIDEO), Services.railSlots(true, emptyList(), recent))
+    }
+
+    @Test
+    fun onePinnedKeepsTheTopShortcutAndTheOtherIsTheDifferentServiceOpenedLast() {
+        val pinned = listOf(Service.DISNEY)
+        assertEquals(listOf(Service.DISNEY, Service.NETFLIX), Services.railSlots(true, pinned, listOf(Service.NETFLIX, Service.HULU)))
+        // The pinned one opened last: the second is the newest of the others, never the pinned one twice.
+        assertEquals(listOf(Service.DISNEY, Service.NETFLIX), Services.railSlots(true, pinned, listOf(Service.DISNEY, Service.NETFLIX)))
+        // No other yet: the second slot stays empty.
+        assertEquals(listOf(Service.DISNEY, null), Services.railSlots(true, pinned, listOf(Service.DISNEY)))
+        assertEquals(listOf(Service.DISNEY, null), Services.railSlots(true, pinned, emptyList()))
+    }
+
+    @Test
+    fun twoPinnedKeepTheirSlotsWhateverWasOpened() {
+        val pinned = listOf(Service.PRIME_VIDEO, Service.HBO_MAX)
+        for (recent in listOf(emptyList(), listOf(Service.NETFLIX, Service.HULU), listOf(Service.HBO_MAX, Service.PRIME_VIDEO))) {
+            assertEquals(listOf(Service.PRIME_VIDEO, Service.HBO_MAX), Services.railSlots(true, pinned, recent))
+        }
+    }
+
+    @Test
+    fun switchedOffTheRailShowsNoServiceShortcuts() {
+        assertEquals(emptyList<Service?>(), Services.railSlots(false, listOf(Service.DISNEY), listOf(Service.NETFLIX)))
+        assertEquals(emptyList<Service?>(), Services.railSlots(false, emptyList(), emptyList()))
+    }
+
+    @Test
+    fun upToTwoDistinctServicesArePinned() {
+        var pins = Services.pin(emptyList(), 0, Service.NETFLIX)
+        assertEquals(listOf(Service.NETFLIX), pins)
+        pins = Services.pin(pins, 1, Service.APPLE_TV)
+        assertEquals(listOf(Service.NETFLIX, Service.APPLE_TV), pins)
+        // A service pinned in the other slot changes places: still two, each once.
+        assertEquals(listOf(Service.APPLE_TV, Service.NETFLIX), Services.pin(pins, 0, Service.APPLE_TV))
+        assertEquals(listOf(Service.APPLE_TV, Service.NETFLIX), Services.pin(pins, 1, Service.NETFLIX))
+        // The same service again in its own slot: as it was.
+        assertEquals(pins, Services.pin(pins, 0, Service.NETFLIX))
+        // A slot back to the most recent: the pins close up, one alone in the top slot.
+        assertEquals(listOf(Service.APPLE_TV), Services.pin(pins, 0, null))
+        assertEquals(listOf(Service.NETFLIX), Services.pin(pins, 1, null))
+        assertEquals(listOf(Service.HULU), Services.pin(emptyList(), 1, Service.HULU))
+        // Stored and read back, repeats and unknown names left out.
+        assertEquals(pins, Services.decode(Services.encode(pins)))
+        assertEquals(listOf(Service.HULU), Services.pin(listOf(Service.HULU, Service.HULU), 5, Service.NETFLIX))
     }
 
     @Test

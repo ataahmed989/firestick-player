@@ -124,7 +124,8 @@ class DefaultVodRepository(
             is Source.Fixed -> local(req, skip, limit, sink) { emptyList() }
             is Source.Discover -> discoverCards(s, skip, limit, req, sink)
             is Source.Curated -> curatedCards(s, skip, limit, req, sink)
-            Source.Services -> local(req, skip, limit, sink) { Services.cards() }
+            // In the viewer's order, read here (main thread) for the disk thread.
+            Source.Services -> rowSettings.serviceOrder().let { order -> local(req, skip, limit, sink) { Services.cards(order) } }
             Source.Brands -> local(req, skip, limit, sink) { Services.brandCards() }
         }
         return req

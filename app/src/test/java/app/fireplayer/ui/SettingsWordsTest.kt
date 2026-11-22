@@ -29,6 +29,8 @@ class SettingsWordsTest {
         val headings = listOf(
             "This copy", "Copies", "Hidden groups", "Favorites", "Order", "Groups", "Playlists & EPG", "Subtitle style",
             "Presets", "Storage", "On this channel", "EPG sources", "Updates", "Account", "Guide",
+            // Settings › Rows: its window's own heading, and its two sections.
+            "Rows", "Streaming Services", "Service shortcuts",
         )
         assertEquals(emptyList<String>(), headings.filter { SidePanel.headingIcon(it) == null })
     }

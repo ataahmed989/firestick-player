@@ -303,7 +303,7 @@ class TitleRow(
             spec.style == RowStyle.RANKED -> RankedItem(context, t, large)
             spec.style == RowStyle.WIDE -> CardView(context, t, CardView.Kind.WIDE, VodSizes.cardW(RowStyle.WIDE, large), VodSizes.cardH(RowStyle.WIDE, large))
             spec.style == RowStyle.EPISODE -> CardView(context, t, CardView.Kind.EPISODE)
-            spec.style == RowStyle.LOGO -> CardView(context, t, CardView.Kind.LOGO, VodSizes.cardW(RowStyle.LOGO), VodSizes.cardH(RowStyle.LOGO))
+            VodSizes.isLogo(spec.style) -> CardView(context, t, CardView.Kind.LOGO, VodSizes.cardW(spec.style), VodSizes.cardH(spec.style))
             else -> CardView(context, t, CardView.Kind.POSTER, VodSizes.posterW(large), VodSizes.posterH(large))
         }
         v.isFocusable = true

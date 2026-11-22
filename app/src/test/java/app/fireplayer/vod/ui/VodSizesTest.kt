@@ -463,21 +463,58 @@ class VodSizesTest {
     }
 
     @Test
-    fun `the ten logo cards share one 16 to 9 card and every logo sits whole inside it`() {
-        val w = VodSizes.cardW(RowStyle.LOGO)
-        val h = VodSizes.cardH(RowStyle.LOGO)
-        near(w * 9f / 16f, h, 0.01f)
-        near(h * 0.12f, VodSizes.logoRadius(), 0.01f)
-        // The pictures are 640 x 300 with clear room round the mark: each whole inside the card, room left on all sides.
-        val shares = Service.entries.map { VodSizes.logoShare(it) } + Brand.entries.map { VodSizes.logoShare(it) }
-        assertEquals(10, shares.size)
-        for (share in shares) {
+    fun `Home's six service cards fit across in fixed slots, in line with the rows`() {
+        val style = RowStyle.SERVICES
+        assertEquals(Service.entries.size, VodSizes.SERVICES_ACROSS)
+        assertTrue(VodSizes.still(style))
+        assertTrue(VodSizes.isLogo(style))
+        assertEquals(0f, VodSizes.extra(style))
+        val w = VodSizes.cardW(style)
+        val n = VodSizes.SERVICES_ACROSS
+        // The first card is in line with the rows below it (their first card, at the content's left edge).
+        near(0f, VodSizes.logoSlotLeft(style, 0), 0.001f)
+        // Five gaps, all the rows' gap: each card the same width, one pitch from the last.
+        for (i in 1 until n) near(VodSizes.GAP, VodSizes.logoSlotLeft(style, i) - (VodSizes.logoSlotLeft(style, i - 1) + w), 0.001f)
+        // All six fully across the content's width: the last ends at the rows' right margin.
+        val lastRight = VodSizes.CONTENT_SCREEN_X + VodSizes.logoSlotLeft(style, n - 1) + w
+        near(VodSizes.SCREEN_W - VodSizes.RIGHT_MARGIN, lastRight, 0.01f)
+        near(VodSizes.tabHeaderW(), n * w + (n - 1) * VodSizes.GAP, 0.01f)
+        // Room for the chosen card's growth and ring at both ends: clear of the rail's window on the left, and of the
+        // screen's edge on the right with some space still to spare.
+        val reach = VodSizes.logoReach(style)
+        assertTrue(VodSizes.CONTENT_SCREEN_X - reach > VodSizes.RAIL_WINDOW_END)
+        assertTrue(VodSizes.SCREEN_W - (lastRight + reach) >= 12f)
+        // ...and between two cards: the chosen one's ring never touches the next.
+        assertTrue(reach < VodSizes.GAP)
+        // The cards keep their shape and corners, smaller than the studios' five.
+        near(w * 9f / 16f, VodSizes.cardH(style), 0.01f)
+        near(VodSizes.cardH(style) * VodSizes.LOGO_RADIUS_SHARE, VodSizes.logoRadius(style), 0.01f)
+        assertTrue(w < VodSizes.cardW(RowStyle.LOGO))
+        // Disney+'s studios keep five across.
+        assertEquals(5, VodSizes.logoAcross(RowStyle.LOGO))
+        near(VodSizes.logoW(5), VodSizes.cardW(RowStyle.LOGO), 0.001f)
+    }
+
+    @Test
+    fun `the eleven logo cards share one 16 to 9 card shape and every logo sits whole inside it`() {
+        // Home's six services at their size, Disney+'s five studios at theirs.
+        val cards = Service.entries.map { RowStyle.SERVICES to VodSizes.logoShare(it) } +
+            Brand.entries.map { RowStyle.LOGO to VodSizes.logoShare(it) }
+        assertEquals(11, cards.size)
+        for ((style, share) in cards) {
+            val w = VodSizes.cardW(style)
+            val h = VodSizes.cardH(style)
+            near(w * 9f / 16f, h, 0.01f)
+            // The pictures are 640 x 300 with clear room round the mark: each whole inside the card, room left on all sides.
             val k = VodSizes.logoFit(share, 640, 300, w, h)
             near(w * share, 640 * k, 0.01f)
             assertTrue(640 * k < w && 300 * k < h)
             // Read at half size it's drawn the same.
             near(640 * k, 320 * VodSizes.logoFit(share, 320, 150, w, h), 0.01f)
         }
+        val w = VodSizes.cardW(RowStyle.LOGO)
+        val h = VodSizes.cardH(RowStyle.LOGO)
+        near(h * 0.12f, VodSizes.logoRadius(), 0.01f)
         // Marvel on the TV (2 px a dp): about 224 x 105 px, read at half size (320 x 150), never smaller than drawn.
         val marvel = w * 2f * VodSizes.logoShare(Brand.MARVEL)
         near(224.2f, marvel, 0.5f)
@@ -491,7 +528,7 @@ class VodSizesTest {
     @Test
     fun `nothing is fetched for a logo card`() {
         assertTrue((Services.cards() + Services.brandCards()).all { it.title.poster == null })
-        assertEquals(5, Services.cards().size)
+        assertEquals(6, Services.cards().size)
         assertEquals(5, Services.brandCards().size)
     }
 
