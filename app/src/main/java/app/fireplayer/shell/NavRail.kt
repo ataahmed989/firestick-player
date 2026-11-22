@@ -761,7 +761,7 @@ class NavRail(context: Context, private val t: Tokens) : LinearLayout(context) {
             val r = boxRadius
             val edge = outline
             if (glass) {
-                // Rail, cards & header's tint and dimness as they are now (Settings › Look): a change shows at the next drawing.
+                // Rail, cards & header's tint and charcoal as they are now (Settings › Look): a change shows at the next drawing.
                 fill.color = Glass.railShade.color
                 if (edge > 0f) drawShade(canvas, edge)
                 if (filmShare > 0f) drawFilm(canvas, r, filmShare)

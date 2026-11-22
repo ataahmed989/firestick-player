@@ -106,17 +106,16 @@ class GlassStyleTest {
         // The controls' close to neutral: the colour comes from what's behind, not from a blue wash.
         val c = GlassStyle.CONTROL_TINT
         assertTrue((c and 0xFF) - ((c shr 16) and 0xFF) <= 12)
-        // The windows' colour is never bluer than the wallpaper's own: between it and charcoal, channel by channel.
+        // The windows' colours are never bluer than the wallpaper's own.
         assertEquals(GlassStyle.WALLPAPER or (0xFF shl 24), GlassStyle.WINDOW_SOLID)
         val w = channels(GlassStyle.WALLPAPER)
-        val k = channels(GlassStyle.CHARCOAL)
         for (shade in listOf(GlassStyle.APP_SHADE, GlassStyle.RAIL_SHADE)) {
             val t = channels(shade.color)
-            for (i in 0..2) assertTrue("$shade channel $i", t[i] <= w[i] && t[i] >= k[i])
+            assertTrue("$shade", t[2] - t[0] <= w[2] - w[0])
         }
     }
 
-    // ---- The user's tint and dimness (Settings › Look: App glass, Rail, cards & header, Playback glass) -----------------
+    // ---- The user's glass (Settings › Look: App glass, Rail, cards & header, Playback glass) ---------------------------
 
     /** A colour's red, green and blue. */
     private fun channels(c: Int) = floatArrayOf(((c shr 16) and 0xFF).toFloat(), ((c shr 8) and 0xFF).toFloat(), (c and 0xFF).toFloat())
@@ -128,119 +127,152 @@ class GlassStyleTest {
         return FloatArray(3) { c[it] * a + b * (1f - a) }
     }
 
-    /** The model itself: lerp(background, charcoal, dimness) laid over grey [b] at the tint's strength. */
-    private fun model(tint: Int, dim: Int, b: Int): FloatArray {
+    /**
+     * The model itself, two layers over grey [b]: the tint's colour (the background's own, or [charcoal]% of the way to
+     * charcoal) at the tint's strength, then black at the dimness's.
+     */
+    private fun model(tint: Int, dim: Int, charcoal: Int, b: Int): FloatArray {
         val t = tint / 100f
         val d = dim / 100f
-        val w = channels(GlassStyle.WALLPAPER)
-        val k = channels(GlassStyle.CHARCOAL)
-        return FloatArray(3) { (1f - t) * b + t * (w[it] + (k[it] - w[it]) * d) }
+        val colour = channels(GlassStyle.charcoalColor(charcoal))
+        return FloatArray(3) { ((1f - t) * b + t * colour[it]) * (1f - d) }
     }
 
-    @Test fun noTintLaysNoColourLayerWhateverTheDimness() {
-        for (dim in 0..100 step GlassStyle.SHADE_STEP) {
-            val clear = GlassStyle.Shade(0, dim)
-            // Nothing at all: the frosted glass as it is, and over the wallpaper it's the wallpaper.
-            assertEquals(0, clear.color ushr 24)
+    private fun assertShows(message: String, want: FloatArray, got: FloatArray) {
+        for (i in 0..2) assertTrue("$message channel $i: ${got[i]} for ${want[i]}", abs(got[i] - want[i]) <= 1f)
+    }
+
+    @Test fun noTintAndNoDimnessLayNothing() {
+        // Nothing at all: the frosted glass as it is, and over the wallpaper it's the wallpaper.
+        for (charcoal in 0..100 step GlassStyle.SHADE_STEP) {
+            val clear = GlassStyle.Shade(0, charcoal = charcoal)
             assertEquals(GlassStyle.CLEAR, clear.color)
             assertEquals(GlassStyle.WINDOW_SOLID, clear.solid)
             for (b in intArrayOf(0, 77, 255)) assertArrayEquals(floatArrayOf(b.toFloat(), b.toFloat(), b.toFloat()), shows(clear.color, b), 0f)
         }
+        assertEquals(GlassStyle.CLEAR, GlassStyle.Shade(0, 0).color)
     }
 
-    @Test fun dimnessRunsFromTheBackgroundsColourToCharcoal() {
-        // The two ends: the wallpaper's measured average, and the neutral glass colour before it took the wallpaper's.
-        assertEquals(0x10191F, GlassStyle.WALLPAPER)
-        assertEquals(0x0C0E12, GlassStyle.CHARCOAL)
-        assertEquals(GlassStyle.WALLPAPER, GlassStyle.dimColor(0))
-        assertEquals(GlassStyle.CHARCOAL, GlassStyle.dimColor(100))
-        // Solid at full tint: the background's colour at 0% dimness, charcoal at 100%.
-        assertEquals(0xFF10191F.toInt(), GlassStyle.Shade(100, 0).color)
-        assertEquals(0xFF0C0E12.toInt(), GlassStyle.Shade(100, 100).color)
-        // Each step on the way is darker, or as dark, in every channel, and never bluer than the background's own.
-        val w = channels(GlassStyle.WALLPAPER)
-        var last = w
+    @Test fun noTintAddsNoColourLayerAndDimnessStillDarkens() {
         for (dim in GlassStyle.SHADE_STEP..100 step GlassStyle.SHADE_STEP) {
-            val now = channels(GlassStyle.dimColor(dim))
-            for (i in 0..2) assertTrue("$dim% channel $i", now[i] <= last[i])
-            assertTrue("$dim%: no bluer", now[2] - now[0] <= w[2] - w[0])
+            val color = GlassStyle.Shade(0, dim).color
+            // Black alone, as strong as the dimness: no colour of the background's or anyone's.
+            assertEquals("$dim%", 0, color and 0xFFFFFF)
+            assertEquals("$dim%", (dim * 255 + 50) / 100, color ushr 24)
+            // What shows through keeps its own colour, darkened by the dimness.
+            for (b in intArrayOf(64, 200, 255)) assertShows("$dim% over $b", FloatArray(3) { b * (1f - dim / 100f) }, shows(color, b))
+        }
+        // All the way: black.
+        assertEquals(0xFF000000.toInt(), GlassStyle.Shade(0, 100).color)
+        assertEquals(0xFF000000.toInt(), GlassStyle.Shade(100, 100).color)
+    }
+
+    @Test fun dimnessDarkensTheTintedGlassWhateverTheTint() {
+        for (tint in 0..100 step GlassStyle.SHADE_STEP) for (dim in 0..100 step GlassStyle.SHADE_STEP) {
+            // The tinted glass first, then the dimness on it: the same share of light taken from whatever the tint left.
+            val tinted = GlassStyle.Shade(tint, 0).color
+            val both = GlassStyle.Shade(tint, dim).color
+            for (b in intArrayOf(0, 128, 255)) {
+                val first = shows(tinted, b)
+                assertShows("$tint% $dim% over $b", FloatArray(3) { first[it] * (1f - dim / 100f) }, shows(both, b))
+            }
+        }
+        // Each step of dimness is darker over a picture, at no tint, the default tint and a solid one.
+        for (tint in intArrayOf(0, 58, 100)) {
+            var last = Float.MAX_VALUE
+            for (dim in 0..100 step GlassStyle.SHADE_STEP) {
+                val now = shows(GlassStyle.Shade(tint, dim).color, 200).sum()
+                assertTrue("dimness $dim% at $tint%", now < last || now == 0f)
+                last = now
+            }
+        }
+    }
+
+    @Test fun aTintIsTheBackgroundsOwnColourAtItsStrength() {
+        // App glass and Playback glass: the wallpaper's measured average, solid at 100%.
+        assertEquals(0x10191F, GlassStyle.WALLPAPER)
+        assertEquals(0xFF10191F.toInt(), GlassStyle.Shade(100, 0).color)
+        // Over white, each step of tint calms what shows through a little more.
+        var last = Float.MAX_VALUE
+        for (tint in 0..100 step GlassStyle.SHADE_STEP) {
+            val now = shows(GlassStyle.Shade(tint, 0).color, 255).sum()
+            assertTrue("tint $tint%", now < last)
+            last = now
+        }
+    }
+
+    @Test fun theOneColourIsTheTwoLayersToTheLevel() {
+        for (tint in 0..100 step GlassStyle.SHADE_STEP) for (dim in 0..100 step GlassStyle.SHADE_STEP) {
+            for (charcoal in intArrayOf(0, 25, 50, 75, 100)) {
+                val color = GlassStyle.Shade(tint, dim, charcoal).color
+                for (b in intArrayOf(0, 64, 128, 200, 255)) {
+                    assertShows("$tint% $dim% $charcoal% over $b", model(tint, dim, charcoal, b), shows(color, b))
+                }
+            }
+        }
+    }
+
+    @Test fun charcoalRunsFromTheBackgroundsColourToCharcoal() {
+        // The two ends: the wallpaper's measured average, and the neutral glass colour before it took the wallpaper's.
+        assertEquals(0x0C0E12, GlassStyle.CHARCOAL)
+        assertEquals(GlassStyle.WALLPAPER, GlassStyle.charcoalColor(0))
+        assertEquals(GlassStyle.CHARCOAL, GlassStyle.charcoalColor(100))
+        // Solid at full tint: the background's colour at 0% charcoal, charcoal at 100%.
+        assertEquals(0xFF10191F.toInt(), GlassStyle.Shade(100, charcoal = 0).color)
+        assertEquals(0xFF0C0E12.toInt(), GlassStyle.Shade(100, charcoal = 100).color)
+        // Each step on the way is the straight line between them, darker or as dark in every channel, never bluer.
+        val w = channels(GlassStyle.WALLPAPER)
+        val k = channels(GlassStyle.CHARCOAL)
+        var last = w
+        for (c in GlassStyle.SHADE_STEP..100 step GlassStyle.SHADE_STEP) {
+            val now = channels(GlassStyle.charcoalColor(c))
+            for (i in 0..2) {
+                assertTrue("$c% channel $i", now[i] <= last[i])
+                assertTrue("$c% channel $i on the line", abs(now[i] - (w[i] + (k[i] - w[i]) * c / 100f)) <= 0.5f)
+            }
+            assertTrue("$c%: no bluer", now[2] - now[0] <= w[2] - w[0])
             last = now
         }
         // Charcoal is the neutral end: much less blue than the background.
-        val k = channels(GlassStyle.CHARCOAL)
         assertTrue(k[2] - k[0] < (w[2] - w[0]) / 2f)
+        // It's only the tint's colour: with no tint it shows nothing.
+        assertEquals(GlassStyle.CLEAR, GlassStyle.Shade(0, charcoal = 100).color)
     }
 
-    @Test fun theColourIsTheGradientAtTheTintsStrength() {
-        for (tint in 0..100 step GlassStyle.SHADE_STEP) for (dim in 0..100 step GlassStyle.SHADE_STEP) {
-            val color = GlassStyle.Shade(tint, dim).color
-            // Its strength is the tint, its colour the dimness's place on the gradient (when there's a layer at all).
-            assertEquals("$tint%", (tint * 255 + 50) / 100, color ushr 24)
-            if (tint > 0) assertEquals("$dim%", GlassStyle.dimColor(dim), color and 0xFFFFFF)
-            // What the screen shows is the model, to the level, over anything from black to white.
-            for (b in intArrayOf(0, 64, 128, 200, 255)) {
-                val got = shows(color, b)
-                val want = model(tint, dim, b)
-                for (i in 0..2) assertTrue("$tint% $dim% over $b: ${got[i]} for ${want[i]}", abs(got[i] - want[i]) <= 1f)
-            }
-        }
-    }
-
-    @Test fun moreTintCalmsWhatShowsThroughAndMoreDimnessDarkens() {
-        // Over a white picture: each step of tint is darker than the one before, at either end of the gradient.
-        for (dim in intArrayOf(0, 30, 100)) {
-            var last = Float.MAX_VALUE
-            for (tint in 0..100 step GlassStyle.SHADE_STEP) {
-                val now = shows(GlassStyle.Shade(tint, dim).color, 255).sum()
-                assertTrue("tint $tint% at $dim%", now < last)
-                last = now
-            }
-        }
-        // At a given tint, more dimness is never lighter.
-        for (tint in intArrayOf(5, 58, 100)) {
-            var last = Float.MAX_VALUE
-            for (dim in 0..100 step GlassStyle.SHADE_STEP) {
-                val now = shows(GlassStyle.Shade(tint, dim).color, 128).sum()
-                assertTrue("dimness $dim% at $tint%", now <= last)
-                last = now
-            }
-        }
-    }
-
-    @Test fun theDefaultsReproduceThePreviousLooks() {
+    @Test fun theDefaults() {
         // Rail, cards & header: exactly the glass before it took the wallpaper's colour, charcoal at 0x94.
-        assertEquals(GlassStyle.Shade(58, 100), GlassStyle.RAIL_SHADE)
+        assertEquals(GlassStyle.Shade(58, charcoal = 100), GlassStyle.RAIL_SHADE)
         assertEquals(0x940C0E12.toInt(), GlassStyle.RAIL_SHADE.color)
-        // App glass: a proper tint, as strong (0x94), in a colour leaning to the background's own: lerp at 30%.
-        assertEquals(GlassStyle.Shade(58, 30), GlassStyle.APP_SHADE)
-        assertEquals(0x940F161B.toInt(), GlassStyle.APP_SHADE.color)
-        val app = channels(GlassStyle.APP_SHADE.color)
-        val w = channels(GlassStyle.WALLPAPER)
-        val k = channels(GlassStyle.CHARCOAL)
-        for (i in 0..2) assertTrue("channel $i", abs(app[i] - w[i]) < abs(app[i] - k[i]))
-        // Playback glass: no tint over playback, as before.
+        // App glass: the background's own colour at 58%, then darkened by 15%, laid as one colour.
+        assertEquals(GlassStyle.Shade(58, dim = 15), GlassStyle.APP_SHADE)
+        assertEquals(0, GlassStyle.APP_SHADE.charcoal)
+        assertEquals(0xA40C1318.toInt(), GlassStyle.APP_SHADE.color)
+        // That's the windows' look before (the wallpaper's colour at 0x94) with 15% of its light taken.
+        val before = (0x94 shl 24) or GlassStyle.WALLPAPER
+        for (b in intArrayOf(0, 64, 128, 200, 255)) {
+            val was = shows(before, b)
+            assertShows("over $b", FloatArray(3) { was[it] * 0.85f }, shows(GlassStyle.APP_SHADE.color, b))
+        }
+        // Playback glass: no tint and no darkening over playback, as before.
         assertEquals(GlassStyle.Shade(0, 0), GlassStyle.PLAYBACK_SHADE)
         assertEquals(0, GlassStyle.PLAYBACK_SHADE.color ushr 24)
     }
 
     @Test fun overTheWallpaperTheCardsGlassIsItsOwnColourSolid() {
         // The banner's backing is the card's glass over the wallpaper, so the two meet without a line.
-        for (tint in 0..100 step 10) for (dim in 0..100 step 10) {
-            val shade = GlassStyle.Shade(tint, dim)
-            val solid = channels(shade.solid)
-            val want = shows(shade.color, 0).let { s ->
-                val a = (shade.color ushr 24) / 255f
-                val w = channels(GlassStyle.WALLPAPER)
-                FloatArray(3) { s[it] + w[it] * (1f - a) }
-            }
-            for (i in 0..2) assertTrue("$tint% $dim%", abs(solid[i] - want[i]) <= 1f)
+        for (tint in 0..100 step 10) for (charcoal in 0..100 step 10) {
+            val shade = GlassStyle.Shade(tint, charcoal = charcoal)
+            val a = (shade.color ushr 24) / 255f
+            val top = channels(shade.color)
+            val w = channels(GlassStyle.WALLPAPER)
+            assertShows("$tint% $charcoal%", FloatArray(3) { top[it] * a + w[it] * (1f - a) }, channels(shade.solid))
             assertEquals(0xFF, shade.solid ushr 24)
         }
-        // At no dimness the tint is the wallpaper's own colour: over the wallpaper, the wallpaper.
-        for (tint in 0..100 step 25) assertEquals(GlassStyle.WINDOW_SOLID, GlassStyle.Shade(tint, 0).solid)
+        // With the background's own colour the tint over the wallpaper is the wallpaper.
+        for (tint in 0..100 step 25) assertEquals(GlassStyle.WINDOW_SOLID, GlassStyle.Shade(tint, charcoal = 0).solid)
     }
 
-    @Test fun tintAndDimnessStepByFivePercentFromNoneToAll() {
+    @Test fun tintDimnessAndCharcoalStepByFivePercentFromNoneToAll() {
         assertEquals(5, GlassStyle.SHADE_STEP)
         assertEquals(35, GlassStyle.stepShade(30, 1))
         assertEquals(25, GlassStyle.stepShade(30, -1))
@@ -266,7 +298,8 @@ class GlassStyleTest {
         assertEquals(100, GlassStyle.clampShade(140))
         // Out of range is read as the nearest end.
         assertEquals(GlassStyle.Shade(100, 0).color, GlassStyle.shadeColor(150, -10))
-        assertEquals(GlassStyle.CHARCOAL, GlassStyle.dimColor(300))
+        assertEquals(GlassStyle.CHARCOAL, GlassStyle.charcoalColor(300))
+        assertEquals(GlassStyle.WALLPAPER, GlassStyle.charcoalColor(-5))
     }
 
     @Test fun eachGlassTakesItsOwnShade() {
@@ -276,9 +309,9 @@ class GlassStyleTest {
         try {
             assertFalse(Glass.useShades(app, rail, playback))
             val changes = Glass.shadeChanges
-            val a = GlassStyle.Shade(30, 20)
-            val r = GlassStyle.Shade(70, 50)
-            val p = GlassStyle.Shade(10, 0)
+            val a = GlassStyle.Shade(30, dim = 20)
+            val r = GlassStyle.Shade(70, charcoal = 50)
+            val p = GlassStyle.Shade(10, dim = 0)
             assertTrue(Glass.useShades(a, r, p))
             assertEquals(changes + 1, Glass.shadeChanges)
             assertEquals(a, Glass.appShade)
@@ -303,13 +336,19 @@ class GlassStyleTest {
             } finally {
                 Glass.on = look
             }
-            // Nothing else has a colour layer of the user's.
+            // Nothing else has a layer of the user's: controls, rows (and so the focus highlight) and outlines.
             assertEquals(0, GlassBakes.tintOf(Glass.Kind.PILL, GlassBakes.CALM))
             assertEquals(0, GlassBakes.tintOf(Glass.Kind.ROW, GlassBakes.FILM))
+            assertEquals(0, GlassBakes.tintOf(Glass.Kind.ROW, GlassBakes.PANE))
             assertEquals(0, GlassBakes.tintOf(Glass.Kind.PANEL, GlassBakes.EDGE))
             // The same shades again change nothing.
             assertFalse(Glass.useShades(a, r, p))
             assertEquals(changes + 1, Glass.shadeChanges)
+            // A dimness alone is a change too: Playback glass darkened with no tint.
+            val dark = GlassStyle.Shade(0, dim = 25)
+            assertTrue(Glass.useShades(a, r, dark))
+            assertEquals(dark.color, GlassBakes.tintOf(Glass.Kind.PANEL, GlassBakes.FILM))
+            assertNotEquals(GlassStyle.CLEAR, GlassBakes.tintOf(Glass.Kind.PANEL, GlassBakes.FILM))
         } finally {
             Glass.useShades(app, rail, playback)
         }
@@ -324,7 +363,7 @@ class GlassStyleTest {
         assertEquals(0, GlassStyle.paneSheen(over) ushr 24)
         // The film's window picture keeps the film's own light.
         assertEquals(1f, GlassStyle.PLAYBACK_PANE_LIGHT, 0f)
-        // Until Playback glass is given a tint: then that's what it lays over the picture.
+        // Until Playback glass is given a tint or a dimness: then that's what it lays over the picture.
         val set = GlassStyle.Shade(20, 10)
         assertEquals(set.color, GlassStyle.paneTint(over, GlassStyle.APP_SHADE, set))
     }

@@ -348,21 +348,24 @@ class SettingsPanels(
     /**
      * Settings › Look's three glasses, under the look's own rows (App settings only; Glass look), each a dropdown row like
      * Info pods ([GlassShades.Kind]: App glass, Rail, cards & header, Playback glass) saying how it stands
-     * ([GlassShades.badge]) and opening to its two rows: Tint, how strong its colour layer is (0% clear frosted glass,
-     * 100% solid), and Dimness, where that colour sits between the background's own (0%) and charcoal (100%). 0% to 100%
-     * in 5% steps with left / right, applied at once and saved ([GlassStyle.Shade]). Playback glass's Tint is the players'
-     * Screen dimmer's Tint too.
+     * ([GlassShades.badge]) and opening to its two rows ([GlassShades.Kind.controls]): Tint, how strong its colour layer
+     * is (0% clear frosted glass, 100% solid), then for App glass and Playback glass Dimness, how much the glass is
+     * darkened after that (even with no tint), and for Rail, cards & header Charcoal, where its tint's colour sits
+     * between the background's own (0%) and charcoal (100%). 0% to 100% in 5% steps with left / right, applied at once
+     * and saved ([GlassStyle.Shade]). Only the glass changes, never the words or icons on it. Playback glass's Tint is
+     * the players' Screen dimmer's Tint too.
      */
     private fun glassShadesSection(panel: SidePanel): Unit = with(panel) {
         for (kind in GlassShades.Kind.entries) {
             val open = isPartOpen(kind.part)
             val shade = shades[kind]
-            dropdownRow(kind.title, GlassShades.badge(shade), if (shade.tint == 0) Rows.Badge.INACTIVE else Rows.Badge.LIGHT, open) {
+            val badge = if (GlassShades.isClear(shade)) Rows.Badge.INACTIVE else Rows.Badge.LIGHT
+            dropdownRow(kind.title, GlassShades.badge(kind, shade), badge, open) {
                 togglePart(kind.part)
                 refresh()
             }
             if (!open) continue
-            for (control in GlassShades.Control.entries) {
+            for (control in kind.controls) {
                 stepper(control.label, percent(control.of(shade))) { dir ->
                     shades.step(kind, control, dir)
                     shades.applyTo(activity)
@@ -969,15 +972,16 @@ class SettingsPanels(
         )
         fun onOff(on: Boolean) = if (on) "On" else "Off"
 
-        /** A tint, dimness or dimmer amount as its row shows it: "55%". */
+        /** A tint, dimness or charcoal as its row shows it: "55%". */
         fun percent(value: Int) = "$value%"
 
         /** Settings › Look: what the three glasses' rows mean. */
         private const val SHADES_NOTE = "Tint: how strongly the glass is coloured, from clear frosted glass (0%) to solid " +
-            "(100%). Dimness: its colour, from the background's own (0%) to charcoal (100%), darker and more neutral. App " +
-            "glass: Settings and the other windows on the app's pages. Rail, cards & header: the rail, the service and " +
-            "studio cards, Recent channels and the banner. Playback glass: windows over a film or full-screen channel " +
-            "(its Tint is in the Screen dimmer too)."
+            "(100%). Dimness: how much darker the glass is made, after its tint. Charcoal: the tint's colour, from the " +
+            "background's own (0%) to charcoal (100%), darker and more neutral. Only the glass changes: words and icons " +
+            "stay as they are. App glass: Settings and the other windows on the app's pages. Rail, cards & header: the " +
+            "rail, the service and studio cards, Recent channels and the banner. Playback glass: windows over a film or " +
+            "full-screen channel (its Tint is in the Screen dimmer too)."
 
         private const val ACTIVE = "Active"
         private const val INACTIVE = "Inactive"

@@ -605,7 +605,7 @@ class VodHeader(
         private var across = 1f
         /** How much wider (px; narrower below 0) than its bounds it's drawn. */
         private var shift = 0f
-        /** The colour its shaders were made in: made again, once, when the card's tint or dimness changes (Settings › Look). */
+        /** The colour its shaders were made in: made again, once, when the card's tint or charcoal changes (Settings › Look). */
         private var shadeColor = 0
 
         /**

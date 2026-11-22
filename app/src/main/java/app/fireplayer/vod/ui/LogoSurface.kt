@@ -19,7 +19,7 @@ import kotlin.math.max
  * through it, as the rail at rest; on Classic the rail's solid colour), and over that, the same on both looks, a faint
  * broad reflection over its upper left, a fine light rim that fades toward the bottom and a soft close shadow just
  * outside it (outside only, so the glass isn't darkened by it). Its look is [VodSizes]' (LOGO_*). It's drawn once per
- * card size, look and fill (Rail, cards & header's tint and dimness, Settings › Look), at the chosen card's size so that one is
+ * card size, look and fill (Rail, cards & header's tint and charcoal, Settings › Look), at the chosen card's size so that one is
  * sharp, and every card of that size draws the same picture: nothing is built, copied or blurred while drawing. Main
  * thread.
  */

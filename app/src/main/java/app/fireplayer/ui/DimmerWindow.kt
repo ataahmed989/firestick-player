@@ -11,8 +11,8 @@ import app.fireplayer.data.GlassShades
  * glass amount (all glass, Glass look) set with arrows. Custom 1 keeps changes at once, the others when Save custom is
  * pressed. Whatever is picked or saved stays on for every video and channel. Under them (Glass look), the windows'
  * Tint over playback: Settings › Look › Playback glass's Tint, the same saved value ([TINT_GLASS], [GlassShades]), applied
- * at once and not part of a custom. The dimmer's own glass amount stays its own: it darkens all the glass over the
- * picture, where Playback glass's Dimness says what colour its tint is.
+ * at once and not part of a custom. The dimmer's own amounts stay as they were: its glass amount still darkens all the
+ * glass over the picture; Playback glass's own Dimness is in Settings › Look only.
  *
  * [applyDim] puts the amounts on screen; [refreshLabels] updates the value under the dimmer's button.
  */

@@ -31,10 +31,10 @@ object Glass {
     @Volatile var dim = 0f
 
     /**
-     * The user's three glasses' colour layers (Settings › Look, saved by [app.fireplayer.data.GlassShades]), each a tint
-     * and a dimness ([GlassStyle.Shade]): App glass on the windows over the app's pages, Rail, cards & header on the
-     * glass in the pages themselves, Playback glass on the windows over full-screen playback. Set by [useShades]; each
-     * piece of glass reads its own as it's drawn.
+     * The user's three glasses' layers (Settings › Look, saved by [app.fireplayer.data.GlassShades], [GlassStyle.Shade]):
+     * App glass on the windows over the app's pages and Playback glass on the windows over full-screen playback, each a
+     * tint and a dimness; Rail, cards & header on the glass in the pages themselves, a tint and its charcoal. Set by
+     * [useShades]; each piece of glass reads its own as it's drawn, under whatever is drawn on it.
      */
     @Volatile var appShade: GlassStyle.Shade = GlassStyle.APP_SHADE
         private set

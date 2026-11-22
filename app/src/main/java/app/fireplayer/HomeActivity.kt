@@ -113,7 +113,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
     private lateinit var settingsPage: LinearLayout
     private var consumeBackUp = false
     private var lookOn = false
-    /** The glass's tint and dimness this screen was last drawn with ([Glass.shadeChanges]). */
+    /** The user's glass (Settings › Look) this screen was last drawn with ([Glass.shadeChanges]). */
     private var shadesSeen = 0
     private var videoTarget: RectF? = null
     private var videoFull = false
@@ -140,7 +140,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         super.onCreate(savedInstanceState)
         val prefs = Prefs(this)
         Glass.on = prefs.glassLook
-        // Settings › Look's tint and dimness of the three glasses (App glass, Rail, cards & header, Playback glass).
+        // Settings › Look's three glasses (App glass, Rail, cards & header, Playback glass).
         GlassShades(this).apply()
         shadesSeen = Glass.shadeChanges
         shellTokens = Tokens(this)
@@ -707,7 +707,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         super.onRestart()
         // Service shortcuts may have been changed in the player's settings meanwhile.
         showRailServices()
-        // So may the glass's tint or dimness (Settings › Look, the Screen dimmer): everything drawn again with it, once.
+        // So may the user's glass (Settings › Look, the Screen dimmer's Tint): everything drawn again with it, once.
         if (shadesSeen != Glass.shadeChanges) {
             shadesSeen = Glass.shadeChanges
             Glass.redraw(window.decorView)

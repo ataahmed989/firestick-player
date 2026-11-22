@@ -134,7 +134,7 @@ class GlassDrawable(
     private var radius = 0f
     private var bakePlain: Bitmap? = null
     private var bakeFocused: Bitmap? = null
-    /** The tints and dimnesses ([Glass.shadeChanges]) its plain drawing was made with: one made before a change goes. */
+    /** The user's glass ([Glass.shadeChanges]) its plain drawing was made with: one made before a change goes. */
     private var shadesFor = Glass.shadeChanges
     private val bakePaint = Paint(Paint.FILTER_BITMAP_FLAG)
     private val bakeFocusedPaint = Paint(Paint.FILTER_BITMAP_FLAG)
@@ -507,7 +507,7 @@ internal object GlassBakes {
     fun trim() = cache.evictAll()
 
     /**
-     * The tints or dimnesses were changed (Settings › Look, the Screen dimmer's Tint: [Glass.useShades]): the window
+     * The user's glass was changed (Settings › Look, the Screen dimmer's Tint: [Glass.useShades]): the window
      * drawings made with a colour layer no longer theirs go at once, and only those ([tintOf]); each is made again once,
      * when next needed. The rest (the rows, the controls, the windows whose glass didn't change) are kept.
      */
@@ -547,8 +547,8 @@ internal object GlassBakes {
     }
 
     /**
-     * Whether [kind]'s plain glass in [variant] has one of the user's colour layers in it (Settings › Look: a tint and a
-     * dimness, [GlassStyle.Shade]): a window's, over the page or over playback, or a window-shaped surface in the page.
+     * Whether [kind]'s plain glass in [variant] has one of the user's layers in it (Settings › Look, [GlassStyle.Shade]):
+     * a window's, over the page or over playback, or a window-shaped surface in the page.
      */
     fun shaded(kind: Glass.Kind, variant: Int): Boolean = isWindow(kind) && variant != EDGE
 
