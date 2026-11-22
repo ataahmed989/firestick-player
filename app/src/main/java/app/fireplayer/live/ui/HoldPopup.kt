@@ -33,9 +33,8 @@ import kotlin.math.roundToInt
  * app's hold window shape ([HoldShape]): a narrow vertical list beside what was held, the full name in the window's
  * header band (up to two lines), then one option per line in a card of rows as in the settings windows (an icon before
  * its words where it has one), the first selected, and optionally one more in a card of its own under it (a group's
- * Manage groups). Up and Down move between the options; Up past the
- * first, Down past the last, Left, Right and Back close it (LivePage passes Back on), and the selection goes back where
- * it was.
+ * Manage groups). Up and Down move between the options; Up past the first, Down past the last, Left, Right and Back
+ * close it (LivePage passes Back on), and the selection goes back where it was.
  *
  * Light, for a slow TV: its few views are made once and reused; it's measured and placed once as it opens (its words
  * and place), then only faded and slid in or out, drawn as one layer while that lasts. It sits in its parent, a
