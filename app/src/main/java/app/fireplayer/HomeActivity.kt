@@ -779,6 +779,14 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         focusPage()
     }
 
+    /** A Home service card's small window pinned or unpinned one: the rail's shortcuts follow at once, shown with [show]. */
+    override fun pinServices(pins: List<Service>, show: Boolean) {
+        val prefs = Prefs(this)
+        prefs.pinnedServices = Services.encode(pins)
+        if (show != prefs.serviceShortcuts) prefs.serviceShortcuts = show
+        showRailServices()
+    }
+
     /** The Disney+ studio whose page shows over the service's, opened from its card there; null: the service's own page. */
     private var studio: Brand? = null
 

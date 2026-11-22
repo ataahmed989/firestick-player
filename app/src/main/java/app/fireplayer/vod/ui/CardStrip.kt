@@ -78,6 +78,22 @@ class CardStrip(
         }
     }
 
+    /**
+     * Item [from] to place [to] (a card being moved): the items between move along one place, each put at its new
+     * place at once; nothing is measured or laid out again. A focused item keeps focus.
+     */
+    fun moveItem(from: Int, to: Int) {
+        val v = getChildAt(from) ?: return
+        if (to !in 0 until childCount || chips) return
+        detachViewFromParent(from)
+        attachViewToParent(v, to, v.layoutParams)
+        for (i in minOf(from, to)..maxOf(from, to)) {
+            val c = getChildAt(i)
+            c.offsetLeftAndRight(itemLeft(i).toInt() - c.left)
+        }
+        invalidate()
+    }
+
     /** The strip's width once laid out, px: how far its chips reach (a row of season pills moves only past its view). */
     val contentWidth: Int get() = if (childCount == 0) 0 else getChildAt(childCount - 1).right
 

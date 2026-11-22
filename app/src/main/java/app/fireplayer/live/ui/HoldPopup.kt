@@ -2,6 +2,11 @@ package app.fireplayer.live.ui
 
 import android.content.Context
 import android.graphics.RectF
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.TextPaint
+import android.text.style.MetricAffectingSpan
+import android.util.TypedValue
 import android.view.Choreographer
 import android.view.Gravity
 import android.view.KeyEvent
@@ -20,6 +25,7 @@ import app.fireplayer.ui.GlassStyle
 import app.fireplayer.ui.RowGroups
 import app.fireplayer.ui.Rows
 import kotlin.math.ceil
+import kotlin.math.roundToInt
 
 /**
  * The small window a held OK opens: in Live TV a channel's in the guide (Favorite, Assign favorites), a group's in the
@@ -37,12 +43,20 @@ import kotlin.math.ceil
  */
 class HoldPopup(context: Context, private val t: Tokens) : LinearLayout(context) {
 
-    /** An option: its words, with an [icon] before them where it has one. [selected] shows it blue. */
-    class Button(val label: String, val icon: Int? = null, val selected: Boolean = false, val onClick: () -> Unit)
+    /**
+     * An option: its words, with an [icon] before them where it has one. [selected] shows it blue. [detail]: a quieter
+     * second line under its words (a Home service's "Replace first shortcut" names what it replaces).
+     */
+    class Button(
+        val label: String,
+        val icon: Int? = null,
+        val selected: Boolean = false,
+        val detail: String? = null,
+        val onClick: () -> Unit,
+    )
 
     private class Slot(val view: LinearLayout) {
         val icon = HoldShape.icon(view)
-        val text = HoldShape.words(view)
         var action: (() -> Unit)? = null
     }
 
@@ -284,8 +298,8 @@ class HoldPopup(context: Context, private val t: Tokens) : LinearLayout(context)
         s.action = b.onClick
         s.view.visibility = VISIBLE
         s.view.isSelected = b.selected
-        s.view.contentDescription = b.label
-        s.text.text = b.label
+        s.view.contentDescription = if (b.detail == null) b.label else "${b.label}, ${b.detail}"
+        HoldShape.words(s.view, t, b.label, b.detail)
         if (b.icon != null) {
             s.icon.setImageResource(b.icon)
             s.icon.visibility = VISIBLE
@@ -342,6 +356,42 @@ object HoldShape {
     fun icon(option: LinearLayout): ImageView = option.getChildAt(0) as ImageView
 
     fun words(option: LinearLayout): TextView = option.getChildAt(1) as TextView
+
+    /**
+     * An option's words: [label] on its one line, or with [detail] under it, smaller and quieter
+     * ([Tokens.HOLD_DETAIL_SP], [Tokens.HOLD_DETAIL_ALPHA]), the option then [Tokens.HOLD_ROW_TALL_H_DP] tall.
+     */
+    fun words(option: LinearLayout, t: Tokens, label: String, detail: String?) {
+        val words = words(option)
+        if (detail == null) {
+            words.isSingleLine = true
+            words.text = label
+        } else {
+            words.isSingleLine = false
+            words.maxLines = 2
+            val size = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, Tokens.HOLD_DETAIL_SP, option.resources.displayMetrics)
+            words.text = SpannableStringBuilder(label).append('\n')
+                .append(detail, QuietSpan(size, Tokens.HOLD_DETAIL_ALPHA), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+        val h = t.dp(if (detail == null) Tokens.HOLD_ROW_H_DP else Tokens.HOLD_ROW_TALL_H_DP)
+        val lp = option.layoutParams ?: return
+        if (lp.height != h) {
+            lp.height = h
+            option.layoutParams = lp
+        }
+    }
+
+    /** A second line's words: [sizePx], and quieter than the option's in whichever colour they are (lit or not). */
+    private class QuietSpan(private val sizePx: Float, private val strength: Float) : MetricAffectingSpan() {
+        override fun updateMeasureState(paint: TextPaint) {
+            paint.textSize = sizePx
+        }
+
+        override fun updateDrawState(paint: TextPaint) {
+            paint.textSize = sizePx
+            paint.alpha = (paint.alpha * strength).roundToInt()
+        }
+    }
 
     /** An option's place in the list: full width, this tall, the gap above it unless it's [first]. */
     fun optionParams(t: Tokens, first: Boolean) =
