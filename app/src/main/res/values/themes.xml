@@ -45,6 +45,28 @@
         <item name="android:fontFamily">@font/figtree_700</item>
     </style>
 
+    <!-- The skip preview's words, in its own look: the time under its picture, and its note. -->
+    <style name="PreviewText">
+        <item name="android:fontFamily">@font/figtree_700</item>
+        <item name="android:textColor">@color/text</item>
+    </style>
+
+    <!-- The skip preview's note when previews stop for a film (SeekPreview.NOTE): the card's dark face and edge
+         (Glass.previewNote, put on with the look), one short line that never wraps, smaller than the "+4:00" card. -->
+    <style name="PreviewNote" parent="PreviewText">
+        <item name="android:layout_width">wrap_content</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:background">@drawable/bg_preview_note</item>
+        <item name="android:ellipsize">end</item>
+        <item name="android:maxLines">1</item>
+        <item name="android:singleLine">true</item>
+        <item name="android:paddingStart">8dp</item>
+        <item name="android:paddingEnd">8dp</item>
+        <item name="android:paddingTop">2dp</item>
+        <item name="android:paddingBottom">2dp</item>
+        <item name="android:textSize">11sp</item>
+    </style>
+
     <!-- A round button's name, shown under it only while it's selected (focusEffect). Set like the icon row's names
          (item_more): plain text, 4dp below the circle, centred under it. -->
     <style name="ButtonLabel">

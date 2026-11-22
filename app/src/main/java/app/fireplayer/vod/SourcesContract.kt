@@ -621,6 +621,8 @@ interface StallWatch {
     /** A seek, a source change or a resume. */
     fun jumped(now: Long)
     fun buffering(now: Long, on: Boolean)
+    /** The wait under way isn't the source's (the skip preview was loading beside the film): it isn't counted. */
+    fun excuse(now: Long)
     /** 3 stalls in 2 minutes, one over 20 s, or over 25 % of 2 minutes buffering. */
     fun shouldSwitch(now: Long): Boolean
 }
@@ -834,6 +836,7 @@ private class StubSources(private val app: Context) : SourcesRepository {
             override fun playing(now: Long) = Unit
             override fun jumped(now: Long) = Unit
             override fun buffering(now: Long, on: Boolean) = Unit
+            override fun excuse(now: Long) = Unit
             override fun shouldSwitch(now: Long) = false
         }
         override fun setListener(listener: (() -> Unit)?) = Unit

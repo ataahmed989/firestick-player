@@ -181,8 +181,11 @@ object PlayerFactory {
         val extractors = SeekableMkvExtractorsFactory(DefaultExtractorsFactory().setConstantBitrateSeekingEnabled(true))
         // Where the provider sent the film is the film's to change: the preview being turned away says nothing about it.
         val upstream = dataSourceFactory(context, headers, readOnlyMemory = true)
-        // Its connection closes as soon as a picture is loaded, so the film can have the server to itself.
-        val dataSources = DataSource.Factory { IdleCloseDataSource(upstream.createDataSource(), 400) }
+        // Its connection closes as soon as a picture is loaded, so the film can have the server to itself. While it's
+        // open the film shares its line with it: the film arriving slower then is the preview's doing, not its server's.
+        val dataSources = DataSource.Factory {
+            IdleCloseDataSource(SharedLineDataSource(upstream.createDataSource()), 400)
+        }
         val mediaSourceFactory = DefaultMediaSourceFactory(dataSources, extractors)
             .setLoadErrorHandlingPolicy(DefaultLoadErrorHandlingPolicy(1))
         val loadControl = GatedLoadControl(
@@ -970,14 +973,21 @@ class ServerSwitch {
          * doing, not the server's, so no move is asked for, and its speed is measured afresh afterwards.
          */
         fun <T> alongside(block: () -> T): T {
-            downloadsAlongside.incrementAndGet()
-            disturbances.incrementAndGet()
+            sharing(true)
             try {
                 return block()
             } finally {
-                downloadsAlongside.decrementAndGet()
-                disturbances.incrementAndGet()
+                sharing(false)
             }
+        }
+
+        /**
+         * A download sharing the film's line began ([on]) or ended, as [alongside] has it for one that isn't a single
+         * block (the skip preview's connection, [SharedLineDataSource]). Every true is followed by one false.
+         */
+        fun sharing(on: Boolean) {
+            if (on) downloadsAlongside.incrementAndGet() else downloadsAlongside.decrementAndGet()
+            disturbances.incrementAndGet()
         }
     }
 }
