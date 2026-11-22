@@ -5277,8 +5277,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                     else "Matched by its IMDb id from ${PlayerMeta.PORTAL}.",
                 )
             }
-            row(if (ref != null) "Show details" else "Film details") { openDetails(show = ref != null) }
-            row("Picture & sound") { openQuality(show = ref != null) }
+            row(if (ref != null) "Show details" else "Film details") { openDetails(show = ref != null) }.asSubRow()
+            row("Picture & sound") { openQuality(show = ref != null) }.asSubRow()
             return
         }
         val portal = NextEpisode.portal(entry.uri)
@@ -5302,8 +5302,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 refresh()
             }
             if (thisTitleOpen) episodeMatchRows(g, ep, portal)
-            if (tmdb.isConfigured && g.tmdbId > 0) row("Show details") { openDetails(show = true) }
-            row("Picture & sound") { openQuality(show = true) }
+            if (tmdb.isConfigured && g.tmdbId > 0) row("Show details") { openDetails(show = true) }.asSubRow()
+            row("Picture & sound") { openQuality(show = true) }.asSubRow()
         } else if (portal != null && entry.info.episode == null) {
             header("This film")
             val fixed = filmFix(entry)
@@ -5320,8 +5320,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 if (tmdb.isConfigured) row("Fix match") { openFixFilm() }.asSubRow()
                 if (!tmdb.isConfigured) message("Needs a TMDB API key (Statuses, below) to fix this film's name.")
             }
-            if (tmdb.isConfigured) row("Film details") { openDetails(show = false) }
-            row("Picture & sound") { openQuality(show = false) }
+            if (tmdb.isConfigured) row("Film details") { openDetails(show = false) }.asSubRow()
+            row("Picture & sound") { openQuality(show = false) }.asSubRow()
         }
     }
 
