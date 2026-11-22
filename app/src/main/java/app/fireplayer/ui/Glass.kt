@@ -93,14 +93,14 @@ object Glass {
         if (on) drawable(context, kind) else requireNotNull(context.getDrawable(classic))
 
     /**
-     * The corner radius, px, a [kind] surface [w] x [h] px has in the look now on: the glass shape's own
+     * The corner radius, px, a [kind] surface [w] x [h] px has in the look now on ([glass]): the glass shape's own
      * ([GlassBakes.radius]) or the classic drawable's (res/drawable/bg_*.xml, whose corners are the radius_* dimens read
      * here: panels and popups 15 dp, pills 20 dp, chips 5 dp, rows 9 dp; circles round; never more than half the
      * shorter side). For something drawn to follow a surface's corners (a header's picture inside its card).
      */
-    fun cornerRadius(context: Context, kind: Kind, w: Int, h: Int): Float {
+    fun cornerRadius(context: Context, kind: Kind, w: Int, h: Int, glass: Boolean = on): Float {
         val res = context.resources
-        if (on) return GlassBakes.radius(kind, w, h, res.displayMetrics.density)
+        if (glass) return GlassBakes.radius(kind, w, h, res.displayMetrics.density)
         val half = minOf(w, h) / 2f
         val classic = when (kind) {
             Kind.PANEL -> R.dimen.radius_panel
@@ -166,6 +166,22 @@ object Glass {
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M || view is android.widget.FrameLayout) {
             view.foreground = edge(view.context, kind)
         }
+    }
+
+    /**
+     * [title] (a window's title line, laid out to reach the window's edges) as the window's header band
+     * ([WindowHeader]) in the look now on: glass, a cool blue tint with a bright upper edge over the window's glass;
+     * classic, a flat colour. Call it when the window is made and again when the look changes: nothing is made when
+     * it's already so. The title keeps its padding.
+     */
+    fun header(title: View, kind: Kind) {
+        if ((title.background as? WindowHeader)?.glass == on) return
+        val l = title.paddingLeft
+        val t = title.paddingTop
+        val r = title.paddingRight
+        val b = title.paddingBottom
+        title.background = WindowHeader(title.context, kind, on)
+        title.setPadding(l, t, r, b)
     }
 
     private fun pageGlassFor(context: Context): GlassSource? {

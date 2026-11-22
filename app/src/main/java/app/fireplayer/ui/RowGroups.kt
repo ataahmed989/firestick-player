@@ -86,10 +86,27 @@ object RowGroups {
      * where it is now. [aboveFocused] says whether the row above it is selected (its line then hides).
      */
     fun styleListRow(view: View, pos: Pos, sub: Boolean, aboveFocused: () -> Boolean) {
-        val density = view.resources.displayMetrics.density
+        styleCardRow(view, pos, sub, aboveFocused)
+        cardMargins(view, pos, view.resources.displayMetrics.density)
+    }
+
+    /**
+     * As [styleListRow], for a card whose place is set by what holds it (a hold window's options,
+     * app.fireplayer.live.ui.HoldShape): the row's margins are left as they are. Again when its place or the look
+     * changes; a row already dressed in this look is only told where it is now.
+     */
+    fun styleCardRow(view: View, pos: Pos, sub: Boolean, aboveFocused: () -> Boolean) {
         val current = view.background as? Segment
-        if (current != null && current.glass == Glass.on) current.place(pos, sub) else dress(view, pos, sub, density, aboveFocused)
-        cardMargins(view, pos, density)
+        if (current != null && current.glass == Glass.on) current.place(pos, sub)
+        else dress(view, pos, sub, view.resources.displayMetrics.density, aboveFocused)
+    }
+
+    /** Where row [index] of [count] rows is in their card. */
+    fun posOf(index: Int, count: Int): Pos = when {
+        count <= 1 -> Pos.SINGLE
+        index == 0 -> Pos.FIRST
+        index == count - 1 -> Pos.LAST
+        else -> Pos.MIDDLE
     }
 
     /** Gives [view] its slice of the card ([Segment]) and its selected look. */

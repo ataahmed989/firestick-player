@@ -42,6 +42,26 @@ object GlassStyle {
     const val ROW_FILL = 0x12FFFFFF
     const val ROW_HIGHLIGHT = 0x1FFFFFFF
 
+    // ---- A window's header band ([WindowHeader]) ------------------------------------------------------------------
+
+    /**
+     * The band across the top of a settings window and of a hold window, behind its title: a cool blue glass tint
+     * over the window's own glass (stronger at the top, fading towards the band's foot), a light catching its upper
+     * left, a bright reflective upper edge following the window's top corners and a fine line at its foot. Only the
+     * band is blue: the window's tint ([WINDOW_TINT]) stays as dark and neutral as ever, so words read on any picture.
+     */
+    const val HEADER_TINT_TOP = 0x47467FD6
+    const val HEADER_TINT_BOTTOM = 0x24467FD6
+    /** The light across its upper left (the glass reference's 135° sheen), gone by the band's middle. */
+    const val HEADER_SHEEN = 0x14FFFFFF
+    /** Its reflective upper edge: the glass reference's bright edge, rgba(255,255,255,.42), this thick. */
+    const val HEADER_EDGE = 0x6BFFFFFF
+    const val HEADER_EDGE_DP = 1f
+    /** The fine line along its foot, parting it from the window's rows. */
+    const val HEADER_LINE = 0x24FFFFFF
+    /** How far inside the window's outline the band sits, so the window's own edge stays crisp. */
+    const val HEADER_INSET_DP = 1f
+
     // ---- Flat surfaces in the page ----------------------------------------------------------------------------------
 
     /**

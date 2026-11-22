@@ -21,7 +21,6 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import app.fireplayer.shell.Tokens
 import app.fireplayer.ui.Glass
-import app.fireplayer.ui.GlassStyle
 import app.fireplayer.ui.RowGroups
 import app.fireplayer.ui.Rows
 import kotlin.math.ceil
@@ -31,9 +30,10 @@ import kotlin.math.roundToInt
  * The small window a held OK opens: in Live TV a channel's in the guide (Favorite, Assign favorites), a group's in the
  * groups column (Move to top, Hide category) and a Multiview picture's; through [app.fireplayer.vod.ui.HoldWindow]
  * Films & Shows' (cards, title pages, Search's history and Live TV results). One look and one behaviour for all, the
- * app's hold window shape ([HoldShape]): a narrow vertical list beside what was held, the full name on a title line (up
- * to two lines), then one option per line (an icon before its words where it has one), the first selected, and
- * optionally one more under a thin line (a group's Manage groups). Up and Down move between the options; Up past the
+ * app's hold window shape ([HoldShape]): a narrow vertical list beside what was held, the full name in the window's
+ * header band (up to two lines), then one option per line in a card of rows as in the settings windows (an icon before
+ * its words where it has one), the first selected, and optionally one more in a card of its own under it (a group's
+ * Manage groups). Up and Down move between the options; Up past the
  * first, Down past the last, Left, Right and Back close it (LivePage passes Back on), and the selection goes back where
  * it was.
  *
@@ -62,11 +62,13 @@ class HoldPopup(context: Context, private val t: Tokens) : LinearLayout(context)
 
     private val rows = Rows(context)
     private val title = HoldShape.title(context, t)
+    /** The options' card ([HoldShape.card]). */
+    private val card = HoldShape.card(context)
     private val slots = ArrayList<Slot>()
     private var shown = 0
-    /** The option under the thin line, and the line; made the first time one is asked for. */
+    /** The option of another kind, in its own card under the first; made the first time one is asked for. */
     private var below: Slot? = null
-    private var line: View? = null
+    private var belowCard: LinearLayout? = null
     private var belowShown = false
     /** Some option has an icon: the others' words keep in line with its words. */
     private var iconColumn = false
@@ -101,20 +103,25 @@ class HoldPopup(context: Context, private val t: Tokens) : LinearLayout(context)
         descendantFocusability = FOCUS_BLOCK_DESCENDANTS
         HoldShape.pad(this, t)
         addView(title)
+        addView(card, HoldShape.cardParams(t, after = false))
         applyLook()
     }
 
-    /** The look's surfaces: a popup's glass (or the classic popup), its options lit only while selected. */
+    /**
+     * The look's surfaces: a popup's glass (or the classic popup), its header band, and its options' card with only the
+     * selected option lit (again when the look changes).
+     */
     fun applyLook() {
         // A window over the page: its glass shows the page behind it, blurred (copied each time it's shown).
         Glass.overlay(this, Glass.Kind.POPUP)
-        for (s in slots) HoldShape.style(s.view)
-        below?.let { HoldShape.style(it.view) }
+        HoldShape.header(title)
+        HoldShape.style(card)
+        belowCard?.let { HoldShape.style(it) }
     }
 
     /**
-     * Opens with [name] over [buttons] (and [under], below a thin line), beside [anchor] (the held item, in the parent's
-     * coordinates) and inside [area]; the first button is selected.
+     * Opens with [name] over [buttons] (and [under], in a card of its own under them), beside [anchor] (the held item,
+     * in the parent's coordinates) and inside [area]; the first button is selected.
      */
     fun open(name: CharSequence, buttons: List<Button>, anchor: RectF, area: RectF, under: Button? = null) {
         if (parent !is View || buttons.isEmpty()) return
@@ -129,8 +136,11 @@ class HoldPopup(context: Context, private val t: Tokens) : LinearLayout(context)
         buttons.forEachIndexed { i, b -> fill(slot(i), b) }
         for (i in buttons.size until slots.size) slots[i].view.visibility = GONE
         belowShown = under != null
-        if (under != null) fill(belowSlot(), under) else below?.view?.visibility = GONE
-        line?.visibility = if (belowShown) VISIBLE else GONE
+        if (under != null) fill(belowSlot(), under)
+        belowCard?.visibility = if (belowShown) VISIBLE else GONE
+        // The options' places in their cards: the cards' corners and the lines between options follow.
+        HoldShape.style(card)
+        if (belowShown) belowCard?.let { HoldShape.style(it) }
         held.set(anchor)
         this.area.set(area)
         isOpen = true
@@ -232,7 +242,7 @@ class HoldPopup(context: Context, private val t: Tokens) : LinearLayout(context)
         }
     }
 
-    /** The options shown, top to bottom: the buttons, then the one under the line. */
+    /** The options shown, top to bottom: the buttons, then the one in the card under them. */
     private fun options(): Int = shown + if (belowShown && below != null) 1 else 0
 
     private fun option(i: Int): View = if (i < shown) slots[i].view else below!!.view
@@ -261,11 +271,11 @@ class HoldPopup(context: Context, private val t: Tokens) : LinearLayout(context)
 
     private fun belowSlot(): Slot {
         below?.let { return it }
-        val l = HoldShape.line(context)
-        addView(l, HoldShape.lineParams(t))
-        line = l
+        val c = HoldShape.card(context)
+        addView(c, HoldShape.cardParams(t, after = true))
+        belowCard = c
         val s = option()
-        addView(s.view, HoldShape.optionParams(t, first = true))
+        c.addView(s.view, HoldShape.optionParams(t))
         below = s
         return s
     }
@@ -282,8 +292,7 @@ class HoldPopup(context: Context, private val t: Tokens) : LinearLayout(context)
     private fun slot(i: Int): Slot {
         slots.getOrNull(i)?.let { return it }
         val s = option()
-        // After the title and the options before it (above the line and the option under it, if they're made).
-        addView(s.view, 1 + slots.size, HoldShape.optionParams(t, first = slots.isEmpty()))
+        card.addView(s.view, HoldShape.optionParams(t))
         slots += s
         return s
     }
@@ -318,24 +327,75 @@ class HoldPopup(context: Context, private val t: Tokens) : LinearLayout(context)
 
 /**
  * The app's one hold window shape ([HoldPopup]; a settings window row's, [app.fireplayer.ui.FireDialog.hold]): a narrow
- * vertical list beside what was held. The window has a little room round the list; a title line (the name held, in line
- * with the options' words); one option per line, an icon before its words where it has one, only the selected one lit
- * (the window is the card); a thin line before an option of another kind. As wide as its widest line ([width]). Its
- * sizes are in [Tokens] (HOLD_*).
+ * vertical list beside what was held, in the settings windows' look. The name held is in the window's header band
+ * across its top ([title]: tinted glass, or classic's flat colour; not selectable); the options are a card of rows under
+ * it, as a settings window's grouped rows ([card], [style]): one option per line, an icon before its words where it has
+ * one, thin lines between them, only the selected one lit (the settings windows' white with its blue ring); an option of
+ * another kind is a card of its own under the first. The cards keep the same small room from the window's sides and
+ * foot and from the band. As wide as its widest line ([width]). Its sizes are in [Tokens] (HOLD_*).
  */
 object HoldShape {
-    /** The window's room round its list. */
-    fun pad(box: View, t: Tokens) {
+    /** The window's room round its cards ([Tokens.HOLD_PAD_DP]); the title's band reaches past it to the edges. */
+    fun pad(box: ViewGroup, t: Tokens) {
         val p = t.dp(Tokens.HOLD_PAD_DP)
         box.setPadding(p, p, p, p)
+        box.clipToPadding = false
     }
 
-    /** The title line: the name held, up to [Tokens.HOLD_TITLE_LINES] lines, in line with the options' words. */
+    /**
+     * The title: the name held, up to [Tokens.HOLD_TITLE_LINES] lines and then cut short, in the window's header band
+     * ([header]). Its margins undo the window's room so the band reaches the window's edges, its padding keeps its words
+     * in line with the options' words, and the card sits the window's room under it.
+     */
     fun title(context: Context, t: Tokens): TextView = t.label(context, Tokens.HOLD_TITLE).apply {
         maxLines = Tokens.HOLD_TITLE_LINES
-        val x = t.dp(Tokens.HOLD_ROW_PAD_X_DP)
+        val p = t.dp(Tokens.HOLD_PAD_DP)
+        val x = p + t.dp(Tokens.HOLD_ROW_PAD_X_DP)
         setPadding(x, t.dp(Tokens.HOLD_TITLE_PAD_TOP_DP), x, t.dp(Tokens.HOLD_TITLE_PAD_BOTTOM_DP))
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            .apply { setMargins(-p, -p, -p, p) }
+        header(this)
+    }
+
+    /** The title's header band in the look now on ([Glass.header]); again when the look changes. */
+    fun header(title: View) = Glass.header(title, Glass.Kind.POPUP)
+
+    /** A card of options: they touch, full width ([optionParams]); [style] dresses them as its slices. */
+    fun card(context: Context): LinearLayout = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+
+    /** A card's place in the window: full width; one [after] another, the window's room above it. */
+    fun cardParams(t: Tokens, after: Boolean) =
+        LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            if (after) topMargin = t.dp(Tokens.HOLD_PAD_DP)
+        }
+
+    /**
+     * Dresses the options shown in [card] as its slices ([RowGroups.styleCardRow]), by where each is now: the card's
+     * fill and rim, thin lines between the options (hidden beside the selected one), the selected option the settings
+     * windows' white with its blue ring; classic, the solid row and white. Again whenever which options show, or the
+     * look, changes.
+     */
+    fun style(card: ViewGroup) {
+        var count = 0
+        for (i in 0 until card.childCount) if (card.getChildAt(i).visibility != View.GONE) count++
+        var at = 0
+        for (i in 0 until card.childCount) {
+            val option = card.getChildAt(i)
+            if (option.visibility == View.GONE) continue
+            RowGroups.styleCardRow(option, RowGroups.posOf(at++, count), sub = false) { shownBeside(option, -1)?.isFocused == true }
+        }
+    }
+
+    /** The option shown next to [option] in its card, before it ([dir] -1) or after it (1). */
+    private fun shownBeside(option: View, dir: Int): View? {
+        val card = option.parent as? ViewGroup ?: return null
+        var i = card.indexOfChild(option) + dir
+        while (i in 0 until card.childCount) {
+            val v = card.getChildAt(i)
+            if (v.visibility != View.GONE) return v
+            i += dir
+        }
+        return null
     }
 
     /** An option: an icon (hidden until it has one, [icon]) and its words ([words]), lit only while selected. */
@@ -344,7 +404,8 @@ object HoldShape {
         minimumHeight = 0
         val x = t.dp(Tokens.HOLD_ROW_PAD_X_DP)
         setPadding(x, 0, x, 0)
-        style(this)
+        // The line under it hides while it's selected (as in a settings card): the option below draws that line.
+        setOnFocusChangeListener { v, _ -> shownBeside(v, 1)?.invalidate() }
         val size = t.dp(Tokens.HOLD_ICON_DP)
         addView(ImageView(context).apply {
             imageTintList = rows.textColors
@@ -393,37 +454,14 @@ object HoldShape {
         }
     }
 
-    /** An option's place in the list: full width, this tall, the gap above it unless it's [first]. */
-    fun optionParams(t: Tokens, first: Boolean) =
-        LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, t.dp(Tokens.HOLD_ROW_H_DP)).apply {
-            if (!first) topMargin = t.dp(Tokens.HOLD_ROW_GAP_DP)
-        }
-
-    /** An option's look (again when the look changes): the selected white alone, glass or classic. */
-    fun style(option: View) {
-        val l = option.paddingLeft
-        val top = option.paddingTop
-        val r = option.paddingRight
-        val b = option.paddingBottom
-        option.background = RowGroups.focusOnly(option.context)
-        option.setPadding(l, top, r, b)
-    }
-
-    /** The thin line before an option of another kind: the glass hairline, in line with the words. */
-    fun line(context: Context): View = View(context).apply { setBackgroundColor(GlassStyle.HAIRLINE) }
-
-    fun lineParams(t: Tokens) =
-        LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, GlassStyle.hairlinePx(t.density).toInt().coerceAtLeast(1)).apply {
-            val x = t.dp(Tokens.HOLD_ROW_PAD_X_DP)
-            leftMargin = x
-            rightMargin = x
-            topMargin = t.dp(Tokens.HOLD_LINE_GAP_DP)
-            bottomMargin = t.dp(Tokens.HOLD_LINE_GAP_DP)
-        }
+    /** An option's place in its card: full width, this tall, touching the options beside it. */
+    fun optionParams(t: Tokens) =
+        LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, t.dp(Tokens.HOLD_ROW_H_DP))
 
     /**
-     * How wide [box] (a window of this shape, its words set) is: its widest line as it would be on one line, and its
-     * room, within [Tokens.HOLD_MIN_W_DP]..[Tokens.HOLD_MAX_W_DP] and [max] px (the area). Measures its lines once.
+     * How wide [box] (a window of this shape, its words set) is: its widest line as it would be on one line (with its
+     * margins: the title's band reaches past the window's room), and its room, within
+     * [Tokens.HOLD_MIN_W_DP]..[Tokens.HOLD_MAX_W_DP] and [max] px (the area). Measures its lines once.
      */
     fun width(box: ViewGroup, t: Tokens, max: Float): Int {
         val free = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
@@ -432,7 +470,9 @@ object HoldShape {
             val c = box.getChildAt(i)
             if (c.visibility == View.GONE) continue
             c.measure(free, free)
-            if (c.measuredWidth > widest) widest = c.measuredWidth
+            val lp = c.layoutParams as? ViewGroup.MarginLayoutParams
+            val w = c.measuredWidth + (lp?.leftMargin ?: 0) + (lp?.rightMargin ?: 0)
+            if (w > widest) widest = w
         }
         val w = HoldSize.width(
             widest.toFloat(),
