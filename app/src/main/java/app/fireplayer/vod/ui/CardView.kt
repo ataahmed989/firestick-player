@@ -1,5 +1,6 @@
 package app.fireplayer.vod.ui
 
+import android.animation.TimeAnimator
 import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.content.Context
@@ -9,6 +10,7 @@ import android.graphics.Canvas
 import android.graphics.LinearGradient
 import android.graphics.Matrix
 import android.graphics.Paint
+import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Shader
 import android.os.Build
@@ -17,11 +19,13 @@ import android.text.StaticLayout
 import android.text.TextPaint
 import android.text.TextUtils
 import android.view.View
+import android.view.animation.AnimationUtils
 import app.fireplayer.shell.TextStyle
 import app.fireplayer.shell.Tokens
 import app.fireplayer.ui.Glass
 import app.fireplayer.ui.ImageLoader
 import app.fireplayer.ui.ImageTarget
+import app.fireplayer.ui.LogoSway
 import app.fireplayer.ui.Rows
 import app.fireplayer.vod.Card
 import app.fireplayer.vod.data.VodArt
@@ -46,6 +50,8 @@ class CardView(
     /** Its picture's size, dp, not grown: the title page's cards' unless given (the browse pages', See all's). */
     private val pictureW: Float = if (kind == Kind.WIDE || kind == Kind.EPISODE) VodSizes.WIDE_W else VodSizes.POSTER_W,
     private val pictureH: Float = if (kind == Kind.WIDE || kind == Kind.EPISODE) VodSizes.WIDE_H else VodSizes.POSTER_H,
+    /** A logo card whose logo moves as Glass Home's focused app tile's icon does ([LogoSway]): Home's services. */
+    swayLogo: Boolean = false,
 ) : View(context), ImageTarget {
 
     enum class Kind {
@@ -85,6 +91,10 @@ class CardView(
     private var logo: CardLogos.Logo? = null
     private val logoPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private val logoBox = RectF()
+    /** Its logo's motion on focus (Glass look only), a frame at a time while it moves; null on any other card. */
+    private val sway: LogoSway? = if (swayLogo && kind == Kind.LOGO) LogoSway() else null
+    private var swayTicker: TimeAnimator? = null
+    private val swayFrame = TimeAnimator.TimeListener { _, _, _ -> onSwayFrame() }
     private val holderPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val scrimPaint = Paint()
     private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = VodSizes.RING_COLOR }
@@ -303,7 +313,15 @@ class CardView(
         surface?.draw(canvas, imagePaint)
         val l = logo
         if (l != null) {
-            canvas.drawBitmap(l.bitmap, null, logoBox, logoPaint)
+            val s = sway
+            if (s != null && Glass.on && (s.dx != 0f || s.dy != 0f)) {
+                canvas.save()
+                canvas.translate(s.dx * t.density, s.dy * t.density)
+                canvas.drawBitmap(l.bitmap, null, logoBox, logoPaint)
+                canvas.restore()
+            } else {
+                canvas.drawBitmap(l.bitmap, null, logoBox, logoPaint)
+            }
             return
         }
         if (textFor != width) layOutText(card)
@@ -313,6 +331,63 @@ class CardView(
             it.draw(canvas)
             canvas.restore()
         }
+    }
+
+    // ---- The logo's motion on focus ([sway]) ----
+
+    override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: Rect?) {
+        super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
+        val s = sway ?: return
+        if (!swayCanRun()) return settleSway()
+        s.focusChanged(gainFocus, AnimationUtils.currentAnimationTimeMillis())
+        invalidate()
+        if (!s.moving) return
+        val ticker = swayTicker ?: TimeAnimator().also {
+            it.setTimeListener(swayFrame)
+            swayTicker = it
+        }
+        if (!ticker.isStarted) ticker.start()
+    }
+
+    private fun onSwayFrame() {
+        val s = sway ?: return
+        if (!swayCanRun()) return settleSway()
+        val busy = s.step(AnimationUtils.currentAnimationTimeMillis())
+        invalidate()
+        if (!busy) swayTicker?.end()
+    }
+
+    /**
+     * Whether the logo may move now: the Glass look (Classic's stays still), on screen in a started, focused window,
+     * the TV's animations on. Otherwise it's where it's heading at once ([settleSway]).
+     */
+    private fun swayCanRun(): Boolean =
+        Glass.on && isAttachedToWindow && windowVisibility == VISIBLE && hasWindowFocus() && isShown &&
+            (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || ValueAnimator.areAnimatorsEnabled())
+
+    /** The logo's motion stops, where it was heading (home, or at rest focused). */
+    private fun settleSway() {
+        val s = sway ?: return
+        swayTicker?.let { if (it.isStarted) it.end() }
+        if (s.moving || s.focus != (if (isFocused) 1f else 0f)) {
+            s.settle(isFocused)
+            invalidate()
+        }
+    }
+
+    override fun onWindowVisibilityChanged(visibility: Int) {
+        super.onWindowVisibilityChanged(visibility)
+        if (visibility != VISIBLE) settleSway()
+    }
+
+    override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
+        super.onWindowFocusChanged(hasWindowFocus)
+        if (!hasWindowFocus) settleSway()
+    }
+
+    override fun onDetachedFromWindow() {
+        settleSway()
+        super.onDetachedFromWindow()
     }
 
     /** Where the logo's picture goes: whole and in proportion, its share of the card ([VodSizes.logoFit]), in the middle. */
