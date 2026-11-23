@@ -221,6 +221,27 @@ class WatchHistory(records: List<Record> = emptyList()) {
         return changed
     }
 
+    /** An episode's numbers and name, as its row shows them. */
+    data class Numbers(val season: Int, val episode: Int, val episodeTitle: String?)
+
+    /**
+     * Rows given other numbers by [of] (null leaves one as it is); the rest of each, and its place in the row, stay.
+     * True when any row changed.
+     */
+    fun renumber(of: (Record) -> Numbers?): Boolean {
+        var changed = false
+        for (i in records.indices) {
+            val r = records[i]
+            val n = of(r) ?: continue
+            val moved = r.copy(season = n.season, episode = n.episode, episodeTitle = n.episodeTitle)
+            if (moved != r) {
+                records[i] = moved
+                changed = true
+            }
+        }
+        return changed
+    }
+
     /** Removed from the row: forgotten, so only playing it again for a while brings it back. True when it was there. */
     fun remove(id: String): Boolean {
         val record = record(id) ?: return false

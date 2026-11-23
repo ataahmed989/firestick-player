@@ -25,7 +25,6 @@ import app.fireplayer.vod.play.Recovery
 import app.fireplayer.vod.play.SourcePlayback
 import app.fireplayer.vod.play.VodFix
 import app.fireplayer.vod.ui.SourcesPanel
-import app.fireplayer.vod.ui.TitleRules
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -567,14 +566,6 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
      * Show details, Skip intro's times and the subtitles search go by it ([vodMeta]). Null: as handed over.
      */
     private var vodFix: VodFix? = null
-    /**
-     * A show's episodes from Films & Shows set by hand to other ones in Fix match (kept by the title's id,
-     * [MatchFixes.vodKey]): This episode, Show details, Next episode's name, Skip intro and the subtitles search show and
-     * ask about the episode each really is; the sources and the library go on by the numbers handed over. Null: none.
-     */
-    private var vodPlaced: MatchFixes.Show? = null
-    /** TMDB's episodes of the show those were set to, by their numbers, once read ([loadVodPlaced]). */
-    private var vodReal: Map<Pair<Int, Int>, Tmdb.TvEpisode> = emptyMap()
     private var nextSkipWarmed = false
     /** How long this start takes, step by step, for one "FirePlayerDiag: start …" line at the first picture. */
     private var launch = LaunchLog(SystemClock.elapsedRealtime())
@@ -648,6 +639,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         openSubtitles = OpenSubtitles(prefs)
         tmdb = Tmdb(prefs)
         matchFixes = MatchFixes(this)
+        // Fix match is for the title only: episode fixes kept by earlier releases go, once, before a kept guide is read.
+        io.execute { app.fireplayer.player.FixReset.runOnce(applicationContext) }
         // Downloaded subtitles unused for a while go, with what was found for their timing.
         io.execute { SavedSubtitles.prune(applicationContext) }
         @Suppress("DEPRECATION")
@@ -2821,9 +2814,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                     val n = s.next
                     if (n != null && !nextSkipWarmed && it.duration - it.currentPosition <= PlayRules.NEXT_LOOKUP_MS) {
                         nextSkipWarmed = true
-                        // The episode it really is, when Fix match set it to another.
-                        val at = guide?.episode(PlayerMeta.episodeId(n))
-                        warmSkipTimes(vodMeta(s.request).imdbId, at?.season ?: n.season, at?.number ?: n.episode, 0L)
+                        warmSkipTimes(vodMeta(s.request).imdbId, n.season, n.episode, 0L)
                     }
                 }
                 // Stage 4: a stall that goes on is judged while it lasts (the same source reopened first, then the rules).
@@ -5344,7 +5335,6 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             val ref = vod.request.target.episode
             val ep = guideEpisode(entry)
             header(if (ref != null) "This episode" else "This film")
-            // As it really is, when Fix match set this episode to another one.
             dropdownRow(PlayerMeta.thisTitleName(vodMeta(vod.request), vodFix), "Matched", Rows.Badge.ACTIVE, thisTitleOpen) {
                 thisTitleOpen = !thisTitleOpen
                 refresh()
@@ -5354,10 +5344,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             if (thisTitleOpen) {
                 row("Source", vod.addon?.label ?: PlayerMeta.PORTAL) {}.asSubRow()
                 if (tmdb.isConfigured) row("Fix match") { openFixVod(show = ref != null) }.asSubRow()
-                val placed = ep != null && (ep.season != ep.providerSeason || ep.number != ep.providerNumber)
-                val named = ep?.takeIf { placed || it.name.isNotEmpty() }
-                    ?.let { e -> e.label + if (e.name.isNotEmpty()) " · ${e.name}" else "" }
-                message(PlayerMeta.matchNote(vod.request, vodFix, named, placed))
+                val named = ep?.takeIf { it.name.isNotEmpty() }?.let { e -> "${e.label} · ${e.name}" }
+                message(PlayerMeta.matchNote(vod.request, vodFix, named))
                 if (!tmdb.isConfigured) message("Needs a TMDB API key (Statuses, below) to fix this ${if (ref != null) "show" else "film"}'s match.")
             }
             row(if (ref != null) "Show details" else "Film details") { openDetails(show = ref != null) }.asSubRow()
@@ -6115,7 +6103,6 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val s = SourcePlayback(request, early?.session ?: repo.session(request), repo.library, MainTicker, sourceHost, early)
         source = s
         vodFix = matchFixes.vodTitle(request.target.title.id)
-        vodPlaced = matchFixes.show(MatchFixes.vodKey(request.target.title.id))?.takeIf { it.picks.isNotEmpty() || it.shifts.isNotEmpty() }
         buffering.visibility = View.VISIBLE
         bufferingInfo.visibility = View.GONE
         warmDecoders()
@@ -6154,7 +6141,6 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             if (s.next == null) s.next = PlayRules.nextEpisode(d.episodes, ep, now)?.ref
             s.nextKnown = true
             vodGuide()
-            loadVodPlaced()
         }
         updateTitle()
         // Film details / Show details open on "Loading…" until this (TMDB's, for a title put right by hand).
@@ -6167,47 +6153,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     /**
      * The show's guide from Films & Shows (This episode, Episodes, Next episode's name), from the details the title page
-     * loaded, with its episodes set by hand to other ones ([vodPlaced]) shown as the ones they really are.
+     * loaded.
      */
     private fun vodGuide() {
         val d = vodDetails ?: return
-        PlayerMeta.guide(d, System.currentTimeMillis(), vodPlaced, vodReal)?.let { g ->
+        PlayerMeta.guide(d, System.currentTimeMillis())?.let { g ->
             guide = g
             showGuideInSheet()
         }
     }
-
-    /**
-     * Reads TMDB's episodes of the show this title's episodes were set to by hand (its seasons Fix match placed them
-     * in; kept a few days, [ShowGuide.season]), then shows them. Nothing when none was set, or all is in already.
-     */
-    private fun loadVodPlaced(then: (() -> Unit)? = null) {
-        val fix = vodPlaced
-        val s = source
-        if (fix == null || s == null || fix.tmdbId <= 0 || !tmdb.isConfigured) { then?.invoke(); return }
-        val seasons = fix.seasons().toSet()
-        if (vodRealShow == fix.tmdbId && vodRealSeasons.containsAll(seasons)) { then?.invoke(); return }
-        val app = applicationContext
-        io.execute {
-            val read = HashMap<Pair<Int, Int>, Tmdb.TvEpisode>()
-            seasons.forEach { n ->
-                runCatching { ShowGuide.season(app, tmdb, fix.tmdbId, n) }.getOrNull()?.forEach { read[it.season to it.number] = it }
-            }
-            handler.post {
-                if (isFinishing || source !== s || vodPlaced !== fix) return@post
-                vodReal = read
-                vodRealShow = fix.tmdbId
-                vodRealSeasons = seasons
-                vodGuide()
-                updateTitle()
-                if (panel.isOpen) panel.refresh()
-                then?.invoke()
-            }
-        }
-    }
-    /** Whose episodes [vodReal] are (a TMDB show id), and which of its seasons. */
-    private var vodRealShow = 0
-    private var vodRealSeasons: Set<Int> = emptySet()
 
     /** The length the film or episode had when it last played here (the library's), 0 when it never did. */
     private fun lastDurationOf(r: PlayRequest): Long {
@@ -6230,23 +6184,19 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     /**
-     * What the player shows and asks about for [r]: as put right by hand in Fix match (the title, [vodFix]; the episode,
-     * [vodPlaced]), else [r] itself. Made once per request and fix (Skip intro asks on every tick).
+     * What the player shows and asks about for [r]: as put right by hand in Fix match (the title, [vodFix]), else [r]
+     * itself. Made once per request and fix (Skip intro asks on every tick).
      */
     private fun vodMeta(r: PlayRequest): PlayRequest {
-        val fix = vodFix
-        val placed = vodPlaced
-        if (fix == null && placed == null) return r
+        val fix = vodFix ?: return r
         val made = vodMetaMade
-        if (made != null && vodMetaOf === r && vodMetaFix === fix && vodMetaPlaced === placed) return made
-        return PlayerMeta.fixed(r, fix, placed).also {
+        if (made != null && vodMetaOf === r && vodMetaFix === fix) return made
+        return PlayerMeta.fixed(r, fix).also {
             vodMetaOf = r
             vodMetaFix = fix
-            vodMetaPlaced = placed
             vodMetaMade = it
         }
     }
-    private var vodMetaPlaced: MatchFixes.Show? = null
     private var vodMetaOf: PlayRequest? = null
     private var vodMetaFix: VodFix? = null
     private var vodMetaMade: PlayRequest? = null
@@ -6699,7 +6649,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }.getOrDefault(iso)
     }
 
-    /** Pairs the show again with the fixes just made, from what the provider last said. */
+    /** Pairs the show again with the match just saved, from what the provider last said. */
     private fun rebuildFromFix(then: (() -> Unit)? = null) {
         val g = guide ?: return
         val found = lastFound
@@ -6722,23 +6672,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
     }
 
-    // Fix match: the TMDB search, the results, then (for a show) its season, which episode this is, and what to save.
+    // Fix match: the TMDB search and its results. OK on the right film or show saves it for the whole title; which
+    // episode is which then goes by that show's own pairing, never by hand.
     private var fixQuery = ""
     private var fixHits: List<Tmdb.Hit> = emptyList()
     private var fixStatus: String? = null
-    private var fixShow: Tmdb.Hit? = null
-    /** Where this episode is matched now (the lists open on it), and where it's being set to. */
-    private var fixAtSeason = 1
-    private var fixAtNumber = 1
-    private var fixSeason = 1
-    private var fixNumber = 1
-    private var fixName = ""
-    /** "Also fix … other episodes from this source": on, and how they'd move ([MatchFixes.alignShift]). */
-    private var fixRest = false
-    private var fixAlign: MatchFixes.Show.Shift? = null
-    /** What a step is waiting for (a season being read), under its list. */
-    private var fixStepStatus: String? = null
-    private val fixSeasons = HashMap<Int, List<Tmdb.TvEpisode>>()
 
     private fun openFixFilm() {
         val entry = currentEntry() ?: return
@@ -6752,8 +6690,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     /**
-     * Fix match for a film or show from Films & Shows: TMDB's search by its name, then OK on the right film keeps it for
-     * the title ([saveVodFix]); for a show, its season and episode are chosen next ([pickFixShow]).
+     * Fix match for a film or show from Films & Shows: TMDB's search by its name, then OK on the right one keeps it for
+     * the title ([saveVodFix]).
      */
     private fun openFixVod(show: Boolean) {
         val r = source?.request ?: return
@@ -6776,24 +6714,27 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 }
             }
             fixStatus?.let { message(it) }
-            // A show can keep the one it's matched to, to set only which episode this is.
+            // The show it's matched to now, first: OK keeps it.
             val keep = if (shows) keptShow() else null
             keep?.let { k ->
                 resultRow(k.name, listOfNotNull(k.year, "Matched now").joinToString(" · "), null, selected = true,
-                    poster = k.poster, withPoster = true) { pickFixShow(k) }
+                    poster = k.poster, withPoster = true) { saveFixMatch(k, vod) }
             }
             fixHits.filter { it.id != keep?.id }.forEach { hit ->
                 resultRow(hit.name, listOfNotNull(hit.year, if (hit.show) "TV show" else "Film").joinToString(" · "), null,
-                    poster = hit.poster, withPoster = true) {
-                    when {
-                        hit.show -> pickFixShow(hit)
-                        vod -> saveVodFix(hit)
-                        else -> saveFixFilm(hit)
-                    }
-                }
+                    poster = hit.poster, withPoster = true) { saveFixMatch(hit, vod) }
             }
             message("Press OK on the search box to type. FirePlayer starts it with the name " +
                 if (vod) "${PlayerMeta.PORTAL} gave." else "your provider gave.")
+        }
+    }
+
+    /** OK on a result: it is what this title is, saved at once. */
+    private fun saveFixMatch(hit: Tmdb.Hit, vod: Boolean) {
+        when {
+            vod -> saveVodFix(hit)
+            hit.show -> saveFixShow(hit)
+            else -> saveFixFilm(hit)
         }
     }
 
@@ -6830,14 +6771,33 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     /**
+     * Fix match on a playlist's show: TMDB's [hit] is the show, for every episode of it from this provider (kept by the
+     * show, [MatchFixes.setShow]). The guide is made again, its episodes paired with that show as any show's are.
+     */
+    private fun saveFixShow(hit: Tmdb.Hit) {
+        val entry = currentEntry() ?: return
+        val g = guide ?: return
+        matchFixes.setShow(g.key, hit.id, g.tmdbId)
+        panel.close()
+        showNotice("Saving the match…", 2_500)
+        rebuildFromFix {
+            showNotice("Saved: ${hit.label}", 2_000)
+            noteRematch(entry, episode = true)
+        }
+    }
+
+    /**
      * Fix match on a film or show from Films & Shows: TMDB's [hit] is what it is, for this play and every later one of
      * the title (kept by its id). Its name, Film details / Show details, Skip intro's times and the subtitles search go by
-     * it from now; the sources, the library and Next episode go on by the title's own id, as matched before.
+     * it from now; the sources, the library, the episodes and Next episode go on by the title's own id, as matched
+     * before. The title's own TMDB match chosen again: no fix, as handed over.
      */
     private fun saveVodFix(hit: Tmdb.Hit) {
         val s = source ?: return
-        val fix = VodFix(hit.id, hit.show, hit.name, hit.year?.take(4)?.toIntOrNull() ?: 0)
-        matchFixes.setVodTitle(s.request.target.title.id, fix)
+        val t = s.request.target.title
+        val own = hit.id == s.request.tmdbId && hit.show == (t.kind == app.fireplayer.vod.Kind.SERIES)
+        val fix = if (own) null else VodFix(hit.id, hit.show, hit.name, hit.year?.take(4)?.toIntOrNull() ?: 0)
+        matchFixes.setVodTitle(t.id, fix)
         vodFix = fix
         // What the old match showed or found is asked again by the new one: details, the subtitles search, Skip intro.
         aboutFor = null
@@ -6846,13 +6806,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         panel.close()
         updateTitle()
         updateSkip()
-        showNotice("Saved: ${fix.label}", 2_500)
+        showNotice("Saved: ${fix?.label ?: PlayerMeta.shownName(t)}", 2_500)
     }
 
     /**
-     * The show this episode is matched to now, offered at the top of Fix match's results to keep while only which
-     * episode it is gets set: Films & Shows' (as fixed by hand, else as handed over), or the playlist show's guide's.
-     * Null when it has no TMDB id.
+     * The show this title is matched to now, offered at the top of Fix match's results (OK keeps it): Films & Shows' (as
+     * fixed by hand, else as handed over), or the playlist show's guide's. Null when it has no TMDB id.
      */
     private fun keptShow(): Tmdb.Hit? {
         val entry = currentEntry() ?: return null
@@ -6865,179 +6824,6 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         val g = guide?.takeIf { it.tmdbId > 0 } ?: return null
         return Tmdb.Hit(g.tmdbId, true, g.searchName, SHOW_YEAR.matchEntire(g.show)?.groupValues?.get(2), about?.poster)
-    }
-
-    /**
-     * Step two for a show: its season, from TMDB's list of them, opening on the one this episode is matched to now
-     * (over the search: Back goes back to the results). Then its episode ([pickFixSeason]), then what to save.
-     */
-    private fun pickFixShow(hit: Tmdb.Hit) {
-        val entry = currentEntry() ?: return
-        val ep = guideEpisode(entry)
-        if (fixShow?.id != hit.id) fixSeasons.clear()
-        fixShow = hit
-        fixAtSeason = ep?.season ?: entry.info.season ?: 1
-        fixAtNumber = ep?.number ?: entry.info.episode ?: 1
-        fixStepStatus = null
-        val window = panel.session
-        fixStatus = "Looking up the seasons of ${hit.label}…"
-        panel.refresh()
-        io.execute {
-            // Specials too: a provider's episode may be one of TMDB's season 0.
-            val read = runCatching { tmdb.seasonNumbers(hit.id, specials = true) }
-            handler.post {
-                if (isFinishing || fixShow !== hit) return@post
-                // Specials last, as the title page's seasons.
-                val seasons = read.getOrNull().orEmpty().sortedBy { if (it == 0) Int.MAX_VALUE else it }
-                fixStatus = when {
-                    read.isFailure -> "Couldn't reach TMDB just now."
-                    seasons.isEmpty() -> "TMDB lists no seasons for ${hit.label}."
-                    else -> null
-                }
-                // Only while the results are still the window on screen.
-                if (!panel.isOpen || panel.session != window) return@post
-                if (seasons.isEmpty()) {
-                    panel.refresh()
-                    return@post
-                }
-                panel.openSub("Fix match · Season", focusIndex = seasons.indexOf(fixAtSeason).coerceAtLeast(0)) {
-                    seasons.forEach { n -> row(TitleRules.seasonLabel(n), checked = n == fixAtSeason) { pickFixSeason(n) } }
-                    fixStepStatus?.let { message(it) }
-                }
-            }
-        }
-    }
-
-    /** Step three: the season's episodes (kept a few days), opening on the one it's matched to now when it's this season. */
-    private fun pickFixSeason(season: Int) {
-        val show = fixShow ?: return
-        fixSeasons[season]?.let { openFixEpisodes(season, it); return }
-        val window = panel.session
-        val named = if (season == 0) "the specials" else "season $season"
-        fixStepStatus = "Looking up $named…"
-        panel.refresh()
-        val app = applicationContext
-        io.execute {
-            val read = runCatching { ShowGuide.season(app, tmdb, show.id, season) }
-            handler.post {
-                if (isFinishing || fixShow !== show) return@post
-                val episodes = read.getOrNull().orEmpty()
-                fixStepStatus = when {
-                    read.isFailure -> "Couldn't reach TMDB just now."
-                    episodes.isEmpty() -> "TMDB lists no episodes in $named."
-                    else -> null
-                }
-                if (episodes.isNotEmpty()) fixSeasons[season] = episodes
-                if (!panel.isOpen || panel.session != window) return@post
-                if (episodes.isEmpty()) panel.refresh() else openFixEpisodes(season, episodes)
-            }
-        }
-    }
-
-    private fun openFixEpisodes(season: Int, episodes: List<Tmdb.TvEpisode>) {
-        fixStepStatus = null
-        val here = if (season == fixAtSeason) episodes.indexOfFirst { it.number == fixAtNumber } else -1
-        panel.openSub("Fix match · ${TitleRules.seasonLabel(season)}", focusIndex = here.coerceAtLeast(0)) {
-            episodes.forEach { e ->
-                row("E${e.number}" + if (e.name.isNotEmpty()) " · ${e.name}" else "", checked = season == fixAtSeason && e.number == fixAtNumber) {
-                    confirmFixEpisode(e)
-                }
-            }
-        }
-    }
-
-    /**
-     * Last step: the episode chosen as a card, and, when the same source has other episodes that would move with it,
-     * one option to set them the same way ("Also fix 9 other episodes from this source"), then Save match.
-     */
-    private fun confirmFixEpisode(picked: Tmdb.TvEpisode) {
-        val show = fixShow ?: return
-        val entry = currentEntry() ?: return
-        val ep = guideEpisode(entry)
-        val g = guide
-        fixSeason = picked.season
-        fixNumber = picked.number
-        fixName = picked.name
-        fixRest = false
-        // The source's other episodes of that season, moved as this one is (fixes made one by one stay as they are).
-        val kept = g?.let { matchFixes.show(it.key) }?.takeIf { it.tmdbId == 0 || it.tmdbId == show.id }
-        val shift = if (g != null && ep != null) MatchFixes.alignShift(g.episodes, ep, picked.season, picked.number) else null
-        val others = if (g != null && ep != null && shift != null) MatchFixes.alignCount(g.episodes, ep, shift, kept?.picks?.keys.orEmpty()) else 0
-        fixAlign = shift?.takeIf { others > 0 }
-        val vod = entry.storeKey != null && source != null
-        panel.openSub("Fix match · Save") {
-            facts(listOfNotNull(
-                ep?.let { e ->
-                    val own = e.providerTitle.takeIf { it.isNotEmpty() }?.let { " · “$it”" }.orEmpty()
-                    (if (vod) "Plays as" else "Your provider") to fact("S${e.providerSeason} E${e.providerNumber}$own")
-                },
-                "Show" to fact(show.label),
-            ))
-            view(episodeCard(picked.still, "S${picked.season} E${picked.number}", picked.name,
-                listOfNotNull(prettyDate(picked.airDate), picked.runtime.takeIf { it > 0 }?.let { "${it}m" }).joinToString(" · "),
-                picked.overview), top = 4, bottom = 6)
-            if (others > 0) {
-                row(if (others == 1) "Also fix 1 other episode from this source" else "Also fix $others other episodes from this source",
-                    app.fireplayer.ui.SettingsPanels.onOff(fixRest), twoLines = true) {
-                    fixRest = !fixRest
-                    refresh()
-                }
-            }
-            buttons("Save match", "Cancel", { saveFixShow() }, { close() })
-        }
-    }
-
-    private fun saveFixShow() {
-        val show = fixShow ?: return
-        val entry = currentEntry() ?: return
-        val g = guide
-        val ep = guideEpisode(entry)
-        val align = fixAlign?.takeIf { fixRest }
-        val s = source?.takeIf { entry.storeKey != null }
-        if (s != null) {
-            // Films & Shows, its details in or not: the episode chosen, by the id of the one handed over (a film: the
-            // show alone, as Fix match did before).
-            val id = ep?.id ?: PlayerMeta.episodeId(s.request)
-            if (id == null) saveVodFix(show) else saveVodEpisode(s, show, id, align)
-            return
-        }
-        if (g == null || ep == null) return
-        matchFixes.place(g.key, show.id, ep.id, fixSeason, fixNumber, align)
-        panel.close()
-        showNotice("Saving the match…", 2_500)
-        rebuildFromFix {
-            showNotice("Match saved", 2_000)
-            noteRematch(entry, episode = true)
-        }
-    }
-
-    /**
-     * Fix match on an episode from Films & Shows ([episodeId], [PlayerMeta.episodeId]: the numbers handed over): it is
-     * [show]'s TMDB episode [fixSeason] / [fixNumber] (with [align], the rest of its season in the title moves the same
-     * way), for this play and every later one of the title, kept by its id ([MatchFixes.vodKey]), whether its details
-     * are in or not. This episode, Show details, Next episode's name, Skip intro and the subtitles search go by the
-     * episode it really is; the sources and the library go on by the numbers handed over.
-     */
-    private fun saveVodEpisode(s: SourcePlayback, show: Tmdb.Hit, episodeId: String, align: MatchFixes.Show.Shift?) {
-        val titleId = s.request.target.title.id
-        // Another show than the one it's shown as: its name and details go by that one too.
-        if (show.id != (vodFix?.tmdbId ?: s.request.tmdbId)) {
-            val fix = VodFix(show.id, true, show.name, show.year?.take(4)?.toIntOrNull() ?: 0)
-            matchFixes.setVodTitle(titleId, fix)
-            vodFix = fix
-            aboutFor = null
-            about = null
-        }
-        val key = MatchFixes.vodKey(titleId)
-        matchFixes.place(key, show.id, episodeId, fixSeason, fixNumber, align)
-        vodPlaced = matchFixes.show(key)
-        findFor = null
-        panel.close()
-        vodGuide()
-        updateTitle()
-        updateSkip()
-        loadVodPlaced()
-        showNotice("Saved: S$fixSeason E$fixNumber" + if (fixName.isNotEmpty()) " · $fixName" else "", 2_500)
     }
 
     // Find subtitles (OpenSubtitles)

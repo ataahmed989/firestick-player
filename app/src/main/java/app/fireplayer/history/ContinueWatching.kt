@@ -12,6 +12,7 @@ import android.util.AtomicFile
 import android.util.Log
 import app.fireplayer.data.KeyStore
 import app.fireplayer.data.Prefs
+import app.fireplayer.player.FixReset
 import app.fireplayer.player.MatchFixes
 import app.fireplayer.player.NextEpisode
 import app.fireplayer.player.NextPick
@@ -154,6 +155,7 @@ object ContinueWatching {
      */
     fun rows(context: Context): List<WatchHistory.Row> {
         val app = context.applicationContext
+        FixReset.runOnce(app)
         val rows = synchronized(lock) { current(app).rows() }
         lookUp(app, rows)
         return rows
@@ -181,6 +183,16 @@ object ContinueWatching {
                 Log.w(TAG, "Couldn't put the match right: ${e.javaClass.simpleName}")
             }
         }
+    }
+
+    /** Gives rows other numbers ([WatchHistory.renumber]) and tells Glass Home. Blocks on the history file. */
+    fun renumber(context: Context, of: (WatchHistory.Record) -> WatchHistory.Numbers?) {
+        val app = context.applicationContext
+        val changed = synchronized(lock) {
+            val h = current(app)
+            h.renumber(of).also { if (it) save(app, h) }
+        }
+        if (changed) app.contentResolver.notifyChange(ITEMS, null)
     }
 
     /** Removes one row; false when there's no such row. */
@@ -214,6 +226,7 @@ object ContinueWatching {
      */
     fun episodes(context: Context, id: String): List<ShowEpisodes.Row> {
         val app = context.applicationContext
+        FixReset.runOnce(app)
         return try {
             val record = synchronized(lock) { current(app).record(id) } ?: return emptyList()
             if (record.kind != WatchHistory.Kind.EPISODE || StreamLink.parse(record.resume.uri)?.listsEpisodes != true) {
@@ -250,6 +263,7 @@ object ContinueWatching {
         if (id.isNullOrEmpty() || episodeId.isNullOrEmpty() || !episodeId.all { it.isDigit() }) return null
         awaitNotes()
         val app = context.applicationContext
+        FixReset.runOnce(app)
         val record = synchronized(lock) { current(app).record(id) } ?: return null
         if (record.kind != WatchHistory.Kind.EPISODE) return null
         val uri = Uri.parse(record.resume.uri)
