@@ -25,8 +25,11 @@ import app.fireplayer.ui.Buttons
 import app.fireplayer.ui.DrawnSpan
 import app.fireplayer.ui.Glass
 import app.fireplayer.ui.ImageLoader
+import app.fireplayer.vod.Cancel
 import app.fireplayer.vod.Card
 import app.fireplayer.vod.Title
+import app.fireplayer.vod.data.TitleFacts
+import app.fireplayer.vod.data.type
 
 /**
  * A page's banner ([VodSizes.HEADER_H]; My List's 186): the title's picture, sharp ([HeaderArt]), in a box at the
@@ -48,6 +51,10 @@ import app.fireplayer.vod.Title
  * once no key has been pressed for that long; the buttons act on the title whose words are showing ([shownCard],
  * [HeaderPress]); Up there moves on to the next title at once ([stepUp]). Its words have fixed boxes, so new ones
  * only redraw them. The buttons' keys go to the page ([Listener]).
+ *
+ * A title made from TMDB's lists (a service's rows; My List entries added from them) has only its year and story: its
+ * other facts (a series' years, genres, rating, length) are asked for once ([completeFacts], the page's repository),
+ * ahead for the feed's titles and the page's ([askFacts]), and the facts line changes in place when they come.
  */
 @SuppressLint("ViewConstructor")
 class VodHeader(
@@ -88,6 +95,13 @@ class VodHeader(
 
     /** Whether anything else (a window, the settings window) asks it to hold still; asked at each turn. */
     var blocked: () -> Boolean = { false }
+
+    /** Completes a title's facts ([app.fireplayer.vod.VodRepository.headerTitle]); null: shown as they are. */
+    var completeFacts: ((Title, (Title) -> Unit) -> Cancel?)? = null
+    /** Titles with their facts completed, by kind and id: shown so from then on. */
+    private val withFacts = HashMap<String, Title>()
+    /** Titles whose facts were asked for (answered or not: asked once while the banner holds its pictures). */
+    private val factsAsked = HashMap<String, Cancel?>()
 
     /**
      * The picture fills the card, or is a box at its right whose left edge is eased away (every page's card now; at
@@ -467,6 +481,8 @@ class VodHeader(
         pause()
         art.release()
         title.release()
+        for (c in factsAsked.values) c?.cancel()
+        factsAsked.clear()
     }
 
     /**
@@ -494,7 +510,35 @@ class VodHeader(
         if (logosAhead || rotation.paused) return
         logosAhead = true
         for (i in feed.indices) ImageLoader.prefetch(HeaderLogo.urlOf(feed[i]))
+        askFacts(feed)
     }
+
+    /** The facts [titles] lack, asked for ahead (each once): a title's turn then shows them whole. */
+    fun askFacts(titles: List<Title>) {
+        for (i in titles.indices) askFacts(titles[i])
+    }
+
+    private fun askFacts(t: Title) {
+        if (!TitleFacts.lacks(t)) return
+        val key = factsKey(t)
+        if (withFacts.containsKey(key) || factsAsked.containsKey(key)) return
+        val complete = completeFacts ?: return
+        // Marked before asking: an answer can't come back into this call, but a second ask must never go out.
+        factsAsked[key] = null
+        factsAsked[key] = complete(t) { whole -> onFacts(key, whole) }
+    }
+
+    /** A title's facts came: kept, and the facts line (and an empty story) changes in place if it shows now. */
+    private fun onFacts(key: String, whole: Title) {
+        withFacts[key] = whole
+        val now = shown ?: return
+        if (factsKey(now) != key) return
+        shown = whole
+        facts.text = factsOf(whole, shownCaption)
+        if (story.text.isNullOrEmpty()) story.text = whole.description.orEmpty()
+    }
+
+    private fun factsKey(t: Title) = "${t.kind.type}|${t.id}"
 
     private val turn = Runnable {
         if (blocked()) {
@@ -555,9 +599,11 @@ class VodHeader(
         }.start()
     }
 
-    private fun showText(title: Title?, caption: String?) {
+    private fun showText(given: Title?, caption: String?) {
         words.animate().cancel()
         words.alpha = 1f
+        // With its facts when they've come; else asked for now (they change the facts line in place).
+        val title = given?.let { g -> withFacts[factsKey(g)] ?: g.also { askFacts(it) } }
         shown = title
         shownCaption = caption
         // Off screen (paused) the logo waits, as the picture does: [resume] shows it then.
