@@ -7,6 +7,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.Process
 import app.fireplayer.data.KeyStore
+import app.fireplayer.data.Settings
 import app.fireplayer.subs.Tmdb
 import app.fireplayer.vod.Page
 import app.fireplayer.vod.VodRepository
@@ -45,7 +46,7 @@ object VodRepositories {
             io = Executors.newSingleThreadExecutor(threads("FirePlayerVodDisk", Process.THREAD_PRIORITY_DEFAULT + Process.THREAD_PRIORITY_LESS_FAVORABLE)),
             net = Executors.newFixedThreadPool(3, threads("FirePlayerVodNet", Process.THREAD_PRIORITY_BACKGROUND)),
             lookups = Executors.newFixedThreadPool(3, threads("FirePlayerVodLookups", Process.THREAD_PRIORITY_BACKGROUND)),
-            rowStore = PrefsRowStore(app.getSharedPreferences(KeyStore.OLD_FILE, Context.MODE_PRIVATE)),
+            rowStore = PrefsRowStore(Settings.of(app)),
         ).also { repo ->
             // Glass Home's Continue Watching row shows the library's too (history/ContinueProvider): it's told of a change.
             repo.addLibraryListener {

@@ -23,7 +23,10 @@ import org.junit.Test
 class DimmerTest {
 
     /** Each test as a new run of the app: nothing left unsaved by another. */
-    @Before fun freshRun() = Dimmer.forgetUnsaved()
+    @Before fun freshRun() {
+        Dimmer.forgetUnsaved()
+        GlassShades.forgetUnsaved()
+    }
 
     private fun custom(id: String, name: String, display: Int, glass: Int, auto: Boolean) =
         JSONObject().put("id", id).put("name", name).put("display", display).put("glass", glass).put("auto", auto)
@@ -78,20 +81,25 @@ class DimmerTest {
         assertEquals(20, live.active().glassDim)
         assertEquals("15% · 20%", GlassShades.badge(Kind.PLAYBACK, look[Kind.PLAYBACK]))
         assertEquals("Default", film.label())
-        // Changed on Default in a player: Look shows it at once (nothing to save), and so does the other player.
+        // Changed on Default in a player: Look shows it at once, and so does the other player; Unsaved in both until
+        // either's Save.
         film.step(Value.GLASS_TINT, -1)
         film.step(Value.GLASS_DIM, 1)
         film.step(Value.GLASS_DIM, 1)
         assertEquals(GlassStyle.Shade(10, dim = 30), look[Kind.PLAYBACK])
         assertEquals(GlassStyle.Shade(10, dim = 30), live.glass())
+        assertTrue(film.hasUnsaved())
+        assertTrue(look.hasUnsaved())
+        assertTrue(saved.values.isEmpty())
+        var onDisk: Boolean? = null
+        film.saveDefault(SettingsWriter { it.run() }, { it.run() }) { onDisk = it }
+        assertEquals(true, onDisk)
         assertFalse(film.hasUnsaved())
+        assertFalse(look.hasUnsaved())
         // Only Playback glass's two values: App glass and Rail, cards & header are as they were, and no custom was made.
         assertEquals(GlassStyle.APP_SHADE, look[Kind.APP])
         assertEquals(GlassStyle.RAIL_SHADE, look[Kind.RAIL])
-        assertEquals(
-            setOf("glass_playback_tint", "glass_playback_dim"),
-            saved.values.keys - Dimmer.PRESETS_KEY - GlassShades.PLAYBACK_MOVED_KEY,
-        )
+        assertEquals(setOf("glass_playback_tint", "glass_playback_dim"), saved.values.keys)
         assertEquals(emptyList<Dimmer.Preset>(), film.customs())
         // Up to 100%, and never below none.
         repeat(30) { film.step(Value.GLASS_TINT, 1) }
@@ -235,9 +243,12 @@ class DimmerTest {
         assertEquals("c99", dimmer.activeId)
         assertEquals(GlassStyle.Shade(0, dim = 20), dimmer.glass())
         assertEquals(40, dimmer.display())
-        // Read once: kept as presets from then on, the old list left as it was.
+        // Reading writes nothing. Saved as presets once as the app starts, the old list left as it was.
+        assertFalse(saved.values.containsKey(Dimmer.PRESETS_KEY))
+        dimmer.convertLegacyOnce()
         assertTrue(saved.values.containsKey(Dimmer.PRESETS_KEY))
         assertEquals(old.toString(), saved.values["dim_customs"])
+        assertEquals(dimmer.customs(), Dimmer(sp = { saved }).customs())
         dimmer.delete("c1")
         assertEquals(listOf("Default", "Night"), Dimmer(sp = { saved }).presets().map { it.name })
     }
@@ -334,7 +345,7 @@ class DimmerTest {
         assertEquals(Dimmer.Preset(Dimmer.DEFAULT_ID, "Default", 0, 5, 15, auto = false), dimmer.active())
         assertEquals(GlassStyle.PLAYBACK_SHADE, dimmer.glass())
         assertFalse(dimmer.hasUnsaved())
-        // As if never changed: the glasses' own values are gone, the customs and the one on are kept.
-        assertEquals(setOf(Dimmer.PRESETS_KEY, Dimmer.ACTIVE_KEY, GlassShades.PLAYBACK_MOVED_KEY), saved.values.keys)
+        // Nothing was saved for the glasses (their steps and Reset show until Save); the customs and the one on are kept.
+        assertEquals(setOf(Dimmer.PRESETS_KEY, Dimmer.ACTIVE_KEY), saved.values.keys)
     }
 }

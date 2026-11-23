@@ -40,10 +40,20 @@ class SyncPlanTest {
         assertEquals(Action.DEFER, SyncPlan.decide(Trigger.AUTO, "p1", playlistReq, provider, playing))
     }
 
-    @Test fun `a guide from another host never touches playback`() {
-        val playing = Playing(stream, "p1", film = true, liveScreen = true)
+    @Test fun `a guide from another host never touches a live channel`() {
+        val playing = Playing(stream, "p1", film = false, liveScreen = true)
         assertEquals(Action.GO, SyncPlan.decide(Trigger.MANUAL, "p1", guideElsewhere, provider, playing))
         assertEquals(Action.GO, SyncPlan.decide(Trigger.AUTO, "p1", guideElsewhere, provider, playing))
+    }
+
+    @Test fun `no automatic update goes anywhere while a film plays`() {
+        val film = Playing(null, null, film = true)
+        // An EPG from a third-party address (a user-set EPG, an M3U's url-tvg) waits for the film too.
+        assertEquals(Action.DEFER, SyncPlan.decide(Trigger.AUTO, "p1", guideElsewhere, provider, film))
+        assertEquals(Action.DEFER, SyncPlan.decide(Trigger.AUTO, "p1", playlistReq, provider, film))
+        assertEquals(Action.DEFER, SyncPlan.decide(Trigger.AUTO, "p1", guideElsewhere, provider, Playing(stream, "p1", film = true, liveScreen = true)))
+        // The viewer asked for it: it goes.
+        assertEquals(Action.GO, SyncPlan.decide(Trigger.MANUAL, "p1", guideElsewhere, provider, film))
     }
 
     @Test fun `another provider's channel is left alone`() {

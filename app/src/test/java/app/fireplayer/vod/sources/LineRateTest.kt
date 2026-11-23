@@ -50,15 +50,16 @@ class LineRateTest {
 
     // ---- The record
 
-    @Test fun nothingMeasuredIsNothingRemembered() {
+    @Test fun everyFilmMeasuredIsRememberedWhateverWasAnsweredAboutItsStalls() {
         assertNull(line.current())
-        // A faster film seen changes nothing where nothing was found short.
-        line.seen(300.0)
-        assertNull(line.current())
-        assertNull(store.text)
+        // The first film measured: kept, and the lists rank again.
+        assertTrue(line.seen(47.2))
+        assertEquals("47.2|1700000000000", store.text)
+        assertEquals(47.2, line.current()!!, 0.001)
     }
 
-    @Test fun aShortLineIsRememberedForTwoWeeks() {
+    @Test fun aShortLineIsRememberedForThreeDays() {
+        assertEquals(3L * 24 * 60 * 60 * 1000, LineRate.KEEP_MS)
         line.short(72.44)
         assertEquals("72.4|1700000000000", store.text)
         assertEquals(72.4, line.current()!!, 0.001)
@@ -68,15 +69,28 @@ class LineRateTest {
         assertNull(line.current())
     }
 
-    @Test fun aFilmSeenToLoadClearlyFasterReplacesIt() {
+    @Test fun theNewestMeasurementReplacesItUpOrDown() {
         line.short(72.0)
-        // A little faster is the same line on a better minute: it stays, or the remux would be picked and stall again.
-        line.seen(85.0)
-        assertEquals(72.0, line.current()!!, 0.001)
-        line.seen(90.0)
-        assertEquals(90.0, line.current()!!, 0.001)
-        // A later, slower measurement of a stalling film replaces it too: the newest evidence counts.
+        // A faster evening lifts it.
+        assertTrue(line.seen(85.0))
+        assertEquals(85.0, line.current()!!, 0.001)
+        // A slower one lowers it: the newest evidence counts.
+        assertTrue(line.seen(47.0))
+        assertEquals(47.0, line.current()!!, 0.001)
+        // Within a twentieth: nothing written, nothing to rank again...
+        now += 60_000
+        assertFalse(line.seen(48.0))
+        assertEquals("47.0|1700000000000", store.text)
+        // ...unless what's kept is an hour old: written again (its time is the newest evidence's), still no rerank.
+        now += LineRate.REFRESH_MS
+        assertFalse(line.seen(48.0))
+        assertEquals(48.0, line.current()!!, 0.001)
+        // A stalling film's measurement replaces it too.
         line.short(60.0)
+        assertEquals(60.0, line.current()!!, 0.001)
+        // Nonsense never counts.
+        assertFalse(line.seen(Double.NaN))
+        assertFalse(line.seen(0.0))
         assertEquals(60.0, line.current()!!, 0.001)
     }
 
@@ -117,6 +131,28 @@ class LineRateTest {
         assertEquals(false, LineRate.tooFast(null, 72.0))
         assertEquals(false, LineRate.tooFast(69.0, null))
         assertEquals(false, LineRate.tooFast(69.0, 0.0))
+    }
+
+    @Test fun steadyIsThreeQuartersOfTheLineAtMost() {
+        // Tonight's line: 47 Mb/s arriving. A 35 Mb/s copy leaves room for busy scenes; a 40 Mb/s one doesn't.
+        assertTrue(LineRate.steady(35.0, 47.0))
+        assertFalse(LineRate.steady(40.0, 47.0))
+        assertTrue(LineRate.steady(null, 47.0))
+        assertTrue(LineRate.steady(76.0, null))
+        assertTrue(LineRate.steady(76.0, 0.0))
+    }
+
+    @Test fun bestForThisTvPrefersCopiesLeavingTheLineRoom() {
+        // 72 Mb/s measured: 60 Mb/s still plays (under nine tenths) but leaves no room; 50 does.
+        val ranked = SourceRank.rank(
+            listOf(Fixtures.source(1, mbps = 26.0), Fixtures.source(2, mbps = 60.0), Fixtures.source(3, mbps = 50.0)),
+            RankInput(plan, listOf("en"), { null }, 173, episode = false, lineMbps = 72.0),
+        )
+        val keys = ranked.map { it.key }
+        assertEquals(TvFit.LIKELY, ranked.first { it.key == "k2" }.fit)
+        assertTrue(keys.toString(), keys.indexOf("k3") < keys.indexOf("k2"))
+        assertTrue(keys.toString(), keys.indexOf("k1") < keys.indexOf("k2"))
+        assertEquals("k2", keys.last())
     }
 
     // ---- "Best for this TV"

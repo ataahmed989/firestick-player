@@ -33,7 +33,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   the last minute ([FrameTally]), how much is loaded ahead and the memory it holds (of what it fills to), how fast the
  *   film downloads ([DownloadRate]: "down" over all of those seconds, "free" over the ones it loaded with room in the
  *   buffer, "best" the fastest three such seconds in a row so far), the picture, the glass's copies, the TV's refresh
- *   and the HDR it reports, the app's memory (Java heap, native heap, graphics), the system's free memory, and the heat.
+ *   and the HDR it reports, the app's memory (Java heap, native heap, graphics, swapped out; read once a minute), the
+ *   system's free memory, and the heat.
  * - 20 s into the film and every minute after, playing or not, the "loader" line: the download's speed while really
  *   loading, pauses left out ([LoaderRate]), what else on the TV downloaded, and whether a VPN carries it ([NetPath]).
  * - With the loader line while the film plays, and once as its player goes, the "bench" line under "FirePlayerBench":
@@ -90,6 +91,9 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
     private var decoder = "none"
     // The second before was one of loading with room in the buffer.
     private var wasFree = false
+    // Whether the film was loading at the last second, and how often loading had been held back by then.
+    private var wasLoading = false
+    private var holdsSeen = 0
     // The loader line ([loaderSecond]): seconds since this player's film started, and since when its figures run.
     private var loaderSeconds = 0
     private var loaderFrom = 0L
@@ -99,6 +103,10 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
 
     private val busy = AtomicBoolean(false)
     private var reader: ExecutorService? = null
+    // The app's memory for the line (" java=… native=… gfx=… pss=… swap=…"), read every [MEMORY_EVERY_S] seconds and
+    // repeated in the lines between, and when it was read (elapsedRealtime, 0: never); on the reader's thread.
+    private var memory = ""
+    private var memoryAt = 0L
 
     /** A new player: its first wait to load isn't a stall. [twoRanges]: its two requests, with "Faster downloads" on. */
     fun newPlayer(twoRanges: TwoRanges? = null) {
@@ -169,7 +177,13 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
         val fill = fillBytes()
         val free = player.isLoading && fill > 0L && held < fill * DownloadRate.FREE_BELOW && wasFree
         wasFree = player.isLoading && fill > 0L && held < fill * DownloadRate.FREE_BELOW
-        download.sample(SystemClock.elapsedRealtime(), meter.bytes, free, free && player.totalBufferedDuration < DownloadRate.FLAT_OUT_BELOW_MS)
+        // Flat out: loading the whole second through, never held back by the buffer rules, however full the buffer.
+        val holds = meter.loader.heldCount
+        val through = player.isLoading && wasLoading && holds == holdsSeen
+        wasLoading = player.isLoading
+        holdsSeen = holds
+        download.sample(SystemClock.elapsedRealtime(), meter.bytes, free,
+            (free || through) && player.totalBufferedDuration < DownloadRate.FLAT_OUT_BELOW_MS)
         loaderSecond(player.isPlaying)
         if (++seconds % LOG_EVERY_S != 0) return
         val playing = player.isPlaying
@@ -278,7 +292,9 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
 
     /**
      * The TV, the app's memory, the system's, and the heat:
-     * "tv=23.976Hz tvHdr=none java=270.0MB native=60.0MB gfx=118.0MB pss=448.0MB avail=412.0MB low=0 heat=0 headroom=0.41".
+     * "tv=23.976Hz tvHdr=none java=270.0MB native=60.0MB gfx=118.0MB pss=448.0MB swap=20.0MB avail=412.0MB low=0 heat=0
+     * headroom=0.41". Reading the app's memory has the kernel walk all of it (the more so with some of it swapped out),
+     * so it is read once a minute ([MEMORY_EVERY_S]) and the lines between repeat it; the rest is read for each line.
      */
     private fun system(): String {
         val out = StringBuilder(200)
@@ -291,22 +307,12 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
                 out.append(" tvHdr=").append(hdrTypes(types))
             }
         }
-        runCatching {
-            val m = Debug.MemoryInfo()
-            Debug.getMemoryInfo(m)
-            var javaKb = m.dalvikPss.toLong()
-            var nativeKb = m.nativePss.toLong()
-            var graphicsKb = -1L
-            if (Build.VERSION.SDK_INT >= 23) {
-                m.getMemoryStat("summary.java-heap")?.toLongOrNull()?.let { javaKb = it }
-                m.getMemoryStat("summary.native-heap")?.toLongOrNull()?.let { nativeKb = it }
-                m.getMemoryStat("summary.graphics")?.toLongOrNull()?.let { graphicsKb = it }
-            }
-            out.append(" java=").append(mb(javaKb * 1024)).append(" native=").append(mb(nativeKb * 1024))
-            if (graphicsKb >= 0) out.append(" gfx=").append(mb(graphicsKb * 1024))
-            out.append(" pss=").append(mb(m.totalPss.toLong() * 1024))
-            bench.pss(m.totalPss.toLong())
+        val now = SystemClock.elapsedRealtime()
+        if (memoryDue(memoryAt, now)) {
+            memoryAt = now
+            memory = appMemory()
         }
+        out.append(memory)
         runCatching {
             val am = app.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
             val mi = ActivityManager.MemoryInfo()
@@ -324,6 +330,29 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
         }
         return out.toString().trim()
     }
+
+    /** The app's memory, " java=270.0MB native=60.0MB gfx=118.0MB pss=448.0MB swap=20.0MB" (sizes only); "" when unread. */
+    private fun appMemory(): String = runCatching {
+        val m = Debug.MemoryInfo()
+        Debug.getMemoryInfo(m)
+        var javaKb = m.dalvikPss.toLong()
+        var nativeKb = m.nativePss.toLong()
+        var graphicsKb = -1L
+        var swapKb = -1L
+        if (Build.VERSION.SDK_INT >= 23) {
+            m.getMemoryStat("summary.java-heap")?.toLongOrNull()?.let { javaKb = it }
+            m.getMemoryStat("summary.native-heap")?.toLongOrNull()?.let { nativeKb = it }
+            m.getMemoryStat("summary.graphics")?.toLongOrNull()?.let { graphicsKb = it }
+            m.getMemoryStat("summary.total-swap")?.toLongOrNull()?.let { swapKb = it }
+        }
+        val out = StringBuilder(80)
+        out.append(" java=").append(mb(javaKb * 1024)).append(" native=").append(mb(nativeKb * 1024))
+        if (graphicsKb >= 0) out.append(" gfx=").append(mb(graphicsKb * 1024))
+        out.append(" pss=").append(mb(m.totalPss.toLong() * 1024))
+        if (swapKb >= 0) out.append(" swap=").append(mb(swapKb * 1024))
+        bench.pss(m.totalPss.toLong())
+        out.toString()
+    }.getOrDefault("")
 
     /** The reader's thread is let go: with the player screen. */
     fun release() {
@@ -412,8 +441,20 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
         /** The loader line's first, this many seconds after the film's player was built (its first fill), then every minute. */
         const val LOADER_FIRST_S = 20
         const val LOADER_EVERY_S = 60
-        /** Seconds between two reads of the app's memory for its peak ([BenchTally.pss]). */
-        const val PSS_EVERY_S = 5
+        /**
+         * Seconds between two reads of the app's memory for its peak ([BenchTally.pss]); the line's own read, once a
+         * minute ([MEMORY_EVERY_S]), counts towards the peak too. Each read has the kernel walk the app's memory.
+         */
+        const val PSS_EVERY_S = 30
+        /** Seconds between two reads of the app's memory for the line; the lines between repeat the last. */
+        const val MEMORY_EVERY_S = 60
+
+        /**
+         * Whether the line reads the app's memory again at [now] (ms), last read at [readAt] (0: never). Half a line's
+         * gap of slack, so the once-a-second tick's drift never puts it off to the line after.
+         */
+        fun memoryDue(readAt: Long, now: Long): Boolean =
+            readAt == 0L || now - readAt >= MEMORY_EVERY_S * 1000L - LOG_EVERY_S * 500L
         private const val HEADROOM_AHEAD_S = 10
         private const val AFTER_JUMP_MS = 3_000L
         private val NO_BYTES: () -> Long = { 0L }

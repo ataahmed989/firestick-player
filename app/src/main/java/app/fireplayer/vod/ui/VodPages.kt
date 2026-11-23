@@ -56,9 +56,39 @@ class VodPages(private val context: Context, private val host: VodPage.Host, pri
         page?.show()
     }
 
-    private fun make(tab: VodTab, service: Service?, studio: Brand?) = VodPage(context, host, ::repository, tab, service, studio).also {
-        container.addView(it.root, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        if (started) it.start()
+    private fun make(tab: VodTab, service: Service?, studio: Brand?) =
+        VodPage(context, host, ::repository, tab, service, studio, places.remove(PagePlace.keyOf(tab, service, studio))).also {
+            container.addView(it.root, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            if (started) it.start()
+        }
+
+    /** Where the viewer was on each page let go of while hidden ([releaseHidden]), for the page made again in its place. */
+    private val places = HashMap<String, PagePlace>()
+
+    /**
+     * The pages out of sight go altogether (a film plays, Live TV is watched a while, the TV is short of memory): their
+     * views, rows and glass (1 to 2 MB each, and what Android's collections have to go through every time). Each keeps
+     * its place ([PagePlace]): made again the next time its tab opens, from the titles kept in memory and on disk and
+     * the pictures on disk, as on a first open, it opens on the row and cards the viewer left it on. The page shown, the
+     * Home tab's own page (Back from a service's page and the live picture go there), and under a studio's page its
+     * service's page (Back returns there), stay as they are. How many went.
+     */
+    fun releaseHidden(): Int {
+        val shown = current
+        var count = 0
+        for (map in listOf<MutableMap<*, VodPage>>(pages, servicePages, studioPages)) {
+            val it = map.values.iterator()
+            while (it.hasNext()) {
+                val page = it.next()
+                if (!PagePlace.goes(page === shown, page.tab, page.service, page.studio, shown?.service, shown?.studio)) continue
+                places[PagePlace.keyOf(page.tab, page.service, page.studio)] = page.place()
+                page.release()
+                container.removeView(page.root)
+                it.remove()
+                count++
+            }
+        }
+        return count
     }
 
     fun start() {

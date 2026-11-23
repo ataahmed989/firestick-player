@@ -22,6 +22,8 @@ import app.fireplayer.data.Dimmer
 import app.fireplayer.data.GlassShades
 import app.fireplayer.data.KeyStore
 import app.fireplayer.data.Prefs
+import app.fireplayer.data.Settings
+import app.fireplayer.data.SettingsWriter
 import app.fireplayer.live.ui.PipRules
 import app.fireplayer.live.ui.channelButtonsRow
 import app.fireplayer.live.ui.liveBufferRow
@@ -359,10 +361,13 @@ class SettingsPanels(
      * is (0% clear frosted glass, 100% solid), then for App glass and Playback glass Dimness, how much the glass is
      * darkened after that (even with no tint), and for Rail, cards & header Charcoal, where its tint's colour sits
      * between the background's own (0%) and charcoal (100%). 0% to 100% in 5% steps with left / right, applied at once
-     * and saved ([GlassStyle.Shade]). Only the glass changes, never the words or icons on it. Playback glass is the
-     * players' dimness settings' Default preset ([Dimmer]): while a custom is on there, its own glass shows over playback,
-     * which Playback glass's rows say. Reset to defaults, last, puts all three back ([GlassShades.reset]). A step or a
-     * reset rewrites the values and badges in place ([SidePanel.liveValue]): the rows stay, and so does the selection.
+     * ([GlassStyle.Shade]). Only the glass changes, never the words or icons on it. Playback glass is the players' dimness
+     * settings' Default preset ([Dimmer]): while a custom is on there, its own glass shows over playback, which Playback
+     * glass's rows say. As the Screen dimmer's customs are, a change isn't kept until Save, after the three glasses: blue
+     * and marked Unsaved meanwhile, and only shown as saved once it's on the TV's storage ([GlassShades.save]). Left
+     * unsaved, it stays as it is (still Unsaved) for as long as the app runs, and is gone when it next starts. Reset to
+     * defaults, last, puts all three back the same way, Unsaved until Save ([GlassShades.reset]). A step, a reset or a
+     * save rewrites the values and badges in place ([SidePanel.liveValue]): the rows stay, and so does the selection.
      */
     private fun glassShadesSection(panel: SidePanel): Unit = with(panel) {
         for (kind in GlassShades.Kind.entries) {
@@ -388,6 +393,18 @@ class SettingsPanels(
                 if (!preset.isDefault) message(customOnNote(preset.name), maxLines = NOTE_LINES)
             }
         }
+        // Save: blue and marked Unsaved while a glass shows a change not saved, as the Screen dimmer's Save custom is.
+        val save = row(SAVE_SHADES, value = shadesSaveValue()) { saveShades(this) }
+        save.isSelected = shades.hasUnsaved()
+        var shown = shadesSaveValue()
+        liveValue {
+            val now = shadesSaveValue()
+            if (now != shown) {
+                updateRow(save, SAVE_SHADES, now)
+                shown = now
+            }
+            save.isSelected = shades.hasUnsaved()
+        }
         // Same row as the others; the values change where they are, and the selection stays on it.
         row(RESET_SHADES) {
             shades.reset()
@@ -396,6 +413,25 @@ class SettingsPanels(
             updateValues()
         }
         message(SHADES_NOTE, maxLines = NOTE_LINES)
+    }
+
+    /** Look's last Save of the glasses didn't reach the TV's storage: its row says so until the next Save. */
+    private var shadesSaveFailed = false
+
+    /** What Look's Save row says beside it: Unsaved while there's a change to keep (or that it couldn't be saved). */
+    private fun shadesSaveValue(): String? = when {
+        !shades.hasUnsaved() -> null
+        shadesSaveFailed -> SAVE_FAILED
+        else -> UNSAVED
+    }
+
+    /** Look's Save: the three glasses kept, and shown as saved once they're on the TV's storage. */
+    private fun saveShades(panel: SidePanel) {
+        if (!shades.hasUnsaved()) return
+        shades.save(SettingsWriter.shared, { activity.runOnUiThread(it) }) { onDisk ->
+            shadesSaveFailed = !onDisk
+            panel.updateValues()
+        }
     }
 
     /** A glass's badge: gray while it lays nothing over the frosted glass, else the lighter blue. */
@@ -554,7 +590,7 @@ class SettingsPanels(
             badge = badgeFor(tmdb.state),
         ) {
             // TiviMate's titles start being looked up with it.
-            TitleService.start(activity)
+            TitleService.start(activity, prefs.tivimateTitles)
             checks.check(CredentialChecks.Service.TMDB) { if (isOpen) refresh() }
         }
         // What's wrong with a key, after the keys, so their card stays whole.
@@ -696,7 +732,7 @@ class SettingsPanels(
             turned = turned,
             onClick = {
                 prefs.tivimateTitles = !prefs.tivimateTitles
-                TitleService.start(activity)
+                TitleService.start(activity, prefs.tivimateTitles)
                 checkValue = null
                 checkNote = null
                 refresh()
@@ -716,7 +752,7 @@ class SettingsPanels(
         rowWithArrow("Check playlists now", checkValue, expanded = playlistNoteShown, turned = noteTurned,
             onClick = {
                 if (prefs.keys.isSet(KeyStore.Key.TMDB)) {
-                    TitleService.checkNow(activity)
+                    TitleService.checkNow(activity, prefs.tivimateTitles)
                     if (inPlayer) checkNote = "Starts once the film is closed." else checkValue = "Started"
                 }
                 refresh()
@@ -945,6 +981,7 @@ class SettingsPanels(
                         return@prompt
                     }
                     presets.saveActiveAs(clean); onStyleChanged(); refresh()
+                    confirmSaved(activity)
                     // Saving swaps this row for "Delete"; start back at the top instead of on it.
                     focusRow(0)
                 }
@@ -1012,6 +1049,28 @@ class SettingsPanels(
 
         /** The last of Look's glass rows: all three glasses back to their defaults ([GlassShades.reset]). */
         const val RESET_SHADES = "Reset to defaults"
+
+        /** Look's row that keeps the three glasses' changes ([GlassShades.save]), before [RESET_SHADES]. */
+        const val SAVE_SHADES = "Save"
+
+        /** Beside a Save row while there's a change to keep: the Screen dimmer's word, in its blue. */
+        const val UNSAVED = "Unsaved"
+
+        /** Beside a Save row, or in a note, when what was saved couldn't be put on the TV's storage. */
+        const val SAVE_FAILED = "Couldn't save · try again"
+
+        /**
+         * After an explicit Save (a Screen dimmer custom, a subtitle preset): once the settings are on the TV's storage
+         * nothing more is said; if they couldn't be put there, a short note says so (the change is still in use, and is
+         * written again with the next change).
+         */
+        fun confirmSaved(activity: Activity) {
+            Settings.save(activity) { onDisk ->
+                if (!onDisk && !activity.isFinishing) {
+                    android.widget.Toast.makeText(activity, SAVE_FAILED, android.widget.Toast.LENGTH_LONG).show()
+                }
+            }
+        }
 
         /** Under Playback glass's rows while the players' Screen dimmer has a custom on: whose glass shows over playback. */
         fun customOnNote(name: String) = "Over playback: \"$name\", from the Screen dimmer."

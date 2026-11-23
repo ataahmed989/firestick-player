@@ -18,6 +18,7 @@ import app.fireplayer.vod.Sources
 import app.fireplayer.vod.TitleDetails
 import app.fireplayer.vod.data.VodRepositories
 import app.fireplayer.vod.play.MainTicker
+import app.fireplayer.vod.play.FilmMode
 import app.fireplayer.vod.play.LaunchLog
 import app.fireplayer.vod.play.PlayRules
 import app.fireplayer.vod.play.PlayerMeta
@@ -76,6 +77,7 @@ import androidx.media3.ui.SubtitleView
 import app.fireplayer.data.Dimmer
 import app.fireplayer.data.GlassShades
 import app.fireplayer.data.Prefs
+import app.fireplayer.data.Settings
 import app.fireplayer.history.ContinueWatching
 import app.fireplayer.history.LibraryContinue
 import app.fireplayer.history.VodContinue
@@ -578,6 +580,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private var soundOnDevice = false
     // When the player last went off screen without closing (the TV slept, the screensaver, Home while paused).
     private var stoppedAt = 0L
+    // Film mode has been told this screen is started (FilmMode.filmStarted), and is told again when it stops.
+    private var shownToFilmMode = false
     // A newer title was handed to this player (onNewIntent): it starts over with that one, the old film never shows.
     private var replaced = false
     private var pendingAudioId: String? = null
@@ -831,6 +835,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             savedPlayWhenReady = false
             pausedForSwitch = false
         }
+        // FirePlayer's Home in the background (Glass Home's Continue Watching, another app) lets go of its pages now,
+        // not after its usual wait: the film's buffer is sized from the memory free in its first second.
+        if (!shownToFilmMode) {
+            shownToFilmMode = true
+            FilmMode.filmStarted()
+        }
         backdrop?.start()
         source?.resume()
         if (entries.isNotEmpty() && player == null) {
@@ -856,17 +866,21 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         handler.post(clockTick)
         handler.post(postPlayTick)
         // TiviMate's titles aren't looked up on TMDB while a film is on.
-        TitleService.playing(this, true)
-        handler.post(playingBeat)
+        TitleService.playing(this, prefs.tivimateTitles, true)
+        if (prefs.tivimateTitles) handler.post(playingBeat)
         watchNotedAt = SystemClock.elapsedRealtime()
     }
 
     override fun onStop() {
         super.onStop()
+        if (shownToFilmMode) {
+            shownToFilmMode = false
+            FilmMode.filmStopped()
+        }
         decoderWait?.invoke()
         decoderWait = null
         handler.removeCallbacks(playingBeat)
-        TitleService.playing(this, false)
+        TitleService.playing(this, prefs.tivimateTitles, false)
         commitSeek()
         seekPreview.release()
         notice = false
@@ -913,6 +927,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     override fun onResume() {
         super.onResume()
         openingOwn = false
+    }
+
+    override fun onPause() {
+        super.onPause()
+        // Any setting still on its way to the TV's storage is put there now: Home may be pressed next.
+        Settings.flush(this)
     }
 
     /**
@@ -2903,6 +2923,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW -> 1
             else -> return
         }
+        // The databases' page caches (the library, the guide, TiviMate's names: a few MB in all) go first; Android
+        // itself only asks them at its last level, which the app in front never gets. They fill again as read.
+        android.database.sqlite.SQLiteDatabase.releaseMemory()
         // Critically short with the film paused: it has nothing to protect, and its player goes with its place kept.
         // Not one paused only just now: the viewer is likely about to play on, and the buffer gives half back instead.
         if (step == 2 && filmStill() && pausedRoom.critical(SystemClock.elapsedRealtime(), windowOpen())) {
@@ -4115,9 +4138,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     /**
-     * The player is on: noted every half minute for the title server, which pauses TMDB meanwhile. The message
-     * saying the player stopped can be refused by Fire OS once FirePlayer is behind another app; a beat that stops
-     * coming lets the server carry on regardless (see TitleService.PLAYER_GONE_MS).
+     * The player is on: noted every half minute for the title server, which pauses TMDB meanwhile (only while TiviMate
+     * titles are on: a file's time, set off the main thread, never the settings). The message saying the player stopped
+     * can be refused by Fire OS once FirePlayer is behind another app; a beat that stops coming lets the server carry on
+     * regardless (see TitleService.PLAYER_GONE_MS).
      */
     private val playingBeat = object : Runnable {
         override fun run() {
@@ -5544,10 +5568,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         ).joinToString(" · ").ifEmpty { null }?.let { pairs += "Frame" to fact(it) }
         // On a TV that reports no HDR the Fire TV turns HDR into SDR: said, so the row doesn't claim what isn't seen.
         pairs += "Range" to fact(spec.rangeLine(hdrScreen()))
+        // The picture's own rate; while it's measured, the file's average stands in, said as such.
         pairs += "Data" to fact(
             if (spec.videoBps > 0) "${MediaSpec.mbps(spec.videoBps)} · " +
                 (if (spec.videoHow == MediaSpec.How.MEASURED) over(video?.id) else "stated by the file")
-            else "Measuring as it loads…",
+            else app.fireplayer.player.ArrivalWords.dataMeasuring(spec.overallBps / 1_000_000.0),
         )
         if (spec.bitsPerPixel > 0) pairs += "Per pixel" to fact(String.format(Locale.US, "%.3f bits a frame", spec.bitsPerPixel))
         listOfNotNull(
@@ -5562,13 +5587,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (spec.sizeBytes > 0) pairs += "File" to fact(
             MediaSpec.size(spec.sizeBytes) + (if (spec.overallBps > 0) " · ${MediaSpec.mbps(spec.overallBps)} on average" else ""),
         )
-        val server = RedirectMemoryDataSource.serverBps(link)
-        if (server > 0) {
-            // The whole file comes, every sound track included: that's what the server has to keep up with.
+        if (diag.meter.bytes > 0L) {
+            // What really arrives: every connection together, over whole seconds of loading flat out, the waits between
+            // requests in them (DownloadRate). The whole file comes, every sound track included: that's what it needs.
+            val d = diag.download
             val need = spec.overallBps.takeIf { it > 0 } ?: (spec.videoBps + spec.audioBps)
-            pairs += "Server" to fact(
-                "at least " + MediaSpec.mbps(server) + (if (need > 0) String.format(Locale.US, " · %.1f× the file's rate", server.toDouble() / need) else ""),
-            )
+            pairs += "Server" to fact(app.fireplayer.player.ArrivalWords.server(d.sustainedMbps, d.sustainedSeconds, need / 1_000_000.0))
+                .also { it.maxLines = 3 }
         }
         droppedFact = null
         droppedLine()?.let { line ->
@@ -5598,10 +5623,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     /**
      * The glass has been off screen a few seconds while a film plays on a TV short of memory: the drawing cache's unused
      * pictures go ([GraphicsTrim]). Where Android only lets go of what went unused for half a minute, it's asked again
-     * that long after, if the controls and windows stayed away.
+     * that long after, if the controls and windows stayed away. With no window open, the decoded pictures kept in memory
+     * go too (the Episodes sheet's stills, a details window's: up to 12 MB); shown again, they fade back in from the disk
+     * cache, as after a minute paused. Freed before Fire OS asks, they don't cost the film's buffer a squeeze.
      */
     private fun trimGraphicsWhenQuiet() {
         if (!GlassLoad.smallRam(this) || player?.isPlaying != true) return
+        if (!panel.isOpen && !episodesSheet.isOpen) app.fireplayer.ui.ImageLoader.trim()
         GraphicsTrim.trim(GRAPHICS_TRIM_GAP_MS)
         handler.removeCallbacks(trimStaleGraphics)
         if (GraphicsTrim.staleOnly) handler.postDelayed(trimStaleGraphics, GraphicsTrim.STALE_MS + 1_000L)
@@ -5676,14 +5704,17 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private val sourcePrefs by lazy { getSharedPreferences(app.fireplayer.vod.sources.LineRate.FILE, MODE_PRIVATE) }
 
     /**
-     * A film from the add-ons seen to load clearly faster than the speed remembered from one that kept stalling: that
-     * speed was the moment's, and is replaced ([app.fireplayer.vod.sources.LineRate.seen]).
+     * What a film from the add-ons is seen to arrive at, once measured over enough seconds, whatever was answered about
+     * its stalls: kept for "Best for this TV" and Next source, newest first, up or down
+     * ([app.fireplayer.vod.sources.LineRate.seen]). The lists in memory rank again when it moved.
      */
     private fun noteLineSpeed() {
         if (source == null || !diagMade.isInitialized()) return
         val d = diag.download
         if (d.sustainedSeconds < app.fireplayer.vod.play.FilmSupply.MIN_SECONDS) return
-        app.fireplayer.vod.sources.LineRate.of(sourcePrefs, two = measuredWithTwo()).seen(d.sustainedMbps)
+        if (app.fireplayer.vod.sources.LineRate.of(sourcePrefs, two = measuredWithTwo()).seen(d.sustainedMbps)) {
+            (Sources.get(this) as? app.fireplayer.vod.sources.DefaultSourcesRepository)?.rerank()
+        }
     }
 
     /** Whether what is measured of this film goes with the two-connection speed ([app.fireplayer.vod.sources.LineRate.forTwo]). */

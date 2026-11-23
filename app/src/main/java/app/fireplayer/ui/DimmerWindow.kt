@@ -3,14 +3,15 @@ package app.fireplayer.ui
 import android.app.Activity
 import app.fireplayer.R
 import app.fireplayer.data.Dimmer
+import app.fireplayer.data.SettingsWriter
 
 /**
  * The Screen dimmer window's rows, the players' dimness settings, shared by the VOD player and full-screen Live TV so
  * both show the same presets and keep the same saved values ([Dimmer]): the presets ("Default" first, then the customs
  * added), then the one on, with its Display dimness (the picture), Glass tint and Glass dimness (the Playback glass)
- * set with arrows ([Dimmer.Value]). Default's glass is Settings › Look › Playback glass's, changed there and here alike;
- * a custom's changes show at once and are kept with Save custom. Whatever is picked or saved stays on for every video
- * and channel.
+ * set with arrows ([Dimmer.Value]). Default's glass is Settings › Look › Playback glass's, changed there and here alike
+ * and kept by either's Save; a custom's changes show at once and are kept with Save custom. Whatever is picked or saved
+ * stays on for every video and channel.
  *
  * [applyDim] puts the preset on screen; [refreshLabels] updates the value under the dimmer's button. An arrow's step
  * rewrites the values in place ([SidePanel.stepper], [SidePanel.liveValue]): the rows stay, and so does the selection.
@@ -88,7 +89,8 @@ object DimmerWindow {
 
     /**
      * Save custom: keeps the changes to the custom on, renames it, or saves what's on as a new custom. On Default it adds
-     * a custom with what's on (Default itself can't be renamed, and its glass is kept at once).
+     * a custom with what's on (Default itself can't be renamed); with Default's glass changed it also offers to keep that
+     * as Default's (Look's Playback glass). Each is shown as saved once it's on the TV's storage.
      */
     private fun saveCustom(panel: SidePanel, activity: Activity, dimmer: Dimmer, applyDim: () -> Unit, refreshLabels: () -> Unit) {
         val active = dimmer.active()
@@ -99,10 +101,20 @@ object DimmerWindow {
                 if (problem != null) askName(problem, clean, except, done) else done(clean)
             }
         }
-        val after = { applyDim(); refreshLabels(); panel.refresh() }
+        val after = { applyDim(); refreshLabels(); panel.refresh(); SettingsPanels.confirmSaved(activity) }
         val saveAsNew = { askName("Custom name", "", null) { dimmer.saveAsNew(it); after() } }
         if (active.isDefault) {
-            saveAsNew()
+            if (!dimmer.defaultGlassUnsaved()) {
+                saveAsNew()
+                return
+            }
+            val saveDefault = {
+                dimmer.saveDefault(SettingsWriter.shared, { activity.runOnUiThread(it) }) { onDisk ->
+                    if (!onDisk) android.widget.Toast.makeText(activity, SettingsPanels.SAVE_FAILED, android.widget.Toast.LENGTH_LONG).show()
+                    applyDim(); refreshLabels(); panel.refresh()
+                }
+            }
+            FireDialog.ask(activity, SAVE, listOf("Save \"${active.name}\"" to saveDefault, "Save as a new custom" to saveAsNew), fromPanel = true)
             return
         }
         val answers = ArrayList<Pair<String, () -> Unit>>()

@@ -7,6 +7,8 @@ import android.database.Cursor
 import android.database.MatrixCursor
 import android.net.Uri
 import android.util.Log
+import app.fireplayer.data.Settings
+import app.fireplayer.titles.TitleService
 
 /**
  * Glass Home's Continue Watching row reads what was watched here (content://app.fireplayer.continue/items), newest
@@ -103,6 +105,18 @@ class ContinueProvider : ContentProvider() {
     override fun insert(uri: Uri, values: ContentValues?): Uri? = null
 
     override fun update(uri: Uri, values: ContentValues?, selection: String?, selectionArgs: Array<out String>?): Int = 0
+
+    /**
+     * The title server's starter, in its own process, asking once after an update whether TiviMate titles are on
+     * ([app.fireplayer.titles.TitleService.SYNC]): the app starts or stops it from its own settings. FirePlayer only.
+     */
+    override fun call(method: String, arg: String?, extras: android.os.Bundle?): android.os.Bundle? {
+        val own = context ?: return null
+        if (method == TitleService.SYNC && runCatching { callingPackage }.getOrNull() == own.packageName) {
+            Settings.syncTitles(own)
+        }
+        return null
+    }
 
     /** Glass Home, or FirePlayer itself. */
     private fun allowed(): Boolean {
