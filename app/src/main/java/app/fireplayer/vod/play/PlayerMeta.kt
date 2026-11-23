@@ -65,18 +65,12 @@ object PlayerMeta {
      * TMDB's film or show as its title (by its stand-in id, [standInId], so Skip intro's times are asked by the IMDb id
      * TMDB gives for it), the season and episode kept. [request] itself without a fix. Only for its name, Film details /
      * Show details, Skip intro's times and the subtitles search: the sources, the library and Next episode keep [request].
-     * An episode Fix match set to another one ([placed], kept by the title's id: [MatchFixes.vodKey]) is that one here.
      */
-    fun fixed(request: PlayRequest, fix: VodFix?, placed: MatchFixes.Show? = null): PlayRequest {
-        val ref = request.target.episode
-        val at = ref?.let { placed?.place(episodeId(it), it.season, it.episode) }
-        val episode = if (at != null && at != (ref.season to ref.episode)) EpisodeRef(at.first, at.second) else ref
-        if (fix == null && episode === ref) return request
-        val title = if (fix == null) request.target.title else {
-            val kind = if (fix.show) Kind.SERIES else Kind.MOVIE
-            Title(standInId(kind, fix.tmdbId), kind, fix.name, year = fix.year.takeIf { it > 0 }?.toString(), tmdbId = fix.tmdbId)
-        }
-        return request.copy(target = request.target.copy(title = title, episode = episode))
+    fun fixed(request: PlayRequest, fix: VodFix?): PlayRequest {
+        if (fix == null) return request
+        val kind = if (fix.show) Kind.SERIES else Kind.MOVIE
+        val title = Title(standInId(kind, fix.tmdbId), kind, fix.name, year = fix.year.takeIf { it > 0 }?.toString(), tmdbId = fix.tmdbId)
+        return request.copy(target = request.target.copy(title = title))
     }
 
     /** This film / This episode's name in the player's Settings: "The Matrix (1999)", "Severance · S2 E5"; the fix's once fixed. */
@@ -89,16 +83,10 @@ object PlayerMeta {
     /**
      * The note in This film / This episode's dropdown, under Source and Fix match: matched by the IMDb id handed over
      * ([episode]: "S2 E5 · Name", the guide's, when known), or, once put right by hand, as which TMDB title and what goes
-     * by it, the sources still found by the id. [placed]: this episode was set by hand to another one ([episode]).
+     * by it, the sources still found by the id.
      */
-    fun matchNote(request: PlayRequest, fix: VodFix?, episode: String?, placed: Boolean = false): String {
+    fun matchNote(request: PlayRequest, fix: VodFix?, episode: String?): String {
         val whose = if (request.target.episode != null) "the show's" else "its"
-        val ref = request.target.episode
-        if (placed && ref != null) {
-            return "Set by hand to " + (episode ?: "another episode") + (fix?.let { " of ${it.label}" } ?: "") +
-                " on TMDB: details, Skip intro and subtitles go by it. Sources still come by the show's IMDb id, as " +
-                "S${ref.season} E${ref.episode}."
-        }
         if (fix != null) {
             return "Fixed by hand as ${fix.label} on TMDB: details, Skip intro and subtitles go by it. " +
                 "Sources still come by $whose IMDb id."
@@ -119,42 +107,15 @@ object PlayerMeta {
     /**
      * The show's guide for the player (the on-screen episode name, the Episodes sheet, Next episode's name), from
      * Cinemeta's episodes: those aired by [now], in order, every one matched (their numbers are the show's own). Null
-     * for a film, or a show with no aired episode listed.
-     *
-     * An episode Fix match set to another one ([fix], by the title's id) keeps its own id and numbers as the source's
-     * (what it plays and is kept by) and shows the one it really is: TMDB's ([real], that show's episodes by their
-     * numbers), else, for the same show, Cinemeta's own; until either is known, only its numbers.
+     * for a film, or a show with no aired episode listed. A title put right by hand in Fix match keeps these: Fix match
+     * says which show it is, never which episode.
      */
-    fun guide(
-        details: TitleDetails,
-        now: Long,
-        fix: MatchFixes.Show? = null,
-        real: Map<Pair<Int, Int>, Tmdb.TvEpisode> = emptyMap(),
-    ): ShowGuide? {
+    fun guide(details: TitleDetails, now: Long): ShowGuide? {
         val t = details.title
         if (t.kind != Kind.SERIES) return null
-        val own = details.episodes.associateBy { it.season to it.episode }
-        val sameShow = fix != null && (fix.tmdbId <= 0 || fix.tmdbId == t.tmdbId)
         val episodes = details.episodes.filter { it.aired(now) }
             .sortedWith(compareBy<Episode>({ it.season }, { it.episode }))
             .map { e ->
-                val id = episodeId(e.season, e.episode)
-                val at = fix?.place(id, e.season, e.episode)
-                val tmdb = at?.let { real[it] }
-                if (tmdb != null) {
-                    return@map ShowGuide.Ep(
-                        id, "", e.season, e.episode, "", tmdb.season, tmdb.number, tmdb.name, tmdb.overview,
-                        tmdb.still, tmdb.runtime, tmdb.airDate, ShowGuide.Match.SURE, null, tmdb.runtime, rating = tmdb.rating,
-                    )
-                }
-                if (at != null && at != (e.season to e.episode)) {
-                    val other = own[at]?.takeIf { sameShow }
-                    return@map ShowGuide.Ep(
-                        id, "", e.season, e.episode, "", at.first, at.second, other?.let { episodeName(it) }.orEmpty(),
-                        other?.overview.orEmpty(), other?.still, other?.runtimeMin ?: 0, other?.let { airDate(it) }.orEmpty(),
-                        ShowGuide.Match.SURE, null, other?.runtimeMin ?: 0,
-                    )
-                }
                 ShowGuide.Ep(
                     id = episodeId(e.season, e.episode),
                     extension = "",
@@ -223,11 +184,7 @@ object PlayerMeta {
     }
 
     /** The reference a guide episode plays by (season, number and name), for the next play's request. */
-    fun refOf(ep: ShowGuide.Ep): EpisodeRef {
-        // One Fix match set to another episode still plays (and is kept) by the source's own numbers.
-        val own = ep.season == ep.providerSeason && ep.number == ep.providerNumber
-        return EpisodeRef(ep.providerSeason, ep.providerNumber, ep.name.takeIf { own && it.isNotEmpty() })
-    }
+    fun refOf(ep: ShowGuide.Ep): EpisodeRef = EpisodeRef(ep.providerSeason, ep.providerNumber, ep.name.ifEmpty { null })
 
     /** How far an episode was watched, 0 to 1, for its card in the Episodes sheet: 1 once watched to the end. */
     fun watchedShare(position: Position?): Float = when {
