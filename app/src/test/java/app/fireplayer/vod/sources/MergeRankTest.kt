@@ -132,6 +132,29 @@ class MergeRankTest {
     }
 
     @Test
+    fun aProfile7CopyThisTvPlayedAsItsBaseLayerIsHdr10Here() {
+        val p7 = source("p7", 2160, setOf(Hdr.DOLBY_VISION, Hdr.HDR10), mbps = 60.0, dvProfile = 7, origin = "REMUX", hash = H1)
+        val hdr10 = source("hdr10", 2160, setOf(Hdr.HDR10), mbps = 25.0, hash = H2)
+        val asBase = Measured(MediaSpec(videoCodec = "HEVC", width = 3840, height = 2160, bitDepth = 10, hdr = "HDR10", dvBaseLayer = 7), null, null)
+        val measured = { key: String -> if (key == "rd|$H1|0") asBase else null }
+        val ranked = SourceRank.rank(listOf(hdr10, p7), input(measured = measured))
+        // Played here, as HDR10: not "may not play here", and the best.
+        val row = ranked.first { it.key == "p7" }
+        assertEquals(TvFit.MEASURED_OK, row.fit)
+        assertNull(row.warning)
+        assertEquals("p7", SourceRank.best(ranked)?.key)
+        assertEquals("4K · HDR10 · Remux", app.fireplayer.vod.play.PlayRules.mainLine(row))
+        // On a Dolby Vision TV it isn't counted as Dolby Vision either: this TV plays it as HDR10.
+        val dvTv = TvPlan(true, listOf(setOf(Hdr.DOLBY_VISION), setOf(Hdr.HDR10, Hdr.HDR10_PLUS)), 2160, emptySet())
+        assertEquals(SourceRank.hdrRank(hdr10.facts, dvTv), SourceRank.hdrRank(SourceRank.asPlayedHere(p7.facts, asBase), dvTv))
+        // Never played here, or played as Dolby Vision: as the add-ons have it.
+        assertEquals("Dolby Vision 7: may not play here", SourceRank.rank(listOf(p7), input()).single().warning)
+        val asDv = Measured(MediaSpec(videoCodec = "HEVC", hdr = "Dolby Vision"), null, null)
+        assertEquals(p7.facts, SourceRank.asPlayedHere(p7.facts, asDv))
+        assertEquals(hdr10.facts, SourceRank.asPlayedHere(hdr10.facts, asBase))
+    }
+
+    @Test
     fun aDolbyVisionTvRanksDolbyVisionFirst() {
         val dvTv = TvPlan(true, listOf(setOf(Hdr.DOLBY_VISION), setOf(Hdr.HDR10, Hdr.HDR10_PLUS)), 2160, emptySet())
         val dvOnly = source("dvonly", 2160, setOf(Hdr.DOLBY_VISION), mbps = 25.0)

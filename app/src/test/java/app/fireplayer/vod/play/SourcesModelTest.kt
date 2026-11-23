@@ -211,6 +211,16 @@ class SourcesModelTest {
     }
 
     @Test
+    fun aProfile7CopyThisTvPlayedAsItsBaseLayerIsHdr10InTheReason() {
+        val asBase = Measured(app.fireplayer.player.MediaSpec(hdr = "HDR10", dvBaseLayer = 7), null, null)
+        val p7 = Fixtures.source(61).let {
+            it.copy(facts = it.facts.copy(hdr = setOf(Hdr.DOLBY_VISION, Hdr.HDR10), dvProfile = 7, origin = "REMUX"), fit = TvFit.MEASURED_OK, measured = asBase)
+        }
+        assertEquals("4K · HDR10 · Remux · played here", SourcesModel.reason(p7, list))
+        assertEquals("4K · Dolby Vision · Remux · played here", SourcesModel.reason(p7.copy(measured = null), list))
+    }
+
+    @Test
     fun aLighterCopyChosenForThisConnectionSaysSo() {
         val copies = listOf(Fixtures.source(1, mbps = 26.0), Fixtures.source(2, mbps = 69.0), Fixtures.source(3, mbps = 87.0))
         val slow = SourceRank.rank(copies, input(lineMbps = 72.0))

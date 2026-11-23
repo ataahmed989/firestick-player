@@ -153,7 +153,7 @@ object PlayRules {
      * title page's source line use the shorter [mainLine] and [detailLine].
      */
     fun badges(s: PlaybackSource): String {
-        val f = s.facts
+        val f = SourceRank.asPlayedHere(s.facts, s.measured)
         val hdr = Hdr.entries.filter { it in f.hdr }.map { h ->
             if (h == Hdr.DOLBY_VISION && f.dvProfile != null) "DV${f.dvProfile}" else h.label
         }
@@ -203,10 +203,10 @@ object PlayRules {
     /**
      * A Sources row's main line, and the title page's: quality · HDR kind · what it was made from · size ("4K IMAX · DV ·
      * HDR10+ · Remux · 58.3 GB"). Over [chars] characters (what the row has room for, so it's never cut inside a word),
-     * the HDR kind keeps its first part.
+     * the HDR kind keeps its first part. The HDR kind is the one this TV played, once it has ([SourceRank.asPlayedHere]).
      */
     fun mainLine(s: PlaybackSource, chars: Int = Int.MAX_VALUE): String {
-        val f = s.facts
+        val f = SourceRank.asPlayedHere(s.facts, s.measured)
         fun line(one: Boolean) = listOfNotNull(quality(s), hdrKind(f, one), kind(f.origin), f.sizeBytes?.let { size(it) }).joinToString(" · ")
         return line(one = false).takeIf { it.length <= chars } ?: line(one = true)
     }

@@ -53,7 +53,7 @@ object SourceRank {
     fun rank(sources: List<PlaybackSource>, input: RankInput): List<PlaybackSource> {
         val scored = withoutSd(sources).mapIndexed { i, s ->
             val measured = s.release?.let { input.measured(it.storeKey) }
-            val (fit, warning) = fit(s.facts, input.plan, measured, input.lineMbps)
+            val (fit, warning) = fit(asPlayedHere(s.facts, measured), input.plan, measured, input.lineMbps)
             val ranked = s.copy(fit = fit, warning = warning, measured = measured)
             Scored(ranked, i, keyOf(ranked, input))
         }
@@ -113,7 +113,7 @@ object SourceRank {
         .thenBy { it.index }
 
     private fun keyOf(s: PlaybackSource, input: RankInput): Key {
-        val f = s.facts
+        val f = asPlayedHere(s.facts, s.measured)
         val ready = when {
             s.measured?.spec != null && s.measured.health?.troubled != true -> 3
             s.readiness == Readiness.PROBABLY_READY -> 2
@@ -169,6 +169,16 @@ object SourceRank {
     }
 
     private fun highRate(avg: Double?) = if (avg != null && avg > HIGH_MBPS) "High data rate" else null
+
+    /**
+     * [facts] as this TV plays the file, by what FirePlayer [measured] when it played here: Dolby Vision this TV played
+     * as its HDR10 base layer ([MediaSpec.dvBaseLayer], a profile 7 file on single-layer Dolby Vision decoders) is HDR10
+     * here, not Dolby Vision, and plays. Otherwise [facts] as the add-ons have them.
+     */
+    fun asPlayedHere(facts: SourceFacts, measured: Measured?): SourceFacts {
+        if ((measured?.spec?.dvBaseLayer ?: 0) <= 0 || Hdr.DOLBY_VISION !in facts.hdr) return facts
+        return facts.copy(hdr = facts.hdr - Hdr.DOLBY_VISION + Hdr.HDR10, dvProfile = null)
+    }
 
     /** IMAX, IMX or open matte as a word ("Film.2023.IMAX.2160p", "Open.Matte", "OpenMatte"), any case. */
     private val IMAX = Regex("""(?<![a-z0-9])(imax|imx|open[ ._-]?matte)(?![a-z0-9])""", RegexOption.IGNORE_CASE)

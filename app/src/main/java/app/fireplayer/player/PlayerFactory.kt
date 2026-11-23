@@ -1082,6 +1082,7 @@ private class TvRenderersFactory(
                 .setEventHandler(eventHandler)
                 .setEventListener(eventListener)
                 .setMaxDroppedFramesToNotify(MAX_DROPPED_VIDEO_FRAME_COUNT_TO_NOTIFY),
+            mediaCodecSelector,
             vsync,
             frameCounts,
             hdr10Plus,
