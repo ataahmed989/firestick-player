@@ -34,7 +34,7 @@ class CredentialChecks(private val prefs: Prefs) {
     fun status(service: Service): Status {
         val now = credentials(service) ?: return Status(State.NOT_SET, null, 0)
         if (service in running) return Status(State.CHECKING, null, 0)
-        val saved = prefs.raw.getString(service.pref, null)?.split('|', limit = 4)
+        val saved = prefs.records.getString(service.pref, null)?.split('|', limit = 4)
         if (saved == null || saved.size < 3 || saved[0] != fingerprint(now)) return Status(State.NOT_CHECKED, null, 0)
         val state = runCatching { State.valueOf(saved[1]) }.getOrDefault(State.NOT_CHECKED)
         return Status(state, saved.getOrNull(3)?.ifEmpty { null }, saved[2].toLongOrNull() ?: 0)
@@ -60,7 +60,7 @@ class CredentialChecks(private val prefs: Prefs) {
                 else -> State.UNREACHABLE
             }
             val problem = result?.second?.replace('|', '/') ?: ""
-            prefs.raw.edit().putString(service.pref, "${fingerprint(creds)}|${state.name}|${System.currentTimeMillis()}|$problem").apply()
+            prefs.records.edit().putString(service.pref, "${fingerprint(creds)}|${state.name}|${System.currentTimeMillis()}|$problem").apply()
             main.post {
                 running.remove(service)
                 onDone()

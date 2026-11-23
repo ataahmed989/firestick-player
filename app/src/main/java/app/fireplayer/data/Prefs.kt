@@ -3,14 +3,17 @@ package app.fireplayer.data
 import android.content.Context
 import android.content.SharedPreferences
 
-/** All user settings, stored in one SharedPreferences file; the keys and sign-in in one of their own ([KeyStore]). */
+/**
+ * All user settings, stored in one SharedPreferences file ([Settings]: each change is on the disk at once); the keys and
+ * sign-in in one of their own ([KeyStore]); what's noted while watching (resume points, subtitle timings) in a third
+ * ([Settings.RECORDS]), so the settings file isn't rewritten all through a film.
+ */
 class Prefs(context: Context) {
 
-    private val sp: SharedPreferences =
-        context.applicationContext.getSharedPreferences(KeyStore.OLD_FILE, Context.MODE_PRIVATE)
+    private val sp: SharedPreferences = Settings.of(context)
 
-    /** The file itself, for small records kept beside the settings (key check results, [CredentialChecks]). */
-    internal val raw: SharedPreferences get() = sp
+    /** What's noted while watching: resume points, subtitle timings, and key check results ([CredentialChecks]). */
+    internal val records: SharedPreferences = Settings.records(context)
 
     init {
         forgetPlayerMatches()
@@ -199,8 +202,8 @@ class Prefs(context: Context) {
 
     /** Whether TiviMate's films and shows are renamed with TMDB (see [app.fireplayer.titles.TitleService]). */
     var tivimateTitles: Boolean
-        get() = sp.getBoolean("tivimate_titles", true)
-        set(v) = sp.edit().putBoolean("tivimate_titles", v).apply()
+        get() = sp.getBoolean(TITLES_KEY, true)
+        set(v) = sp.edit().putBoolean(TITLES_KEY, v).apply()
 
     /** The language Find subtitles searches in; "" until one is picked, then the default subtitle language is used. */
     var subtitleSearchLanguage: String
@@ -227,10 +230,10 @@ class Prefs(context: Context) {
     // The screen dimmer's choices are kept by Dimmer.
 
     // Resume points, keyed by the video's URI.
-    fun savedPosition(key: String): Long = sp.getLong("pos:$key", 0L)
+    fun savedPosition(key: String): Long = records.getLong("pos:$key", 0L)
 
     fun savePosition(key: String, positionMs: Long) {
-        val editor = sp.edit()
+        val editor = records.edit()
         if (positionMs <= 0L) editor.remove("pos:$key") else editor.putLong("pos:$key", positionMs)
         editor.apply()
     }
@@ -242,85 +245,85 @@ class Prefs(context: Context) {
 
     // The one subtitle delay for the whole film (ms) that older versions kept, keyed by the subtitle file's name and the
     // film: still read when that's all there is; nothing writes it any more (see [saveSyncedSegments]).
-    fun syncedDelayMs(key: String): Long? = if (sp.contains("sync|$key")) sp.getLong("sync|$key", 0L) else null
+    fun syncedDelayMs(key: String): Long? = if (records.contains("sync|$key")) records.getLong("sync|$key", 0L) else null
 
     /**
      * Everything auto sync found for a subtitle and film goes: the delays, the track it picked, the talking's
      * fine-tuning of that track, and the track the talking turned down.
      */
-    fun forgetSyncedDelay(key: String) = sp.edit().remove("sync|$key").remove("sync|$key|at").remove("sync|$key|track")
+    fun forgetSyncedDelay(key: String) = records.edit().remove("sync|$key").remove("sync|$key|at").remove("sync|$key|track")
         .remove("sync|$key|trim").remove("sync|$key|drop").apply()
 
     // The delays auto sync found for a subtitle and film, by film position (more than one once the timing changed along
     // the film: an ad break): see OffsetTracker.encode.
-    fun syncedSegments(key: String): String? = sp.getString("sync|$key|at", null)
+    fun syncedSegments(key: String): String? = records.getString("sync|$key|at", null)
 
     /**
      * Jumps auto sync found in a show's episodes (the subtitles needing this much more, or less, delay after a bumper
      * or an ad), newest first: tried first after a break in its other episodes.
      */
     fun showJumps(show: String): List<Long> =
-        sp.getString("syncjumps|$show", null)?.split(',')?.mapNotNull { it.trim().toLongOrNull() } ?: emptyList()
+        records.getString("syncjumps|$show", null)?.split(',')?.mapNotNull { it.trim().toLongOrNull() } ?: emptyList()
 
-    fun saveShowJumps(show: String, jumps: List<Long>) = sp.edit().putString("syncjumps|$show", jumps.joinToString(",")).apply()
+    fun saveShowJumps(show: String, jumps: List<Long>) = records.edit().putString("syncjumps|$show", jumps.joinToString(",")).apply()
 
     /** The delays auto sync found, by film position; an older version's one delay for the pair is replaced by them. */
-    fun saveSyncedSegments(key: String, text: String) = sp.edit().putString("sync|$key|at", text).remove("sync|$key").apply()
+    fun saveSyncedSegments(key: String, text: String) = records.edit().putString("sync|$key|at", text).remove("sync|$key").apply()
 
     /**
      * The delay a show's last episode started with (ms), for subtitles from the same source ([source]: the release they
      * were made for, less the episode): a new episode starts from it, checked as it plays.
      */
     fun showStartMs(show: String, source: String): Long? =
-        "syncstart|$show|$source".let { if (sp.contains(it)) sp.getLong(it, 0L) else null }
+        "syncstart|$show|$source".let { if (records.contains(it)) records.getLong(it, 0L) else null }
 
-    fun saveShowStart(show: String, source: String, ms: Long) = sp.edit().putLong("syncstart|$show|$source", ms).apply()
+    fun saveShowStart(show: String, source: String, ms: Long) = records.edit().putLong("syncstart|$show|$source", ms).apply()
 
     /**
      * What auto sync lines up against for a show (or one film without one), as chosen in the Subtitle delay window: one
      * of the film's own subtitle tracks (its key), "speech", or null for the best of them (auto).
      */
-    fun syncWith(scope: String): String? = sp.getString("syncwith|$scope", null)
+    fun syncWith(scope: String): String? = records.getString("syncwith|$scope", null)
 
     fun saveSyncWith(scope: String, choice: String?) =
-        sp.edit().apply { if (choice == null) remove("syncwith|$scope") else putString("syncwith|$scope", choice) }.apply()
+        records.edit().apply { if (choice == null) remove("syncwith|$scope") else putString("syncwith|$scope", choice) }.apply()
 
     /** The film's own subtitle track auto sync picked for a subtitle and film, so it picks the same one next time. */
-    fun syncTrack(key: String): String? = sp.getString("sync|$key|track", null)
+    fun syncTrack(key: String): String? = records.getString("sync|$key|track", null)
 
-    fun saveSyncTrack(key: String, track: String) = sp.edit().putString("sync|$key|track", track).apply()
+    fun saveSyncTrack(key: String, track: String) = records.edit().putString("sync|$key|track", track).apply()
 
     /**
      * How much the talking fine-tuned the film's own subtitle track [first] by (ms, [second]) for a subtitle and film, so
      * it's put in again next time on the same track.
      */
     fun syncTrim(key: String): Pair<String, Long>? {
-        val v = sp.getString("sync|$key|trim", null) ?: return null
+        val v = records.getString("sync|$key|trim", null) ?: return null
         val track = v.substringBeforeLast(':', "").ifEmpty { return null }
         val ms = v.substringAfterLast(':').toLongOrNull() ?: return null
         return track to ms
     }
 
-    fun saveSyncTrim(key: String, track: String, ms: Long) = sp.edit().putString("sync|$key|trim", "$track:$ms").apply()
+    fun saveSyncTrim(key: String, track: String, ms: Long) = records.edit().putString("sync|$key|trim", "$track:$ms").apply()
 
     /**
      * The film's own subtitle track the talking disagreed with for a subtitle and film (it's timed for another cut):
      * not lined up against the next time either, till the viewer picks it or starts afresh.
      */
-    fun droppedSyncTrack(key: String): String? = sp.getString("sync|$key|drop", null)
+    fun droppedSyncTrack(key: String): String? = records.getString("sync|$key|drop", null)
 
     /** [track] is turned down for a subtitle and film: no longer the one picked, and its fine-tuning goes with it. */
     fun dropSyncTrack(key: String, track: String) =
-        sp.edit().remove("sync|$key|track").remove("sync|$key|trim").putString("sync|$key|drop", track).apply()
+        records.edit().remove("sync|$key|track").remove("sync|$key|trim").putString("sync|$key|drop", track).apply()
 
-    fun forgetDroppedSyncTrack(key: String) = sp.edit().remove("sync|$key|drop").apply()
+    fun forgetDroppedSyncTrack(key: String) = records.edit().remove("sync|$key|drop").apply()
 
     /** A delay set by hand for a downloaded subtitle on one video, used again when it's chosen another time. */
-    fun handDelayMs(key: String): Long? = if (sp.contains("subdelay|$key")) sp.getLong("subdelay|$key", 0L) else null
+    fun handDelayMs(key: String): Long? = if (records.contains("subdelay|$key")) records.getLong("subdelay|$key", 0L) else null
 
-    fun saveHandDelay(key: String, ms: Long) = sp.edit().putLong("subdelay|$key", ms).apply()
+    fun saveHandDelay(key: String, ms: Long) = records.edit().putLong("subdelay|$key", ms).apply()
 
-    fun forgetHandDelay(key: String) = sp.edit().remove("subdelay|$key").apply()
+    fun forgetHandDelay(key: String) = records.edit().remove("subdelay|$key").apply()
 
     /**
      * Downloaded subtitles [file]'s timing as found or set for one copy of a film ([from], a film key) kept for another
@@ -328,8 +331,8 @@ class Prefs(context: Context) {
      * they were matched with: the other copy's tracks are its own.
      */
     fun copySubtitleTiming(file: String, from: String, to: String) {
-        val all = sp.all
-        val e = sp.edit()
+        val all = records.all
+        val e = records.edit()
         for (suffix in listOf("", "|at")) {
             when (val v = all["sync|$file|$from$suffix"]) {
                 is Long -> e.putLong("sync|$file|$to$suffix", v)
@@ -346,8 +349,8 @@ class Prefs(context: Context) {
      * none left ([videos]: the films that still have some). A show's choice, jumps and starting delays stay.
      */
     fun keepSubtitleTimes(files: Set<String>, videos: Set<String>) {
-        val gone = staleSubtitleTimes(sp.all.keys, files, videos)
-        if (gone.isNotEmpty()) sp.edit().apply { gone.forEach { remove(it) } }.apply()
+        val gone = staleSubtitleTimes(records.all.keys, files, videos)
+        if (gone.isNotEmpty()) records.edit().apply { gone.forEach { remove(it) } }.apply()
     }
 
     /** Name of the subtitle font sent from the phone, or "" when there isn't one. */
@@ -357,6 +360,9 @@ class Prefs(context: Context) {
 
     companion object {
         private const val PLAYER_MATCHES_GONE = 100
+
+        /** TiviMate titles on or off ([tivimateTitles]), read by [Settings.syncTitles] too. */
+        internal const val TITLES_KEY = "tivimate_titles"
         private const val PREVIEWS_OFF_ONCE = "seek_previews_off_once"
 
         /**

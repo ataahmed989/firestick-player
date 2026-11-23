@@ -56,11 +56,11 @@ enum class SettingsCategory(val title: String, val icon: Int, val settings: List
         listOf("Subtitle language", "Audio language", "Auto sync subtitles", "Subtitle style", "Font from your phone"),
     ),
     // The three glasses, each a dropdown of its Tint and its Dimness or Charcoal (App settings' Look only, not the players'
-    // menus), then the row that puts all three back to their defaults.
+    // menus), then the row that keeps their changes, and the row that puts all three back to their defaults.
     LOOK(
         "Look",
         R.drawable.ic_head_look,
-        listOf("Glass look", "Glass refresh", "Info pods", "App glass", "Rail, cards & header", "Playback glass", "Reset to defaults"),
+        listOf("Glass look", "Glass refresh", "Info pods", "App glass", "Rail, cards & header", "Playback glass", "Save", "Reset to defaults"),
     ),
     ACCOUNTS(
         "Accounts & services",

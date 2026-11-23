@@ -76,6 +76,7 @@ import androidx.media3.ui.SubtitleView
 import app.fireplayer.data.Dimmer
 import app.fireplayer.data.GlassShades
 import app.fireplayer.data.Prefs
+import app.fireplayer.data.Settings
 import app.fireplayer.history.ContinueWatching
 import app.fireplayer.history.LibraryContinue
 import app.fireplayer.history.VodContinue
@@ -856,8 +857,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         handler.post(clockTick)
         handler.post(postPlayTick)
         // TiviMate's titles aren't looked up on TMDB while a film is on.
-        TitleService.playing(this, true)
-        handler.post(playingBeat)
+        TitleService.playing(this, prefs.tivimateTitles, true)
+        if (prefs.tivimateTitles) handler.post(playingBeat)
         watchNotedAt = SystemClock.elapsedRealtime()
     }
 
@@ -866,7 +867,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         decoderWait?.invoke()
         decoderWait = null
         handler.removeCallbacks(playingBeat)
-        TitleService.playing(this, false)
+        TitleService.playing(this, prefs.tivimateTitles, false)
         commitSeek()
         seekPreview.release()
         notice = false
@@ -913,6 +914,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     override fun onResume() {
         super.onResume()
         openingOwn = false
+    }
+
+    override fun onPause() {
+        super.onPause()
+        // Any setting still on its way to the TV's storage is put there now: Home may be pressed next.
+        Settings.flush(this)
     }
 
     /**
@@ -4115,9 +4122,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     /**
-     * The player is on: noted every half minute for the title server, which pauses TMDB meanwhile. The message
-     * saying the player stopped can be refused by Fire OS once FirePlayer is behind another app; a beat that stops
-     * coming lets the server carry on regardless (see TitleService.PLAYER_GONE_MS).
+     * The player is on: noted every half minute for the title server, which pauses TMDB meanwhile (only while TiviMate
+     * titles are on: a file's time, set off the main thread, never the settings). The message saying the player stopped
+     * can be refused by Fire OS once FirePlayer is behind another app; a beat that stops coming lets the server carry on
+     * regardless (see TitleService.PLAYER_GONE_MS).
      */
     private val playingBeat = object : Runnable {
         override fun run() {

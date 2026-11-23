@@ -11,9 +11,12 @@ import app.fireplayer.ui.GlassStyle
  * windows over the app's pages) and Playback glass (windows over full-screen films and Live TV), each with its Tint and
  * its Dimness, and Rail, cards & header (the glass in the pages themselves), with its Tint and its Charcoal; 0% to 100%
  * in 5% steps ([GlassStyle.Shade]). Playback glass is the players' dimness settings' Default preset ([Dimmer.default]):
- * the same saved values, so a change in one shows in the other. The Playback glass in use is the preset on there
+ * the same values, so a change in one shows in the other. The Playback glass in use is the preset on there
  * ([Dimmer.glass]: Default's, Look's, until a custom is picked). [apply] puts them on the glass ([Glass.useShades]). Only
  * the glass's own layers change: never text, icons or the focus highlight drawn on it.
+ *
+ * As the Screen dimmer's customs are: a step or Reset to defaults changes the glass at once but isn't saved ([draft],
+ * Unsaved), and Save keeps all three ([save]); a change not saved stays for this run of the app only.
  */
 class GlassShades(private val sp: () -> SharedPreferences) {
 
@@ -68,57 +71,88 @@ class GlassShades(private val sp: () -> SharedPreferences) {
         }
     }
 
-    /** [kind]'s tint and its second control as saved (its defaults until changed). */
-    operator fun get(kind: Kind): GlassStyle.Shade {
-        if (kind == Kind.PLAYBACK) movePlaybackDefaults()
+    /** [kind]'s tint and its second control as they show now: a change not saved yet ([hasUnsaved]), else as saved. */
+    operator fun get(kind: Kind): GlassStyle.Shade = draft?.get(kind) ?: saved(kind)
+
+    /** [kind] as saved (its defaults until saved). Only reads. */
+    fun saved(kind: Kind): GlassStyle.Shade {
         val tint = read(kind.tintKey, kind.default.tint)
         val second = read(kind.secondKey, kind.second.of(kind.default))
-        return if (kind.second == Control.CHARCOAL) GlassStyle.Shade(tint, charcoal = second) else GlassStyle.Shade(tint, dim = second)
+        return shade(kind, tint, second)
     }
 
     /**
-     * [kind]'s [control] a step up ([direction] 1) or down (-1), saved; the shade it has now. The steps are 5% apart,
-     * with the glass's own default a stop on the way where it's between two ([GlassStyle.stepShade]).
+     * [kind]'s [control] a step up ([direction] 1) or down (-1), shown at once and kept by [save]; the shade it has now.
+     * The steps are 5% apart, with the glass's own default a stop on the way where it's between two
+     * ([GlassStyle.stepShade]).
      */
     fun step(kind: Kind, control: Control, direction: Int): GlassStyle.Shade {
-        write(kind.keyOf(control), GlassStyle.stepShade(control.of(get(kind)), direction, stop = control.of(kind.default)))
+        val now = get(kind)
+        val value = GlassStyle.stepShade(control.of(now), direction, stop = control.of(kind.default))
+        val tint = if (control == Control.TINT) value else now.tint
+        val second = if (control == Control.TINT) kind.second.of(now) else value
+        change(kind, shade(kind, tint, second))
         return get(kind)
     }
 
     /**
-     * Reset to defaults: all three glasses back to their defaults ([Kind.default]), as if never changed. Playback glass is
-     * the players' Default preset, so Default is back to its defaults too, with no display dimness (one tried on it and
-     * not saved goes). The customs stay as they are, and so does the preset on: a custom picked stays picked.
+     * Reset to defaults: all three glasses back to their defaults ([Kind.default]), shown at once and Unsaved until Save,
+     * so a stray press can't take the saved values away. Playback glass is the players' Default preset, so Default is
+     * back to its defaults too, with no display dimness (one tried on it and not saved goes). The customs stay as they
+     * are, and so does the preset on: a custom picked stays picked.
      */
     fun reset() {
-        movePlaybackDefaults()
-        val edit = sp().edit()
-        for (kind in Kind.entries) edit.remove(kind.tintKey).remove(kind.secondKey)
-        edit.apply()
+        for (kind in Kind.entries) change(kind, kind.default)
         Dimmer.forgetDefaultDraft()
     }
 
+    /** Whether a glass shows a change not saved yet: Save would keep it. */
+    fun hasUnsaved(): Boolean = draft != null
+
+    /** Whether [kind] shows a change not saved yet. */
+    fun hasUnsaved(kind: Kind): Boolean = draft?.let { it[kind] != saved(kind) } ?: false
+
     /**
-     * Once: Playback glass's defaults were no tint and no dimness ([OLD_PLAYBACK]) before [GlassStyle.PLAYBACK_SHADE]. A
-     * Playback glass never changed (nothing saved, or still those) takes the new defaults; one the viewer changed keeps
-     * their values, each as it showed (one never saved was the old default).
+     * Save: the glasses as they show now ([kinds]: all three, both values each, in one change), committed on [writer]'s
+     * thread so it's on the disk; then, back on the main thread ([main]), [done] says whether it is. Only then is the
+     * change no longer Unsaved (a glass changed again meanwhile stays Unsaved); if it couldn't be saved it stays Unsaved.
      */
-    private fun movePlaybackDefaults() {
-        if (playbackMoved) return
-        playbackMoved = true
+    fun save(writer: SettingsWriter, main: (Runnable) -> Unit, kinds: List<Kind> = Kind.entries, done: (Boolean) -> Unit) {
+        val now = kinds.associateWith { get(it) }
+        val edit = sp().edit()
+        for ((kind, shade) in now) edit.putInt(kind.tintKey, shade.tint).putInt(kind.secondKey, kind.second.of(shade))
+        writer.post(Runnable {
+            val onDisk = runCatching { edit.commit() }.getOrDefault(false)
+            main(Runnable {
+                if (onDisk) for ((kind, shade) in now) if (draft?.get(kind) == shade) change(kind, shade)
+                done(onDisk)
+            })
+        })
+    }
+
+    /** [kind] shown as [shade] until saved; no change is left once all three are as saved again. */
+    private fun change(kind: Kind, shade: GlassStyle.Shade) {
+        val next = (draft ?: Kind.entries.associateWith { saved(it) }) + (kind to shade)
+        draft = if (Kind.entries.all { next[it] == saved(it) }) null else next
+    }
+
+    /**
+     * Once, as the app starts ([Settings]): Playback glass's defaults were no tint and no dimness ([OLD_PLAYBACK]) before
+     * [GlassStyle.PLAYBACK_SHADE]. Where only one of its two values was saved, the other showed as the old default
+     * (none) and is saved as that. Nothing saved stays unsaved and reads as the new defaults; values saved are the
+     * viewer's and are never changed or taken away, a Clear one (no tint, no dimness) included.
+     */
+    internal fun movePlaybackDefaultsOnce() {
         val saved = sp()
         if (saved.getBoolean(PLAYBACK_MOVED_KEY, false)) return
         val kind = Kind.PLAYBACK
-        val tint = GlassStyle.clampShade(saved.getInt(kind.tintKey, OLD_PLAYBACK.tint))
-        val dim = GlassStyle.clampShade(saved.getInt(kind.secondKey, OLD_PLAYBACK.dim))
         val edit = saved.edit().putBoolean(PLAYBACK_MOVED_KEY, true)
-        if (tint == OLD_PLAYBACK.tint && dim == OLD_PLAYBACK.dim) edit.remove(kind.tintKey).remove(kind.secondKey)
-        else edit.putInt(kind.tintKey, tint).putInt(kind.secondKey, dim)
+        val hasTint = saved.contains(kind.tintKey)
+        val hasDim = saved.contains(kind.secondKey)
+        if (hasTint && !hasDim) edit.putInt(kind.secondKey, OLD_PLAYBACK.dim)
+        if (hasDim && !hasTint) edit.putInt(kind.tintKey, OLD_PLAYBACK.tint)
         edit.apply()
     }
-
-    /** [movePlaybackDefaults] done, by this reader. */
-    private var playbackMoved = false
 
     /**
      * Puts all three on the glass ([Glass.useShades]), Playback glass as the players' preset on has it ([Dimmer.glass]:
@@ -133,9 +167,21 @@ class GlassShades(private val sp: () -> SharedPreferences) {
 
     private fun read(key: String, default: Int): Int = GlassStyle.clampShade(sp().getInt(key, default))
 
-    private fun write(key: String, value: Int) = sp().edit().putInt(key, value).apply()
+    private fun shade(kind: Kind, tint: Int, second: Int): GlassStyle.Shade =
+        if (kind.second == Control.CHARCOAL) GlassStyle.Shade(tint, charcoal = second) else GlassStyle.Shade(tint, dim = second)
 
     companion object {
+        /**
+         * The three glasses as shown, while that's not what's saved: for this run of the app only, as the Screen dimmer's
+         * changes not kept ([Dimmer]). Null when nothing is unsaved.
+         */
+        private var draft: Map<Kind, GlassStyle.Shade>? = null
+
+        /** As a new run of the app: changes not saved are gone (the tests start each from nothing). */
+        internal fun forgetUnsaved() {
+            draft = null
+        }
+
         /**
          * What [kind]'s dropdown row says beside its name: its two values ("58% · 15%", Tint first), or "Clear" when it
          * lays nothing over the frosted glass at all (no tint, and no dimness either).
@@ -149,16 +195,16 @@ class GlassShades(private val sp: () -> SharedPreferences) {
         /** "Clear": a glass with nothing laid over it, the frosted picture as it is. */
         const val CLEAR = "Clear"
 
-        /** Playback glass's defaults before it had a tint and a dimness of its own: none ([movePlaybackDefaults]). */
+        /** Playback glass's defaults before it had a tint and a dimness of its own: none ([movePlaybackDefaultsOnce]). */
         internal val OLD_PLAYBACK = GlassStyle.Shade(0, dim = 0)
 
-        /** Saved once Playback glass's values were looked at against its new defaults ([movePlaybackDefaults]). */
+        /** Saved once Playback glass's values were looked at against its new defaults ([movePlaybackDefaultsOnce]). */
         internal const val PLAYBACK_MOVED_KEY = "glass_playback_defaults_moved"
 
-        /** The settings file ([Prefs], [Dimmer]'s too). */
+        /** The settings file ([Settings]), shared with [Prefs] and [Dimmer]. */
         internal fun settingsOf(context: Context): () -> SharedPreferences {
-            val app = context.applicationContext
-            return { app.getSharedPreferences(KeyStore.OLD_FILE, Context.MODE_PRIVATE) }
+            val settings = Settings.of(context)
+            return { settings }
         }
     }
 }

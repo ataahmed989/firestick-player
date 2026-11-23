@@ -13,14 +13,15 @@ import org.json.JSONObject
  * Playback glass while it's on ([glass]: the windows over the picture, [GlassStyle.Shade]; 0% to 100%).
  *
  * - "Default", always first: display 0%, and the glass of Settings › Look › Playback glass (5% and 15% until changed,
- *   [GlassStyle.PLAYBACK_SHADE]). It IS those values: its glass rows here change Look's at once ([GlassShades]), and
- *   Look's change it; Look's Reset to defaults puts it back ([GlassShades.reset]). A display dimness tried on it is
- *   kept with Save custom, as a new custom.
+ *   [GlassStyle.PLAYBACK_SHADE]). It IS those values: its glass rows here change Look's ([GlassShades]: shown at once,
+ *   Unsaved until saved here or in Look), and Look's change it; Look's Reset to defaults puts it back
+ *   ([GlassShades.reset]). A display dimness tried on it is kept with Save custom, as a new custom.
  * - Customs, added with Save custom from what's on: arrows change one on screen only until Save custom keeps the change;
  *   each can be renamed and deleted. "Auto" keeps a custom's display dimness and glass dimness the same.
  *
- * Customs saved before (a display amount and a glass amount each) are read once as presets ([migrate]): the glass amount
- * is their Glass dimness, with no Glass tint.
+ * Customs saved before (a display amount and a glass amount each) are read as presets ([migrate]), and saved as presets
+ * once as the app starts ([convertLegacyOnce]): the glass amount is their Glass dimness, with no Glass tint. Reading
+ * never writes anything.
  */
 class Dimmer(private val sp: () -> SharedPreferences) {
 
@@ -77,10 +78,21 @@ class Dimmer(private val sp: () -> SharedPreferences) {
         return Preset(DEFAULT_ID, DEFAULT_NAME, 0, glass.tint, glass.dim, auto = false)
     }
 
-    /** The customs, in the order they were added. */
+    /** The customs, in the order they were added. Only reads: those from before presets are read as presets. */
     fun customs(): List<Preset> {
-        val saved = sp().getString(PRESETS_KEY, null) ?: return migrate().also { store(it) }
+        val saved = sp().getString(PRESETS_KEY, null) ?: return migrate()
         return parse(saved)
+    }
+
+    /**
+     * Once, as the app starts ([Settings]): the customs from before presets ([OLD_CUSTOMS_KEY], [OLD_LEVEL_KEY]) saved as
+     * presets, only while there are no presets saved at all. Saved presets are never replaced, and the old values stay.
+     */
+    internal fun convertLegacyOnce() {
+        val saved = sp()
+        if (saved.contains(PRESETS_KEY)) return
+        if (!saved.contains(OLD_CUSTOMS_KEY) && !saved.contains(OLD_LEVEL_KEY)) return
+        store(migrate())
     }
 
     /** Every preset, as the window lists them: Default, then the customs. */
@@ -99,11 +111,27 @@ class Dimmer(private val sp: () -> SharedPreferences) {
         return d ?: customs.first { it.id == id }
     }
 
-    /** The preset on has changes that Save custom would keep (for Default: a display dimness, kept as a new custom). */
+    /**
+     * The preset on has changes that Save custom would keep (for Default: a display dimness, kept as a new custom, or its
+     * glass changed and not saved, [GlassShades.hasUnsaved]).
+     */
     fun hasUnsaved(): Boolean {
-        val d = draft ?: return false
-        if (d.id != activeId) return false
-        return if (d.isDefault) d.display != 0 else d != customs().firstOrNull { it.id == d.id }
+        val id = activeId
+        val d = draft?.takeIf { it.id == id }
+        if (id == DEFAULT_ID) return (d != null && d.display != 0) || look.hasUnsaved(GlassShades.Kind.PLAYBACK)
+        return d != null && d != customs().firstOrNull { it.id == d.id }
+    }
+
+    /** Default's glass changed and not saved: what Save "Default" keeps ([saveDefault]). */
+    fun defaultGlassUnsaved(): Boolean = activeId == DEFAULT_ID && look.hasUnsaved(GlassShades.Kind.PLAYBACK)
+
+    /**
+     * Save "Default": its glass as it shows now kept as Look's Playback glass ([GlassShades.save], put on the disk), then
+     * [done] told whether it is, on the main thread ([main]). A display dimness tried on it stays a change Save custom
+     * keeps as a new custom.
+     */
+    fun saveDefault(writer: SettingsWriter, main: (Runnable) -> Unit, done: (Boolean) -> Unit) {
+        look.save(writer, main, listOf(GlassShades.Kind.PLAYBACK), done)
     }
 
     /** The picture's darkening now, percent. */
@@ -121,9 +149,9 @@ class Dimmer(private val sp: () -> SharedPreferences) {
     }
 
     /**
-     * [value] of the preset on a step up ([direction] 1) or down (-1). Default's glass is Look's, changed and saved at
-     * once; anything else shows at once and is kept by Save custom. With Auto, display dimness and glass dimness move as
-     * one (to [MAX_DISPLAY] at most).
+     * [value] of the preset on a step up ([direction] 1) or down (-1). Default's glass is Look's, changed there too and
+     * kept by Save "Default" or Look's Save; anything else shows at once and is kept by Save custom. With Auto, display
+     * dimness and glass dimness move as one (to [MAX_DISPLAY] at most).
      */
     fun step(value: Value, direction: Int) {
         val now = active()
@@ -166,7 +194,7 @@ class Dimmer(private val sp: () -> SharedPreferences) {
     fun saveChanges() {
         val d = draft ?: return
         if (d.isDefault) return
-        replace(d)
+        if (!replace(d)) return
         draft = null
         choose(d.id)
     }
@@ -177,7 +205,7 @@ class Dimmer(private val sp: () -> SharedPreferences) {
         var n = System.currentTimeMillis()
         while (customs.any { it.id == "c$n" }) n++
         val c = active().copy(id = "c$n", name = name)
-        store(customs + c)
+        if (!store(customs + c)) return
         choose(c.id)
     }
 
@@ -185,7 +213,7 @@ class Dimmer(private val sp: () -> SharedPreferences) {
     fun rename(name: String) {
         val now = active()
         if (now.isDefault) return
-        replace(now.copy(name = name))
+        if (!replace(now.copy(name = name))) return
         choose(now.id)
     }
 
@@ -205,11 +233,13 @@ class Dimmer(private val sp: () -> SharedPreferences) {
         else -> null
     }
 
-    private fun replace(c: Preset) {
-        store(customs().map { if (it.id == c.id) c else it })
-    }
+    private fun replace(c: Preset): Boolean = store(customs().map { if (it.id == c.id) c else it })
 
-    private fun store(list: List<Preset>) {
+    /**
+     * Saves [list] as the customs. An entry of the saved ones that can't be read is kept as it is, after them; and when
+     * what's saved can't be read at all, nothing is written over it (false): a custom is never lost to a write.
+     */
+    private fun store(list: List<Preset>): Boolean {
         val arr = JSONArray()
         list.forEach {
             arr.put(
@@ -217,18 +247,32 @@ class Dimmer(private val sp: () -> SharedPreferences) {
                     .put("tint", it.glassTint).put("dim", it.glassDim).put("auto", it.auto),
             )
         }
+        val saved = sp().getString(PRESETS_KEY, null)
+        if (saved != null) {
+            val old = runCatching { JSONArray(saved) }.getOrNull() ?: return false
+            for (i in 0 until old.length()) if (entry(old.opt(i)) == null && !isDefaultEntry(old.opt(i))) arr.put(old.opt(i))
+        }
         sp().edit().putString(PRESETS_KEY, arr.toString()).apply()
+        return true
     }
 
+    /** The saved customs: an entry that can't be read is passed over, and the rest are still read. */
     private fun parse(json: String): List<Preset> {
+        val arr = runCatching { JSONArray(json) }.getOrNull() ?: return emptyList()
         val list = ArrayList<Preset>()
-        runCatching {
-            val arr = JSONArray(json)
-            for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
-                val id = o.getString("id")
-                if (id == DEFAULT_ID) continue
-                list += Preset(
+        for (i in 0 until arr.length()) entry(arr.opt(i))?.let { list += it }
+        return list
+    }
+
+    /** One saved custom, or null when it can't be read (or is Default, which is never saved as a custom). */
+    private fun entry(value: Any?): Preset? {
+        val o = value as? JSONObject ?: return null
+        return runCatching {
+            val id = o.getString("id")
+            if (id == DEFAULT_ID) {
+                null
+            } else {
+                Preset(
                     id,
                     o.getString("name"),
                     clampDisplay(o.optInt("display", 0)),
@@ -237,9 +281,10 @@ class Dimmer(private val sp: () -> SharedPreferences) {
                     o.optBoolean("auto", false),
                 )
             }
-        }
-        return list
+        }.getOrNull()
     }
+
+    private fun isDefaultEntry(value: Any?): Boolean = (value as? JSONObject)?.optString("id") == DEFAULT_ID
 
     /**
      * The customs saved before presets, as presets ([OLD_CUSTOMS_KEY]: a display amount and a glass amount each): the

@@ -5,16 +5,19 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.BroadcastReceiver
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.net.Uri
 import android.os.Build
 import android.os.IBinder
 import android.os.Process
 import android.os.SystemClock
 import android.util.Log
 import app.fireplayer.R
-import app.fireplayer.data.KeyStore
+import app.fireplayer.data.SettingsWriter
 import app.fireplayer.subs.Tmdb
 import java.io.IOException
 import java.util.concurrent.Callable
@@ -30,6 +33,10 @@ import java.util.concurrent.atomic.AtomicInteger
  * Names TMDB has confirmed go into the lists as they pass ([ProxyServer]); new titles are asked about in the
  * background, a few at a time and never while FirePlayer is playing, and have their English names from TiviMate's next
  * playlist update. Settings' "Check playlists now" wakes it at once ([checkNow]).
+ *
+ * It never opens the app's settings: what it needs from the app (on or off, the player's beat, the TMDB key) comes in
+ * files of its own that it only reads ([TitleFiles]). Turned off, it and its [Starter] are switched off in the app's
+ * manifest too, so nothing of it starts at all.
  */
 class TitleService : Service() {
 
@@ -108,14 +115,11 @@ class TitleService : Service() {
     // ---------------------------------------------------------------------
     // Asking TMDB
 
-    @Suppress("DEPRECATION")
-    private val prefs get() = getSharedPreferences(KeyStore.OLD_FILE, Context.MODE_MULTI_PROCESS)
-
     private fun matchLoop() {
         Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
-        // Read again each time: the key is saved in the app, which is another process.
-        val keys = KeyStore.reading(this)
-        val tmdb = Tmdb({ keys[KeyStore.Key.TMDB] }, book.tmdbMemory)
+        // Read again whenever the app writes a new one: the key is saved in the app, which is another process.
+        val key = TitleFiles.Key(this)
+        val tmdb = Tmdb({ key.get() }, book.tmdbMemory)
         val matcher = TitleMatcher(tmdb)
         val pool = Executors.newFixedThreadPool(ASKING_AT_ONCE) { r ->
             Thread {
@@ -142,7 +146,7 @@ class TitleService : Service() {
             }
             told = false
             // The player has the TV to itself, while it says so: a "stopped" Fire OS refused leaves no beat behind.
-            if (playing && System.currentTimeMillis() - prefs.getLong(PLAYER_BEAT, 0L) < PLAYER_GONE_MS) {
+            if (playing && System.currentTimeMillis() - TitleFiles.beatAt(this) < PLAYER_GONE_MS) {
                 sleep(PLAYING_CHECK_MS)
                 continue
             }
@@ -209,9 +213,21 @@ class TitleService : Service() {
     /**
      * Starts it at boot and after FirePlayer is updated, before TiviMate needs it; and when Glass Home asks: pressing
      * Home with the TV short of memory has Fire OS force-stop the app in front, and with FirePlayer this goes too.
+     * Switched off with the server ([start]), so with titles off it never runs. Here in the server's process it reads
+     * only the app's note ([TitleFiles.isOn]); until there is one (the first start after an update), the app is asked
+     * to start it or not ([app.fireplayer.data.Settings.syncTitles]).
      */
     class Starter : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) = start(context)
+        override fun onReceive(context: Context, intent: Intent) {
+            if (!context.resources.getBoolean(R.bool.title_proxy)) return
+            when (TitleFiles.isOn(context)) {
+                true -> startHere(context)
+                false -> Unit
+                null -> runCatching {
+                    context.contentResolver.call(Uri.parse("content://${context.packageName}.continue"), SYNC, null, null)
+                }.onFailure { startHere(context) }
+            }
+        }
     }
 
     companion object {
@@ -231,24 +247,62 @@ class TitleService : Service() {
         private const val LOGGED_PER_BATCH = 4
         private const val PROGRESS_EVERY = 10
 
-        /** Starts it when it's turned on in Settings (it is unless turned off), stops it otherwise. */
-        fun start(context: Context) {
+        /** What the [Starter] asks the app, through its Continue Watching provider, when it has no note yet. */
+        const val SYNC = "titles_sync"
+
+        /**
+         * From the app ([on]: TiviMate titles as Settings has it, on unless turned off): starts it, or stops it. Its
+         * note for the [Starter] is written, and it and its [Starter] are switched on or off, so with titles off nothing
+         * of it starts at boot or when Glass Home asks. Done on the settings' writer thread, in the order asked.
+         */
+        fun start(context: Context, on: Boolean) {
+            val app = context.applicationContext
             // A build that may not run it (the side-by-side test build) never starts it.
-            val on = isOn(context) && context.resources.getBoolean(app.fireplayer.R.bool.title_proxy)
+            val run = on && app.resources.getBoolean(R.bool.title_proxy)
+            SettingsWriter.shared.post {
+                val intent = Intent(app, TitleService::class.java)
+                if (run) {
+                    switchOn(app, true)
+                    TitleFiles.writeOn(app, true)
+                    runCatching {
+                        if (Build.VERSION.SDK_INT >= 26) app.startForegroundService(intent) else app.startService(intent)
+                    }.onFailure { Log.w(TAG, "Couldn't start: $it") }
+                } else {
+                    runCatching { app.stopService(intent) }
+                    TitleFiles.writeOn(app, false)
+                    switchOn(app, false)
+                }
+            }
+        }
+
+        /** In the server's own process: started as the app last said ([Starter]). */
+        internal fun startHere(context: Context) {
             val intent = Intent(context, TitleService::class.java)
             runCatching {
-                if (!on) context.stopService(intent)
-                else if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent)
-                else context.startService(intent)
+                if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent) else context.startService(intent)
             }.onFailure { Log.w(TAG, "Couldn't start: $it") }
+        }
+
+        /** The server and its [Starter] switched on or off in the app's manifest (only when that changes it). */
+        private fun switchOn(app: Context, on: Boolean) {
+            val pm = app.packageManager
+            val state = if (on) PackageManager.COMPONENT_ENABLED_STATE_ENABLED else PackageManager.COMPONENT_ENABLED_STATE_DISABLED
+            for (cls in listOf(TitleService::class.java, Starter::class.java)) {
+                val component = ComponentName(app, cls)
+                runCatching {
+                    if (pm.getComponentEnabledSetting(component) != state) {
+                        pm.setComponentEnabledSetting(component, state, PackageManager.DONT_KILL_APP)
+                    }
+                }
+            }
         }
 
         /**
          * Settings' "Check playlists now": the server stops resting and looks up what's waiting at once, trying again
-         * what failed before. It still waits while a film is on, and for a TMDB key. Only when the server is on.
+         * what failed before. It still waits while a film is on, and for a TMDB key. Only when the server is [on].
          */
-        fun checkNow(context: Context) {
-            if (!isOn(context)) return
+        fun checkNow(context: Context, on: Boolean) {
+            if (!on) return
             runCatching { context.startService(Intent(context, TitleService::class.java).setAction(ACTION_CHECK)) }
                 .onFailure { Log.w(TAG, "Couldn't ask for a check: $it") }
         }
@@ -256,25 +310,24 @@ class TitleService : Service() {
         /** How often the player notes that it is on, and how long without a note the server takes it as stopped. */
         const val BEAT_MS = 30_000L
         private const val PLAYER_GONE_MS = 90_000L
-        private const val PLAYER_BEAT = "player_beat"
 
-        /** The player is on (see PlayerActivity.playingBeat). */
+        /**
+         * The player is on (see PlayerActivity.playingBeat): the beat file's time is now, set off the main thread. Not
+         * the settings: they're no longer written all through a film.
+         */
         fun playerBeat(context: Context) {
-            context.getSharedPreferences("fireplayer", Context.MODE_MULTI_PROCESS).edit()
-                .putLong(PLAYER_BEAT, System.currentTimeMillis()).apply()
+            val app = context.applicationContext
+            SettingsWriter.shared.post { TitleFiles.touchBeat(app) }
         }
 
-        /** While FirePlayer plays, TMDB isn't asked: the player has the TV's attention. */
-        fun playing(context: Context, playing: Boolean) {
-            if (!isOn(context)) return
+        /** While FirePlayer plays, TMDB isn't asked: the player has the TV's attention. Only when the server is [on]. */
+        fun playing(context: Context, on: Boolean, playing: Boolean) {
+            if (!on) return
             runCatching {
                 context.startService(
                     Intent(context, TitleService::class.java).setAction(ACTION_PLAYING).putExtra(EXTRA_PLAYING, playing),
                 )
             }
         }
-
-        private fun isOn(context: Context) =
-            context.getSharedPreferences("fireplayer", Context.MODE_MULTI_PROCESS).getBoolean("tivimate_titles", true)
     }
 }

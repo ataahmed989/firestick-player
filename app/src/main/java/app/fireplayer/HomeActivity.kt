@@ -26,6 +26,7 @@ import androidx.media3.ui.SubtitleView
 import app.fireplayer.data.Dimmer
 import app.fireplayer.data.GlassShades
 import app.fireplayer.data.Prefs
+import app.fireplayer.data.Settings
 import app.fireplayer.live.ChannelKey
 import app.fireplayer.live.LiveSync
 import app.fireplayer.live.ui.LivePage
@@ -250,7 +251,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
             updater.check { release -> release?.let { updater.offer(it) } }
         }
         // Normally running since the TV started; the first time after installing, from here.
-        TitleService.start(this)
+        TitleService.start(this, prefs.tivimateTitles)
     }
 
     override fun onStart() {
@@ -301,6 +302,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
 
     override fun onPause() {
         super.onPause()
+        // Any setting still on its way to the TV's storage is put there now: Home may be pressed next.
+        Settings.flush(this)
         // The rail's motion ends where it was heading: nothing is left half-way or moving unseen.
         if (::rail.isInitialized) rail.finishMotion()
         filmMode.onPause()

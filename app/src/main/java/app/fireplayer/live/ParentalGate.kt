@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.database.sqlite.SQLiteDatabase
 import app.fireplayer.data.KeyStore
+import app.fireplayer.data.Settings
 import java.security.MessageDigest
 
 /**
@@ -22,7 +23,7 @@ class ParentalGate(context: Context) {
 
     private val app = context.applicationContext
     private val secrets: SharedPreferences = app.getSharedPreferences(KeyStore.FILE, Context.MODE_PRIVATE)
-    private val settings: SharedPreferences = app.getSharedPreferences(KeyStore.OLD_FILE, Context.MODE_PRIVATE)
+    private val settings: SharedPreferences = Settings.of(app)
     private val live = LiveDb.get(app)
 
     init {

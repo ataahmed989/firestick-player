@@ -2,18 +2,24 @@ package app.fireplayer.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import app.fireplayer.titles.TitleFiles
 
 /**
  * The user's own keys and sign-in (TMDB, OpenSubtitles), in a file of their own ([FILE]), apart from the settings
  * that change all the time. Each is written at once (commit, not apply), and a blank value never replaces a saved
  * one, so a box confirmed empty by mistake can't take a key away.
  *
- * Older versions kept them with the other settings ("fireplayer"): what only that file has is copied over, and stays
+ * Older versions kept them with the other settings ([Settings.FILE]): what only that file has is copied over, and stays
  * there too, so an older version installed over this one still finds them. A key this file lacks is read from there.
  *
  * Values are never logged or shown; Settings only says whether each is set.
  */
-class KeyStore(private val keys: () -> SharedPreferences, private val old: () -> SharedPreferences) {
+class KeyStore(
+    private val keys: () -> SharedPreferences,
+    private val old: () -> SharedPreferences,
+    /** Told of each key saved (the title server is given its own copy of the TMDB key). */
+    private val onSaved: (Key, String) -> Unit = { _, _ -> },
+) {
 
     /** Each key, by its name in both files. A password keeps its spaces; the rest are trimmed. */
     enum class Key(val pref: String, val trimmed: Boolean = true) {
@@ -39,6 +45,7 @@ class KeyStore(private val keys: () -> SharedPreferences, private val old: () ->
         if (clean.isBlank()) return false
         val saved = keys().edit().putString(key.pref, clean).commit()
         old().edit().putString(key.pref, clean).commit()
+        onSaved(key, clean)
         return saved
     }
 
@@ -58,25 +65,22 @@ class KeyStore(private val keys: () -> SharedPreferences, private val old: () ->
 
     companion object {
         const val FILE = "fireplayer_keys"
-        /** Where older versions kept them, with the other settings ([Prefs]). */
-        const val OLD_FILE = "fireplayer"
+        /** Where older versions kept them, with the other settings ([Prefs], [Settings.FILE]). */
+        const val OLD_FILE = Settings.FILE
 
-        /** The app's own, copied over from the old file the first time. */
+        /**
+         * The app's own, copied over from the old file the first time. The title server, in its own process, never
+         * opens either file: it's given its copy of the TMDB key as it's saved
+         * ([app.fireplayer.titles.TitleFiles.keepKey]).
+         */
         fun of(context: Context): KeyStore {
             val app = context.applicationContext
             val keys = app.getSharedPreferences(FILE, Context.MODE_PRIVATE)
-            val old = app.getSharedPreferences(OLD_FILE, Context.MODE_PRIVATE)
-            return KeyStore({ keys }, { old }).apply { migrate() }
+            val old = Settings.of(app)
+            val tellTitles = { key: Key, value: String ->
+                if (key == Key.TMDB) SettingsWriter.shared.post { TitleFiles.keepKey(app, value) }
+            }
+            return KeyStore({ keys }, { old }, tellTitles).apply { migrate() }
         }
-
-        /**
-         * For the title server, which runs in a process of its own: both files are read afresh each time, since the
-         * app (another process) saves the keys. It only reads.
-         */
-        @Suppress("DEPRECATION")
-        fun reading(context: Context): KeyStore = KeyStore(
-            { context.getSharedPreferences(FILE, Context.MODE_MULTI_PROCESS) },
-            { context.getSharedPreferences(OLD_FILE, Context.MODE_MULTI_PROCESS) },
-        )
     }
 }
