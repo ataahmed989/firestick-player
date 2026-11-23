@@ -706,7 +706,7 @@ class TwoRangesTest {
         assertArrayEquals(expected(0, 40_000), rig.readAll(0))
         rig.stream.close()
         assertNull(rig.film.fallback)
-        assertTrue(rig.film.sendAhead)
+        assertTrue(rig.film.sendAhead(40_000L))
         assertTrue(rig.film.answerNs >= 30_000_000L)
         // Once answers were seen to be slow, the first request's later spans were asked for ahead, on requests of their
         // own (made like the second's), and read from there on the loading thread.
@@ -721,6 +721,56 @@ class TwoRangesTest {
         assertTrue(rig.film.rates(), rig.film.rates().contains(" answer="))
         assertTrue(rig.film.rates(), rig.film.rates().endsWith(" new=0"))
         // Every request sent is closed or cut off by the end.
+        waitFor { rig.helpers.all { it.closes > 0 || it.cancelled } }
+    }
+
+    @Test
+    fun aServerTurningAwayARequestSentAheadStopsTheAskingAheadNotTwoRequests() {
+        val rig = Rig(total = 40_000, config = AHEAD)
+        rig.first.openDelayMs = 30
+        val made = java.util.concurrent.atomic.AtomicInteger()
+        rig.onHelper = { f ->
+            f.openDelayMs = 30
+            // The second request's own connection is let in; one more (a request sent ahead) is turned away, as a
+            // server allowing two connections would, and let in once asked again.
+            if (made.getAndIncrement() > 0) {
+                val opens = java.util.concurrent.atomic.AtomicInteger()
+                f.statusFor = { if (opens.getAndIncrement() == 0) 429 else 206 }
+            }
+        }
+        assertEquals(40_000L, rig.stream.open(0, "k"))
+        assertArrayEquals(expected(0, 40_000), rig.readAll(0))
+        rig.stream.close()
+        // Two requests kept: the span turned away was asked for again in place, and nothing more is asked ahead.
+        assertNull(rig.film.fallback)
+        assertEquals("2", rig.film.mode())
+        assertTrue(rig.lines.toString(), rig.lines.contains("asking ahead stopped: http 429"))
+        assertEquals(1, synchronized(rig.lines) { rig.lines.count { it.startsWith("asking ahead stopped") } })
+        assertFalse(rig.film.sendAhead(40_000L))
+        // Another film in the same player starts afresh.
+        assertTrue(rig.film.sendAhead(80_000L))
+        waitFor { rig.helpers.all { it.closes > 0 || it.cancelled } }
+    }
+
+    @Test
+    fun aRequestSentAheadThatFailsIsAskedForAgainInPlace() {
+        val rig = Rig(total = 40_000, config = AHEAD)
+        rig.first.openDelayMs = 30
+        val made = java.util.concurrent.atomic.AtomicInteger()
+        rig.onHelper = { f ->
+            f.openDelayMs = 30
+            if (made.getAndIncrement() > 0) {
+                val opens = java.util.concurrent.atomic.AtomicInteger()
+                f.throwOnOpen = { if (opens.getAndIncrement() == 0) IOException("reset") else null }
+            }
+        }
+        assertEquals(40_000L, rig.stream.open(0, "k"))
+        assertArrayEquals(expected(0, 40_000), rig.readAll(0))
+        rig.stream.close()
+        // Not a limit: two requests kept, and asking ahead goes on.
+        assertNull(rig.film.fallback)
+        assertTrue(rig.film.sendAhead(40_000L))
+        assertFalse(rig.lines.toString(), rig.lines.any { it.startsWith("asking ahead stopped") })
         waitFor { rig.helpers.all { it.closes > 0 || it.cancelled } }
     }
 

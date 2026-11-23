@@ -183,14 +183,27 @@ class GlassShadesTest {
         // Not saved, it's gone in the next run of the app.
         GlassShades.forgetUnsaved()
         assertEquals(GlassStyle.Shade(30, dim = 10), GlassShades(sp = { saved })[Kind.APP])
-        // A Save that can't reach the disk stays Unsaved.
-        val failing = FailingPrefs(saved)
+        // A Save that can't reach the disk stays Unsaved, though the file has the values in its memory (as Android's
+        // does), even after a step one way and back; Save stays offered until one reaches the disk.
+        val failing = FailingPrefs(MemoryPrefs("glass_app_tint" to 30, "glass_app_dim" to 10))
         val onFailing = GlassShades(sp = { failing })
         onFailing.reset()
         var onDisk: Boolean? = null
         onFailing.save(now, main) { onDisk = it }
         assertEquals(false, onDisk)
+        assertEquals(GlassStyle.APP_SHADE, onFailing.saved(Kind.APP))
         assertTrue(onFailing.hasUnsaved())
+        assertTrue(onFailing.hasUnsaved(Kind.APP))
+        // Not changed by that Save: not marked.
+        assertFalse(onFailing.hasUnsaved(Kind.PLAYBACK))
+        onFailing.step(Kind.APP, Control.TINT, 1)
+        onFailing.step(Kind.APP, Control.TINT, -1)
+        assertTrue(onFailing.hasUnsaved(Kind.APP))
+        failing.failing = false
+        onFailing.save(now, main) { onDisk = it }
+        assertEquals(true, onDisk)
+        assertFalse(onFailing.hasUnsaved())
+        GlassShades.forgetUnsaved()
         // Saved: once, all six values in one change, and no longer Unsaved.
         shades.reset()
         shades.save(now, main) { onDisk = it }

@@ -32,14 +32,16 @@ import java.util.concurrent.atomic.AtomicLong
  *   ([sendAhead]) each connection's next span is asked for ahead of need, timed from the answer time measured
  *   ([SendAhead]), on a connection of its own ([Ahead]), so its answer comes while the span before is still read. A
  *   range is always read to its last byte, so its connection goes back to the platform's pool for the next one; a
- *   range cut off (a jump, a close) is disconnected, never used again.
+ *   range cut off (a jump, a close) is disconnected, never used again. A request sent ahead that fails or is turned
+ *   away is asked for again in place; turned away (a server with a limit on connections), nothing more is asked ahead
+ *   for that film ([refusedAhead]), and two requests go on.
  * - A jump or a close cuts the second request off at once and drops what it had fetched.
  * - A film standing still (a long pause) gives the segments back without giving two requests up ([rest]): the second
  *   request starts again where reading goes on.
- * - One request for the rest of the film ([fallbackFor]) when the server answers 429, 503, 403 or 509 to either request,
- *   stops honouring a range, the second request fails, ends early or goes quiet, the first request spends more time
- *   waiting for the second than reading, or more than [Config.answerShare] of its time waiting for answers
- *   ([HelperPace]): two must never be worse than one.
+ * - One request for the rest of the film ([fallbackFor]) when the server answers 429, 503, 403 or 509 to either request
+ *   (one sent ahead aside), stops honouring a range, the second request fails, ends early or goes quiet, the first
+ *   request spends more time waiting for the second than reading, or more than [Config.answerShare] of its time waiting
+ *   for answers ([HelperPace]): two must never be worse than one.
  *
  * A film is told by its size in bytes, so what is decided for it holds whichever of its addresses is asked (the link, or
  * where the provider sent it); another film in the same player (the next episode, another source) starts afresh.
@@ -190,6 +192,8 @@ class TwoRanges(val config: Config = Config(), private val log: (String) -> Unit
     private val answers = AtomicLong()
     private val answerNsAll = AtomicLong()
     @Volatile private var answerLately = 0L
+    // Films (by size) whose server turned a request sent ahead away, and its status ([refusedAhead]).
+    private val aheadRefused = ConcurrentHashMap<Long, Int>()
     // Film sockets made (FilmSockets.created), and how many there were as this player started; null: not counted.
     @Volatile private var sockets: (() -> Long)? = null
     private var socketsBefore = 0L
@@ -214,8 +218,21 @@ class TwoRanges(val config: Config = Config(), private val log: (String) -> Unit
     /** How long answers have taken lately, in ns; 0 before any came. */
     val answerNs: Long get() = answerLately
 
-    /** Whether a span's next request is worth sending ahead: answers take [Config.aheadMinNs] or more. */
-    val sendAhead: Boolean get() = answerLately >= config.aheadMinNs
+    /**
+     * Whether a span's next request for the film of [total] bytes is worth sending ahead: answers take
+     * [Config.aheadMinNs] or more, and its server hasn't turned a request sent ahead away ([refusedAhead]).
+     */
+    fun sendAhead(total: Long): Boolean = answerLately >= config.aheadMinNs && !aheadRefused.containsKey(total)
+
+    /**
+     * The server turned a request sent ahead for the film of [total] bytes away with [status]: asking ahead opens one
+     * more connection for a moment at each span's end, more than a server with a limit on them allows. Two requests go
+     * on, with nothing asked ahead for the rest of this film; the span is asked for again in place. Logged once.
+     */
+    internal fun refusedAhead(total: Long, status: Int) {
+        if (aheadRefused.size >= MAX_LINKS) aheadRefused.clear()
+        if (aheadRefused.putIfAbsent(total, status) == null) log("asking ahead stopped: http $status")
+    }
 
     internal fun link(key: String): Link? = synchronized(links) { links[key] }
 
@@ -806,7 +823,7 @@ class TwoRangeStream(
     // The first request's next segment is asked for now when answers are slow and what's left of this one comes in
     // about an answer's time.
     private fun sendAhead(now: Long) {
-        if (!film.sendAhead || gaveUp()) return
+        if (!film.sendAhead(plan.end) || gaveUp()) return
         val seg = plan.segmentOf(position)
         val after = seg + 2
         if (after >= plan.count) return
@@ -875,21 +892,21 @@ class TwoRangeStream(
     /** Asks the first request for the segment at [position]; [first]: as a connection opens, not in the middle of one. */
     private fun openSegment(first: Boolean) {
         val to = plan.endOf(plan.segmentOf(position))
-        val started = System.nanoTime()
+        var started = System.nanoTime()
         // Asked for ahead already (the answer may well be in): that request reads it.
         val ahead = if (first) null else takeNext(position, to)
         var r = primary
         val answer = try {
-            // Dropped meanwhile (the film stood still): asked for afresh.
-            val got = ahead?.take()
+            // Dropped meanwhile (the film stood still), turned away or failed: asked for afresh, in place.
+            val got = ahead?.let { fromAhead(it) }
             if (ahead != null && got != null) {
                 r = ahead.request
                 got
             } else {
+                if (ahead != null) started = System.nanoTime()
                 primary.open(position, to - position, fresh = first, probe = false)
             }
         } catch (e: IOException) {
-            if (ahead != null && !ahead.drop()) closeQuietly(ahead.request)
             if (TwoRanges.cancelled(e)) throw e
             val status = r.statusOf(e)
             // As a connection opens, any failure is the player's to handle, as with one request (a stale remembered
@@ -925,6 +942,26 @@ class TwoRangeStream(
         primaryOpen = true
         primaryEnd = to
         clock.reset()
+    }
+
+    /**
+     * The answer to the span asked for ahead with [a], handed over to be read; null when it was dropped meanwhile, failed
+     * or was turned away, and the span is to be asked for in place. A refusal ([TwoRanges.LIMIT_STATUSES]) is a limit
+     * on connections, not on the film: asking ahead stops for this film ([TwoRanges.refusedAhead]), two requests go on.
+     */
+    @Throws(IOException::class)
+    private fun fromAhead(a: Ahead): TwoRanges.Answer? {
+        val answer = try {
+            a.take() ?: return null
+        } catch (e: IOException) {
+            if (!a.drop()) closeQuietly(a.request)
+            if (TwoRanges.cancelled(e)) throw e
+            return null
+        }
+        if (answer.status !in TwoRanges.LIMIT_STATUSES) return answer
+        closeQuietly(a.request)
+        film.refusedAhead(plan.end, answer.status)
+        return null
     }
 
     // The request asked for ahead for [start] to [to], still fresh; any other is dropped.
@@ -1082,11 +1119,27 @@ internal class HelperRun(
             return false
         }
         try {
-            val answer = (if (sent != null) sent.take() else {
-                r.open(slot.start, slot.length.toLong(), fresh = false, probe = false).also {
-                    film.answered(System.nanoTime() - started)
+            // Sent ahead: its answer, or null when it failed or was turned away (asked for again in place below).
+            var answer = if (sent == null) null else try {
+                sent.take() ?: return false
+            } catch (e: IOException) {
+                if (cancelled || TwoRanges.cancelled(e)) return false
+                null
+            }
+            if (answer != null && answer.status in TwoRanges.LIMIT_STATUSES) {
+                // A limit on connections, not on the film: nothing more is asked ahead, two requests go on.
+                film.refusedAhead(plan.end, answer.status)
+                answer = null
+            }
+            if (answer == null) {
+                if (sent != null) {
+                    closeQuietly(r)
+                    if (cancelled) return false
                 }
-            }) ?: return false
+                val asked = System.nanoTime()
+                answer = r.open(slot.start, slot.length.toLong(), fresh = false, probe = false)
+                film.answered(System.nanoTime() - asked)
+            }
             if (answer.status in TwoRanges.LIMIT_STATUSES) return fail("http ${answer.status} on the second request")
             val verdict = RangeCheck.check(answer.status, answer.contentRange, slot.start, slot.start + slot.length - 1)
             if (!verdict.honoured) return fail("second request: ${verdict.reason}")
@@ -1127,7 +1180,7 @@ internal class HelperRun(
     // answer's time.
     private fun sendAhead(slot: Slot, filled: Int, now: Long) {
         val make = more ?: return
-        if (!film.sendAhead) return
+        if (!film.sendAhead(plan.end)) return
         val after = slot.segment + 2
         if (after >= plan.count) return
         val rate = clock.bytesPerSecond(now, SendAhead.least(slot.length.toLong()))

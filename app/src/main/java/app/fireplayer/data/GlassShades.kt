@@ -106,25 +106,34 @@ class GlassShades(private val sp: () -> SharedPreferences) {
         Dimmer.forgetDefaultDraft()
     }
 
-    /** Whether a glass shows a change not saved yet: Save would keep it. */
-    fun hasUnsaved(): Boolean = draft != null
+    /** Whether a glass shows a change not saved yet (or whose Save didn't reach the disk): Save would keep it. */
+    fun hasUnsaved(): Boolean = draft != null || notOnDisk.isNotEmpty()
 
-    /** Whether [kind] shows a change not saved yet. */
-    fun hasUnsaved(kind: Kind): Boolean = draft?.let { it[kind] != saved(kind) } ?: false
+    /** Whether [kind] shows a change not saved yet, or one whose Save didn't reach the disk ([save]). */
+    fun hasUnsaved(kind: Kind): Boolean = kind in notOnDisk || (draft?.let { it[kind] != saved(kind) } ?: false)
 
     /**
      * Save: the glasses as they show now ([kinds]: all three, both values each, in one change), committed on [writer]'s
      * thread so it's on the disk; then, back on the main thread ([main]), [done] says whether it is. Only then is the
      * change no longer Unsaved (a glass changed again meanwhile stays Unsaved); if it couldn't be saved it stays Unsaved.
+     * A failed commit still leaves the values in the file's memory (Android puts them there before it writes), so the
+     * glasses it changed are noted as not on the disk ([notOnDisk]) until a commit gets there: Save stays offered.
      */
     fun save(writer: SettingsWriter, main: (Runnable) -> Unit, kinds: List<Kind> = Kind.entries, done: (Boolean) -> Unit) {
         val now = kinds.associateWith { get(it) }
+        val before = kinds.associateWith { saved(it) }
         val edit = sp().edit()
         for ((kind, shade) in now) edit.putInt(kind.tintKey, shade.tint).putInt(kind.secondKey, kind.second.of(shade))
         writer.post(Runnable {
             val onDisk = runCatching { edit.commit() }.getOrDefault(false)
             main(Runnable {
-                if (onDisk) for ((kind, shade) in now) if (draft?.get(kind) == shade) change(kind, shade)
+                if (onDisk) {
+                    // The whole file was written: every glass's values in it are on the disk now.
+                    notOnDisk = emptySet()
+                    for ((kind, shade) in now) if (draft?.get(kind) == shade) change(kind, shade)
+                } else {
+                    notOnDisk = notOnDisk + now.keys.filter { now[it] != before[it] }
+                }
                 done(onDisk)
             })
         })
@@ -177,9 +186,16 @@ class GlassShades(private val sp: () -> SharedPreferences) {
          */
         private var draft: Map<Kind, GlassStyle.Shade>? = null
 
+        /**
+         * The glasses whose last Save didn't reach the disk: the file has their values in memory, so they read as saved,
+         * but the next start would bring back the old ones. Unsaved until a commit gets there. Main thread.
+         */
+        private var notOnDisk = emptySet<Kind>()
+
         /** As a new run of the app: changes not saved are gone (the tests start each from nothing). */
         internal fun forgetUnsaved() {
             draft = null
+            notOnDisk = emptySet()
         }
 
         /**

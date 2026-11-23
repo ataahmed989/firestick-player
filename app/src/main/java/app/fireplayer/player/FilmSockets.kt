@@ -22,9 +22,12 @@ import javax.net.ssl.SSLSocketFactory
  *
  * Left to itself the TV's kernel starts a socket's receive buffer at 1 MiB and grows it to at most 2 MiB, which lets
  * about 1 MiB be in flight at a time: at the 86-106 ms a round trip takes while the film loads, one connection can't
- * carry more than 79-95 Mb/s, whatever the server and the line could do. Each film socket asks for [WIDE_BYTES]
- * (the TV's rmem_max), or [NARROW_BYTES] on a TV short of memory ([lowMemory], [squeezed]): a socket the player stops
- * reading can hold up to that much in the kernel.
+ * carry more than 79-95 Mb/s, whatever the server and the line could do. Each film socket asks for [WIDE_BYTES], or
+ * [NARROW_BYTES] on a TV short of memory ([lowMemory], [squeezed]). The kernel doubles the size asked for (the other
+ * half covers its own bookkeeping), so a socket the player stops reading can hold up to twice that much in the kernel,
+ * outside the film's own budget: up to about 32 MiB with four film sockets open while loading is held (two connections,
+ * each with a span asked ahead). [WIDE_BYTES] still lets about 4 MiB be in flight: some 300 Mb/s for one connection at
+ * the 106 ms a round trip takes, and about 88 Mb/s at the 379 ms it reaches at worst.
  *
  * The socket is set up after its TCP connection is made and before its TLS handshake, in the one place every HTTPS
  * connection's socket passes through: the platform's SSL socket factory ([install] wraps it once; the wrapper changes
@@ -38,8 +41,8 @@ import javax.net.ssl.SSLSocketFactory
  * range shows there as a count close to the number of requests.
  */
 object FilmSockets {
-    const val WIDE_BYTES = 8 shl 20
-    const val NARROW_BYTES = 4 shl 20
+    const val WIDE_BYTES = 4 shl 20
+    const val NARROW_BYTES = 2 shl 20
 
     /** Linux's TCP_WINDOW_CLAMP (android.system.OsConstants doesn't name it). */
     private const val TCP_WINDOW_CLAMP = 10

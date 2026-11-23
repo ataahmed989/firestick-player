@@ -258,12 +258,17 @@ internal class CountingPrefs(val real: MemoryPrefs = MemoryPrefs()) : SharedPref
     }
 }
 
-/** A settings file whose writes never reach the disk (a full or failing storage): commit says false. */
+/**
+ * A settings file whose writes don't reach the disk (a full or failing storage) while [failing]: commit says false. As
+ * on Android, the change is made in the file's memory all the same.
+ */
 internal class FailingPrefs(private val real: MemoryPrefs) : SharedPreferences by real {
+    var failing = true
+
     override fun edit(): SharedPreferences.Editor {
         val e = real.edit()
         return object : SharedPreferences.Editor by e {
-            override fun commit(): Boolean = false
+            override fun commit(): Boolean = e.commit() && !failing
         }
     }
 }

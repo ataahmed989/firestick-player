@@ -69,8 +69,9 @@ class VodPages(private val context: Context, private val host: VodPage.Host, pri
      * The pages out of sight go altogether (a film plays, Live TV is watched a while, the TV is short of memory): their
      * views, rows and glass (1 to 2 MB each, and what Android's collections have to go through every time). Each keeps
      * its place ([PagePlace]): made again the next time its tab opens, from the titles kept in memory and on disk and
-     * the pictures on disk, as on a first open, it opens on the row and cards the viewer left it on. The page shown, and
-     * under a studio's page its service's page (Back returns there), stay as they are. How many went.
+     * the pictures on disk, as on a first open, it opens on the row and cards the viewer left it on. The page shown, the
+     * Home tab's own page (Back from a service's page and the live picture go there), and under a studio's page its
+     * service's page (Back returns there), stay as they are. How many went.
      */
     fun releaseHidden(): Int {
         val shown = current
@@ -79,7 +80,7 @@ class VodPages(private val context: Context, private val host: VodPage.Host, pri
             val it = map.values.iterator()
             while (it.hasNext()) {
                 val page = it.next()
-                if (!PagePlace.goes(page === shown, page.service, page.studio, shown?.service, shown?.studio)) continue
+                if (!PagePlace.goes(page === shown, page.tab, page.service, page.studio, shown?.service, shown?.studio)) continue
                 places[PagePlace.keyOf(page.tab, page.service, page.studio)] = page.place()
                 page.release()
                 container.removeView(page.root)

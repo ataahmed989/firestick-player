@@ -242,7 +242,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
                 wallpaper.release()
                 // The pages out of sight go altogether, keeping their places (made again when their tab next opens),
                 // then the glass no one sees lets go of its drawings, and the databases their page caches. The page
-                // shown stays as it is, so Back finds it at once.
+                // shown and Home's own stay as they are, so Back finds them at once.
                 val pages = vodPages.releaseHidden()
                 val glass = GlassBakes.forgetOffScreen()
                 SQLiteDatabase.releaseMemory()
@@ -927,8 +927,9 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
 
     /**
      * Someone settled in to watch Live TV: the film pages hidden behind it (none shows while Live TV is in front) go
-     * altogether with their glass, keeping their places ([app.fireplayer.vod.ui.VodPages.releaseHidden]). The guide, its
-     * logos, the wallpaper and the glass drawings kept for the guide stay: nothing on screen goes.
+     * altogether with their glass, keeping their places ([app.fireplayer.vod.ui.VodPages.releaseHidden]); Home's own
+     * stays, as the live picture goes there. The guide, its logos, the wallpaper and the glass drawings kept for the
+     * guide stay: nothing on screen goes.
      */
     private val liveSettled = Runnable {
         liveSettledArmed = false

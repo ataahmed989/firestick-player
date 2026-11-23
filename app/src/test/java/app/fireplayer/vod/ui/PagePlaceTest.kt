@@ -51,20 +51,25 @@ class PagePlaceTest {
     }
 
     @Test
-    fun everyHiddenPageGoesButTheShownOneAndTheServiceUnderAStudio() {
+    fun everyHiddenPageGoesButTheShownOneHomeAndTheServiceUnderAStudio() {
+        val home = VodTab.HOME
         // On Home: Movies, a service's page and a studio's page go; Home stays.
-        assertFalse(PagePlace.goes(isCurrent = true, service = null, studio = null, currentService = null, currentStudio = null))
-        assertTrue(PagePlace.goes(isCurrent = false, service = null, studio = null, currentService = null, currentStudio = null))
-        assertTrue(PagePlace.goes(false, Service.NETFLIX, null, null, null))
-        assertTrue(PagePlace.goes(false, Service.DISNEY, Brand.entries.first(), null, null))
+        assertFalse(PagePlace.goes(isCurrent = true, tab = home, service = null, studio = null, currentService = null, currentStudio = null))
+        assertTrue(PagePlace.goes(isCurrent = false, tab = VodTab.MOVIES, service = null, studio = null, currentService = null, currentStudio = null))
+        assertTrue(PagePlace.goes(false, home, Service.NETFLIX, null, null, null))
+        assertTrue(PagePlace.goes(false, home, Service.DISNEY, Brand.entries.first(), null, null))
         // On a Disney+ studio's page: Disney+'s own page stays (Back returns to it as it was); other services' go.
         val studio = Brand.MARVEL
-        assertFalse(PagePlace.goes(false, Service.DISNEY, null, Service.DISNEY, studio))
-        assertTrue(PagePlace.goes(false, Service.NETFLIX, null, Service.DISNEY, studio))
+        assertFalse(PagePlace.goes(false, home, Service.DISNEY, null, Service.DISNEY, studio))
+        assertTrue(PagePlace.goes(false, home, Service.NETFLIX, null, Service.DISNEY, studio))
         // Another studio's page, left before: it goes.
-        assertTrue(PagePlace.goes(false, Service.DISNEY, Brand.PIXAR, Service.DISNEY, studio))
-        // On Live TV or Settings (no film page shown): every film page goes.
-        assertTrue(PagePlace.goes(false, null, null, null, null))
+        assertTrue(PagePlace.goes(false, home, Service.DISNEY, Brand.PIXAR, Service.DISNEY, studio))
+        // The Home tab's own page never goes: Back from a service's page (a film opened from it) and the live picture
+        // land there, and it would show empty, then fill in and jump.
+        assertFalse(PagePlace.goes(false, home, null, null, Service.NETFLIX, null))
+        assertFalse(PagePlace.goes(false, home, null, null, null, null))
+        // On Live TV or Settings (no film page shown): every other film page goes.
+        for (tab in VodTab.entries.filter { it != home }) assertTrue(PagePlace.goes(false, tab, null, null, null, null))
     }
 
     @Test

@@ -89,7 +89,11 @@ object PlayerFactory {
         /** What the film's buffer fills to now, in bytes: its budget, or less while squeezed. */
         val fillBytes: () -> Long = { 0L },
         private val roomer: (Long, Long) -> Int = { _, _ -> 0 },
-        /** The film's budget now, in bytes (what it fills to when not squeezed); 0 when not known. */
+        /**
+         * The memory the film holds now, in bytes: its buffer's budget (what it fills to when not squeezed) and what the
+         * second request's long spans were given of it ([FilmBufferPlan.spanExtraBytes]); 0 when not known. Handed on
+         * whole to a player that takes this one's place (keepBudgetBytes), which plans that memory afresh.
+         */
         val budgetBytes: () -> Int = { 0 },
         /** How the film is arriving and stalling, for the log and the supply check ([FilmFlow]); null for none. */
         val flow: () -> FilmFlow? = { null },
@@ -462,7 +466,7 @@ object PlayerFactory {
                 .setMediaSourceFactory(sources)
                 .setRenderersFactory(DelayRenderersFactory(baseRenderers, delays, vsync))
                 .build()
-            return Built(player, null, { loadControl.wait }, { loadControl.allocatedBytes }, loadControl::squeeze, null, keptBehind(sources, plan), { loadControl.fillBytes }, loadControl::roomMade, { loadControl.budget }, { loadControl.flow })
+            return Built(player, null, { loadControl.wait }, { loadControl.allocatedBytes }, loadControl::squeeze, null, keptBehind(sources, plan), { loadControl.fillBytes }, loadControl::roomMade, { loadControl.budget + plan.spanExtraBytes }, { loadControl.flow })
         }
 
         // Same wiring as ass-media's buildWithAssSupport, plus our delay wrapper.
@@ -487,7 +491,7 @@ object PlayerFactory {
         // libass's OpenGL overlay goes over the film only once a styled track is chosen (Built.assOverlay): most films
         // have none, and it would otherwise keep its own render thread, GL context and full-screen buffer all film long.
         val overlay = AssOverlay { assSubtitleView.withAssSupport(assHandler) }
-        return Built(player, assHandler, { loadControl.wait }, { loadControl.allocatedBytes }, loadControl::squeeze, overlay, keptBehind(sources, plan), { loadControl.fillBytes }, loadControl::roomMade, { loadControl.budget }, { loadControl.flow })
+        return Built(player, assHandler, { loadControl.wait }, { loadControl.allocatedBytes }, loadControl::squeeze, overlay, keptBehind(sources, plan), { loadControl.fillBytes }, loadControl::roomMade, { loadControl.budget + plan.spanExtraBytes }, { loadControl.flow })
     }
 
     /** The film's sources, keeping no more behind than the plan's cap in memory ([BackBuffer]); as they are without one. */

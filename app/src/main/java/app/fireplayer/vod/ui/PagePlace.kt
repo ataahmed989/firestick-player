@@ -37,12 +37,22 @@ class PagePlace(val lastRow: String?, chosen: Map<String, Int>) {
         fun keyOf(tab: VodTab, service: Service?, studio: Brand?): String = "${tab.name}|${service?.name}|${studio?.name}"
 
         /**
-         * Whether a hidden page ([service], [studio]) goes when the hidden pages are let go of, with [current]'s shown
-         * (null: another tab, as Live TV or Settings): every page but the shown one, except, under a studio's page, its
-         * service's page, which Back from the studio returns to as it was.
+         * Whether a hidden page ([tab]'s, [service], [studio]) goes when the hidden pages are let go of, with the page
+         * of [currentService] and [currentStudio] shown (both null: a tab's, or another tab, as Live TV or Settings):
+         * every page but the shown one, except the Home tab's own page (the start page, where Back from a service's page
+         * returns and the live picture follows to: made again, it would show empty and fill in under the viewer), and,
+         * under a studio's page, its service's page, which Back from the studio returns to as it was.
          */
-        fun goes(isCurrent: Boolean, service: Service?, studio: Brand?, currentService: Service?, currentStudio: Brand?): Boolean {
+        fun goes(
+            isCurrent: Boolean,
+            tab: VodTab,
+            service: Service?,
+            studio: Brand?,
+            currentService: Service?,
+            currentStudio: Brand?,
+        ): Boolean {
             if (isCurrent) return false
+            if (tab == VodTab.HOME && service == null && studio == null) return false
             val underStudio = currentStudio != null && studio == null && service != null && service == currentService
             return !underStudio
         }
