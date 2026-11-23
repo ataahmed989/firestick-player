@@ -84,6 +84,14 @@ object Services {
         RowSpec("service.${service.key}.shows", "Popular Shows", RowStyle.POSTER, Source.Discover(Kind.SERIES, service.providerId, alsoProvider = service.withAds)),
     )
 
+    /**
+     * Whether [service]'s page, opened, starts with focus on its banner's Details (Hulu, Netflix, Prime Video, HBO Max,
+     * Apple TV); Disney+'s starts in its rows (its studios' cards first), as every other page does.
+     */
+    fun startsOnDetails(service: Service): Boolean = service in DETAILS_FIRST
+
+    private val DETAILS_FIRST = setOf(Service.HULU, Service.NETFLIX, Service.PRIME_VIDEO, Service.HBO_MAX, Service.APPLE_TV)
+
     /** A brand's whole collection on Disney+ in the US, films and series in turn, page after page. */
     fun collection(brand: Brand): RowSpec = RowSpec(
         "brand.${brand.key}", brand.label, RowStyle.POSTER,
