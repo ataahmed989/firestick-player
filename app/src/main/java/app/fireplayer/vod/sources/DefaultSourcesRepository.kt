@@ -200,9 +200,12 @@ class DefaultSourcesRepository(
 
     internal fun link(addon: Addon): SecretUrl? = links(addon)
 
-    /** What real use found about [addon] ([AddonCheck]), for its status in Settings › Add-ons; null notes nothing. */
-    internal fun noted(addon: Addon, outcome: AddonCheck.Outcome?) {
-        if (outcome != null) checks?.noted(addon, outcome)
+    /**
+     * What real use found about [addon] ([AddonCheck]), for its status in Settings › Add-ons; null notes nothing.
+     * [fromList]: a streams list's (it can't see a debrid problem that shows only when a link is opened).
+     */
+    internal fun noted(addon: Addon, outcome: AddonCheck.Outcome?, fromList: Boolean = false) {
+        if (outcome != null) checks?.noted(addon, outcome, fromList)
     }
 
     /** The key of [target]'s row holding [release], also when it was merged into another release's row (×N). */
@@ -315,7 +318,7 @@ class DefaultSourcesRepository(
         call.deadline = null
         val now = elapsed()
         val parsed = result.getOrNull()
-        noted(addon, AddonCheck.fromLookup(parsed, result.exceptionOrNull(), online()))
+        noted(addon, AddonCheck.fromLookup(parsed, result.exceptionOrNull(), online()), fromList = true)
         when {
             parsed == null -> {
                 val e = result.exceptionOrNull()

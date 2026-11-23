@@ -23,8 +23,8 @@ import kotlin.concurrent.thread
  * real use notes the same for free ([noted]: a look-up with cached sources, a play's link). A result is kept in the
  * records ([records]) as its state, a short problem, the debrid service's name, the time and a fingerprint (one-way
  * hash) of the link checked, so a changed link reads "not checked" again; the link itself is never stored, logged or
- * shown. Checks run only when asked: a link added or changed, Check now, or Settings opening a day after the last
- * ([checkStale]). Main thread, except the requests.
+ * shown. Checks run only when asked: a link added or changed, Check now, or Settings opening a day after the last, or
+ * after a "Couldn't check" once back online or [RETRY_MS] later ([checkStale]). Main thread, except the requests.
  */
 class AddonChecks(
     private val records: SharedPreferences,
@@ -89,27 +89,33 @@ class AddonChecks(
     }
 
     /**
-     * The saved add-ons not checked yet, or last checked (or used) over a day ago: Settings opening. One being checked
-     * already (Settings tab opening, say) is joined, so [onDone] still hears of it.
+     * The saved add-ons not checked yet, or last checked (or used) over a day ago: Settings opening. A "Couldn't check"
+     * is due again sooner, as the keys' is: one made without internet once online, any other after [RETRY_MS] (offline
+     * it's never due, and a failed check keeps its time, so a window drawn again can't keep checking). One being
+     * checked already (Settings tab opening, say) is joined, so [onDone] still hears of it.
      */
     fun checkStale(onDone: () -> Unit = {}) {
         val now = wall()
         for (addon in Addon.entries) {
             val st = status(addon)
             if (st.state == State.NOT_SET) continue
-            val due = st.state == State.CHECKING || st.state == State.NOT_CHECKED || now - st.checkedAt >= STALE_MS || now < st.checkedAt
+            val due = st.state == State.CHECKING || st.state == State.NOT_CHECKED || now - st.checkedAt >= STALE_MS || now < st.checkedAt ||
+                st.state == State.UNREACHABLE && (now - st.checkedAt >= RETRY_MS || st.problem == AddonCheck.NO_INTERNET && online())
             if (due) check(addon, onDone)
         }
     }
 
     /**
      * What real use found ([AddonCheck.fromLookup], [AddonCheck.fromLinkCheck]), kept as a check's result would be. The
-     * same result again within [NOTE_AGAIN_MS] isn't written again, so browsing doesn't keep writing the records.
+     * same result again within [NOTE_AGAIN_MS] isn't written again, so browsing doesn't keep writing the records. A
+     * streams list's Working ([fromList]) doesn't clear a Not accepted: a debrid limit or refused key shows only when a
+     * link is opened, so a play's Ready link, Check now or a new link clears it.
      */
-    fun noted(addon: Addon, outcome: AddonCheck.Outcome) {
+    fun noted(addon: Addon, outcome: AddonCheck.Outcome, fromList: Boolean = false) {
         val link = links(addon) ?: return
         val fp = fingerprint(link)
         val saved = read(addon)?.takeIf { it.fingerprint == fp }
+        if (fromList && outcome.state == State.WORKING && saved?.state == State.NOT_ACCEPTED) return
         val service = outcome.service ?: saved?.service
         if (saved != null && saved.state == outcome.state && saved.problem == outcome.problem && saved.service == service &&
             wall() - saved.at in 0 until NOTE_AGAIN_MS
@@ -157,6 +163,8 @@ class AddonChecks(
         const val STALE_MS = 24 * 60 * 60_000L
         /** Real use writes the same result again only after this long (the "checked … ago" stays near). */
         const val NOTE_AGAIN_MS = 10 * 60_000L
+        /** Settings opening checks a "Couldn't check" again once it's this old (an add-on busy or down a while). */
+        const val RETRY_MS = 10 * 60_000L
         const val MANIFEST_TIMEOUT_MS = 10_000
         /** The streams request may take this much past the add-on's own answer limit. */
         const val STREAMS_EXTRA_MS = 10_000L

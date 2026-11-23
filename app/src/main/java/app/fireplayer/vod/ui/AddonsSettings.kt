@@ -20,7 +20,7 @@ import app.fireplayer.vod.sources.AddonChecks
  * Each add-on's badge says whether it works, as the API keys' do (Accounts & services): "Set · not checked",
  * "Working", "Not accepted", "Couldn't check" ([AddonChecks]), with a short note after the add-ons ("Torrentio:
  * Real-Debrid · checked 5 min ago."). A link is checked once saved, by Check now, and as this window opens when its
- * last check is a day old.
+ * last check is a day old (a "Couldn't check" sooner: [AddonChecks.checkStale]).
  */
 object AddonsSettings {
 

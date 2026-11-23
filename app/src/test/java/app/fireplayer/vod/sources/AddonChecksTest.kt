@@ -40,6 +40,7 @@ class AddonChecksTest {
     private val records = MemoryPrefs()
     private val links = HashMap<Addon, SecretUrl>().apply { put(Addon.TORRENTIO, SecretUrl.of(SourceFixtures.TIO)!!) }
     private var wall = 1_800_000_000_000L
+    private var online = true
     private var manifest: () -> String = { MANIFEST }
     private var streams: () -> String = { answer(torrentio(H1)) }
     private val asked = ArrayList<String>()
@@ -55,7 +56,7 @@ class AddonChecksTest {
         background = { r -> if (deferred) pending += r else r.run() },
         main = loop,
         wall = { wall },
-        online = { true },
+        online = { online },
     )
 
     private fun checkNow(addon: Addon = Addon.TORRENTIO): Int {
@@ -161,6 +162,59 @@ class AddonChecksTest {
         checks.checkStale()
         loop.advance()
         assertEquals(2, asked.size)
+    }
+
+    @Test fun aCouldntCheckIsCheckedAgainOnceOnlineOrTenMinutesLater() {
+        online = false
+        manifest = { throw java.io.IOException() }
+        checkNow()
+        assertEquals("no internet", checks.status(Addon.TORRENTIO).detail(wall))
+        // Still offline: not due, however often the window is drawn.
+        asked.clear()
+        checks.checkStale()
+        loop.advance()
+        assertTrue(asked.isEmpty())
+        // Back online: the next opening checks it again.
+        online = true
+        manifest = { MANIFEST }
+        wall += 60_000
+        checks.checkStale()
+        loop.advance()
+        assertEquals(2, asked.size)
+        assertEquals(State.WORKING, checks.status(Addon.TORRENTIO).state)
+        // Any other Couldn't check (the add-on busy): again only once it's 10 minutes old, so a redraw doesn't loop.
+        manifest = { throw StreamsHttp.Busy() }
+        checkNow()
+        assertEquals("add-on busy", checks.status(Addon.TORRENTIO).detail(wall))
+        asked.clear()
+        wall += AddonChecks.RETRY_MS - 1
+        checks.checkStale()
+        loop.advance()
+        assertTrue(asked.isEmpty())
+        manifest = { MANIFEST }
+        wall += 1
+        checks.checkStale()
+        loop.advance()
+        assertEquals(2, asked.size)
+        assertEquals(State.WORKING, checks.status(Addon.TORRENTIO).state)
+    }
+
+    @Test fun aListsWorkingDoesNotClearAProblemFoundWhilePlaying() {
+        // A play's link was refused: the debrid limit.
+        checks.noted(Addon.TORRENTIO, Outcome(State.NOT_ACCEPTED, AddonCheck.LIMIT))
+        // The next title's list still shows cached sources: the problem stays.
+        val engine = engine { answer(torrentio(H1)) }
+        engine.lookUp(SourceTarget(Title("tt0000001", Kind.MOVIE, "Film", runtime = "120 min")), LookupWhy.SOURCES, Addon.TORRENTIO) { }
+        loop.advance()
+        assertEquals(State.NOT_ACCEPTED, checks.status(Addon.TORRENTIO).state)
+        assertEquals("debrid limit reached", checks.status(Addon.TORRENTIO).detail(wall))
+        // A play whose link comes back Ready clears it.
+        checks.noted(Addon.TORRENTIO, Outcome(State.WORKING, service = "Real-Debrid"))
+        assertEquals(State.WORKING, checks.status(Addon.TORRENTIO).state)
+        // So does Check now.
+        checks.noted(Addon.TORRENTIO, Outcome(State.NOT_ACCEPTED, AddonCheck.KEY_REFUSED))
+        checkNow()
+        assertEquals(State.WORKING, checks.status(Addon.TORRENTIO).state)
     }
 
     @Test fun realUseNotesTheStatusWithoutAsking() {
