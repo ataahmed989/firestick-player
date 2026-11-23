@@ -1,6 +1,7 @@
 package app.fireplayer.vod.sources
 
 import app.fireplayer.data.Prefs
+import app.fireplayer.data.Settings
 import android.annotation.SuppressLint
 import android.content.Context
 import android.net.ConnectivityManager
@@ -75,6 +76,8 @@ class DefaultSourcesRepository(
     internal val online: () -> Boolean,
     /** What this connection was measured to sustain when a film kept stalling for want of it ([LineRate.current]). */
     private val lineMbps: () -> Double? = { null },
+    /** The add-ons' statuses: real use notes in them what it finds ([noted]). */
+    override val checks: AddonChecks? = null,
 ) : SourcesRepository {
 
     private class Answer(val parsed: ParsedAnswer, val keepUntil: Long)
@@ -197,6 +200,11 @@ class DefaultSourcesRepository(
 
     internal fun link(addon: Addon): SecretUrl? = links(addon)
 
+    /** What real use found about [addon] ([AddonCheck]), for its status in Settings › Add-ons; null notes nothing. */
+    internal fun noted(addon: Addon, outcome: AddonCheck.Outcome?) {
+        if (outcome != null) checks?.noted(addon, outcome)
+    }
+
     /** The key of [target]'s row holding [release], also when it was merged into another release's row (×N). */
     internal fun rowKeyOf(target: SourceTarget, release: ReleaseKey): String? = entries[target.key]?.rowOf?.get(release.storeKey)
 
@@ -307,6 +315,7 @@ class DefaultSourcesRepository(
         call.deadline = null
         val now = elapsed()
         val parsed = result.getOrNull()
+        noted(addon, AddonCheck.fromLookup(parsed, result.exceptionOrNull(), online()))
         when {
             parsed == null -> {
                 val e = result.exceptionOrNull()
@@ -489,6 +498,16 @@ class DefaultSourcesRepository(
             val budgetPrefs = app.getSharedPreferences("fireplayer_sources", Context.MODE_PRIVATE)
             var engine: DefaultSourcesRepository? = null
             val vault = AddonVault.of(app) { engine?.forget() }
+            val checks = AddonChecks(
+                records = Settings.records(app),
+                links = vault::link,
+                manifest = AddonChecks.URL_MANIFEST,
+                streams = StreamsHttp.URL_STREAMS,
+                background = AddonChecks.THREAD,
+                main = loop,
+                wall = System::currentTimeMillis,
+                online = online,
+            )
             val vod = VodRepositories.repository(app)
             val tv = ThisTvReader(app, app.getSharedPreferences(ThisTvReader.FILE, Context.MODE_PRIVATE), System::currentTimeMillis)
             val made = DefaultSourcesRepository(
@@ -516,6 +535,7 @@ class DefaultSourcesRepository(
                 online = online,
                 // With Faster downloads on, what two connections were measured to bring; one connection's otherwise.
                 lineMbps = { LineRate.of(budgetPrefs, two = Prefs(app).fasterDownloads).current() },
+                checks = checks,
             )
             engine = made
             // A new plan for this TV (Settings › This TV): the lists kept in memory rank again.
