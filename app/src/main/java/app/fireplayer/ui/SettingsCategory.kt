@@ -81,7 +81,7 @@ enum class SettingsCategory(val title: String, val icon: Int, val settings: List
     // every tab's banner shows each title while idle.
     HOME_HEADER("Home Header", R.drawable.ic_head_banner, listOf("Match the focused Continue Watching title", "Time on each title")),
     // Films & Shows' sources (design-brief.md §6.1, 6.5): the two add-ons, and how sources are ranked for this TV.
-    ADDONS("Add-ons", R.drawable.ic_server, listOf("Torrentio", "MediaFusion", "StremThru Torz")),
+    ADDONS("Add-ons", R.drawable.ic_server, listOf("Torrentio", "MediaFusion", "StremThru Torz", "Check the add-ons now")),
     THIS_TV("This TV", R.drawable.ic_display, listOf("Check again", "Best for this TV")),
     TITLES("TiviMate titles", R.drawable.ic_head_tv, listOf("English titles in TiviMate", "Check playlists now")),
     APP("App", R.drawable.ic_head_app, listOf("Check for updates")),

@@ -59,6 +59,8 @@ class SettingsCategoryTest {
             "Torrentio", "MediaFusion", "Check again", "Best for this TV",
             // The third add-on.
             "StremThru Torz",
+            // Add-ons: every saved add-on checked, as Accounts & services' Check the keys now.
+            "Check the add-ons now",
             // Films & Shows step 4: Settings › Rows, a window per page.
             "Home", "Movies", "TV Shows",
             // Home Header: whether Home's banner shows the focused Continue Watching title.

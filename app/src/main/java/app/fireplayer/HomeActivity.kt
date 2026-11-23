@@ -878,6 +878,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         val isLive = tab == NavRail.Tab.LIVE
         live.root.visibility = if (isLive) View.VISIBLE else View.GONE
         settingsPage.visibility = if (tab == NavRail.Tab.SETTINGS) View.VISIBLE else View.GONE
+        // Settings opening: an add-on not checked (or used) for a day is checked now, so Add-ons shows it fresh.
+        if (tab == NavRail.Tab.SETTINGS && from != tab) runCatching { app.fireplayer.vod.Sources.get(this).checks?.checkStale() }
         // Search, Home, Movies, TV Shows or My List (the others hidden, their pictures let go).
         vodPages.show(tab, service)
         // Live TV in front a while: what the other tabs left in memory goes (LiveRoom).
