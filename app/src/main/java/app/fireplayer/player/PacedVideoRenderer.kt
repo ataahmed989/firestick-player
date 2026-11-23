@@ -47,7 +47,8 @@ import androidx.media3.exoplayer.video.MediaCodecVideoRenderer
  * so all of Media3 after sees an HEVC film: the HEVC decoders are the ones listed and tried, falling back from one to
  * the next as for any HEVC film; their format checks pass, rather than warning that the format exceeds the decoder;
  * and the decoder is configured as video/hevc with the colour the track states (for profile 7, BT.2020 and PQ), without
- * the Dolby Vision profile Media3 sets for a Dolby Vision format. The samples go to it as they are.
+ * the Dolby Vision profile Media3 sets for a Dolby Vision format, and HDR10 colour where the file states none
+ * ([DvBaseLayer.hdr10]). Its samples go to it with their Dolby Vision units hidden ([DvBaseLayer.hideDolbyVision]).
  */
 @OptIn(UnstableApi::class)
 class PacedVideoRenderer(
@@ -69,6 +70,13 @@ class PacedVideoRenderer(
     private var masked = false
     /** The Dolby Vision format last looked at and its HEVC base layer (null: played as it is), made once a track. */
     @Volatile private var seen: BaseLayer? = null
+    /**
+     * The decoder is being given a track as its base layer: set by each format the decoder is given, before its
+     * samples, so an HEVC film or a Dolby Vision 5 or 8 one after it (the next in the list) is never touched.
+     */
+    private var asBase = false
+    /** Dolby Vision units were hidden since the decoder was made: logged the first time. */
+    private var dvHidden = false
     /** The Dolby Vision format whose base layer the log last told of, and how many Dolby Vision decoders the TV has. */
     private var told: Format? = null
     private var dvDecoders = 0
@@ -98,6 +106,7 @@ class PacedVideoRenderer(
         firstSent = false
         hevc = Hdr10PlusMask.hevcStream(codecInfo?.mimeType, codecInputFormat?.codecs)
         masked = false
+        dvHidden = false
         // Tunnelled playback has Media3's own listener, and Media3 its own timing; the film never plays tunnelled here.
         if (getConfiguration().tunneling) return
         val looper = Looper.myLooper() ?: return
@@ -108,6 +117,11 @@ class PacedVideoRenderer(
         }
     }
 
+    /**
+     * Each output format the decoder reports. Some report one a frame for a while (the 4K Max's MediaTek decoder logged
+     * "updateFormatChanged" on every frame for a few seconds of a profile 7 film): nothing here may log, measure or make
+     * anything, and the same frame length is a single compare.
+     */
     override fun onOutputFormatChanged(format: Format, mediaFormat: MediaFormat?) {
         super.onOutputFormatChanged(format, mediaFormat)
         // A frame's length as the film states it, to tell a gap in its times by.
@@ -166,7 +180,9 @@ class PacedVideoRenderer(
     /**
      * Each sample on its way to the decoder, after Media3 has put it together and before it's queued: HDR10+ is masked
      * in place when the TV doesn't report HDR10+. Only the few hundred bytes before the picture data are read, with
-     * nothing made, so it costs microseconds a frame.
+     * nothing made, so it costs microseconds a frame. A track played as its base layer has its Dolby Vision units
+     * hidden: the whole sample is searched for them, 8 bytes at a time, with nothing made (a quarter to a third of
+     * the time reading every byte takes). Encrypted samples are never touched.
      */
     override fun onQueueInputBuffer(buffer: DecoderInputBuffer) {
         if (hevc && hdr10Plus.mask && !buffer.isEncrypted) {
@@ -176,7 +192,7 @@ class PacedVideoRenderer(
                 Log.i(TAG, "HDR10+ metadata in this video is masked before the decoder (the TV doesn't report HDR10+)")
             }
         }
-        if (seen?.base != null && !buffer.isEncrypted) {
+        if (asBase && !buffer.isEncrypted) {
             val data = buffer.data
             if (data != null && DvBaseLayer.hideDolbyVision(data) > 0 && !dvHidden) {
                 dvHidden = true
@@ -185,8 +201,6 @@ class PacedVideoRenderer(
         }
         super.onQueueInputBuffer(buffer)
     }
-
-    private var dvHidden = false
 
     /**
      * How well the renderer plays [format]: a profile 7 track played as its base layer, as the HEVC film it then is, on a
@@ -206,6 +220,7 @@ class PacedVideoRenderer(
     override fun onInputFormatChanged(formatHolder: FormatHolder): DecoderReuseEvaluation? {
         val format = formatHolder.format
         val base = format?.let { baseLayer(it) }
+        asBase = base != null
         if (base != null) {
             formatHolder.format = base
             if (format !== told) {

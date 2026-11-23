@@ -125,31 +125,68 @@ object DvBaseLayer {
 
     /**
      * Hides a profile 7 file's Dolby Vision units from the HEVC decoder, in place: every NAL unit of type 62 (the RPU,
-     * Dolby Vision's metadata) or 63 (the enhancement layer) becomes reserved type 47, which a decoder skips. The sample
-     * is Annex-B (Media3's Matroska and MP4 readers hand HEVC on with start codes). Nothing is made; one pass over the
-     * sample. Returns how many units were hidden.
+     * Dolby Vision's metadata) or 63 (the enhancement layer) becomes reserved type 47, which a decoder skips. Only the
+     * type changes: the header's forbidden bit and the layer id's high bit stay as they were.
+     *
+     * The sample, from its position to its limit, is Annex-B: Media3's Matroska reader turns each NAL unit's length
+     * into a 00 00 00 01 start code for every V_MPEGH/ISO/HEVC track (Dolby Vision ones are such tracks), its MP4 and
+     * fragmented MP4 readers do the same for every track whose hvcC gives a length size (dvhe and dvh1 tracks carry
+     * one), and MPEG-TS is Annex-B already. Emulation prevention keeps 00 00 01 out of a NAL unit's contents, so each
+     * one found is a start code.
+     *
+     * Most of a sample is picture data with no start code in it, so it's searched 8 bytes at a time: 8 bytes with no
+     * 00 among them can't hold a start code's two zeros, and none of the 8 positions after the first of them can be its
+     * 01. Where there is a 00, as Media3's NalUnitUtil.findNalUnit searches: a byte that's not 00 is no start code's
+     * zero, so the 01 isn't there or at the next two bytes (unless it's that 01 itself). Finds exactly what reading
+     * every byte would. Nothing is made, and the position and limit stay. Returns how many units were hidden.
      */
     fun hideDolbyVision(data: java.nio.ByteBuffer): Int {
-        var hidden = 0
+        if (data.isReadOnly) return 0
         val end = data.limit()
-        var i = data.position()
-        while (i + 3 < end) {
-            if (data.get(i) == 0.toByte() && data.get(i + 1) == 0.toByte() && data.get(i + 2) == 1.toByte()) {
-                val h = i + 3
-                val b = data.get(h).toInt() and 0xFF
-                val type = (b shr 1) and 0x3F
-                if (type == 62 || type == 63) {
-                    data.put(h, ((b and 0x81) or (HIDDEN_TYPE shl 1)).toByte())
+        var hidden = 0
+        // Where a start code's 01 may be: two bytes into the sample at the earliest, and its NAL unit's header after it.
+        var i = data.position() + 2
+        while (i < end - 1) {
+            if (i + 7 <= end) {
+                // The 8 bytes from the one before: a 01 at any of the 8 positions from here needs one of them to be 00.
+                val x = data.getLong(i - 1)
+                if (((x - ONES) and x.inv() and HIGHS) == 0L) {
+                    i += 8
+                    continue
+                }
+            }
+            val b = data.get(i).toInt()
+            if (b == 0) {
+                // A zero of a start code whose 01 is next, or the one after.
+                i++
+            } else if (b != 1 || data.get(i - 1).toInt() != 0 || data.get(i - 2).toInt() != 0) {
+                i += 3
+            } else {
+                val h = i + 1
+                val header = data.get(h).toInt() and 0xFF
+                val type = (header shr 1) and 0x3F
+                if (type == RPU || type == ENHANCEMENT_LAYER) {
+                    data.put(h, ((header and 0x81) or (HIDDEN_TYPE shl 1)).toByte())
                     hidden++
                 }
-                i = h + 1
-            } else {
-                i++
+                // The next start code starts after this header byte.
+                i = h + 3
             }
         }
         return hidden
     }
 
-    /** A reserved non-picture NAL unit type: decoders skip it. */
-    private const val HIDDEN_TYPE = 47
+    /** Dolby Vision's NAL unit types in an HEVC stream: its RPU (metadata) and its enhancement layer. */
+    private const val RPU = 62
+    private const val ENHANCEMENT_LAYER = 63
+
+    /**
+     * A reserved non-picture NAL unit type, which decoders skip. Like 62 and 63, it may come after a picture's data
+     * without starting a new access unit (types 41 to 44 and 48 to 55 would), so the decoder's frames stay as they were.
+     */
+    const val HIDDEN_TYPE = 47
+
+    /** 0x01 and 0x80 in every byte: (x - [ONES]) and not x has a [HIGHS] bit set exactly when one of x's bytes is 00. */
+    private const val ONES = 0x0101010101010101L
+    private const val HIGHS = ONES shl 7
 }
