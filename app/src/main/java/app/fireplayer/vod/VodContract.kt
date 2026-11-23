@@ -532,6 +532,15 @@ interface VodRepository {
      */
     fun header(page: Page, onFeed: (HeaderFeed) -> Unit): Cancel
 
+    /**
+     * [title] as a banner shows it, its facts completed from Cinemeta ([app.fireplayer.vod.data.TitleFacts]) when it
+     * lacks them: one made from TMDB's lists (a service's rows, More Like This, My List entries added from them) has
+     * only its year and TMDB's story. [onTitle] is called once, on the main thread, only when something was added:
+     * from what's known here at once, else after one Cinemeta call (kept a day; a stand-in's IMDb id from TMDB first).
+     * Never for a title that has its facts.
+     */
+    fun headerTitle(title: Title, onTitle: (Title) -> Unit): Cancel = Cancel {}
+
     /** Whether a TMDB key is set (Top 10, age ratings, cast photos, More Like This); a key TMDB refused counts as none. */
     fun hasTmdbKey(): Boolean
 

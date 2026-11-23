@@ -166,6 +166,55 @@ class DefaultVodRepository(
         return req
     }
 
+    override fun headerTitle(title: Title, onTitle: (Title) -> Unit): Cancel {
+        val req = Req()
+        if (!TitleFacts.lacks(title)) return req
+        val kind = title.kind
+        io.execute {
+            if (req.cancelled) return@execute
+            val imdb = imdbOf(title, fetch = false)
+            // Known here (Cinemeta's pages, a title page's meta, an earlier answer): at once.
+            val known = imdb?.let { knownFacts(kind, it) }
+            if (known != null) return@execute factsTo(req, title, known, onTitle)
+            net.execute {
+                if (req.cancelled) return@execute
+                val id = imdb ?: imdbOf(title, fetch = true) ?: return@execute
+                // Fetched (kept a day), else an older copy.
+                val meta = metaTitle(kind, id) ?: cache.read(Cinemeta.metaUrl(kind, id))?.let { TitleJson.read(it.data.optJSONObject("title")) }
+                if (meta != null && !req.cancelled) factsTo(req, title, meta, onTitle)
+            }
+        }
+        return req
+    }
+
+    /** [title] completed from [meta], to [onTitle] when that added anything. */
+    private fun factsTo(req: Req, title: Title, meta: Title, onTitle: (Title) -> Unit) {
+        val whole = TitleFacts.complete(title, meta)
+        if (whole != title) post(req) { onTitle(whole) }
+    }
+
+    /** A title's facts as known here without asking: Cinemeta's pages, a title page's meta, a stored meta. */
+    private fun knownFacts(kind: Kind, imdb: String): Title? =
+        byId["${kind.type}|$imdb"]?.takeIf { !TitleFacts.lacks(it) }
+            ?: storedMeta(kind, imdb)?.value?.title
+            ?: cache.read(Cinemeta.metaUrl(kind, imdb))?.takeIf { it.isFresh(clock()) }?.let { TitleJson.read(it.data.optJSONObject("title")) }
+
+    /**
+     * [title]'s IMDb id: its own, or a stand-in's as known here ([knownImdb], stored TMDB details) or, with [fetch],
+     * from TMDB's details (the call its title page makes anyway). Null when TMDB has none.
+     */
+    private fun imdbOf(title: Title, fetch: Boolean): String? {
+        if (title.hasImdbId) return title.id
+        val kind = title.kind
+        val tmdbId = title.tmdbId ?: MoreLikeThis.tmdbIdOfStandIn(title.id) ?: return null
+        return when (val k = knownImdb(kind, tmdbId)) {
+            is TmdbTrending.Known.Hit -> k.imdb
+            TmdbTrending.Known.Miss -> null
+            TmdbTrending.Known.Unknown -> storedExtras(kind, tmdbId)?.value?.imdbId
+                ?: if (fetch) fetchExtras(kind, tmdbId)?.value?.imdbId else null
+        }
+    }
+
     override fun hasTmdbKey(): Boolean = usableKey()
 
     // ---- Library ----

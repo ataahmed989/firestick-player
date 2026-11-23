@@ -9,6 +9,7 @@ import app.fireplayer.vod.RowSpec
 import app.fireplayer.vod.RowStyle
 import app.fireplayer.vod.Source
 import app.fireplayer.vod.Title
+import app.fireplayer.vod.standInId
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -542,5 +543,56 @@ class DefaultVodRepositoryTest {
         queued.forEach { it.run() }
         assertEquals(0, heard)
         assertEquals(0, http.count(url))
+    }
+
+    // ---- A banner's facts (headerTitle) ----
+
+    /** The Bear as a service's row makes it from TMDB's list: its year and TMDB's story only. */
+    private val bearFromTmdb = Title("tt14452776", Kind.SERIES, "The Bear", year = "2022", logo = "logo", description = "TMDB's story", tmdbId = 136315)
+    private val bearMeta = """{"meta":{"id":"tt14452776","type":"series","name":"The Bear","releaseInfo":"2022–2026",""" +
+        """"description":"Cinemeta's story","imdbRating":"8.5","genres":["Comedy","Drama"],"runtime":"35 min"}}"""
+
+    @Test
+    fun aBannersShowMadeFromTmdbGetsCinemetasFactsOnceThenFromMemory() {
+        val url = Cinemeta.metaUrl(Kind.SERIES, "tt14452776")
+        http.answers[url] = bearMeta
+        val r = repo()
+        var got: Title? = null
+        r.headerTitle(bearFromTmdb) { got = it }
+        assertEquals("2022–2026", got?.year)
+        assertEquals(listOf("Comedy", "Drama"), got?.genres)
+        assertEquals("8.5", got?.imdbRating)
+        assertEquals("35 min", got?.runtime)
+        // What the banner shows already stays.
+        assertEquals("TMDB's story", got?.description)
+        assertEquals("logo", got?.logo)
+        // Asked again (the next turn, My List chosen again): what's known, no second call.
+        got = null
+        r.headerTitle(bearFromTmdb) { got = it }
+        assertEquals("2022–2026", got?.year)
+        assertEquals(1, http.count(url))
+    }
+
+    @Test
+    fun aTitleWithItsFactsIsNeverAskedForAndNothingFoundIsNoAnswer() {
+        val r = repo()
+        var heard = 0
+        r.headerTitle(bearFromTmdb.copy(genres = listOf("Drama"), imdbRating = "8.5")) { heard++ }
+        // Offline: Cinemeta can't be asked, and the banner keeps what it shows.
+        r.headerTitle(bearFromTmdb) { heard++ }
+        assertEquals(0, heard)
+        assertEquals(1, http.count(Cinemeta.metaUrl(Kind.SERIES, "tt14452776")))
+    }
+
+    @Test
+    fun aStandInsFactsComeByTheImdbIdItsTmdbDetailsGive() {
+        key = "0123456789abcdef0123456789abcdef"
+        tmdb.details["series|136315"] = """{"id":136315,"name":"The Bear","external_ids":{"imdb_id":"tt14452776"}}"""
+        http.answers[Cinemeta.metaUrl(Kind.SERIES, "tt14452776")] = bearMeta
+        val r = repo()
+        var got: Title? = null
+        r.headerTitle(bearFromTmdb.copy(id = standInId(Kind.SERIES, 136315))) { got = it }
+        assertEquals(standInId(Kind.SERIES, 136315), got?.id)
+        assertEquals(listOf("Comedy", "Drama"), got?.genres)
     }
 }

@@ -277,6 +277,15 @@ class VodPage(
     private var pendingFrom: View? = null
     /** The row focus was last in (focus memory for the rail, windows and tab switches). */
     private var lastRow: TitleRow? = null
+    /**
+     * Hulu's, Netflix's, Prime Video's, HBO Max's and Apple TV's pages ([Services.startsOnDetails]): focus starts on the
+     * banner's Details when the page opens, and while no row has been chosen on it yet.
+     */
+    private val detailsFirst = studio == null && service?.let { Services.startsOnDetails(it) } == true
+    /** Focus is to go to the banner's Details (the page opened), once its titles have come ([takePendingFocus]). */
+    private var openOnDetails = false
+    /** A service page's banner has been given its rows' titles ([updateServiceFeed]). */
+    private var serviceFeedSet = false
     /** The row holding focus now, or null. */
     private var focusedRow: TitleRow? = null
     /** The row the page's offset is anchored to, and its top then: rows appearing above it don't move it on screen. */
@@ -349,6 +358,8 @@ class VodPage(
         }
         header.blocked = { host.overlayOpen() || hold.isOpen }
         header.listener = this
+        // A title made from TMDB's lists shows Cinemeta's facts too (a series' years, genres, rating, length).
+        header.completeFacts = { title, onTitle -> repo?.headerTitle(title, onTitle) }
         when {
             // My List: the header holds still above the rows, which glide under it.
             myList -> {
@@ -480,6 +491,8 @@ class VodPage(
     /** The page's tab is selected: shown, and running while the screen is started. */
     fun show() {
         if (released) return
+        // Opened (shown after another page): Hulu's and the like start on the banner's Details ([takeFocus]).
+        if (!shown && detailsFirst) openOnDetails = true
         shown = true
         root.visibility = View.VISIBLE
         resume()
@@ -491,6 +504,7 @@ class VodPage(
         shown = false
         focusPending = false
         pendingFrom = null
+        openOnDetails = false
         // A Back held to full screen went with its release unseen here.
         pipBackDown = false
         searchBackDown = false
@@ -641,6 +655,20 @@ class VodPage(
             if (row == null || !row.focusChosen()) bar.focusBar()
             return
         }
+        // Hulu, Netflix, Prime Video, HBO Max, Apple TV: opened (or no row chosen yet), the banner's Details; until its
+        // titles come, focus waits for them.
+        if (detailsFirst && (openOnDetails || lastRow == null)) {
+            val opened = openOnDetails
+            openOnDetails = true
+            if (header.focusButton(VodHeader.Button.DETAILS)) {
+                // Opened this frame where it was left further down: at its top at once, not gliding up as it appears.
+                if (opened) pageSpring.snap(0f)
+                return
+            }
+            if (!serviceFeedSet) return waitForRows()
+            // The banner has no title to show: into the rows, as on every page.
+            openOnDetails = false
+        }
         val row = lastRow?.takeIf { it.visibility == View.VISIBLE && it.items.isNotEmpty() } ?: firstReadyRow()
         if (row == null || !row.focusChosen()) waitForRows()
     }
@@ -769,6 +797,7 @@ class VodPage(
     override fun onItemFocused(row: TitleRow, index: Int) {
         focusPending = false
         pendingFrom = null
+        openOnDetails = false
         press.cancel()
         if (focusedRow !== row || anchorRow !== row) {
             anchorRow = row
@@ -848,6 +877,7 @@ class VodPage(
         if (has) {
             focusPending = false
             pendingFrom = null
+            openOnDetails = false
             press.cancel()
             // The banner whole (a first row of posters had moved it up a little); rows that come now leave it there.
             anchorRow = null
@@ -1476,6 +1506,9 @@ class VodPage(
         if (lists.any { !it.answered }) return
         val titles = lists.map { row -> row.cards.map { it.title }.filter { it.hasImdbId } }
         header.setFeed(TmdbTrending.interleave(titles.getOrNull(0).orEmpty(), titles.getOrNull(1).orEmpty()))
+        serviceFeedSet = true
+        // Focus waiting for the banner's Details takes it now.
+        takePendingFocus()
     }
 
     /** [cards] into [row], unless the viewer is in it and they would move what they're on: then when they leave. */
@@ -1573,6 +1606,8 @@ class VodPage(
         val at = row.focusedIndex()
         if (row.spec.continueRow && at >= 0) row.cards.getOrNull(at)?.takeIf { followsContinue(row) }?.let { header.follow(it) } ?: header.unfollow()
         if (myList && at >= 0) row.cards.getOrNull(at)?.let { followCard(it) }
+        // My List: the facts its titles lack asked for ahead, so its banner shows them whole when one is chosen.
+        if (myList) header.askFacts(cards.map { it.title })
         checkEmpty()
         updateImages()
         takePendingFocus()
@@ -1621,6 +1656,17 @@ class VodPage(
         // Asked for while loading (and the viewer stayed on the rail's tab), or nothing has focus at all: never taken
         // from the rail otherwise.
         if (!stillPending() && root.rootView.findFocus() != null) return
+        if (openOnDetails) {
+            // The banner's Details, once its titles have come (made from the rows' answers: [updateServiceFeed]).
+            if (header.focusButton(VodHeader.Button.DETAILS)) {
+                openOnDetails = false
+                focusPending = false
+                pendingFrom = null
+                return
+            }
+            if (!serviceFeedSet) return
+            openOnDetails = false
+        }
         val row = firstReadyRow() ?: return
         if (row.focusChosen()) {
             focusPending = false

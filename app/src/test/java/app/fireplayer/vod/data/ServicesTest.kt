@@ -290,4 +290,12 @@ class ServicesTest {
         assertTrue(page.last)
         assertFalse(Discover.parse(text, Kind.MOVIE, 1).last)
     }
+
+    @Test
+    fun huluNetflixPrimeVideoHboMaxAndAppleTvStartOnTheBannersDetailsDisneyPlusInItsRows() {
+        val details = Service.entries.filter { Services.startsOnDetails(it) }.toSet()
+        assertEquals(setOf(Service.HULU, Service.NETFLIX, Service.PRIME_VIDEO, Service.HBO_MAX, Service.APPLE_TV), details)
+        // Disney+'s studio cards stay first.
+        assertFalse(Services.startsOnDetails(Service.DISNEY))
+    }
 }
