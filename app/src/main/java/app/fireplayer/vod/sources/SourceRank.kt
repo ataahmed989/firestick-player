@@ -34,7 +34,8 @@ class RankInput(
 /**
  * "Best for this TV" (r3_sources-organize §4.4), the same order in every group: first a 4K IMAX or open-matte release
  * this TV plays ([imaxFirst], the user's wish), then plays on this TV (measured here > likely > unknown > likely not;
- * a file needing more than this connection was measured to sustain is "likely not", and its row says so),
+ * a file needing more than this connection was measured to sustain is "likely not", and its row says so), then one
+ * leaving the connection room for busy scenes ([LineRate.steady]) before one that doesn't,
  * the debrid service's state (played here > probably cached > unknown), the sound wanted
  * ([CopyLanguage]), the picture ([CopyRank]'s data per pixel with codec efficiency, starved and full limits, and the HDR
  * the [TvPlan] prefers), then width, bit depth, source, sound for this TV's receiver, size. Pure.
@@ -81,6 +82,7 @@ object SourceRank {
     private class Key(
         val imax: Int,
         val fit: Int,
+        val steady: Int,
         val ready: Int,
         val language: Int,
         val picture: Int,
@@ -97,6 +99,7 @@ object SourceRank {
 
     private val ORDER: Comparator<Scored> = compareByDescending<Scored> { it.key.imax }
         .thenByDescending { it.key.fit }
+        .thenByDescending { it.key.steady }
         .thenByDescending { it.key.ready }
         .thenByDescending { it.key.language }
         .thenByDescending { it.key.picture }
@@ -126,6 +129,7 @@ object SourceRank {
                 TvFit.UNKNOWN -> 1
                 TvFit.LIKELY_NOT -> 0
             },
+            steady = if (LineRate.steady(f.avgMbps, input.lineMbps)) 1 else 0,
             ready = ready,
             language = language(f.languages, s.measured?.spec?.audioLangs, input.wanted),
             picture = pictureBucket(f, input, hdr),

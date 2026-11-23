@@ -98,6 +98,8 @@ class TwoRangesTest {
         var endEarlyAt = -1L
         @Volatile var hold = false
         var readDelayMs = 0L
+        /** The server's time to answer a range. */
+        var openDelayMs = 0L
         @Volatile var cancelled = false
         @Volatile var closes = 0
         private var at = 0L
@@ -105,6 +107,7 @@ class TwoRangesTest {
 
         override fun open(start: Long, length: Long, fresh: Boolean, probe: Boolean): TwoRanges.Answer {
             log.add("$name $start+$length" + (if (fresh) " fresh" else "") + if (probe) " probe" else "")
+            if (openDelayMs > 0) Thread.sleep(openDelayMs)
             if (cancelled) throw IOException("cancelled")
             throwOnOpen(start)?.let { throw it }
             if (crashOnOpen) throw IllegalStateException("http://secret.example/key")
@@ -146,11 +149,11 @@ class TwoRangesTest {
         override fun statusOf(e: IOException): Int = (e as? Refused)?.status ?: -1
     }
 
-    private class Rig(total: Long = 10_500, config: TwoRanges.Config = SMALL) {
+    private class Rig(total: Long = 10_500, config: TwoRanges.Config = SMALL, long: Boolean = false) {
         val total = total
         val log: MutableList<String> = Collections.synchronizedList(ArrayList<String>())
         val lines: MutableList<String> = Collections.synchronizedList(ArrayList<String>())
-        val film = TwoRanges(config) { lines.add(it) }
+        val film = TwoRanges(config) { lines.add(it) }.also { if (long) it.longSpans() }
         val first = Fake(total, log, "first")
         val helpers: MutableList<Fake> = Collections.synchronizedList(ArrayList<Fake>())
         var onHelper: (Fake) -> Unit = {}
@@ -662,6 +665,149 @@ class TwoRangesTest {
         assertFalse(all, all.contains("http:") || all.contains("https") || all.contains("SECRET") || all.contains("token") || all.contains("host"))
     }
 
+    // --- Long spans, answers and requests sent ahead
+
+    @Test
+    fun longSpansAreChosenBeforeAnyMemoryIsMadeAndSayWhatTheyAdd() {
+        val film = TwoRanges(TwoRanges.Config(segmentBytes = 1_000, buffers = 2, longSegmentBytes = 3_000, longBuffers = 1))
+        assertEquals(1_000, film.spanBytes)
+        // 3,000 held at most instead of 2,000: the film's buffer gives up the 1,000 more.
+        assertEquals(1_000L, film.longSpans())
+        assertEquals(3_000, film.spanBytes)
+        // Never smaller than nothing: a long span held as one buffer that's no bigger adds nothing.
+        assertEquals(0L, TwoRanges(TwoRanges.Config(segmentBytes = 1_000, buffers = 2, longSegmentBytes = 2_000, longBuffers = 1)).longSpans())
+    }
+
+    @Test
+    fun longSpansMeanFewerRangesEachReadToItsLastByte() {
+        val rig = Rig(total = 20_000, config = LONG, long = true)
+        assertEquals(20_000L, rig.stream.open(0, "k"))
+        assertArrayEquals(expected(0, 20_000), rig.readAll(0))
+        rig.stream.close()
+        assertNull(rig.film.fallback)
+        assertEquals(
+            listOf("first 0+-1 fresh probe", "first 6000+3000", "first 12000+3000", "first 18000+2000"),
+            rig.firstOpens(),
+        )
+        assertEquals(listOf("second 3000+3000", "second 9000+3000", "second 15000+3000"), rig.secondOpens())
+        // One long span held at a time.
+        assertTrue(rig.film.heldBytes <= LONG.maxLongBytes)
+        // Every range but the probe (cut off at its span's end) was read to its last byte and closed once.
+        assertEquals(3, rig.first.closes - 1)
+    }
+
+    @Test
+    fun slowAnswersSendEachSpansRequestAheadOnAConnectionOfItsOwn() {
+        val rig = Rig(total = 40_000, config = AHEAD)
+        rig.first.openDelayMs = 30
+        rig.onHelper = { it.openDelayMs = 30 }
+        rig.film.countSockets { 7L }
+        assertEquals(40_000L, rig.stream.open(0, "k"))
+        assertArrayEquals(expected(0, 40_000), rig.readAll(0))
+        rig.stream.close()
+        assertNull(rig.film.fallback)
+        assertTrue(rig.film.sendAhead)
+        assertTrue(rig.film.answerNs >= 30_000_000L)
+        // Once answers were seen to be slow, the first request's later spans were asked for ahead, on requests of their
+        // own (made like the second's), and read from there on the loading thread.
+        val evenAhead = rig.secondOpens().filter { it.substringAfter(' ').substringBefore('+').toLong() / 4_000 % 2 == 0L }
+        assertTrue(rig.log.toString(), evenAhead.isNotEmpty())
+        assertTrue(rig.firstOpens().size < 5)
+        // Every range asked once.
+        val asked = synchronized(rig.log) { ArrayList(rig.log) }
+        val starts = asked.map { it.split(' ')[1].substringBefore('+') }
+        assertEquals(asked.toString(), starts.size, starts.toSet().size)
+        // The bench line tells the answer time and the connections made.
+        assertTrue(rig.film.rates(), rig.film.rates().contains(" answer="))
+        assertTrue(rig.film.rates(), rig.film.rates().endsWith(" new=0"))
+        // Every request sent is closed or cut off by the end.
+        waitFor { rig.helpers.all { it.closes > 0 || it.cancelled } }
+    }
+
+    @Test
+    fun aJumpDropsARequestSentAhead() {
+        val rig = Rig(total = 40_000, config = AHEAD)
+        rig.onHelper = { it.openDelayMs = 40 }
+        rig.stream.open(0, "k")
+        val buffer = ByteArray(100)
+        var got = 0
+        while (got < 200) got += rig.stream.read(buffer, 0, 100)
+        // The second request's first answer tells how slow answers are.
+        waitFor { rig.film.answerNs > 0L }
+        while (got < 3_500) got += rig.stream.read(buffer, 0, 100)
+        waitFor { rig.secondOpens().any { it.startsWith("second 8000+") } }
+        rig.stream.close()
+        // Cut off: the request sent ahead too, not only the second request.
+        waitFor { rig.helpers.all { it.cancelled || it.closes > 0 } }
+        assertNull(rig.film.fallback)
+        // The next connection starts with the bytes wanted, as ever.
+        rig.log.clear()
+        rig.stream.open(20_000, "k")
+        assertArrayEquals(expected(20_000, 40_000), rig.readAll(20_000))
+        rig.stream.close()
+        assertEquals("first 20000+4000 fresh", rig.firstOpens().first())
+        assertNull(rig.film.fallback)
+    }
+
+    @Test
+    fun aFilmStandingStillDropsTheSpanAskedForAheadAndAsksAgainAfter() {
+        val rig = Rig(total = 40_000, config = AHEAD)
+        rig.onHelper = { it.openDelayMs = 40 }
+        rig.stream.open(0, "k")
+        val buffer = ByteArray(100)
+        var got = 0
+        while (got < 200) got += rig.stream.read(buffer, 0, 100)
+        waitFor { rig.film.answerNs > 0L }
+        while (got < 3_500) got += rig.stream.read(buffer, 0, 100)
+        waitFor { rig.secondOpens().any { it.startsWith("second 8000+") } }
+        rig.film.rest()
+        // Nothing sent ahead is left waiting, the second request included.
+        waitFor { rig.helpers.all { it.cancelled || it.closes > 0 } }
+        // Reading goes on: every byte in order, the span asked for again, two requests kept.
+        val out = java.io.ByteArrayOutputStream()
+        while (true) {
+            val n = rig.stream.read(buffer, 0, 100)
+            if (n < 0) break
+            out.write(buffer, 0, n)
+        }
+        assertArrayEquals(expected(got.toLong(), 40_000), out.toByteArray())
+        assertNull(rig.film.fallback)
+        val asked = synchronized(rig.log) { ArrayList(rig.log) }
+        assertTrue(asked.toString(), asked.count { it.contains(" 8000+4000") } >= 2)
+        rig.stream.close()
+    }
+
+    @Test
+    fun answersTakingTooMuchOfTheFirstRequestsTimeAreWorseThanOneRequest() {
+        val pace = HelperPace(windowNs = 1_000, answerShare = 0.3)
+        pace.read(600)
+        pace.reopened(350)
+        // A third of the time waiting for answers: one open-ended request pays that once.
+        assertTrue(pace.waited(100))
+        assertTrue(pace.why, pace.why.startsWith("answers too slow (33%"))
+        // A fifth: two still bring more.
+        pace.read(700)
+        pace.reopened(200)
+        assertFalse(pace.waited(100))
+        // Waiting for the second request is still told apart.
+        pace.read(300)
+        assertTrue(pace.waited(800))
+        assertEquals("second request too slow", pace.why)
+    }
+
+    @Test
+    fun theNextRequestGoesAboutAnAnswerAheadOfNeed() {
+        val mb = 1L shl 20
+        // 59 Mb/s within a span (7.4 MB a second) and answers of a second: sent with about 1.45 s of the span left.
+        assertTrue(SendAhead.due(8 * mb, 7_375_000.0, 1_000_000_000L))
+        assertFalse(SendAhead.due(16 * mb, 7_375_000.0, 1_000_000_000L))
+        // Not before the span's speed or the answer time is known.
+        assertFalse(SendAhead.due(1, 0.0, 1_000_000_000L))
+        assertFalse(SendAhead.due(1, 7_375_000.0, 0L))
+        assertEquals(1L shl 20, SendAhead.least(32 * mb))
+        assertEquals(250L, SendAhead.least(1_000))
+    }
+
     @Test
     fun cancelledReadsAreToldFromFailures() {
         assertTrue(TwoRanges.cancelled(InterruptedIOException()))
@@ -674,6 +820,17 @@ class TwoRangesTest {
         private val SMALL = TwoRanges.Config(
             segmentBytes = 1_000, buffers = 2, startAfterBytes = 100, minFileBytes = 5_000, stallMs = 3_000,
             paceWindowNs = Long.MAX_VALUE,
+        )
+
+        private val LONG = TwoRanges.Config(
+            segmentBytes = 1_000, buffers = 2, startAfterBytes = 100, minFileBytes = 5_000, stallMs = 3_000,
+            paceWindowNs = Long.MAX_VALUE, longSegmentBytes = 3_000, longBuffers = 1,
+        )
+
+        // Spans of 4,000 bytes, and answers of 1 ms or more count as slow.
+        private val AHEAD = TwoRanges.Config(
+            segmentBytes = 4_000, buffers = 2, startAfterBytes = 100, minFileBytes = 5_000, stallMs = 3_000,
+            paceWindowNs = Long.MAX_VALUE, aheadMinNs = 1_000_000L,
         )
 
         fun byteAt(position: Long): Byte = ((position * 7 + (position shr 8)) and 0xff).toByte()

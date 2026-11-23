@@ -363,7 +363,8 @@ class SourcePlayback(
     /**
      * The stall rules call for a switch. What happens goes by Settings › Playback › When a film keeps buffering
      * ([WhenBuffering]) and by why it stalls:
-     * - Keep trying, or "Keep this source" answered for this film before: nothing.
+     * - Keep trying, or "Keep this source" answered for this film before: nothing is switched or asked. When the
+     *   connection brings the film no faster than it plays, that is said once, plainly, with the copy that would fit.
      * - The connection brings the film no faster than it plays ([FilmSupply.short]): the next source in the list is
      *   most often the same film at the same size, and stalls the same. The best source this connection keeps up with
      *   is offered instead, once (or switched to with a note, by the setting or the film's remembered answer).
@@ -380,6 +381,12 @@ class SourcePlayback(
                 keepLogged = true
                 host.log("stalls past the limit: staying on this source (" +
                     (if (mode == WhenBuffering.KEEP) "the setting says keep trying" else "kept when asked for this film") + ")")
+                // Not a question (it was answered, or the setting says so): what's happening, once.
+                val kept = host.supply()
+                if (FilmSupply.short(s.facts.avgMbps, kept)) {
+                    val fits = FilmSupply.ceilingMbps(kept)?.let { session.lighter(it) }
+                    host.notice(FilmSupply.keptNote(s.facts.avgMbps, kept, fits))
+                }
             }
             return
         }

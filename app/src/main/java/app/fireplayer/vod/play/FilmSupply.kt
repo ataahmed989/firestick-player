@@ -111,6 +111,21 @@ object FilmSupply {
     fun switchedNote(r: Reading?): String =
         r?.lineMbps?.let { "Kept pausing at ${round(it)} Mb/s · switching to a lighter source" } ?: "Kept pausing · switching to a lighter source"
 
+    /**
+     * The note when this source is kept though the connection is short for it (Keep trying, or "Keep this source"
+     * answered): "This copy needs about 78 Mb/s and about 47 is arriving, so it will keep pausing · 4K · HDR · ≈26 Mb/s
+     * fits, in Sources". Said once.
+     */
+    fun keptNote(sourceMbps: Double?, r: Reading?, fits: PlaybackSource?): String {
+        val line = r?.lineMbps
+        val why = if (sourceMbps != null && line != null) {
+            "This copy needs about ${round(sourceMbps)} Mb/s and about ${round(line)} is arriving, so it will keep pausing"
+        } else {
+            "This copy arrives slower than it plays, so it will keep pausing"
+        }
+        return why + " · " + (fits?.let { (PlayRules.badges(it).ifEmpty { "A lighter copy" }) + " fits, in Sources" } ?: "Sources lists every file")
+    }
+
     /** The note when nothing lighter is ready. */
     fun noneNote(r: Reading?): String =
         (r?.lineMbps?.let { "This connection brings about ${round(it)} Mb/s" } ?: "This source arrives only as fast as it plays") +

@@ -5544,10 +5544,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         ).joinToString(" · ").ifEmpty { null }?.let { pairs += "Frame" to fact(it) }
         // On a TV that reports no HDR the Fire TV turns HDR into SDR: said, so the row doesn't claim what isn't seen.
         pairs += "Range" to fact(spec.rangeLine(hdrScreen()))
+        // The picture's own rate; while it's measured, the file's average stands in, said as such.
         pairs += "Data" to fact(
             if (spec.videoBps > 0) "${MediaSpec.mbps(spec.videoBps)} · " +
                 (if (spec.videoHow == MediaSpec.How.MEASURED) over(video?.id) else "stated by the file")
-            else "Measuring as it loads…",
+            else app.fireplayer.player.ArrivalWords.dataMeasuring(spec.overallBps / 1_000_000.0),
         )
         if (spec.bitsPerPixel > 0) pairs += "Per pixel" to fact(String.format(Locale.US, "%.3f bits a frame", spec.bitsPerPixel))
         listOfNotNull(
@@ -5562,13 +5563,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (spec.sizeBytes > 0) pairs += "File" to fact(
             MediaSpec.size(spec.sizeBytes) + (if (spec.overallBps > 0) " · ${MediaSpec.mbps(spec.overallBps)} on average" else ""),
         )
-        val server = RedirectMemoryDataSource.serverBps(link)
-        if (server > 0) {
-            // The whole file comes, every sound track included: that's what the server has to keep up with.
+        if (diag.meter.bytes > 0L) {
+            // What really arrives: every connection together, over whole seconds of loading flat out, the waits between
+            // requests in them (DownloadRate). The whole file comes, every sound track included: that's what it needs.
+            val d = diag.download
             val need = spec.overallBps.takeIf { it > 0 } ?: (spec.videoBps + spec.audioBps)
-            pairs += "Server" to fact(
-                "at least " + MediaSpec.mbps(server) + (if (need > 0) String.format(Locale.US, " · %.1f× the file's rate", server.toDouble() / need) else ""),
-            )
+            pairs += "Server" to fact(app.fireplayer.player.ArrivalWords.server(d.sustainedMbps, d.sustainedSeconds, need / 1_000_000.0))
+                .also { it.maxLines = 3 }
         }
         droppedFact = null
         droppedLine()?.let { line ->
@@ -5676,14 +5677,17 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private val sourcePrefs by lazy { getSharedPreferences(app.fireplayer.vod.sources.LineRate.FILE, MODE_PRIVATE) }
 
     /**
-     * A film from the add-ons seen to load clearly faster than the speed remembered from one that kept stalling: that
-     * speed was the moment's, and is replaced ([app.fireplayer.vod.sources.LineRate.seen]).
+     * What a film from the add-ons is seen to arrive at, once measured over enough seconds, whatever was answered about
+     * its stalls: kept for "Best for this TV" and Next source, newest first, up or down
+     * ([app.fireplayer.vod.sources.LineRate.seen]). The lists in memory rank again when it moved.
      */
     private fun noteLineSpeed() {
         if (source == null || !diagMade.isInitialized()) return
         val d = diag.download
         if (d.sustainedSeconds < app.fireplayer.vod.play.FilmSupply.MIN_SECONDS) return
-        app.fireplayer.vod.sources.LineRate.of(sourcePrefs, two = measuredWithTwo()).seen(d.sustainedMbps)
+        if (app.fireplayer.vod.sources.LineRate.of(sourcePrefs, two = measuredWithTwo()).seen(d.sustainedMbps)) {
+            (Sources.get(this) as? app.fireplayer.vod.sources.DefaultSourcesRepository)?.rerank()
+        }
     }
 
     /** Whether what is measured of this film goes with the two-connection speed ([app.fireplayer.vod.sources.LineRate.forTwo]). */

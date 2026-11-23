@@ -60,7 +60,8 @@ enum class RamTier(
  * What the film's buffer gets on this TV (see [FilmMemory.plan]): [budgetBytes] in all, [backBufferMs] of it behind
  * where the film plays, held to [backCapBytes] (0: no limit). [byFreeMemory]: the budget is below the tier's because
  * little memory was free when the film started; [tierBytes] is what it would be with enough free (the most it can be
- * raised to once room has been made, [FilmMemory.afterRoom]).
+ * raised to once room has been made, [FilmMemory.afterRoom]). [spanExtraBytes]: what the second request's long spans
+ * hold beyond its usual segments, given up by the buffer ([FilmMemory.withSecondRequest]).
  */
 data class FilmBufferPlan(
     val tier: RamTier,
@@ -69,6 +70,7 @@ data class FilmBufferPlan(
     val backCapBytes: Long = 0L,
     val byFreeMemory: Boolean = false,
     val tierBytes: Int = budgetBytes,
+    val spanExtraBytes: Int = 0,
 )
 
 /**
@@ -175,15 +177,39 @@ object FilmMemory {
 
     /**
      * What the buffer fills to at squeeze [step]: 0 is the whole [budgetBytes], 1 three quarters (Fire OS says memory
-     * is running low), 2 half (critical, or still low half a minute on); never below [FLOOR_BYTES].
+     * is running low), 2 half (critical, or still low half a minute on); never below [FLOOR_BYTES]. [extraBytes] that
+     * the second request's long spans hold ([FilmBufferPlan.spanExtraBytes]) count with the budget and come off what
+     * it fills to, so the two together are squeezed as the buffer alone was.
      */
-    fun capFor(budgetBytes: Int, step: Int): Int {
+    fun capFor(budgetBytes: Int, step: Int, extraBytes: Int = 0): Int {
+        val whole = budgetBytes + extraBytes.coerceAtLeast(0)
         val cap = when {
-            step <= 0 -> budgetBytes
-            step == 1 -> (budgetBytes.toLong() * 3 / 4).toInt()
-            else -> budgetBytes / 2
-        }
+            step <= 0 -> whole
+            step == 1 -> (whole.toLong() * 3 / 4).toInt()
+            else -> whole / 2
+        } - extraBytes.coerceAtLeast(0)
         return cap.coerceAtLeast(FLOOR_BYTES).coerceAtMost(budgetBytes)
+    }
+
+    /**
+     * Whether the second request may read long spans ([TwoRanges.longSpans]) beside a film buffer of [plan]: not on the
+     * smallest TVs, nor when the buffer was held down by the memory free as the film started (spans stay short there).
+     */
+    fun longSpansFit(plan: FilmBufferPlan): Boolean = plan.tier != RamTier.TINY && !plan.byFreeMemory
+
+    /**
+     * [plan], with the second request's long spans holding [extraBytes] more than its usual segments: the film's buffer
+     * gives that up (its budget, and the most it can be raised to), so the two hold no more memory together than
+     * before. What's kept behind stays as planned. Never under [FLOOR_BYTES].
+     */
+    fun withSecondRequest(plan: FilmBufferPlan, extraBytes: Long): FilmBufferPlan {
+        if (extraBytes <= 0L) return plan
+        val extra = extraBytes.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        return plan.copy(
+            budgetBytes = (plan.budgetBytes - extra).coerceAtLeast(FLOOR_BYTES),
+            tierBytes = (plan.tierBytes - extra).coerceAtLeast(FLOOR_BYTES),
+            spanExtraBytes = extra,
+        )
     }
 
     /**
@@ -228,6 +254,20 @@ object FilmMemory {
         if (fullUs > 0) return fullUs
         if (aheadUs < ROOM_MIN_US || allocatedBytes < ROOM_MIN_BYTES || limitBytes <= 0) return 0L
         return (aheadUs.toDouble() * limitBytes / allocatedBytes).toLong()
+    }
+
+    /**
+     * How much of this film fits ahead in a stall, in µs, worked out from the bytes held now (every check, so a squeeze
+     * that has lifted or a buffer that never filled counts as it is): [allocatedBytes] hold the [aheadUs] loaded ahead
+     * and the [behindUs] kept behind, so here the film takes allocated / (ahead + behind) bytes a µs, and [fillBytes]
+     * hold that much film less what stays behind. 0 while there's too little to tell. An 80 Mb/s film with 2 s kept
+     * behind in 128 MiB: about 11 s.
+     */
+    fun roomInStallUs(aheadUs: Long, behindUs: Long, allocatedBytes: Long, fillBytes: Long): Long {
+        val behind = behindUs.coerceAtLeast(0L)
+        val span = aheadUs.coerceAtLeast(0L) + behind
+        if (span < ROOM_MIN_US || allocatedBytes < ROOM_MIN_BYTES || fillBytes <= 0L) return 0L
+        return ((span.toDouble() * fillBytes / allocatedBytes).toLong() - behind).coerceAtLeast(0L)
     }
 
     /**
