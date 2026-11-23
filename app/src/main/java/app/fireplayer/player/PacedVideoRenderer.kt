@@ -12,6 +12,7 @@ import androidx.media3.decoder.DecoderInputBuffer
 import androidx.media3.exoplayer.DecoderReuseEvaluation
 import androidx.media3.exoplayer.FormatHolder
 import androidx.media3.exoplayer.Renderer
+import androidx.media3.exoplayer.RendererCapabilities
 import androidx.media3.exoplayer.mediacodec.MediaCodecAdapter
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.mediacodec.MediaCodecUtil
@@ -178,9 +179,19 @@ class PacedVideoRenderer(
         super.onQueueInputBuffer(buffer)
     }
 
-    /** How well the renderer plays [format]: a profile 7 track played as its base layer, as the HEVC film it then is. */
-    override fun supportsFormat(mediaCodecSelector: MediaCodecSelector, format: Format): Int =
-        super.supportsFormat(mediaCodecSelector, baseLayer(format) ?: format)
+    /**
+     * How well the renderer plays [format]: a profile 7 track played as its base layer, as the HEVC film it then is, on a
+     * decoder that isn't its own (as Media3 reports its own Dolby Vision fallback to another codec). So where the file
+     * has another video track (profile 7 as a separate HEVC base layer track), Media3 picks that one, as before.
+     */
+    override fun supportsFormat(mediaCodecSelector: MediaCodecSelector, format: Format): Int {
+        val base = baseLayer(format) ?: return super.supportsFormat(mediaCodecSelector, format)
+        val c = super.supportsFormat(mediaCodecSelector, base)
+        return RendererCapabilities.create(
+            RendererCapabilities.getFormatSupport(c), RendererCapabilities.getAdaptiveSupport(c),
+            RendererCapabilities.getTunnelingSupport(c), RendererCapabilities.getHardwareAccelerationSupport(c),
+            RendererCapabilities.DECODER_SUPPORT_FALLBACK_MIMETYPE)
+    }
 
     /** A new format for the decoder: a profile 7 track played as its base layer goes on as HEVC, said once in the log. */
     override fun onInputFormatChanged(formatHolder: FormatHolder): DecoderReuseEvaluation? {
