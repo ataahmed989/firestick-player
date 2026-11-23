@@ -33,6 +33,19 @@ class PlaybackDiagTest {
     }
 
     @Test
+    fun theAppsMemoryIsReadOnceAMinuteNotForEveryLine() {
+        // The first line reads it; the next five (every 10 s, a tick's drift either way) repeat it; the sixth reads again.
+        assertEquals(true, PlaybackDiag.memoryDue(0L, 10_000L))
+        val readAt = 10_000L
+        for (line in 1..5) assertFalse(PlaybackDiag.memoryDue(readAt, readAt + line * 10_000L + 40L))
+        assertEquals(true, PlaybackDiag.memoryDue(readAt, readAt + 60_000L - 40L))
+        // Reads a minute while the film plays: the line's one and the peak's two, against 6 + 12 before (5 in 6 fewer).
+        val reads = 60 / PlaybackDiag.MEMORY_EVERY_S + 60 / PlaybackDiag.PSS_EVERY_S
+        assertEquals(3, reads)
+        assertEquals(18, 60 / PlaybackDiag.LOG_EVERY_S + 60 / 5)
+    }
+
+    @Test
     fun theTvsHdrTypesByName() {
         assertEquals("none", PlaybackDiag.hdrTypes(null))
         assertEquals("none", PlaybackDiag.hdrTypes(IntArray(0)))

@@ -18,6 +18,7 @@ import app.fireplayer.vod.Sources
 import app.fireplayer.vod.TitleDetails
 import app.fireplayer.vod.data.VodRepositories
 import app.fireplayer.vod.play.MainTicker
+import app.fireplayer.vod.play.FilmMode
 import app.fireplayer.vod.play.LaunchLog
 import app.fireplayer.vod.play.PlayRules
 import app.fireplayer.vod.play.PlayerMeta
@@ -579,6 +580,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private var soundOnDevice = false
     // When the player last went off screen without closing (the TV slept, the screensaver, Home while paused).
     private var stoppedAt = 0L
+    // Film mode has been told this screen is started (FilmMode.filmStarted), and is told again when it stops.
+    private var shownToFilmMode = false
     // A newer title was handed to this player (onNewIntent): it starts over with that one, the old film never shows.
     private var replaced = false
     private var pendingAudioId: String? = null
@@ -832,6 +835,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             savedPlayWhenReady = false
             pausedForSwitch = false
         }
+        // FirePlayer's Home in the background (Glass Home's Continue Watching, another app) lets go of its pages now,
+        // not after its usual wait: the film's buffer is sized from the memory free in its first second.
+        if (!shownToFilmMode) {
+            shownToFilmMode = true
+            FilmMode.filmStarted()
+        }
         backdrop?.start()
         source?.resume()
         if (entries.isNotEmpty() && player == null) {
@@ -864,6 +873,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     override fun onStop() {
         super.onStop()
+        if (shownToFilmMode) {
+            shownToFilmMode = false
+            FilmMode.filmStopped()
+        }
         decoderWait?.invoke()
         decoderWait = null
         handler.removeCallbacks(playingBeat)
@@ -2910,6 +2923,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW -> 1
             else -> return
         }
+        // The databases' page caches (the library, the guide, TiviMate's names: a few MB in all) go first; Android
+        // itself only asks them at its last level, which the app in front never gets. They fill again as read.
+        android.database.sqlite.SQLiteDatabase.releaseMemory()
         // Critically short with the film paused: it has nothing to protect, and its player goes with its place kept.
         // Not one paused only just now: the viewer is likely about to play on, and the buffer gives half back instead.
         if (step == 2 && filmStill() && pausedRoom.critical(SystemClock.elapsedRealtime(), windowOpen())) {
@@ -5607,10 +5623,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     /**
      * The glass has been off screen a few seconds while a film plays on a TV short of memory: the drawing cache's unused
      * pictures go ([GraphicsTrim]). Where Android only lets go of what went unused for half a minute, it's asked again
-     * that long after, if the controls and windows stayed away.
+     * that long after, if the controls and windows stayed away. With no window open, the decoded pictures kept in memory
+     * go too (the Episodes sheet's stills, a details window's: up to 12 MB); shown again, they fade back in from the disk
+     * cache, as after a minute paused. Freed before Fire OS asks, they don't cost the film's buffer a squeeze.
      */
     private fun trimGraphicsWhenQuiet() {
         if (!GlassLoad.smallRam(this) || player?.isPlaying != true) return
+        if (!panel.isOpen && !episodesSheet.isOpen) app.fireplayer.ui.ImageLoader.trim()
         GraphicsTrim.trim(GRAPHICS_TRIM_GAP_MS)
         handler.removeCallbacks(trimStaleGraphics)
         if (GraphicsTrim.staleOnly) handler.postDelayed(trimStaleGraphics, GraphicsTrim.STALE_MS + 1_000L)

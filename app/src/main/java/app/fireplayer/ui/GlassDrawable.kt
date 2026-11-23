@@ -33,6 +33,7 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sqrt
+import java.util.WeakHashMap
 
 /**
  * One piece of glass (Glass look): the blurred film behind it ([GlassBackdrop]), a milky glaze, a soft inner
@@ -355,6 +356,20 @@ class GlassDrawable(
         shader1 = null
     }
 
+    /**
+     * Out of sight while a film plays, or while the TV is short of memory ([GlassBakes.forgetOffScreen]): lets go of
+     * its baked drawings, so they can leave memory with [GlassBakes]' own. Drawn again, they're taken from there or
+     * made again (a few milliseconds), the same as before.
+     */
+    internal fun forgetBakes() {
+        bakePlain = null
+        bakeFocused = null
+    }
+
+    init {
+        GlassBakes.made(this)
+    }
+
     private fun shaderFor(film: Bitmap): BitmapShader {
         val s0 = shader0
         if (film === film0 && s0 != null) return s0
@@ -507,6 +522,32 @@ internal object GlassBakes {
      * still exists keeps the ones it drew, and the rest are made again (a few milliseconds each) when next needed.
      */
     fun trim() = cache.evictAll()
+
+    /** Every piece of glass made and still in use (held weakly: it goes with its view). */
+    private val made = WeakHashMap<GlassDrawable, Boolean>()
+
+    /** A piece of glass was made ([GlassDrawable]'s start). */
+    fun made(drawable: GlassDrawable) {
+        synchronized(made) { made[drawable] = true }
+    }
+
+    /**
+     * The shell is covered by a film, or out of sight with the TV short of memory: glass that can't be seen (hidden
+     * pages, closed windows; all of it while the shell is in the background) lets go of its own drawings, and every
+     * bitmap kept here goes ([trim]), so the memory is really free. Glass on screen keeps its own, so coming back draws
+     * at once. How many let theirs go. Main thread.
+     */
+    fun forgetOffScreen(): Int {
+        val all = synchronized(made) { made.keys.toList() }
+        var count = 0
+        for (glass in all) {
+            if (glass.isOnScreen()) continue
+            glass.forgetBakes()
+            count++
+        }
+        trim()
+        return count
+    }
 
     /**
      * The user's glass was changed (Settings › Look, the players' dimness presets: [Glass.useShades]): the window

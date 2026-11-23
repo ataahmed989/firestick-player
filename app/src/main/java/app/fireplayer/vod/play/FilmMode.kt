@@ -14,6 +14,8 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import app.fireplayer.player.FilmRoom
 import app.fireplayer.player.GraphicsTrim
+import app.fireplayer.ui.ImageLoader
+import java.util.WeakHashMap
 
 /**
  * Film mode memory and background release (design-brief.md §6.6), for the shell (HomeActivity).
@@ -24,8 +26,9 @@ import app.fireplayer.player.GraphicsTrim
  * and the graphics caches. Returning shows the snapshot at once over the page while the posters come back from the disk
  * cache ([onStart]).
  *
- * In the background for other reasons (the Home button, a link opened from Settings) the same release waits
- * [BACKGROUND_RELEASE_MS] first: coming back sooner finds everything as it was.
+ * In the background for other reasons (the Home button, another app) the same release waits [BACKGROUND_RELEASE_MS]
+ * first: coming back sooner finds everything as it was. A film player coming on screen meanwhile, from wherever it was
+ * asked for (Glass Home's Continue Watching, another app, a video link), has it run at once ([filmStarted]).
  */
 class FilmMode(private val activity: Activity, private val hooks: Hooks) {
 
@@ -50,6 +53,7 @@ class FilmMode(private val activity: Activity, private val hooks: Hooks) {
     private var waiting = false
     private val backgroundRelease = Runnable {
         waiting = false
+        away.remove(this)
         releaseNow()
     }
 
@@ -62,6 +66,8 @@ class FilmMode(private val activity: Activity, private val hooks: Hooks) {
         filmStarting = true
         filmAskedAt = SystemClock.elapsedRealtime()
         hooks.stopLive()
+        // Posters queued ahead of need don't download alongside the film's start.
+        ImageLoader.quiet()
         capture(null)
         go()
     }
@@ -71,15 +77,19 @@ class FilmMode(private val activity: Activity, private val hooks: Hooks) {
         if (!filmStarting) capture(null)
     }
 
-    /** The shell is covered or in the background: released now for a film, later otherwise. */
+    /**
+     * The shell is covered or in the background: released now for a film (one started from a page, or the player
+     * already on screen over it), later otherwise.
+     */
     fun onStop() {
         main.removeCallbacks(backgroundRelease)
         waiting = false
-        if (filmStarting) {
+        if (filmStarting || filmsShown > 0) {
             filmStarting = false
             releaseNow()
         } else {
             waiting = true
+            away[this] = true
             main.postDelayed(backgroundRelease, BACKGROUND_RELEASE_MS)
         }
     }
@@ -92,6 +102,7 @@ class FilmMode(private val activity: Activity, private val hooks: Hooks) {
         if (!waiting) return false
         main.removeCallbacks(backgroundRelease)
         waiting = false
+        away.remove(this)
         releaseNow()
         return true
     }
@@ -100,6 +111,7 @@ class FilmMode(private val activity: Activity, private val hooks: Hooks) {
     fun onStart(over: FrameLayout) {
         main.removeCallbacks(backgroundRelease)
         waiting = false
+        away.remove(this)
         main.removeCallbacks(trimStale)
         filmStarting = false
         filmAskedAt = 0L
@@ -111,6 +123,7 @@ class FilmMode(private val activity: Activity, private val hooks: Hooks) {
     fun release() {
         main.removeCallbacks(backgroundRelease)
         waiting = false
+        away.remove(this)
         main.removeCallbacks(trimStale)
         overlay?.let { (it.parent as? ViewGroup)?.removeView(it) }
         overlay = null
@@ -211,6 +224,34 @@ class FilmMode(private val activity: Activity, private val hooks: Hooks) {
     private val trimStale = Runnable { if (released) GraphicsTrim.trim() }
 
     companion object {
+        /** Film player screens started now (main thread). */
+        private var filmsShown = 0
+        /** Shells in the background whose release may still be waiting for its time (main thread; weak). */
+        private val away = WeakHashMap<FilmMode, Boolean>()
+        private val mainThread by lazy { Handler(Looper.getMainLooper()) }
+
+        /**
+         * The film player's screen starts (PlayerActivity.onStart), from wherever it was asked for: Glass Home's
+         * Continue Watching, another app, a link. A shell in the background still waiting to let go ([BACKGROUND_RELEASE_MS])
+         * lets go now, right after the player's own start, so the film's buffer is sized with that memory free; the
+         * film hears of it as for a film started from a page ([FilmRoom.made]). A quick return with no film still finds
+         * the pages as they were. Main thread.
+         */
+        fun filmStarted() {
+            filmsShown++
+            if (away.isEmpty()) return
+            mainThread.post {
+                for (mode in away.keys.toList()) {
+                    if (mode.releaseIfAway()) Log.i(TAG, "A film started with the pages in the background: they let go now")
+                }
+            }
+        }
+
+        /** The film player's screen stopped (PlayerActivity.onStop). Main thread. */
+        fun filmStopped() {
+            filmsShown = (filmsShown - 1).coerceAtLeast(0)
+        }
+
         /** In the background this long before the shell's memory is released (not at once: a quick return stays as it was). */
         const val BACKGROUND_RELEASE_MS = 90_000L
         /** The longest a film's start waits for the snapshot. */

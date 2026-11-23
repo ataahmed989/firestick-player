@@ -244,6 +244,22 @@ object ImageLoader {
     }
 
     /**
+     * A film starts, or the pages leave the screen: the posters queued ahead of need ([prefetch], up to 32) aren't
+     * downloaded, and queued pictures nobody waits for any more aren't fetched, so they don't share the line with the
+     * film's start. Pictures a target still waits for, and the header's next one, stay queued; a download under way
+     * finishes. Main thread.
+     */
+    fun quiet() {
+        ahead.clear()
+        if (jobs.isEmpty()) return
+        val it = jobs.values.iterator()
+        while (it.hasNext()) {
+            val job = it.next()
+            if (job.waiters.isEmpty() && !job.warm && pool.remove(job)) it.remove()
+        }
+    }
+
+    /**
      * Frees memory: decoded pictures down to [fraction] of the cache (0 empties it). Pictures on screen are held by
      * their views and stay. Main thread.
      */

@@ -98,6 +98,11 @@ class VodPage(
      * its name in words ("Marvel · Disney+"); null on the service's own page.
      */
     val studio: Brand? = null,
+    /**
+     * Made again after it was let go of while hidden ([VodPages.releaseHidden]): where the viewer was on it, so it opens
+     * there (each row on its chosen card, the page at the row chosen last); null for a page opened the first time.
+     */
+    place: PagePlace? = null,
 ) : TitleRow.Listener, SeeAllPage.Host, HoldWindow.Host, TitleStack.Host, VodHeader.Listener {
 
     /** What the shell gives a page: the same as Live TV's (HomeActivity implements both). */
@@ -286,6 +291,12 @@ class VodPage(
     private var openOnDetails = false
     /** A service page's banner has been given its rows' titles ([updateServiceFeed]). */
     private var serviceFeedSet = false
+    /** Where the viewer was when this page was let go of before ([PagePlace]): its rows' cards, taken as they show. */
+    private val placeBefore: PagePlace = place ?: PagePlace.none()
+    /** The row to be the chosen one again as it shows; null once it has (or the viewer chose another first). */
+    private var placeRow: String? = placeBefore.lastRow
+    /** That row has shown: the page stands at it as the rows come in, until the viewer moves ([onRowsMoved]). */
+    private var placeHeld = false
     /** The row holding focus now, or null. */
     private var focusedRow: TitleRow? = null
     /** The row the page's offset is anchored to, and its top then: rows appearing above it don't move it on screen. */
@@ -502,6 +513,7 @@ class VodPage(
     fun hide() {
         dropCarry(animate = false)
         shown = false
+        placeHeld = false
         focusPending = false
         pendingFrom = null
         openOnDetails = false
@@ -596,6 +608,18 @@ class VodPage(
         }
         seeAll?.settle()
         seeAll?.releaseImages()
+    }
+
+    /**
+     * Where the viewer is on this page, kept as it's let go of while hidden ([VodPages.releaseHidden]) for the page made
+     * again in its place: the row chosen last and each shown row's chosen card (and what this page, itself made again,
+     * still had to restore).
+     */
+    fun place(): PagePlace {
+        val shownRows = HashMap<String, Int>()
+        for (row in rows) if (row.visibility == View.VISIBLE && row.items.isNotEmpty()) shownRows[row.spec.key] = row.chosen
+        val last = lastRow?.takeIf { it.visibility == View.VISIBLE }?.spec?.key ?: placeRow
+        return PagePlace.keep(last, shownRows, placeBefore)
     }
 
     /** Memory is short: pictures of rows other than the chosen one go (all of them under a title page). */
@@ -800,6 +824,9 @@ class VodPage(
         focusPending = false
         pendingFrom = null
         openOnDetails = false
+        // The viewer is on the page now: it follows them from here, not the place it was made again at.
+        placeHeld = false
+        placeRow = null
         press.cancel()
         if (focusedRow !== row || anchorRow !== row) {
             anchorRow = row
@@ -1598,11 +1625,14 @@ class VodPage(
         // Focus off items that go, before they go.
         val target = RowRules.focusAfter(row.focusedIndex(), row.cards.size, row.hasSeeAll, cards.size, seeAll)
         if (target >= 0) row.items.getOrNull(target)?.requestFocus()
+        // A row coming in starts on its first card; on a page made again, on the card chosen in it before ([PagePlace]).
+        val coming = row.visibility != View.VISIBLE
+        if (coming) row.chosen = placeBefore.takeChosen(row.spec.key, cards.size + if (seeAll) 1 else 0)
         row.bind(cards, seeAll)
-        if (row.visibility != View.VISIBLE) {
-            row.chosen = 0
-            row.motion.snap(0, isGrown = false)
+        if (coming) {
+            row.motion.snap(row.chosen, isGrown = false)
             row.visibility = View.VISIBLE
+            placeShown(row)
         }
         // In the Continue row, a card taken away: the header follows the card now chosen.
         val at = row.focusedIndex()
@@ -1625,12 +1655,27 @@ class VodPage(
         if (row.genres == names && row.visibility == View.VISIBLE) return
         row.bindGenres(names)
         if (row.visibility != View.VISIBLE) {
-            row.chosen = 0
-            row.motion.snap(0, isGrown = false)
+            row.chosen = placeBefore.takeChosen(row.spec.key, row.items.size)
+            row.motion.snap(row.chosen, isGrown = false)
             row.visibility = View.VISIBLE
+            placeShown(row)
         }
         checkEmpty()
         takePendingFocus()
+    }
+
+    /**
+     * [row] has just shown on a page made again ([PagePlace]): when it's the row chosen last before, it's the chosen one
+     * again (where focus comes back to) and the page stands at it as the rows come in ([onRowsMoved]), as it stood.
+     */
+    private fun placeShown(row: TitleRow) {
+        if (placeRow == null || row.spec.key != placeRow) return
+        placeRow = null
+        if (lastRow != null || focusedRow != null) return
+        lastRow = row
+        anchorRow = row
+        anchorTop = -1
+        placeHeld = true
     }
 
     /** A row with nothing in it goes; focus in it moves to the next row shown, else the one before, else the rail. */
@@ -1669,7 +1714,8 @@ class VodPage(
             if (!serviceFeedSet) return
             openOnDetails = false
         }
-        val row = firstReadyRow() ?: return
+        // A page made again: back to the row chosen before, once it's in ([placeShown]).
+        val row = lastRow?.takeIf { placeHeld && it.visibility == View.VISIBLE && it.items.isNotEmpty() } ?: firstReadyRow() ?: return
         if (row.focusChosen()) {
             focusPending = false
             pendingFrom = null
@@ -1732,6 +1778,14 @@ class VodPage(
         }
         val top = column.topOf(row)
         if (top < 0) return
+        if (placeHeld) {
+            // A page made again ([PagePlace]): it stands at the viewer's row as the rows come in, as it stood before.
+            anchorTop = top
+            pageSpring.snap(targetFor(row))
+            updateHeaderPause()
+            updateImages()
+            return
+        }
         val shift = if (anchorTop >= 0) top - anchorTop else 0
         anchorTop = top
         if (shift != 0) pageSpring.snap(pageSpring.value + shift)

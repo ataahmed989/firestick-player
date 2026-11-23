@@ -141,15 +141,21 @@ class WallpaperView(context: Context) : View(context) {
                 main.post { if (serial == loadSerial) loading = false }
                 return@execute
             }
-            // Centre-cropped to the screen once, so drawing is a plain copy.
-            val scaled = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-            val sx = w.toFloat() / decoded.width
-            val sy = h.toFloat() / decoded.height
-            val s = maxOf(sx, sy)
-            val dw = decoded.width * s
-            val dh = decoded.height * s
-            Canvas(scaled).drawBitmap(decoded, null, RectF((w - dw) / 2, (h - dh) / 2, (w + dw) / 2, (h + dh) / 2), Paint(Paint.FILTER_BITMAP_FLAG))
-            decoded.recycle()
+            // Centre-cropped to the screen once, so drawing is a plain copy. The glass look's picture is the screen's
+            // size already (1920 x 1080): used as decoded, the same pixels without a second 8 MB copy drawn from it.
+            val scaled = if (WallpaperFit.asDecoded(decoded.width, decoded.height, decoded.config == Bitmap.Config.ARGB_8888, w, h)) {
+                decoded
+            } else {
+                val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                val sx = w.toFloat() / decoded.width
+                val sy = h.toFloat() / decoded.height
+                val s = maxOf(sx, sy)
+                val dw = decoded.width * s
+                val dh = decoded.height * s
+                Canvas(out).drawBitmap(decoded, null, RectF((w - dw) / 2, (h - dh) / 2, (w + dw) / 2, (h + dh) / 2), Paint(Paint.FILTER_BITMAP_FLAG))
+                decoded.recycle()
+                out
+            }
             // Only the glass look shows blurred wallpaper.
             val glass = if (glassLook && glassToo) StillGlass.from(scaled, w, h, density) else null
             main.post {
@@ -212,4 +218,14 @@ class WallpaperView(context: Context) : View(context) {
     private companion object {
         val worker = Executors.newSingleThreadExecutor { r -> Thread(r, "FirePlayerWallpaper").apply { priority = Thread.MIN_PRIORITY } }
     }
+}
+
+/** Whether a decoded wallpaper is shown as it is (pure, unit-tested). */
+internal object WallpaperFit {
+    /**
+     * A [dw] x [dh] picture decoded in the screen's own format ([argb]) for a [w] x [h] screen: true when it's exactly
+     * the screen's size, so the centre-crop would copy it pixel for pixel (the glass look's 1920 x 1080 wallpaper on a
+     * 1080p screen). Any other size (the classic look's 1672 x 941, another screen) is scaled and cropped.
+     */
+    fun asDecoded(dw: Int, dh: Int, argb: Boolean, w: Int, h: Int): Boolean = argb && dw > 0 && dh > 0 && dw == w && dh == h
 }
