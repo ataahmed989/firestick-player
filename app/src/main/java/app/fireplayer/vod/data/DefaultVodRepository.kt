@@ -179,8 +179,9 @@ class DefaultVodRepository(
             net.execute {
                 if (req.cancelled) return@execute
                 val id = imdb ?: imdbOf(title, fetch = true) ?: return@execute
-                // Fetched (kept a day), else an older copy.
-                val meta = metaTitle(kind, id) ?: cache.read(Cinemeta.metaUrl(kind, id))?.let { TitleJson.read(it.data.optJSONObject("title")) }
+                // Fetched through the title page's store (one download, shared with it), else an older copy.
+                val meta = fetchMeta(kind, id)?.value?.title
+                    ?: cache.read(Cinemeta.metaUrl(kind, id))?.let { TitleJson.read(it.data.optJSONObject("title")) }
                 if (meta != null && !req.cancelled) factsTo(req, title, meta, onTitle)
             }
         }

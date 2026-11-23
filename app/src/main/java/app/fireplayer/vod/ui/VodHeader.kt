@@ -473,6 +473,8 @@ class VodHeader(
         if (c != null) art.show(c.title.background) else feed.getOrNull(rotation.index)?.let { art.show(it.background) }
         title.show(shown)
         fetchLogosAhead()
+        // Facts asks let go by [release] go out again (titles answered or still asked are skipped).
+        askFacts(feed)
         schedule()
     }
 

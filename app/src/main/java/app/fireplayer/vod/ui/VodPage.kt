@@ -566,6 +566,8 @@ class VodPage(
         val now = SystemClock.elapsedRealtime()
         if (lastLoad == 0L || now - lastLoad > RELOAD_MS) loadAll() else reloadLibrary()
         updateHeaderPause()
+        // My List: the facts asks let go while hidden go out again (titles answered already are skipped).
+        if (myList) for (row in visibleRows()) header.askFacts(row.cards.map { it.title })
         // The stack runs again even with no title page open: one opened later must start (it used to stay paused
         // after a film started from Continue Watching, so its details, sources and Play were dead).
         titles.resume()

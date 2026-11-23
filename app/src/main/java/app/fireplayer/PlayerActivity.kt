@@ -2978,8 +2978,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             } else {
                 postPlayNext.visibility = View.VISIBLE
                 postPlayNext.text = "Next · " + if (next == null && vodNext != null) {
-                    // The next episode's numbers and name as the show's guide (or the page) has them: the one it really
-                    // is when Fix match set it to another.
+                    // The next episode's numbers and name as the show's guide (or the page) has them.
                     val e = guide?.episode(PlayerMeta.episodeId(vodNext))
                     val name = e?.name ?: vodNext.name?.takeIf { !it.startsWith("Episode ") && it != "TBA" }.orEmpty()
                     (e?.label ?: "S${vodNext.season} E${vodNext.episode}") + if (name.isNotEmpty()) " · $name" else ""
@@ -5270,8 +5269,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     /**
-     * [ep] of the show playing from Films & Shows, as the library keeps it ("tt…:2:5"): by the numbers it plays by, which
-     * are its own unless Fix match set it to another episode ([ShowGuide.Ep.providerSeason]).
+     * [ep] of the show playing from Films & Shows, as the library keeps it ("tt…:2:5"): by its own numbers.
      */
     private fun vodEpisode(vod: SourcePlayback, ep: ShowGuide.Ep): app.fireplayer.vod.Episode {
         val ref = PlayerMeta.refOf(ep)
@@ -6862,7 +6860,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             findLoadedSubId = null
             findTmdb = 0
             // From Films & Shows, put right by hand in Fix match: TMDB's film or show as fixed, by its id, at the
-            // season and episode handed over (or the episode Fix match set it to).
+            // season and episode handed over.
             val fix = vodFix?.takeIf { entry.storeKey != null && source != null }
             if (fix != null) {
                 findQuery = fix.name
@@ -6902,7 +6900,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 }
             }
             if (findIsShow) {
-                // Side by side, as Fix match sets them.
+                // Season and episode, side by side.
                 steppers(listOf(
                     SidePanel.Step("Season", findSeason.toString()) { findSeason = (findSeason + it).coerceIn(0, 99) },
                     SidePanel.Step("Episode", findEpisode.toString()) { findEpisode = (findEpisode + it).coerceIn(0, 999) },
