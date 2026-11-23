@@ -122,4 +122,34 @@ object DvBaseLayer {
         b.putShort(400)   // MaxFALL
         return b.array()
     }
+
+    /**
+     * Hides a profile 7 file's Dolby Vision units from the HEVC decoder, in place: every NAL unit of type 62 (the RPU,
+     * Dolby Vision's metadata) or 63 (the enhancement layer) becomes reserved type 47, which a decoder skips. The sample
+     * is Annex-B (Media3's Matroska and MP4 readers hand HEVC on with start codes). Nothing is made; one pass over the
+     * sample. Returns how many units were hidden.
+     */
+    fun hideDolbyVision(data: java.nio.ByteBuffer): Int {
+        var hidden = 0
+        val end = data.limit()
+        var i = data.position()
+        while (i + 3 < end) {
+            if (data.get(i) == 0.toByte() && data.get(i + 1) == 0.toByte() && data.get(i + 2) == 1.toByte()) {
+                val h = i + 3
+                val b = data.get(h).toInt() and 0xFF
+                val type = (b shr 1) and 0x3F
+                if (type == 62 || type == 63) {
+                    data.put(h, ((b and 0x81) or (HIDDEN_TYPE shl 1)).toByte())
+                    hidden++
+                }
+                i = h + 1
+            } else {
+                i++
+            }
+        }
+        return hidden
+    }
+
+    /** A reserved non-picture NAL unit type: decoders skip it. */
+    private const val HIDDEN_TYPE = 47
 }

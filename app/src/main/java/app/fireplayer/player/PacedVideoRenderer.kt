@@ -176,8 +176,17 @@ class PacedVideoRenderer(
                 Log.i(TAG, "HDR10+ metadata in this video is masked before the decoder (the TV doesn't report HDR10+)")
             }
         }
+        if (seen?.base != null && !buffer.isEncrypted) {
+            val data = buffer.data
+            if (data != null && DvBaseLayer.hideDolbyVision(data) > 0 && !dvHidden) {
+                dvHidden = true
+                Log.i(TAG, "Dolby Vision units hidden from the HEVC decoder: it plays the HDR10 base layer only")
+            }
+        }
         super.onQueueInputBuffer(buffer)
     }
+
+    private var dvHidden = false
 
     /**
      * How well the renderer plays [format]: a profile 7 track played as its base layer, as the HEVC film it then is, on a
