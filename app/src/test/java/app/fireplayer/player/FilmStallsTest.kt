@@ -196,4 +196,23 @@ class FilmStallsTest {
         assertTrue("${r.sustainedMbps}", r.sustainedMbps < 100.0)
         assertTrue(r.sustainedSeconds <= DownloadRate.SUSTAIN_MEMORY_MS / 1000 + 1)
     }
+
+    // ---- A film arriving short of its own rate
+
+    @Test fun arrivingShortWaitsOnceForAllThatFitsAtTheFirstStall() {
+        // Tonight: 128 MiB holds about 9.4 s of a 93 Mb/s stretch with 2 s kept behind; arriving at 0.46x.
+        val room = 9_400_000L
+        val wanted = StallCushion.wantedUs(1, 0.46f)
+        assertEquals(StallCushion.MAX_CUSHION_US, wanted)
+        // All that fits less a second at once, instead of half of it (4.7 s) and more only after more stalls.
+        assertEquals(8_400_000L, StallCushion.waitUs(1, wanted, room, 0.46f))
+        assertEquals(4_700_000L, StallCushion.waitUs(1, wanted, room))
+        // Nearly keeping up: as before.
+        assertEquals(StallCushion.waitUs(1, wanted, room), StallCushion.waitUs(1, wanted, room, 0.95f))
+        // A tenth is left unfilled of a big room; never under the least wait; nothing known about the room: as wanted.
+        assertEquals(3_000_000L, StallCushion.shortHeadroomUs(30_000_000L))
+        assertEquals(27_000_000L, StallCushion.waitUs(1, wanted, 30_000_000L, 0.46f))
+        assertEquals(FilmMemory.STALL_WAIT_LEAST_US, StallCushion.waitUs(1, wanted, 2_500_000L, 0.46f))
+        assertEquals(wanted, StallCushion.waitUs(1, wanted, 0L, 0.46f))
+    }
 }

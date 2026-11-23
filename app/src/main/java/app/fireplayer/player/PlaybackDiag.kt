@@ -90,6 +90,9 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
     private var decoder = "none"
     // The second before was one of loading with room in the buffer.
     private var wasFree = false
+    // Whether the film was loading at the last second, and how often loading had been held back by then.
+    private var wasLoading = false
+    private var holdsSeen = 0
     // The loader line ([loaderSecond]): seconds since this player's film started, and since when its figures run.
     private var loaderSeconds = 0
     private var loaderFrom = 0L
@@ -169,7 +172,13 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
         val fill = fillBytes()
         val free = player.isLoading && fill > 0L && held < fill * DownloadRate.FREE_BELOW && wasFree
         wasFree = player.isLoading && fill > 0L && held < fill * DownloadRate.FREE_BELOW
-        download.sample(SystemClock.elapsedRealtime(), meter.bytes, free, free && player.totalBufferedDuration < DownloadRate.FLAT_OUT_BELOW_MS)
+        // Flat out: loading the whole second through, never held back by the buffer rules, however full the buffer.
+        val holds = meter.loader.heldCount
+        val through = player.isLoading && wasLoading && holds == holdsSeen
+        wasLoading = player.isLoading
+        holdsSeen = holds
+        download.sample(SystemClock.elapsedRealtime(), meter.bytes, free,
+            (free || through) && player.totalBufferedDuration < DownloadRate.FLAT_OUT_BELOW_MS)
         loaderSecond(player.isPlaying)
         if (++seconds % LOG_EVERY_S != 0) return
         val playing = player.isPlaying

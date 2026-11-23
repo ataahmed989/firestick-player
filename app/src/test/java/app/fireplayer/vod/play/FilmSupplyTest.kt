@@ -20,6 +20,17 @@ import org.junit.Test
  */
 class FilmSupplyTest {
 
+    @Test fun aKeptSourceIsToldOncePlainlyWhatsHappening() {
+        assertEquals(
+            "This copy needs about 78 Mb/s and about 47 is arriving, so it will keep pausing · Sources lists every file",
+            FilmSupply.keptNote(78.0, FilmSupply.Reading(47.2, 0.46f), null),
+        )
+        assertEquals(
+            "This copy arrives slower than it plays, so it will keep pausing · Sources lists every file",
+            FilmSupply.keptNote(null, FilmSupply.Reading(null, 0.46f), null),
+        )
+    }
+
     // ---- The rule
 
     @Test fun aSourceWithinATenthOfTheLineIsShort() {

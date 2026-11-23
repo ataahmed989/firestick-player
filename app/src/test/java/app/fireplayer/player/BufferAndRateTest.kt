@@ -294,4 +294,40 @@ class BufferAndRateTest {
         assertEquals(0.0, r.bestFreeMbps, 0.0)
         assertEquals(0.0, r.mbps, 0.0)
     }
+
+    @Test fun secondsLoadingFlatOutCountHoweverFullTheBuffer() {
+        val r = DownloadRate()
+        var bytes = 0L
+        var t = 0L
+        r.sample(t, bytes, free = false)
+        // 47 Mb/s, the buffer over 85 % full but loading the whole second through.
+        repeat(20) {
+            t += 1_000
+            bytes += 5_875_000
+            r.sample(t, bytes, free = false, flatOut = true)
+        }
+        assertEquals(47.0, r.sustainedMbps, 0.05)
+        assertEquals(20, r.sustainedSeconds)
+        assertEquals(0, r.freeSeconds)
+        assertEquals(0.0, r.bestFreeMbps, 0.0)
+    }
+
+    // ---- Picture & sound's Server and Data rows (ArrivalWords)
+
+    @Test fun theServerRowSaysWhatArrivesAgainstWhatTheCopyNeeds() {
+        assertEquals("47 Mb/s arriving · 0.6× this copy's 78 · too slow, it will keep pausing", ArrivalWords.server(46.8, 91, 78.0))
+        assertEquals("101 Mb/s arriving · 1.3× this copy's 78 · enough", ArrivalWords.server(101.0, 40, 78.0))
+        assertEquals("80 Mb/s arriving · 1.0× this copy's 78 · only just enough, busy scenes may pause", ArrivalWords.server(80.0, 40, 78.0))
+        assertEquals("47 Mb/s arriving", ArrivalWords.server(47.0, 40, 0.0))
+        // The first seconds: only a plain "enough" is said that early.
+        assertEquals("Measuring…", ArrivalWords.server(47.0, 10, 78.0))
+        assertEquals("120 Mb/s arriving · 1.5× this copy's 78 · enough", ArrivalWords.server(120.0, 5, 78.0))
+        assertEquals("Measuring…", ArrivalWords.server(0.0, 0, 78.0))
+        assertEquals("Measuring…", ArrivalWords.server(Double.NaN, 30, 78.0))
+    }
+
+    @Test fun theDataRowShowsTheFilesAverageWhileThePictureIsMeasured() {
+        assertEquals("≈78 Mb/s for the whole file · measuring the picture…", ArrivalWords.dataMeasuring(78.2))
+        assertEquals("Measuring as it loads…", ArrivalWords.dataMeasuring(0.0))
+    }
 }

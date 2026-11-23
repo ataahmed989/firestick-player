@@ -12,6 +12,7 @@ import java.io.IOException
 import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import javax.net.ssl.HttpsURLConnection
 
 /**
  * The film's network connection read with up to two range requests at a time ([TwoRanges], [TwoRangeStream]); the
@@ -22,7 +23,8 @@ import java.net.URL
  * exactly as it would without this.
  *
  * [http] is the first request, the app's usual connection; the second is a plain HttpURLConnection to the address the
- * first was answered from ([HttpRangeRequest]), with the same headers.
+ * first was answered from ([HttpRangeRequest]), with the same headers, and so are the first request's later spans when
+ * they are asked for ahead of need. Every one of them connects as the film's ([FilmSockets]).
  */
 @OptIn(UnstableApi::class)
 class TwoRangeDataSource(
@@ -46,7 +48,8 @@ class TwoRangeDataSource(
             if (!fresh) landed?.let { d = d.withUri(it) }
             // From byte 0 Media3 sends no Range header; the server's answer to one is what's being asked.
             if (probe) d = d.withAdditionalHeaders(mapOf("Range" to "bytes=$start-"))
-            val n = http.open(d)
+            val asked = d
+            val n = FilmSockets.film { http.open(asked) }
             if (fresh) {
                 landed = http.uri
                 landedHeaders = http.responseHeaders
@@ -129,9 +132,12 @@ class TwoRangeDataSource(
 }
 
 /**
- * The second request: one HTTP range request at a time to [link], over the platform's HttpURLConnection like the
- * first, so a segment read to its end leaves its connection for the next. [cancel] from another thread disconnects,
- * which ends a read in progress at once. [link] is never logged.
+ * The second request, and a span of the first asked for ahead: one HTTP range request at a time to [link], over the
+ * platform's HttpURLConnection like the first, so a range read to its last byte leaves its connection in the platform's
+ * pool for the next (measured on the Stick: 36 ms to answer on the same connection against 435 ms on a new one). A
+ * range not read to its end is disconnected before its body is closed: its connection is never used again, and
+ * closing doesn't first read on through what's left. [cancel] from another thread disconnects, which ends a read in
+ * progress at once. Its socket is the film's ([FilmSockets]). [link] is never logged.
  */
 class HttpRangeRequest(
     private val link: String,
@@ -143,6 +149,8 @@ class HttpRangeRequest(
     @Volatile private var connection: HttpURLConnection? = null
     @Volatile private var cancelled = false
     private var body: InputStream? = null
+    // Of the range asked for, what hasn't been read yet; below 0: not known (asked to the file's end).
+    private var left = -1L
 
     override fun open(start: Long, length: Long, fresh: Boolean, probe: Boolean): TwoRanges.Answer {
         val c = URL(link).openConnection() as? HttpURLConnection ?: throw IOException("Not an HTTP link")
@@ -151,27 +159,38 @@ class HttpRangeRequest(
             c.disconnect()
             throw IOException("Cancelled")
         }
+        (c as? HttpsURLConnection)?.sslSocketFactory = FilmSockets.install()
         c.connectTimeout = connectTimeoutMs
         c.readTimeout = readTimeoutMs
         for ((name, value) in headers) c.setRequestProperty(name, value)
         c.setRequestProperty("Range", "bytes=$start-" + if (length < 0L) "" else (start + length - 1).toString())
         // As the first request asks: the bytes as they are in the file.
         c.setRequestProperty("Accept-Encoding", "identity")
-        val status = c.responseCode
+        val status = FilmSockets.film { c.responseCode }
         val contentRange = c.getHeaderField("Content-Range")
-        if (status == HttpURLConnection.HTTP_PARTIAL) body = c.inputStream
+        if (status == HttpURLConnection.HTTP_PARTIAL) {
+            body = c.inputStream
+            left = length
+        }
         return TwoRanges.Answer(status, contentRange, length)
     }
 
-    override fun read(buffer: ByteArray, offset: Int, length: Int): Int =
-        (body ?: throw IOException("Not open")).read(buffer, offset, length)
+    override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+        val n = (body ?: throw IOException("Not open")).read(buffer, offset, length)
+        if (n > 0 && left > 0L) left -= n
+        return n
+    }
 
     override fun close() {
         val c = connection
+        // Cut off before its end: disconnected first, so the connection goes and nothing more is read from it.
+        val whole = left == 0L && !cancelled
         try {
+            if (!whole) c?.disconnect()
             body?.close()
         } finally {
             body = null
+            left = -1L
             connection = null
             c?.disconnect()
         }

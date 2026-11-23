@@ -197,4 +197,46 @@ class FilmMemoryTest {
             assertEquals(t.name, 3_000L, t.previewHoldMs)
         }
     }
+
+    // ---- The second request's long spans, and what fits in a stall
+
+    @Test fun longSpansComeOutOfTheFilmsOwnBudget() {
+        val plan = FilmMemory.plan(RamTier.SMALL, stickHeap, freeBytes = 600 * mib)
+        assertTrue(FilmMemory.longSpansFit(plan))
+        val shared = FilmMemory.withSecondRequest(plan, 16 * mib)
+        assertEquals((112 * mib).toInt(), shared.budgetBytes)
+        assertEquals((112 * mib).toInt(), shared.tierBytes)
+        assertEquals((16 * mib).toInt(), shared.spanExtraBytes)
+        // What's kept behind stays as planned.
+        assertEquals(plan.backBufferMs, shared.backBufferMs)
+        assertEquals(plan.backCapBytes, shared.backCapBytes)
+        assertEquals(plan, FilmMemory.withSecondRequest(plan, 0L))
+        // Held down by free memory, or on the smallest TVs: short segments, as before.
+        assertFalse(FilmMemory.longSpansFit(FilmMemory.plan(RamTier.SMALL, stickHeap, freeBytes = 340 * mib)))
+        assertFalse(FilmMemory.longSpansFit(FilmMemory.plan(RamTier.TINY, stickHeap)))
+    }
+
+    @Test fun aSqueezeCountsTheLongSpansWithTheBudget() {
+        val budget = (112 * mib).toInt()
+        val extra = (16 * mib).toInt()
+        // Buffer and spans together squeezed as the 128 MiB buffer alone was: 128, 96, 64 in all.
+        assertEquals(budget, FilmMemory.capFor(budget, 0, extra))
+        assertEquals((80 * mib).toInt(), FilmMemory.capFor(budget, 1, extra))
+        assertEquals(FilmMemory.FLOOR_BYTES, FilmMemory.capFor(budget, 2, extra))
+        // Without long spans: as ever.
+        assertEquals((96 * mib).toInt(), FilmMemory.capFor((128 * mib).toInt(), 1))
+        assertEquals((64 * mib).toInt(), FilmMemory.capFor((128 * mib).toInt(), 2))
+    }
+
+    @Test fun whatFitsInAStallIsWorkedOutFromTheBytesWithoutWhatsKeptBehind() {
+        // 0.3 s ahead and 2.1 s behind in 28 MiB (about 93 Mb/s): 128 MiB holds about 11 s, 8.9 s of it ahead.
+        val room = FilmMemory.roomInStallUs(300_000L, 2_100_000L, 28 * mib, 128 * mib)
+        assertTrue("$room", room in 8_700_000L..9_000_000L)
+        // A squeeze to half: about 3.4 s ahead.
+        assertTrue(FilmMemory.roomInStallUs(300_000L, 2_100_000L, 28 * mib, 64 * mib) in 3_300_000L..3_500_000L)
+        // Too little held to tell.
+        assertEquals(0L, FilmMemory.roomInStallUs(200_000L, 300_000L, 28 * mib, 128 * mib))
+        assertEquals(0L, FilmMemory.roomInStallUs(300_000L, 2_100_000L, mib, 128 * mib))
+        assertEquals(0L, FilmMemory.roomInStallUs(300_000L, 2_100_000L, 28 * mib, 0L))
+    }
 }

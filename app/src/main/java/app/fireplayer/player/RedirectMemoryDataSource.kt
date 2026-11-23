@@ -94,7 +94,6 @@ class RedirectMemoryDataSource(
         if (serverSwitch?.take() == true) remembered.remove(dataSpec.uri.toString())
         if (serverSwitch != null) filmOpenedAt = SystemClock.elapsedRealtime()
         val length = openRemembering(dataSpec)
-        if (serverSwitch != null && !readOnly) speedFor(dataSpec.uri.toString())
         // The film's whole size, from a reply that runs to its end: for its quality details.
         if (serverSwitch != null && !readOnly && length != C.LENGTH_UNSET.toLong() &&
             dataSpec.length == C.LENGTH_UNSET.toLong()) {
@@ -186,9 +185,6 @@ class RedirectMemoryDataSource(
             remembered.remove(link)
             throw IOException("Moving to another of the provider's servers")
         }
-        val film = serverSwitch != null && !readOnly
-        val started = if (film) System.nanoTime() else 0L
-        if (film) gapBefore(started)
         val read = try {
             upstream.read(buffer, offset, length)
         } catch (e: IOException) {
@@ -202,7 +198,6 @@ class RedirectMemoryDataSource(
         }
         if (read > 0) {
             readSinceOpen += read
-            if (film) timed(read, System.nanoTime() - started)
             keeping?.add(buffer, offset, read)
         }
         return read
@@ -234,71 +229,6 @@ class RedirectMemoryDataSource(
     companion object {
         // When the film last opened a connection (elapsedRealtime).
         @Volatile private var filmOpenedAt = 0L
-
-        // The film's bytes, and the time they took to come while it was loading, since the speed was last worked out.
-        private var windowBytes = 0L
-        private var windowNanos = 0L
-        private var lastReadEnd = 0L
-        @Volatile private var lastBps = 0L
-        @Volatile private var speedLink: String? = null
-
-        /** A connection to [link] opened: another film's speed isn't this one's. */
-        @Synchronized
-        private fun speedFor(link: String) {
-            if (link == speedLink) return
-            speedLink = link
-            lastBps = 0
-            windowBytes = 0
-            windowNanos = 0
-            lastReadEnd = 0
-            warmUp = WARM_UP_BYTES
-        }
-
-        /**
-         * Only time spent loading counts: the reads and the short gaps between them while the player keeps reading, not
-         * the pauses while its buffer is full. So a film topped up now and then still shows the speed it comes at (or,
-         * if the player reads slower than the server sends, how fast it was taken: the server is at least that fast).
-         */
-        // After a pause the network has queued what fits in its buffer: that comes at once and isn't timed.
-        private var warmUp = WARM_UP_BYTES
-
-        @Synchronized
-        private fun gapBefore(now: Long) {
-            val gap = now - lastReadEnd
-            if (lastReadEnd != 0L && gap in 0..IDLE_NANOS) {
-                windowNanos += gap
-            } else {
-                windowBytes = 0
-                windowNanos = 0
-                warmUp = WARM_UP_BYTES
-            }
-        }
-
-        @Synchronized
-        private fun timed(bytes: Int, nanos: Long) {
-            lastReadEnd = System.nanoTime()
-            if (warmUp > 0) {
-                warmUp -= bytes
-                return
-            }
-            windowBytes += bytes
-            windowNanos += nanos
-            if (windowBytes >= SPEED_WINDOW_BYTES && windowNanos > 0) {
-                // The fastest stretch: topped up in short steps, the film comes only as fast as it plays, which says
-                // nothing of the server. So it's "at least" this fast.
-                lastBps = maxOf(lastBps, windowBytes * 8 * 1_000_000_000 / windowNanos)
-                windowBytes = 0
-                windowNanos = 0
-            }
-        }
-
-        /** How fast the film at [link] has come from the server at best while loading, bits a second; 0 before it's known. */
-        fun serverBps(link: String?): Long = if (link != null && link == speedLink) lastBps else 0L
-
-        private const val SPEED_WINDOW_BYTES = 16L * 1024 * 1024
-        private const val WARM_UP_BYTES = 6L * 1024 * 1024
-        /** A pause longer than this between reads is the player waiting with a full buffer, not loading. */
-        private const val IDLE_NANOS = 250_000_000L
 
         // Each film's size in bytes, by its link.
         private val fileSizes = ConcurrentHashMap<String, Long>()

@@ -53,6 +53,12 @@ object StallCushion {
     /** ...but never waits for more than this. */
     const val MAX_CUSHION_US = 30_000_000L
 
+    /** Arriving at less than this share of the film's own rate, a stall waits for all that fits at once ([waitUs]). */
+    const val SHORT_RATE = 0.9f
+
+    /** What such a wait leaves unfilled of what fits: a tenth of it, at least a second. */
+    fun shortHeadroomUs(roomUs: Long): Long = maxOf(1_000_000L, roomUs / 10)
+
     /**
      * How much to have before playing so it then plays [SMOOTH_US] without stopping, when [rate] seconds of film
      * arrive each second (the download's speed over the film's own, measured as it loads).
@@ -81,9 +87,17 @@ object StallCushion {
      * as it plays, when the line allows), three quarters after the second, all of it from the third: by then the line
      * has shown it doesn't fill the rest. Never less than [FilmMemory.STALL_WAIT_LEAST_US]; a film of which a minute or
      * more fits waits for what it wants, as [FilmMemory.waitUs] has it.
+     *
+     * A film measured arriving at less than [SHORT_RATE] of its own rate ([rate]) can't be kept from stopping by any
+     * wait: arriving at r, it can only play r of the time, and how long it plays after a wait goes with the wait (about
+     * room / (1 - r)). So it waits once for all that fits, less [shortHeadroomUs], from the first stall on: half as many
+     * stops, each longer, for the same waiting in all.
      */
-    fun waitUs(stalls: Int, wantedUs: Long, roomUs: Long): Long {
+    fun waitUs(stalls: Int, wantedUs: Long, roomUs: Long, rate: Float? = null): Long {
         if (roomUs <= 0L) return wantedUs
+        if (rate != null && rate < SHORT_RATE) {
+            return minOf(wantedUs, maxOf(FilmMemory.STALL_WAIT_LEAST_US, roomUs - shortHeadroomUs(roomUs)))
+        }
         val share = when {
             stalls <= 1 -> roomUs / 2
             stalls == 2 -> roomUs / 4 * 3

@@ -46,6 +46,9 @@ class LoaderRate {
         holds.incrementAndGet()
     }
 
+    /** How often loading was held back so far: unchanged over a second, loading ran that second through. Any thread. */
+    val heldCount: Int get() = holds.get()
+
     /** What came since the last take, and starts afresh. */
     @Synchronized
     fun take(): Sample {

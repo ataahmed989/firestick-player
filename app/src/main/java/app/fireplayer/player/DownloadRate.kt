@@ -5,6 +5,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.TransferListener
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -21,7 +22,7 @@ class ByteMeter : TransferListener {
     /** The same connection's speed while really loading, pauses left out ([LoaderRate]). */
     val loader = LoaderRate()
 
-    /** Bytes that came outside the film's own connection: a second request's ([TwoRanges]). */
+    /** Bytes that came through this app's own range requests ([TwoRanges.onSpanBytes]). */
     fun add(bytes: Int) {
         total.addAndGet(bytes.toLong())
     }
@@ -93,9 +94,9 @@ class DownloadRate {
     /**
      * [bytesSoFar] have come by [nowMs] (any clock in ms that only goes forward). [free]: the film loaded all of this
      * last second with room left in its buffer, so the line and the server set the speed, not the film's own rate.
-     * [flatOut]: and with less of the film ahead than it ever stops loading at, so it loaded the whole second through
-     * (a light film near its two minutes ahead loads in short bursts, each of which looks like loading): only such
-     * seconds count for [sustainedMbps].
+     * [flatOut]: it loaded the whole second through, never held back by its buffer, with less of the film ahead than it
+     * ever stops loading at (a light film near its two minutes ahead loads in short bursts, each of which looks like
+     * loading): only such seconds count for [sustainedMbps], whether or not the buffer was nearly full.
      */
     fun sample(nowMs: Long, bytesSoFar: Long, free: Boolean, flatOut: Boolean = free) {
         val before = lastBytes
@@ -110,12 +111,6 @@ class DownloadRate {
         val got = bytesSoFar - before
         bytes += got
         ms += since
-        if (!free) {
-            run = 0
-            return
-        }
-        freeBytes += got
-        freeMs += since
         if (flatOut) {
             longBytes += got
             longMs += since
@@ -125,6 +120,12 @@ class DownloadRate {
                 longMs /= 2
             }
         }
+        if (!free) {
+            run = 0
+            return
+        }
+        freeBytes += got
+        freeMs += since
         if (run == BEST_SECONDS) {
             System.arraycopy(runBytes, 1, runBytes, 0, BEST_SECONDS - 1)
             System.arraycopy(runMs, 1, runMs, 0, BEST_SECONDS - 1)
@@ -178,4 +179,41 @@ class DownloadRate {
 
         private fun rate(bytes: Long, ms: Long): Double = if (ms <= 0L) 0.0 else bytes * 8.0 / 1_000.0 / ms
     }
+}
+
+/**
+ * Picture & sound's "Server" row: how fast the film is arriving, every connection together over whole seconds of loading
+ * flat out with the gaps between requests in them ([DownloadRate.sustainedMbps]), against what this copy needs on
+ * average, and what that means: "47 Mb/s arriving · 0.6× this copy's 78 · too slow, it will keep pausing". Not the
+ * best burst seen (the log keeps those): a figure that only ever goes up said 1.3× while the film kept pausing.
+ * Pure: no link, no host.
+ */
+object ArrivalWords {
+    /** A verdict under this many seconds measured only when it's plainly enough; "Measuring…" before. */
+    const val MIN_SECONDS = 15
+
+    /** Arriving this many times as fast as the copy needs on average carries its busy scenes too. */
+    const val ENOUGH = 1.2
+
+    const val MEASURING = "Measuring…"
+
+    /** [arrivingMbps] measured over [seconds]; the copy needs [needMbps] on average (0: not known). */
+    fun server(arrivingMbps: Double, seconds: Int, needMbps: Double): String {
+        if (arrivingMbps <= 0.0 || arrivingMbps.isNaN() || seconds <= 0) return MEASURING
+        val share = if (needMbps > 0.0) arrivingMbps / needMbps else 0.0
+        // The first seconds include each connection's slow start: only a clear "enough" is said that early.
+        if (seconds < MIN_SECONDS && share < ENOUGH) return MEASURING
+        val got = Math.round(arrivingMbps)
+        if (needMbps <= 0.0) return "$got Mb/s arriving"
+        val verdict = when {
+            share >= ENOUGH -> "enough"
+            share >= 1.0 -> "only just enough, busy scenes may pause"
+            else -> "too slow, it will keep pausing"
+        }
+        return String.format(Locale.US, "%d Mb/s arriving · %.1f× this copy's %d · %s", got, share, Math.round(needMbps), verdict)
+    }
+
+    /** Picture & sound's "Data" row while the picture's own rate is measured: the file's average meanwhile. */
+    fun dataMeasuring(fileMbps: Double): String =
+        if (fileMbps > 0.0) "≈" + Math.round(fileMbps) + " Mb/s for the whole file · measuring the picture…" else "Measuring as it loads…"
 }
