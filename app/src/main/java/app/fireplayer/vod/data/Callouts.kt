@@ -4,6 +4,7 @@ import app.fireplayer.vod.Callout
 import app.fireplayer.vod.Episode
 import app.fireplayer.vod.EpisodeRef
 import app.fireplayer.vod.Kind
+import app.fireplayer.vod.LastPlayed
 import app.fireplayer.vod.PlayTarget
 import app.fireplayer.vod.TitleDetails
 
@@ -91,5 +92,30 @@ object EpisodeMarks {
             watchedUpTo = before.any { !watched(it) },
             unwatchedUpTo = before.any { watched(it) || played(it) },
         )
+    }
+}
+
+/**
+ * The marks a film's or a whole show's windows offer (a poster's hold window, the title page's (⋯)), as an episode's
+ * do ([EpisodeMarks.offer]): Mark watched while it isn't fully watched, Mark unwatched once it is or has been played
+ * some way ([app.fireplayer.vod.VodRepository.hasHistory]), both while it's part watched. Pure.
+ */
+object TitleMarks {
+
+    /** What a film's or a show's window offers; each is there only when it would change something. */
+    data class Offer(val watched: Boolean, val unwatched: Boolean)
+
+    /** [watched]: it reads as fully watched ([TitleMarks.watched]); [played]: it has a history Mark unwatched clears. */
+    fun offer(watched: Boolean, played: Boolean): Offer = Offer(watched = !watched, unwatched = watched || played)
+
+    /**
+     * Whether [kind]'s title reads as fully watched from memory alone (no episodes read): its own mark ([marked]),
+     * except a show being played since it (its record [last] newer than the mark, not over and not taken out of
+     * Continue Watching) or [inContinue] (an episode left to go on with), whose mark covers only the episodes aired
+     * when it was set.
+     */
+    fun watched(kind: Kind, marked: Boolean, last: LastPlayed?, inContinue: Boolean): Boolean {
+        if (!marked || kind != Kind.SERIES) return marked
+        return !inContinue && last?.let { !it.hidden && !it.finished } != true
     }
 }

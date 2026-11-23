@@ -3,6 +3,8 @@ package app.fireplayer.vod.data
 import app.fireplayer.vod.Episode
 import app.fireplayer.vod.EpisodeRef
 import app.fireplayer.vod.Kind
+import app.fireplayer.vod.LastPlayed
+import app.fireplayer.vod.Position
 import app.fireplayer.vod.Title
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -193,6 +195,101 @@ class UnwatchTest {
     }
 
     @Test
+    fun anEpisodeAfterADoneShowsRecordIsNotPutInContinueWatching() {
+        // Caught up: S1 E1 finished, the whole show marked watched; in neither row.
+        play(1, 1, 23)
+        now += 1000
+        library.setWatched(show, true)
+        assertFalse(library.inContinueWatching(show.id))
+        library.setEpisodesWatched(listOf(e(2, 1)), false)
+        assertFalse(library.isEpisodeWatched(e(2, 1)))
+        assertFalse(library.inContinueWatching(show.id))
+        assertTrue(library.continueWatching(null).isEmpty())
+        assertTrue(library.nextEpisodes().isEmpty())
+        // Its record went to that episode at 0:00, kept out; Mark watched on it again lets it out, done as before.
+        val last = library.lastPlayed(Kind.SERIES, show.id)!!
+        assertEquals(EpisodeRef(2, 1, "E1"), last.episode)
+        assertTrue(last.hidden)
+        library.setEpisodesWatched(listOf(e(2, 1)), true)
+        assertFalse(library.lastPlayed(Kind.SERIES, show.id)!!.hidden)
+        assertFalse(library.inContinueWatching(show.id))
+        assertFalse(store.progress["series|${show.id}"]!!.hidden)
+    }
+
+    @Test
+    fun upToHereBeforeASpecialsRecordIsNotPutInContinueWatching() {
+        play(0, 1, 23)
+        library.setEpisodesWatched(eps.filter { !it.isSpecial }, true)
+        assertFalse(library.inContinueWatching(show.id))
+        library.unwatchEpisodes(EpisodeMarks.upTo(eps, e(1, 3), now), e(1, 3))
+        assertFalse(library.isEpisodeWatched(e(1, 1)))
+        assertFalse(library.inContinueWatching(show.id))
+        assertTrue(library.nextEpisodes().isEmpty())
+    }
+
+    /** A library whose show's episodes are [aired] (changed by a test as a new one airs), on its own store. */
+    private class Airing(eps: List<Episode>, clock: () -> Long) {
+        var aired: List<Episode> = eps
+        val library = VodLibrary(MemoryLibraryStore(), clock, Executor { it.run() }, { aired }) {}
+    }
+
+    private fun s3e1() = Episode(Episode.idOf(show.id, 3, 1), 3, 1, "E1", released = now + day, runtimeMin = 23)
+
+    @Test
+    fun aWholeShowUnwatchedAndWatchedAgainComesBackInNextEpisodes() {
+        val a = Airing(eps) { now }
+        now += 1000
+        a.library.recordProgress(show, EpisodeRef(2, 2, "E2"), 23 * min, 23 * min)
+        assertFalse(a.library.inContinueWatching(show.id))
+        now += 1000
+        a.library.setWatched(show, false)
+        now += 1000
+        a.library.setWatched(show, true)
+        assertFalse(a.library.lastPlayed(Kind.SERIES, show.id)!!.hidden)
+        assertFalse(a.library.inContinueWatching(show.id))
+        // A new episode airs: Next Episodes has it, as before Mark unwatched.
+        val new = s3e1()
+        a.aired = eps + new
+        now += 2 * day
+        assertEquals(listOf(show to new), a.library.nextEpisodes())
+        assertFalse(a.library.inContinueWatching(show.id))
+    }
+
+    @Test
+    fun anEpisodeUnwatchedAndWatchedAgainGoesOnToTheNext() {
+        val a = Airing(eps) { now }
+        a.library.setEpisodesWatched(eps.filter { !it.isSpecial }, true)
+        now += 1000
+        a.library.recordProgress(show, EpisodeRef(2, 2, "E2"), 23 * min, 23 * min)
+        val new = s3e1()
+        a.aired = eps + new
+        now += 2 * day
+        assertEquals(listOf(show to new), a.library.nextEpisodes())
+        a.library.setEpisodesWatched(listOf(e(2, 2)), false)
+        assertTrue(a.library.lastPlayed(Kind.SERIES, show.id)!!.hidden)
+        a.library.setEpisodesWatched(listOf(e(2, 2)), true)
+        assertEquals(EpisodeRef(3, 1, "E1"), a.library.continueEntries().single().episode)
+        assertTrue(a.library.nextEpisodes().isEmpty())
+    }
+
+    @Test
+    fun aShowMarkedWatchedLeavesContinueWatchingBeforeItsEpisodesAreKnown() {
+        val lib = VodLibrary(MemoryLibraryStore(), { now }, direct, { null }) {}
+        now += 1000
+        lib.recordProgress(show, EpisodeRef(1, 1, "E1"), 23 * min, 23 * min)
+        // Over, its episodes not known: kept as it was.
+        assertTrue(lib.inContinueWatching(show.id))
+        now += 1000
+        lib.setWatched(show, true)
+        assertFalse(lib.inContinueWatching(show.id))
+        assertTrue(lib.continueWatching(null).isEmpty())
+        // Played since (its episode over by its own mark): kept again while they aren't known.
+        now += 1000
+        lib.recordProgress(show, EpisodeRef(1, 2, "E2"), 23 * min, 23 * min)
+        assertTrue(lib.inContinueWatching(show.id))
+    }
+
+    @Test
     fun playbackWritesItsRecordPositionAndMarkTogether() {
         val b = store.batches
         play(1, 1, 22)
@@ -222,6 +319,59 @@ class UnwatchTest {
         // Only played before it (nothing watched): unwatched up to here clears that.
         watched.clear()
         assertEquals(EpisodeMarks.Offer(watched = true, unwatched = false, watchedUpTo = true, unwatchedUpTo = true), offer(e(2, 2)))
+    }
+
+    // ---- What a film's or a whole show's windows offer (TitleMarks) ----
+
+    @Test
+    fun aTitlesWindowOffersBothMarksWhilePartWatched() {
+        assertEquals(TitleMarks.Offer(watched = true, unwatched = false), TitleMarks.offer(watched = false, played = false))
+        assertEquals(TitleMarks.Offer(watched = true, unwatched = true), TitleMarks.offer(watched = false, played = true))
+        assertEquals(TitleMarks.Offer(watched = false, unwatched = true), TitleMarks.offer(watched = true, played = true))
+        assertEquals(TitleMarks.Offer(watched = false, unwatched = true), TitleMarks.offer(watched = true, played = false))
+    }
+
+    @Test
+    fun aShowPlayedSinceItsMarkIsNotFullyWatched() {
+        val playing = LastPlayed(EpisodeRef(3, 1), Position(10 * min, 23 * min, now))
+        // A film: its mark alone.
+        assertTrue(TitleMarks.watched(Kind.MOVIE, marked = true, last = playing, inContinue = true))
+        assertFalse(TitleMarks.watched(Kind.MOVIE, marked = false, last = null, inContinue = false))
+        // A show: its mark, unless played since (in Continue Watching, not over) or on its Continue card.
+        assertTrue(TitleMarks.watched(Kind.SERIES, marked = true, last = null, inContinue = false))
+        assertFalse(TitleMarks.watched(Kind.SERIES, marked = true, last = playing, inContinue = false))
+        assertTrue(TitleMarks.watched(Kind.SERIES, marked = true, last = playing.copy(hidden = true), inContinue = false))
+        assertTrue(TitleMarks.watched(Kind.SERIES, marked = true, last = playing.copy(markedWatched = true), inContinue = false))
+        assertFalse(TitleMarks.watched(Kind.SERIES, marked = true, last = null, inContinue = true))
+        assertFalse(TitleMarks.watched(Kind.SERIES, marked = false, last = null, inContinue = false))
+        // From the library: marked watched, then a new season started. Both marks, and Mark watched keeps every position.
+        library.setWatched(show, true)
+        play(2, 1, 10)
+        val watched = TitleMarks.watched(Kind.SERIES, library.isWatched(show.id), library.lastPlayed(Kind.SERIES, show.id), false)
+        assertFalse(watched)
+        assertEquals(TitleMarks.Offer(watched = true, unwatched = true), TitleMarks.offer(watched, library.hasHistory(show)))
+        library.setWatched(show, true)
+        assertEquals(10 * min, library.positionOf(e(2, 1))!!.positionMs)
+        assertFalse(library.inContinueWatching(show.id))
+    }
+
+    @Test
+    fun aTitleHasAHistoryUntilMarkedUnwatched() {
+        assertFalse(library.hasHistory(film))
+        assertFalse(library.hasHistory(show))
+        library.recordProgress(film, null, 50 * min, 142 * min)
+        assertTrue(library.hasHistory(film))
+        library.setWatched(film, false)
+        assertFalse(library.hasHistory(film))
+        // A show: an episode started, or one episode's own mark, is enough.
+        library.setEpisodesWatched(listOf(e(1, 2)), true)
+        assertTrue(library.hasHistory(show))
+        play(1, 3, 5)
+        library.setWatched(show, false)
+        assertFalse(library.hasHistory(show))
+        play(1, 1, 5)
+        library.removeFromContinueWatching(show.id)
+        assertTrue(library.hasHistory(show))
     }
 
     @Test

@@ -1072,8 +1072,18 @@ class SidePanel(private val activity: Activity) {
         card.isClickable = true
         card.setOnClickListener { onClick() }
         card.setOnKeyListener { v, keyCode, event ->
-            Rows.verticalNav(list, v, keyCode, event) ||
-                keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
+            val vertical = keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN
+            // The window's one card (Show details): Up and Down glide its text instead, so what's above it can be read.
+            if (vertical && focusables().size < 2) {
+                if (event.action == KeyEvent.ACTION_DOWN) {
+                    val step = rows.dp(ARROW_SCROLL_DP)
+                    scroll.glideBy(if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) step else -step)
+                }
+                true
+            } else {
+                Rows.verticalNav(list, v, keyCode, event) ||
+                    keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
+            }
         }
         list.addView(card, rows.listParams(top, bottom))
         return card

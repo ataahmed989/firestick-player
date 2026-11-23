@@ -39,7 +39,7 @@ enum class SettingsCategory(val title: String, val icon: Int, val settings: List
         R.drawable.ic_head_play,
         listOf(
             "Play next episode", "Resume where I left off", "Match frame rate", "Surround passthrough", "When a film keeps buffering",
-            "Faster downloads (2 connections)", "Skip buttons", "Next episode / Exit countdown",
+            "Faster downloads", "Skip buttons", "Next episode / Exit countdown",
         ),
     ),
     REMOTE(

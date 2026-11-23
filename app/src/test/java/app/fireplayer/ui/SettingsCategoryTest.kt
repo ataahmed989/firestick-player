@@ -68,7 +68,7 @@ class SettingsCategoryTest {
             // Playback: what a film from the add-ons does when it keeps stopping to load.
             "When a film keeps buffering",
             // Playback: a film read with two requests at a time, Off by default.
-            "Faster downloads (2 connections)",
+            "Faster downloads",
             // Multiview: how many pictures at most, and how 3 or 4 open.
             "Multiview pictures", "Multiview with 3 or 4",
             // Picture-in-picture: the live picture on Home and Search, and whether it starts with its sound.

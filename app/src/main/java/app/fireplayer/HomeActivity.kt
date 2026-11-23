@@ -213,6 +213,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         settingsPanels.onAssStylingChanged = { applyCaptionStyle() }
         // Info pods are one setting for films and live channels: the live controls follow a change at once.
         settingsPanels.onChipsChanged = { live.refreshPods() }
+        // Look › Reset to defaults forgets Default's unsaved display dimness: full screen's darkness follows at once.
+        settingsPanels.onShadesReset = { applyLiveDim() }
         filmMode = FilmMode(this, object : FilmMode.Hooks {
             override fun stopLive() {
                 // The channel stops and its player is released: its decoders are the film's now. Multiview's pictures

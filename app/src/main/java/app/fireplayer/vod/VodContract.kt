@@ -550,6 +550,12 @@ interface VodRepository {
      */
     fun setWatched(title: Title, watched: Boolean)
 
+    /**
+     * Whether [title] has a history Mark unwatched ([setWatched]) clears: a watched mark (a show's, or any of its
+     * episodes'), or where playback of it stopped (a show's: of any episode). Main thread, from memory.
+     */
+    fun hasHistory(title: Title): Boolean = isWatched(title.id) || (lastPlayed(title)?.position?.positionMs ?: 0L) > 0L
+
     /** Takes a title out of Continue Watching (its resume point stays). */
     fun removeFromContinueWatching(id: String)
 

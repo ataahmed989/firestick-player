@@ -409,11 +409,11 @@ class Tmdb(private val key: () -> String, private val memory: Memory) {
         }
     }
 
-    /** The numbers of a show's seasons, specials (season 0) left out. Blocks. */
-    fun seasonNumbers(showId: Int): List<Int> {
+    /** The numbers of a show's seasons, specials (season 0) left out unless [specials] (Fix match). Blocks. */
+    fun seasonNumbers(showId: Int, specials: Boolean = false): List<Int> {
         val seasons = JSONObject(request("tv/$showId", listOf("language" to "en-US"))).optJSONArray("seasons") ?: return emptyList()
         return (0 until seasons.length()).mapNotNull { seasons.optJSONObject(it)?.optInt("season_number", -1) }
-            .filter { it > 0 }.sorted()
+            .filter { it > 0 || (specials && it == 0) }.sorted()
     }
 
     /** A film or show found by a search typed in by hand (Fix match). */

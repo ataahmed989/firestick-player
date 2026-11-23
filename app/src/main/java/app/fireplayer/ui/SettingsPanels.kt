@@ -134,6 +134,12 @@ class SettingsPanels(
     /** Settings › Picture-in-picture's first row was changed (the screen stops a picture playing when it's now off). */
     var onPipChanged: (() -> Unit)? = null
 
+    /**
+     * Look › Reset to defaults was used: it also forgets Default's unsaved display dimness, so a screen dimming its
+     * picture with it ([app.fireplayer.data.Dimmer]) applies its dimness again.
+     */
+    var onShadesReset: () -> Unit = {}
+
     /** Languages offered as defaults; English first. */
     private val languages = listOf("en", "ar", "es", "fr", "de", "it", "pt", "hi", "ur", "tr", "ja", "ko", "zh")
 
@@ -386,6 +392,7 @@ class SettingsPanels(
         row(RESET_SHADES) {
             shades.reset()
             shades.applyTo(activity)
+            onShadesReset()
             updateValues()
         }
         message(SHADES_NOTE, maxLines = NOTE_LINES)
@@ -480,7 +487,7 @@ class SettingsPanels(
      * player reads it as it's built, so it holds from the next film or source started.
      */
     private fun fasterDownloadsRow(panel: SidePanel): Unit = with(panel) {
-        row("Faster downloads (2 connections)", onOff(prefs.fasterDownloads)) {
+        row("Faster downloads", onOff(prefs.fasterDownloads)) {
             prefs.fasterDownloads = !prefs.fasterDownloads; refresh()
             // The lists in memory rank again with the line speed measured for that many connections.
             (app.fireplayer.vod.Sources.get(activity) as? app.fireplayer.vod.sources.DefaultSourcesRepository)?.rerank()
