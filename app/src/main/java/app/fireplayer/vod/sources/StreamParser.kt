@@ -29,9 +29,15 @@ class ParsedStream(
 
 /**
  * An add-on's answer, read: its streams, and what it said instead of them ([notice]: an error row such as "Invalid
- * RealDebrid ApiKey" (or another debrid service's); [busy]: ElfHosted's 🐢 "rate-limit exceeded" row).
+ * RealDebrid ApiKey" (or another debrid service's); [busy]: ElfHosted's 🐢 "rate-limit exceeded" row). [service]: the
+ * debrid service the answer names ("Real-Debrid"), a cached source's first ([Debrids]); null when it names none.
  */
-class ParsedAnswer(val streams: List<ParsedStream>, val notice: Failure? = null, val busy: Boolean = false)
+class ParsedAnswer(
+    val streams: List<ParsedStream>,
+    val notice: Failure? = null,
+    val busy: Boolean = false,
+    val service: String? = null,
+)
 
 /**
  * Reads Torrentio's, MediaFusion's and StremThru Torz's stream lists (Stremio add-on protocol) as r3_sources-organize
@@ -49,6 +55,8 @@ object StreamParser {
         val out = ArrayList<ParsedStream>(streams.length())
         var notice: Failure? = null
         var busy = false
+        var service: String? = null
+        var serviceCached = false
         for (i in 0 until streams.length()) {
             val s = streams.optJSONObject(i) ?: continue
             val name = s.optString("name")
@@ -63,16 +71,24 @@ object StreamParser {
                 ?: if (name.contains("error", ignoreCase = true)) Notices.listError(text, addon) else null
             if (noticed != null) {
                 if (notice == null) notice = noticed
+                if (service == null) service = Debrids.of(name, null)
                 continue
             }
             val link = url?.let { SecretUrl.of(it) } ?: continue
-            out += when (addon) {
+            val parsed = when (addon) {
                 Addon.TORRENTIO -> torrentio(s, name, text, link, runtimeMin)
                 Addon.MEDIAFUSION -> mediaFusion(s, name, text, link, runtimeMin)
                 Addon.TORZ -> torz(s, name, text, link, runtimeMin)
             } ?: continue
+            out += parsed
+            // Which debrid service serves it: the first source's that tells, a cached one's when there is one.
+            val cached = parsed.offer.readiness == Readiness.PROBABLY_READY
+            if (!serviceCached && (service == null || cached)) Debrids.of(name, url)?.let {
+                service = it
+                serviceCached = cached
+            }
         }
-        return ParsedAnswer(out, notice, busy && out.isEmpty())
+        return ParsedAnswer(out, notice, busy && out.isEmpty(), service)
     }
 
     // ---- Torrentio ----

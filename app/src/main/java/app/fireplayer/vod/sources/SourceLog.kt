@@ -38,19 +38,8 @@ object SourceLog {
     /** "co.uk"-style endings: the site is the last three labels. */
     private val SECOND_LEVEL = setOf("co", "com", "net", "org", "ac", "gov")
 
-    /** Sites the debrid services and the add-ons' hosts stream from. */
-    private val SERVICES = mapOf(
-        "real-debrid.com" to "Real-Debrid",
-        "rdeb.io" to "Real-Debrid",
-        "torbox.app" to "TorBox",
-        "tb-cdn.st" to "TorBox",
-        "tb-cdn.io" to "TorBox",
-        "alldebrid.com" to "AllDebrid",
-        "debrid.it" to "AllDebrid",
-        "premiumize.me" to "Premiumize",
-        "debrid-link.com" to "Debrid-Link",
-        "debrid-link.fr" to "Debrid-Link",
-        "offcloud.com" to "Offcloud",
+    /** Sites the debrid services ([Debrids.SITES]) and the add-ons' hosts stream from. */
+    private val SERVICES = Debrids.SITES + mapOf(
         "elfhosted.com" to "ElfHosted",
         "strem.fun" to "Torrentio",
     )

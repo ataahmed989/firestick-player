@@ -228,7 +228,7 @@ class SettingsPanels(
             SettingsCategory.ACCOUNTS -> credentialsSection(this)
             SettingsCategory.ROWS -> app.fireplayer.vod.ui.RowsSettings.render(this, activity, prefs) { onRailServicesChanged() }
             SettingsCategory.HOME_HEADER -> homeHeaderSection(this)
-            SettingsCategory.ADDONS -> app.fireplayer.vod.ui.AddonsSettings.render(this, activity, app.fireplayer.vod.Sources.get(activity).addons)
+            SettingsCategory.ADDONS -> addonsWindow(this)
             SettingsCategory.THIS_TV -> app.fireplayer.vod.ui.ThisTvSettings.render(this, app.fireplayer.vod.Sources.get(activity).thisTv)
             SettingsCategory.TITLES -> renderTitles(this)
             SettingsCategory.APP -> appSection(this, allSettings = false)
@@ -246,7 +246,7 @@ class SettingsPanels(
         skippingSection(this, full = false)
         defaultsSection(this, autoSync = true, resume = true)
         playbackSection(this)
-        statusesSection(this)
+        statusesSection(this, addons = true)
         appSection(this, allSettings = true)
     }
 
@@ -635,16 +635,20 @@ class SettingsPanels(
     }
 
     /**
-     * Statuses ▾ (the player windows): OpenSubtitles, TMDB API and the font sent from the phone. Each opens the
-     * window where it's managed (Accounts & services, Subtitle font). Opening the list checks keys that haven't been
-     * checked yet.
+     * Statuses ▾ (the player windows): OpenSubtitles, TMDB API and the font sent from the phone; with [addons] (the
+     * film player's) also each saved add-on. Each opens the window where it's managed (Accounts & services, Add-ons,
+     * Subtitle font). Opening the list checks keys that haven't been checked yet, and add-ons not checked for a day.
      */
-    fun statusesSection(panel: SidePanel): Unit = with(panel) {
+    fun statusesSection(panel: SidePanel, addons: Boolean = false): Unit = with(panel) {
         header("Statuses")
         val statusesOpen = isPartOpen("statuses")
         val os = checks.status(CredentialChecks.Service.OPENSUBTITLES)
         val tmdb = checks.status(CredentialChecks.Service.TMDB)
-        val states = listOf(os.state, tmdb.state)
+        val addonChecks = if (addons) app.fireplayer.vod.Sources.get(activity).checks else null
+        val savedAddons = addonChecks?.let { c ->
+            app.fireplayer.vod.Addon.entries.map { it to c.status(it) }.filter { it.second.state != CredentialChecks.State.NOT_SET }
+        }.orEmpty()
+        val states = listOf(os.state, tmdb.state) + savedAddons.map { it.second.state }
         val (summary, style) = when {
             states.any { it == CredentialChecks.State.NOT_ACCEPTED } -> "Needs a look" to Rows.Badge.PROBLEM
             states.any { it == CredentialChecks.State.CHECKING } -> "Checking…" to Rows.Badge.BUSY
@@ -654,7 +658,10 @@ class SettingsPanels(
         }
         dropdownRow("Services and font", summary, style, statusesOpen) {
             togglePart("statuses")
-            if (isPartOpen("statuses")) checks.checkUnchecked { if (isOpen) refresh() }
+            if (isPartOpen("statuses")) {
+                checks.checkUnchecked { if (isOpen) refresh() }
+                addonChecks?.checkStale { if (isOpen) refresh() }
+            }
             refresh()
         }
         if (statusesOpen) {
@@ -662,6 +669,12 @@ class SettingsPanels(
                 val (text, badge) = badgeFor(st.state)
                 badgeRow(service.label, text, badge) {
                     openSub(SettingsCategory.ACCOUNTS.title) { credentialsSection(this) }
+                }.asSubRow()
+            }
+            for ((addon, st) in savedAddons) {
+                val (text, badge) = badgeFor(st.state)
+                badgeRow(addon.label, text, badge) {
+                    openSub(SettingsCategory.ADDONS.title) { addonsWindow(this) }
                 }.asSubRow()
             }
             val font = importedFontName
@@ -695,13 +708,10 @@ class SettingsPanels(
         }
     }
 
-    private fun badgeFor(state: CredentialChecks.State): Pair<String, Rows.Badge> = state.label to when (state) {
-        CredentialChecks.State.NOT_SET -> Rows.Badge.INACTIVE
-        CredentialChecks.State.NOT_CHECKED -> Rows.Badge.LIGHT
-        CredentialChecks.State.CHECKING -> Rows.Badge.BUSY
-        CredentialChecks.State.WORKING -> Rows.Badge.ACTIVE
-        CredentialChecks.State.NOT_ACCEPTED -> Rows.Badge.PROBLEM
-        CredentialChecks.State.UNREACHABLE -> Rows.Badge.INACTIVE
+    /** Settings › Add-ons: the add-ons' links and statuses ([app.fireplayer.vod.ui.AddonsSettings]). */
+    private fun addonsWindow(panel: SidePanel) {
+        val sources = app.fireplayer.vod.Sources.get(activity)
+        app.fireplayer.vod.ui.AddonsSettings.render(panel, activity, sources.addons, sources.checks)
     }
 
     private fun problemOf(st: CredentialChecks.Status): String? = when (st.state) {
@@ -1034,6 +1044,19 @@ class SettingsPanels(
             "sound" to "Sound", "source" to "Source",
         )
         fun onOff(on: Boolean) = if (on) "On" else "Off"
+
+        /**
+         * A key's or an add-on's status as its badge says it ([CredentialChecks.State]'s words): blue while it works,
+         * the lighter blue while set but not checked, soft red when refused, gray otherwise.
+         */
+        fun badgeFor(state: CredentialChecks.State): Pair<String, Rows.Badge> = state.label to when (state) {
+            CredentialChecks.State.NOT_SET -> Rows.Badge.INACTIVE
+            CredentialChecks.State.NOT_CHECKED -> Rows.Badge.LIGHT
+            CredentialChecks.State.CHECKING -> Rows.Badge.BUSY
+            CredentialChecks.State.WORKING -> Rows.Badge.ACTIVE
+            CredentialChecks.State.NOT_ACCEPTED -> Rows.Badge.PROBLEM
+            CredentialChecks.State.UNREACHABLE -> Rows.Badge.INACTIVE
+        }
 
         /** A tint, dimness or charcoal as its row shows it: "55%". */
         fun percent(value: Int) = "$value%"

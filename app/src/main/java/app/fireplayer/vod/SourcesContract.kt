@@ -346,6 +346,9 @@ interface SourcesRepository {
     val thisTv: ThisTv
     val library: PlaybackLibrary
 
+    /** Whether each saved add-on and its debrid service work (Settings › Add-ons); null where nothing checks them. */
+    val checks: app.fireplayer.vod.sources.AddonChecks? get() = null
+
     /** What is kept for [target] now, complete or not; null when nothing was asked or it expired. */
     fun cached(target: SourceTarget): SourceList?
 

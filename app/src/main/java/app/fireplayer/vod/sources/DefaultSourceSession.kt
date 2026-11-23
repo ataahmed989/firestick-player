@@ -499,6 +499,12 @@ internal class DefaultSourceSession(
             val result = runCatching { repo.linkCheck.check(offer.addon, offer.link, confirmed, handle) }
                 .getOrElse { LinkCheck.Result.Failed(Failure(FailureKind.UNKNOWN, offer.addon, it.javaClass.simpleName)) }
             repo.main.post {
+                // The add-on's status learns from it, whether this play still waits for it or not (not from a check
+                // stopped half way: that says nothing of the add-on).
+                if (!handle.cancelled) {
+                    val ready = result as? LinkCheck.Result.Ready
+                    repo.noted(offer.addon, AddonCheck.fromLinkCheck(ready?.link?.host, (result as? LinkCheck.Result.Failed)?.failure))
+                }
                 if (!op.live) return@post
                 op.handle = null
                 repo.lastAddAt = repo.elapsed()
