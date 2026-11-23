@@ -371,7 +371,11 @@ class TitleRow(
             spec.style == RowStyle.RANKED -> RankedItem(context, t, large)
             spec.style == RowStyle.WIDE -> CardView(context, t, CardView.Kind.WIDE, VodSizes.cardW(RowStyle.WIDE, large), VodSizes.cardH(RowStyle.WIDE, large))
             spec.style == RowStyle.EPISODE -> CardView(context, t, CardView.Kind.EPISODE)
-            VodSizes.isLogo(spec.style) -> CardView(context, t, CardView.Kind.LOGO, VodSizes.cardW(spec.style), VodSizes.cardH(spec.style))
+            // Home's services: the chosen card's logo moves as Glass Home's focused app tile's icon does.
+            VodSizes.isLogo(spec.style) -> CardView(
+                context, t, CardView.Kind.LOGO, VodSizes.cardW(spec.style), VodSizes.cardH(spec.style),
+                swayLogo = spec.style == RowStyle.SERVICES,
+            )
             else -> CardView(context, t, CardView.Kind.POSTER, VodSizes.posterW(large), VodSizes.posterH(large))
         }
         v.isFocusable = true
