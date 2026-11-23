@@ -89,4 +89,37 @@ object DvBaseLayer {
     fun logLine(dvDecoders: Int): String =
         if (dvDecoders > 0) "Dolby Vision profile $PROFILE played as HDR10: this TV's Dolby Vision decoder is single-layer"
         else "Dolby Vision profile $PROFILE played as HDR10: this TV has no Dolby Vision decoder"
+
+    /**
+     * The colour a profile 7 base layer is played with: its own when the file states HDR, otherwise HDR10 (BT.2020, PQ,
+     * limited range, generic static metadata), which is what a profile 7 base layer always is. Without it the decoder
+     * still outputs PQ but the TV is never switched to HDR, and on the 4K Max the video plane then stays black.
+     */
+    fun hdr10(own: androidx.media3.common.ColorInfo?): androidx.media3.common.ColorInfo {
+        if (own != null && own.colorTransfer == androidx.media3.common.C.COLOR_TRANSFER_ST2084 && own.hdrStaticInfo != null) {
+            return own
+        }
+        return androidx.media3.common.ColorInfo.Builder()
+            .setColorSpace(androidx.media3.common.C.COLOR_SPACE_BT2020)
+            .setColorRange(own?.colorRange?.takeIf { it != androidx.media3.common.Format.NO_VALUE } ?: androidx.media3.common.C.COLOR_RANGE_LIMITED)
+            .setColorTransfer(androidx.media3.common.C.COLOR_TRANSFER_ST2084)
+            .setHdrStaticInfo(own?.hdrStaticInfo ?: genericStaticInfo())
+            .build()
+    }
+
+    /**
+     * CTA-861.3 static metadata (type 1, little-endian, as MediaFormat.KEY_HDR_STATIC_INFO): P3-D65 primaries, D65 white,
+     * 1000 nits peak, 0.0001 nits black, MaxCLL 1000, MaxFALL 400: the usual 4K Blu-ray master.
+     */
+    private fun genericStaticInfo(): ByteArray {
+        val b = java.nio.ByteBuffer.allocate(25).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        b.put(0)
+        // R, G, B (x, y) in 0.00002 units, then the white point.
+        for (v in intArrayOf(34000, 16000, 13250, 34500, 7500, 3000, 15635, 16450)) b.putShort(v.toShort())
+        b.putShort(1000)  // max mastering luminance, cd/m2
+        b.putShort(1)     // min mastering luminance, 0.0001 cd/m2
+        b.putShort(1000)  // MaxCLL
+        b.putShort(400)   // MaxFALL
+        return b.array()
+    }
 }

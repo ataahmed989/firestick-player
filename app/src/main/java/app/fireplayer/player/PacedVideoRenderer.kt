@@ -230,7 +230,10 @@ class PacedVideoRenderer(
             return null
         }
         DvBaseLayer.tvPlaysBase = instead
-        val base = if (instead) format.buildUpon().setSampleMimeType(MimeTypes.VIDEO_H265).setCodecs(null).build() else null
+        val base = if (instead) {
+            format.buildUpon().setSampleMimeType(MimeTypes.VIDEO_H265).setCodecs(null)
+                .setColorInfo(DvBaseLayer.hdr10(format.colorInfo)).build()
+        } else null
         seen = BaseLayer(format, base)
         return base
     }
