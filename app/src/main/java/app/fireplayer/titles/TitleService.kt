@@ -5,8 +5,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.BroadcastReceiver
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
@@ -108,8 +110,9 @@ class TitleService : Service() {
     // ---------------------------------------------------------------------
     // Asking TMDB
 
+    /** The player's beat, in a file of its own ([PlayerBeat]): read afresh each time, as the player writes it elsewhere. */
     @Suppress("DEPRECATION")
-    private val prefs get() = getSharedPreferences(KeyStore.OLD_FILE, Context.MODE_MULTI_PROCESS)
+    private val beat get() = getSharedPreferences(PlayerBeat.FILE, Context.MODE_MULTI_PROCESS)
 
     private fun matchLoop() {
         Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
@@ -142,7 +145,7 @@ class TitleService : Service() {
             }
             told = false
             // The player has the TV to itself, while it says so: a "stopped" Fire OS refused leaves no beat behind.
-            if (playing && System.currentTimeMillis() - prefs.getLong(PLAYER_BEAT, 0L) < PLAYER_GONE_MS) {
+            if (playing && PlayerBeat.heard(beat, System.currentTimeMillis())) {
                 sleep(PLAYING_CHECK_MS)
                 continue
             }
@@ -235,12 +238,28 @@ class TitleService : Service() {
         fun start(context: Context) {
             // A build that may not run it (the side-by-side test build) never starts it.
             val on = isOn(context) && context.resources.getBoolean(app.fireplayer.R.bool.title_proxy)
+            keepStarter(context, on)
             val intent = Intent(context, TitleService::class.java)
             runCatching {
                 if (!on) context.stopService(intent)
                 else if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent)
                 else context.startService(intent)
             }.onFailure { Log.w(TAG, "Couldn't start: $it") }
+        }
+
+        /**
+         * The [Starter] (the TV starting, FirePlayer updated, Glass Home's START after Fire OS force-stopped the app)
+         * only answers while the server is [on]: turned off, those no longer start a whole process of its own (15 to
+         * 25 MB, often just as memory is short) only to find there's nothing to run. Turned on again, it answers as
+         * before; while it's on, nothing changes.
+         */
+        private fun keepStarter(context: Context, on: Boolean) {
+            val want = if (on) PackageManager.COMPONENT_ENABLED_STATE_DEFAULT else PackageManager.COMPONENT_ENABLED_STATE_DISABLED
+            runCatching {
+                val pm = context.packageManager
+                val starter = ComponentName(context, Starter::class.java)
+                if (pm.getComponentEnabledSetting(starter) != want) pm.setComponentEnabledSetting(starter, want, PackageManager.DONT_KILL_APP)
+            }.onFailure { Log.w(TAG, "Couldn't set the starter: ${it.javaClass.simpleName}") }
         }
 
         /**
@@ -253,15 +272,18 @@ class TitleService : Service() {
                 .onFailure { Log.w(TAG, "Couldn't ask for a check: $it") }
         }
 
-        /** How often the player notes that it is on, and how long without a note the server takes it as stopped. */
-        const val BEAT_MS = 30_000L
-        private const val PLAYER_GONE_MS = 90_000L
-        private const val PLAYER_BEAT = "player_beat"
+        /** How often the player notes that it is on ([PlayerBeat.GONE_MS] without a note: taken as stopped). */
+        const val BEAT_MS = PlayerBeat.EVERY_MS
 
-        /** The player is on (see PlayerActivity.playingBeat). */
+        /**
+         * The player is on (see PlayerActivity.playingBeat): noted in a small file of its own, not in the app's settings
+         * file (which is written whole on every change), and only while the title server is on: nobody reads it else.
+         */
         fun playerBeat(context: Context) {
-            context.getSharedPreferences("fireplayer", Context.MODE_MULTI_PROCESS).edit()
-                .putLong(PLAYER_BEAT, System.currentTimeMillis()).apply()
+            if (!isOn(context)) return
+            @Suppress("DEPRECATION")
+            val beat = context.getSharedPreferences(PlayerBeat.FILE, Context.MODE_MULTI_PROCESS)
+            PlayerBeat.note(beat, on = true, now = System.currentTimeMillis())
         }
 
         /** While FirePlayer plays, TMDB isn't asked: the player has the TV's attention. */

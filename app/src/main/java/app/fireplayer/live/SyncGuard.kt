@@ -186,7 +186,9 @@ class SyncGuard(
 
     private val hourly = object : Runnable {
         override fun run() {
-            if (started > 0) onQuiet()
+            // While a film plays nothing automatic goes ([SyncPlan.decide]): the look waits for the next quiet moment
+            // rather than starting a job that could only put everything off.
+            if (started > 0) { if (films > 0) watchQuiet() else onQuiet() }
             main.postDelayed(this, SyncPlan.CHECK_EVERY_MS)
         }
     }

@@ -2,6 +2,7 @@ package app.fireplayer
 
 import android.content.Intent
 import android.content.pm.ApplicationInfo
+import android.database.sqlite.SQLiteDatabase
 import android.graphics.RectF
 import android.net.Uri
 import android.os.Bundle
@@ -45,6 +46,7 @@ import app.fireplayer.ui.FireDialog
 import app.fireplayer.ui.Glass
 import app.fireplayer.ui.PageRow
 import app.fireplayer.ui.GlassBackdrop
+import app.fireplayer.ui.GlassBakes
 import app.fireplayer.ui.GlassSource
 import app.fireplayer.ui.ImageLoader
 import app.fireplayer.ui.Rows
@@ -237,6 +239,13 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
                 live.dropMemory()
                 // The glass look's full-screen wallpaper (about 8 MB) too; it loads again on return.
                 wallpaper.release()
+                // The pages out of sight go altogether, keeping their places (made again when their tab next opens),
+                // then the glass no one sees lets go of its drawings, and the databases their page caches. The page
+                // shown stays as it is, so Back finds it at once.
+                val pages = vodPages.releaseHidden()
+                val glass = GlassBakes.forgetOffScreen()
+                SQLiteDatabase.releaseMemory()
+                android.util.Log.i("FirePlayerFilmMode", "Film mode: $pages hidden pages and $glass glass drawings let go")
             }
         })
         // Home is the start page; Live TV is one press away on the rail.
@@ -255,6 +264,7 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
 
     override fun onStart() {
         super.onStart()
+        shellStarted = true
         // Back from a film (or a while away): the snapshot shows at once while the page fills again.
         filmMode.onStart(root)
         behind?.start()
@@ -291,13 +301,19 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         // The film pages' pictures go, and half the decoded ones kept in memory: a film may be starting in the player.
         vodPages.stop()
         ImageLoader.trim(ImageLoader.TRIM_HALF)
+        // Posters queued ahead of need aren't downloaded with nothing on screen to show them.
+        ImageLoader.quiet()
         film?.stop()
         behind?.stop()
         root.keepScreenOn = false
+        shellStarted = false
         // A film starting: the rest of the memory goes now; otherwise after a while in the background.
         filmMode.onStop()
         super.onStop()
     }
+
+    /** Between onStart and onStop. */
+    private var shellStarted = false
 
     override fun onPause() {
         super.onPause()
@@ -311,6 +327,15 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW && ::vodPages.isInitialized) {
             vodPages.trimImages()
             ImageLoader.trim()
+        }
+        // Fire OS asking for memory (not the screens merely hidden): the databases' page caches go (Android only asks
+        // them at its last level); with the shell out of sight (a film in front), its hidden pages and unseen glass too.
+        @Suppress("DEPRECATION")
+        val asked = level == android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW ||
+            level == android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL || PausedRoom.backgroundAsks(level)
+        if (asked) {
+            SQLiteDatabase.releaseMemory()
+            if (!shellStarted && ::vodPages.isInitialized && vodPages.releaseHidden() > 0) GlassBakes.forgetOffScreen()
         }
         // In the background and Fire OS wants memory from the apps there: what would go after a while goes now.
         if (PausedRoom.backgroundAsks(level) && ::filmMode.isInitialized && filmMode.releaseIfAway()) {
@@ -884,6 +909,30 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         root.removeCallbacks(liveRoomStale)
         roomFull = on && full
         if (on) root.postDelayed(liveRoom, app.fireplayer.playback.LiveRoom.dueMs(full))
+        // Live TV in front [LiveRoom.TAB_MS], full screen or not (counted from when it came in front, not reset by
+        // full screen coming and going): the film pages behind it go too ([liveSettled]).
+        if (!on) {
+            root.removeCallbacks(liveSettled)
+            liveSettledArmed = false
+        } else if (!liveSettledArmed) {
+            liveSettledArmed = true
+            root.postDelayed(liveSettled, app.fireplayer.playback.LiveRoom.TAB_MS)
+        }
+    }
+
+    private var liveSettledArmed = false
+
+    /**
+     * Someone settled in to watch Live TV: the film pages hidden behind it (none shows while Live TV is in front) go
+     * altogether with their glass, keeping their places ([app.fireplayer.vod.ui.VodPages.releaseHidden]). The guide, its
+     * logos, the wallpaper and the glass drawings kept for the guide stay: nothing on screen goes.
+     */
+    private val liveSettled = Runnable {
+        liveSettledArmed = false
+        if (rail.selected == NavRail.Tab.LIVE && !isFinishing) {
+            val pages = vodPages.releaseHidden()
+            if (pages > 0) android.util.Log.i("FirePlayerLive", "Live memory (Live TV a while): $pages film pages out of sight let go")
+        }
     }
 
     /**

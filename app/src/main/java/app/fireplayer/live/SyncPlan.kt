@@ -47,15 +47,17 @@ object SyncPlan {
 
     /**
      * Before a request for [account]'s playlist or EPG goes to [requestUrl]; [providerUrl] is the playlist's own
-     * address. A request to another host (an EPG from elsewhere) never touches playback. The film player's source
-     * isn't known here, so while it's in front every request to a provider's own host counts as clashing with it;
-     * the same goes for a Live TV screen about to tune.
+     * address. A request to another host (an EPG from elsewhere) never touches a live channel's connection. The film
+     * player's source isn't known here, so while it's in front every request to a provider's own host counts as
+     * clashing with it; the same goes for a Live TV screen about to tune. And while a film plays, no automatic update
+     * goes anywhere: an EPG from elsewhere is still tens of MB to download, unpack and store, which the film's own
+     * download, its buffer and the TV's flash shouldn't share. It runs at the next quiet moment instead.
      */
     fun decide(trigger: Trigger, account: String, requestUrl: String, providerUrl: String, playing: Playing): Action {
         val own = usesProvider(providerUrl, requestUrl)
         val live = playing.liveUrl != null && (sameHost(playing.liveUrl, requestUrl) || (own && playing.liveAccount == account))
         return when {
-            trigger == Trigger.AUTO && (live || (own && (playing.film || playing.liveScreen))) -> Action.DEFER
+            trigger == Trigger.AUTO && (live || playing.film || (own && playing.liveScreen)) -> Action.DEFER
             live -> Action.LET_GO
             else -> Action.GO
         }
