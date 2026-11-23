@@ -254,9 +254,11 @@ class GlassStyleTest {
             val was = shows(before, b)
             assertShows("over $b", FloatArray(3) { was[it] * 0.85f }, shows(GlassStyle.APP_SHADE.color, b))
         }
-        // Playback glass: no tint and no darkening over playback, as before.
-        assertEquals(GlassStyle.Shade(0, 0), GlassStyle.PLAYBACK_SHADE)
-        assertEquals(0, GlassStyle.PLAYBACK_SHADE.color ushr 24)
+        // Playback glass: a faint tint of the background's own colour, then darkened by 15%, over playback.
+        assertEquals(GlassStyle.Shade(5, 15), GlassStyle.PLAYBACK_SHADE)
+        assertEquals(0, GlassStyle.PLAYBACK_SHADE.charcoal)
+        // Laid as one colour: 1 - 0.95 x 0.85 of the way to it, about 19% (49 of 255).
+        assertEquals(49, GlassStyle.PLAYBACK_SHADE.color ushr 24)
     }
 
     @Test fun overTheWallpaperTheCardsGlassIsItsOwnColourSolid() {
@@ -366,10 +368,12 @@ class GlassStyleTest {
 
     // ---- A window's pane, by what it's over, and its cards -------------------------------------------------------------
 
-    @Test fun overPlaybackAWindowAddsNoTintAndNoDarkByDefault() {
+    @Test fun overPlaybackAWindowHasThePlaybackGlass() {
         val over = GlassStyle.Over.PLAYBACK
-        // Nothing laid over the frosted picture: no colour, no dark, no light; the screen dimmer alone darkens it.
-        assertEquals(0, GlassStyle.paneTint(over, GlassStyle.APP_SHADE, GlassStyle.PLAYBACK_SHADE) ushr 24)
+        // Playback glass's layer over the frosted picture (by default its 5% tint and 15% dimness), and no light.
+        assertEquals(GlassStyle.PLAYBACK_SHADE.color, GlassStyle.paneTint(over, GlassStyle.APP_SHADE, GlassStyle.PLAYBACK_SHADE))
+        // Cleared to none: nothing laid over the picture, no colour and no dark; the screen dimmer alone darkens it.
+        assertEquals(0, GlassStyle.paneTint(over, GlassStyle.APP_SHADE, GlassStyle.Shade(0, 0)) ushr 24)
         assertEquals(0, GlassStyle.paneSheen(over) ushr 24)
         // The film's window picture keeps the film's own light.
         assertEquals(1f, GlassStyle.PLAYBACK_PANE_LIGHT, 0f)

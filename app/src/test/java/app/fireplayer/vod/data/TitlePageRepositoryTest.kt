@@ -368,6 +368,35 @@ class TitlePageRepositoryTest {
     }
 
     @Test
+    fun markUnwatchedUpToHereIsOneWriteAndKeepsContinueWatchingAtThatEpisode() {
+        http.answers[korraMeta] = Fixtures.text("cinemeta_meta_show_ended_specials.json")
+        val r = repo()
+        var heard = 0
+        r.addLibraryListener { heard++ }
+        val d = r.allDetails(korra).last().first
+        val s2e3 = d.episodes.first { it.season == 2 && it.episode == 3 }
+        val s2e4 = d.episodes.first { it.season == 2 && it.episode == 4 }
+        r.markWatchedUpTo(d, s2e3)
+        r.recordProgress(korra, s2e4.ref, 10 * 60_000L, 23 * 60_000L)
+        val (h, b, v) = Triple(heard, library.batches, r.libraryVersion())
+        r.markUnwatchedUpTo(d, s2e3)
+        // One write, one listener call; the version is up at once (a page redrawn straight after needn't again).
+        assertEquals(h + 1, heard)
+        assertEquals(b + 1, library.batches)
+        assertEquals(v + 1, r.libraryVersion())
+        assertFalse(d.episodes.filter { !it.isSpecial && (it.season < 2 || it.episode <= 3) && it.season <= 2 }.any(r::isEpisodeWatched))
+        // The episode after it keeps where it stopped; Continue Watching is at 0:00 of the episode chosen.
+        assertEquals(10 * 60_000L, r.positionOf(s2e4)!!.positionMs)
+        val card = r.continueCard(korra)!!
+        assertEquals(2 to 3, card.episode!!.season to card.episode!!.episode)
+        assertEquals(0L, r.lastPlayed(korra)!!.position.positionMs)
+        assertTrue(r.inContinueWatching(korra.id))
+        // Nothing left to clear: nothing written, nobody told.
+        r.markUnwatchedUpTo(d, s2e3)
+        assertEquals(h + 1, heard)
+    }
+
+    @Test
     fun theCacheNeverHoldsTheKey() {
         key = "SECRET-KEY-0123456789"
         serveDune()

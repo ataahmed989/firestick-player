@@ -134,6 +134,12 @@ class SettingsPanels(
     /** Settings › Picture-in-picture's first row was changed (the screen stops a picture playing when it's now off). */
     var onPipChanged: (() -> Unit)? = null
 
+    /**
+     * Look › Reset to defaults was used: it also forgets Default's unsaved display dimness, so a screen dimming its
+     * picture with it ([app.fireplayer.data.Dimmer]) applies its dimness again.
+     */
+    var onShadesReset: () -> Unit = {}
+
     /** Languages offered as defaults; English first. */
     private val languages = listOf("en", "ar", "es", "fr", "de", "it", "pt", "hi", "ur", "tr", "ja", "ko", "zh")
 
@@ -355,31 +361,45 @@ class SettingsPanels(
      * between the background's own (0%) and charcoal (100%). 0% to 100% in 5% steps with left / right, applied at once
      * and saved ([GlassStyle.Shade]). Only the glass changes, never the words or icons on it. Playback glass is the
      * players' dimness settings' Default preset ([Dimmer]): while a custom is on there, its own glass shows over playback,
-     * which Playback glass's rows say.
+     * which Playback glass's rows say. Reset to defaults, last, puts all three back ([GlassShades.reset]). A step or a
+     * reset rewrites the values and badges in place ([SidePanel.liveValue]): the rows stay, and so does the selection.
      */
     private fun glassShadesSection(panel: SidePanel): Unit = with(panel) {
         for (kind in GlassShades.Kind.entries) {
             val open = isPartOpen(kind.part)
             val shade = shades[kind]
-            val badge = if (GlassShades.isClear(shade)) Rows.Badge.INACTIVE else Rows.Badge.LIGHT
-            dropdownRow(kind.title, GlassShades.badge(kind, shade), badge, open) {
+            val dropdown = dropdownRow(kind.title, GlassShades.badge(kind, shade), shadeBadge(shade), open) {
                 togglePart(kind.part)
                 refresh()
             }
+            liveValue {
+                val now = shades[kind]
+                setBadge(dropdown, GlassShades.badge(kind, now), shadeBadge(now))
+            }
             if (!open) continue
             for (control in kind.controls) {
-                stepper(control.label, percent(control.of(shade))) { dir ->
+                stepper(control.label, { percent(control.of(shades[kind])) }) { dir ->
                     shades.step(kind, control, dir)
                     shades.applyTo(activity)
                 }.asSubRow()
             }
             if (kind == GlassShades.Kind.PLAYBACK) {
                 val preset = Dimmer(activity).active()
-                if (!preset.isDefault) message(customOnNote(preset.name))
+                if (!preset.isDefault) message(customOnNote(preset.name), maxLines = NOTE_LINES)
             }
         }
-        message(SHADES_NOTE)
+        // Same row as the others; the values change where they are, and the selection stays on it.
+        row(RESET_SHADES) {
+            shades.reset()
+            shades.applyTo(activity)
+            onShadesReset()
+            updateValues()
+        }
+        message(SHADES_NOTE, maxLines = NOTE_LINES)
     }
+
+    /** A glass's badge: gray while it lays nothing over the frosted glass, else the lighter blue. */
+    private fun shadeBadge(shade: GlassStyle.Shade) = if (GlassShades.isClear(shade)) Rows.Badge.INACTIVE else Rows.Badge.LIGHT
 
     /**
      * Skipping: [full] adds the step lengths and Hold to speed up (Remote & skipping); the player shows the preview
@@ -467,12 +487,12 @@ class SettingsPanels(
      * player reads it as it's built, so it holds from the next film or source started.
      */
     private fun fasterDownloadsRow(panel: SidePanel): Unit = with(panel) {
-        row("Faster downloads (2 connections)", onOff(prefs.fasterDownloads)) {
+        row("Faster downloads", onOff(prefs.fasterDownloads)) {
             prefs.fasterDownloads = !prefs.fasterDownloads; refresh()
             // The lists in memory rank again with the line speed measured for that many connections.
             (app.fireplayer.vod.Sources.get(activity) as? app.fireplayer.vod.sources.DefaultSourcesRepository)?.rerank()
         }
-        textBlock("Loads a film over two connections when the server allows it. From the next film or source started.")
+        cardNote(FASTER_DOWNLOADS_NOTE)
     }
 
     /**
@@ -981,17 +1001,23 @@ class SettingsPanels(
         /** A tint, dimness or charcoal as its row shows it: "55%". */
         fun percent(value: Int) = "$value%"
 
-        /** Settings › Look: what the three glasses' rows mean. */
-        private const val SHADES_NOTE = "Tint: how strongly the glass is coloured, from clear frosted glass (0%) to solid " +
-            "(100%). Dimness: how much darker the glass is made, after its tint. Charcoal: the tint's colour, from the " +
-            "background's own (0%) to charcoal (100%), darker and more neutral. Only the glass changes: words and icons " +
-            "stay as they are. App glass: Settings and the other windows on the app's pages. Rail, cards & header: the " +
-            "rail, the service and studio cards, Recent channels and the banner. Playback glass: windows over a film or " +
-            "full-screen channel; it's the Default preset of the players' Screen dimmer, where customs can be added."
+        /**
+         * The most lines a note in Look or the Screen dimmer takes at the window's width: short enough that, under the
+         * last row, it shows in full once that row is selected (the list keeps the selected row in its middle).
+         */
+        const val NOTE_LINES = 2
+
+        /** Settings › Look, under the three glasses: what their rows do, in a line. */
+        internal const val SHADES_NOTE = "Tint colours the glass; Dimness and Charcoal darken it."
+
+        /** The last of Look's glass rows: all three glasses back to their defaults ([GlassShades.reset]). */
+        const val RESET_SHADES = "Reset to defaults"
 
         /** Under Playback glass's rows while the players' Screen dimmer has a custom on: whose glass shows over playback. */
-        fun customOnNote(name: String) = "The players' Screen dimmer has \"$name\" on: its own glass shows over playback " +
-            "until Default is picked there."
+        fun customOnNote(name: String) = "Over playback: \"$name\", from the Screen dimmer."
+
+        /** In Faster downloads' card, under it: what it does, in a line. */
+        internal const val FASTER_DOWNLOADS_NOTE = "Two connections, if the server allows."
 
         private const val ACTIVE = "Active"
         private const val INACTIVE = "Inactive"

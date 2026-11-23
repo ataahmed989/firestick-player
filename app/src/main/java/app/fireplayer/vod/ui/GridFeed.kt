@@ -74,6 +74,18 @@ internal class GridFeed(
         if (changed) update()
     }
 
+    /** A title's card changed in place (Mark unwatched: back to 0:00): [change] makes the new one from the one shown. */
+    fun replace(id: String, change: (Card) -> Card) {
+        var changed = false
+        for (i in pages.indices) {
+            val p = pages[i] ?: continue
+            if (p.none { it.title.id == id }) continue
+            pages[i] = p.map { if (it.title.id == id) change(it) else it }
+            changed = true
+        }
+        if (changed) update()
+    }
+
     fun close() {
         closed = true
         for (c in cancels) c.cancel()

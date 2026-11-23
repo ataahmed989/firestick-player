@@ -125,16 +125,28 @@ class VodDb(context: Context) : SQLiteOpenHelper(context, "vod.db", null, VERSIO
         writableDatabase.insertWithOnConflict("watched", null, watchedValues(w, ContentValues()), SQLiteDatabase.CONFLICT_REPLACE)
     }
 
-    /** One transaction for all of them ("Mark watched up to here" on a long show is hundreds of rows). */
-    override fun saveWatchedAll(marks: List<Watched>) {
-        if (marks.isEmpty()) return
+    /**
+     * One transaction for all of them: "Mark watched up to here" on a long show is hundreds of rows, a mark unwatched
+     * also clears positions and a Continue Watching record, playback writes its record with a position and a mark. One
+     * commit instead of one per row (each a journal sync on the TV's flash).
+     */
+    override fun saveAll(change: LibraryStore.Change) {
+        if (change.isEmpty) return
         val db = writableDatabase
         db.beginTransaction()
         try {
             val values = ContentValues()
-            for (w in marks) {
+            for (w in change.watched) {
                 values.clear()
                 db.insertWithOnConflict("watched", null, watchedValues(w, values), SQLiteDatabase.CONFLICT_REPLACE)
+            }
+            for (p in change.positions) {
+                values.clear()
+                db.insertWithOnConflict("episode_progress", null, positionValues(p, values), SQLiteDatabase.CONFLICT_REPLACE)
+            }
+            for (p in change.progress) {
+                values.clear()
+                db.insertWithOnConflict("progress", null, progressValues(p, values), SQLiteDatabase.CONFLICT_REPLACE)
             }
             db.setTransactionSuccessful()
         } finally {
@@ -150,33 +162,37 @@ class VodDb(context: Context) : SQLiteOpenHelper(context, "vod.db", null, VERSIO
     }
 
     override fun saveEpisodePosition(p: EpisodePosition) {
-        writableDatabase.insertWithOnConflict("episode_progress", null, ContentValues().apply {
-            put("id", p.id)
-            put("position", p.positionMs)
-            put("duration", p.durationMs)
-            put("at", p.at)
-        }, SQLiteDatabase.CONFLICT_REPLACE)
+        writableDatabase.insertWithOnConflict("episode_progress", null, positionValues(p, ContentValues()), SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    private fun positionValues(p: EpisodePosition, values: ContentValues) = values.apply {
+        put("id", p.id)
+        put("position", p.positionMs)
+        put("duration", p.durationMs)
+        put("at", p.at)
     }
 
     override fun saveProgress(p: Progress) {
-        writableDatabase.insertWithOnConflict("progress", null, ContentValues().apply {
-            put("kind", p.title.kind.type)
-            put("id", p.title.id)
-            put("title", TitleJson.write(p.title).toString())
-            if (p.episode != null) {
-                put("season", p.episode.season)
-                put("episode", p.episode.episode)
-                put("episode_name", p.episode.name)
-            } else {
-                putNull("season")
-                putNull("episode")
-                putNull("episode_name")
-            }
-            put("position", p.positionMs)
-            put("duration", p.durationMs)
-            put("at", p.at)
-            put("hidden", if (p.hidden) 1 else 0)
-        }, SQLiteDatabase.CONFLICT_REPLACE)
+        writableDatabase.insertWithOnConflict("progress", null, progressValues(p, ContentValues()), SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    private fun progressValues(p: Progress, values: ContentValues) = values.apply {
+        put("kind", p.title.kind.type)
+        put("id", p.title.id)
+        put("title", TitleJson.write(p.title).toString())
+        if (p.episode != null) {
+            put("season", p.episode.season)
+            put("episode", p.episode.episode)
+            put("episode_name", p.episode.name)
+        } else {
+            putNull("season")
+            putNull("episode")
+            putNull("episode_name")
+        }
+        put("position", p.positionMs)
+        put("duration", p.durationMs)
+        put("at", p.at)
+        put("hidden", if (p.hidden) 1 else 0)
     }
 
     override fun saveRelease(r: ReleaseRow) {

@@ -12,7 +12,8 @@ import app.fireplayer.data.Dimmer
  * a custom's changes show at once and are kept with Save custom. Whatever is picked or saved stays on for every video
  * and channel.
  *
- * [applyDim] puts the preset on screen; [refreshLabels] updates the value under the dimmer's button.
+ * [applyDim] puts the preset on screen; [refreshLabels] updates the value under the dimmer's button. An arrow's step
+ * rewrites the values in place ([SidePanel.stepper], [SidePanel.liveValue]): the rows stay, and so does the selection.
  */
 object DimmerWindow {
 
@@ -30,7 +31,8 @@ object DimmerWindow {
         }
         header(active.name, R.drawable.ic_head_moon)
         for (value in Dimmer.Value.entries) {
-            stepper(value.label, SettingsPanels.percent(value.of(active))) { dir ->
+            // Read again after each step: with Auto, display dimness and glass dimness move together.
+            stepper(value.label, { SettingsPanels.percent(value.of(dimmer.active())) }) { dir ->
                 dimmer.step(value, dir)
                 applyDim()
                 refreshLabels()
@@ -46,9 +48,17 @@ object DimmerWindow {
         val changed = dimmer.hasUnsaved()
         spacer(6)
         // Blue, like the current choice, and marked Unsaved while there's something to save.
-        row("Save custom", value = if (changed) "Unsaved" else null) { saveCustom(this, activity, dimmer, applyDim, refreshLabels) }.isSelected = changed
+        val save = row(SAVE, value = unsaved(changed)) { saveCustom(this, activity, dimmer, applyDim, refreshLabels) }
+        save.isSelected = changed
+        liveValue {
+            val now = dimmer.hasUnsaved()
+            if (now != save.isSelected) {
+                updateRow(save, SAVE, unsaved(now))
+                save.isSelected = now
+            }
+        }
         if (active.isDefault) {
-            message(DEFAULT_NOTE)
+            message(DEFAULT_NOTE, maxLines = SettingsPanels.NOTE_LINES)
         } else {
             row("Delete \"${active.name}\"") {
                 FireDialog.ask(
@@ -69,9 +79,12 @@ object DimmerWindow {
     /** The heading over the presets. */
     const val PRESETS = "Presets"
 
-    /** Under Default's rows: what it is, and how a custom is added. */
-    const val DEFAULT_NOTE = "Default doesn't dim the picture. Its glass tint and glass dimness are Settings › Look › " +
-        "Playback glass: a change here shows there, and there here. Save custom adds a custom with what's on."
+    /** Under Default's rows: where else its glass is set, in a line. */
+    const val DEFAULT_NOTE = "Default's glass is Settings › Look › Playback glass."
+
+    private const val SAVE = "Save custom"
+
+    private fun unsaved(changed: Boolean) = if (changed) "Unsaved" else null
 
     /**
      * Save custom: keeps the changes to the custom on, renames it, or saves what's on as a new custom. On Default it adds

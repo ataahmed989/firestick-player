@@ -540,7 +540,21 @@ interface VodRepository {
     fun inMyList(id: String): Boolean
     fun setInMyList(title: Title, inList: Boolean)
     fun isWatched(id: String): Boolean
+
+    /**
+     * Mark watched (a film leaves Continue Watching; a show's mark covers the episodes aired by then), or Mark
+     * unwatched: the film's or the whole show's watched marks, its history and where playback of it (each episode)
+     * stopped are cleared. In Continue Watching it stays there, in its place, at 0:00 of the film or of the show's first
+     * episode; one not in it isn't put in it. Either way in memory at once (ask again straight after), one write off
+     * the main thread, one listener call; nothing to change: neither.
+     */
     fun setWatched(title: Title, watched: Boolean)
+
+    /**
+     * Whether [title] has a history Mark unwatched ([setWatched]) clears: a watched mark (a show's, or any of its
+     * episodes'), or where playback of it stopped (a show's: of any episode). Main thread, from memory.
+     */
+    fun hasHistory(title: Title): Boolean = isWatched(title.id) || (lastPlayed(title)?.position?.positionMs ?: 0L) > 0L
 
     /** Takes a title out of Continue Watching (its resume point stays). */
     fun removeFromContinueWatching(id: String)
@@ -548,6 +562,18 @@ interface VodRepository {
     /** Called on the main thread whenever My List, watched marks or Continue Watching change, so rows can refresh. */
     fun addLibraryListener(listener: () -> Unit)
     fun removeLibraryListener(listener: () -> Unit)
+
+    /**
+     * Goes up with every library change, at once (before its listener call, which is posted): a page that redrew
+     * itself straight after its own change needn't again when that call comes.
+     */
+    fun libraryVersion(): Long
+
+    /**
+     * [title]'s Continue Watching card as its row would load it now; null when it isn't in Continue Watching. A row
+     * changes that one card in place with it (Mark unwatched: back to 0:00), with no reload. Main thread, from memory.
+     */
+    fun continueCard(title: Title): Card?
 
     // ---- The title page (step 2) ----
     // Same conventions as [load]: callbacks on the main thread, none after Cancel; stored answers at once, fresh ones
@@ -595,7 +621,11 @@ interface VodRepository {
      */
     fun isEpisodeWatched(episode: Episode): Boolean
 
-    /** Marks [episodes] (of one show) watched or not: one write, one listener call. */
+    /**
+     * Marks [episodes] (of one show) watched, or not watched: their marks and where playback of each stopped are
+     * cleared, and the show, if in Continue Watching, stays there at 0:00 of the last of [episodes] (the one the action
+     * was used on); one not in it isn't put in it. Other episodes are left as they are. One write, one listener call.
+     */
     fun setEpisodesWatched(episodes: List<Episode>, watched: Boolean)
 
     /**
@@ -604,6 +634,13 @@ interface VodRepository {
      * aired specials up to it. Nothing for an episode not aired yet.
      */
     fun markWatchedUpTo(details: TitleDetails, upTo: Episode)
+
+    /**
+     * "Mark unwatched up to here": the same episodes as [markWatchedUpTo] marked not watched as [setEpisodesWatched]
+     * does (their history and positions cleared; Continue Watching, if the show is in it, at 0:00 of [upTo]), in one
+     * write and one listener call. Episodes after [upTo] are left as they are. Nothing for an episode not aired yet.
+     */
+    fun markUnwatchedUpTo(details: TitleDetails, upTo: Episode)
 
     /**
      * Whether [id] is in Continue Watching now: played, not taken out and not marked watched since. The (⋯) window

@@ -1068,6 +1068,29 @@ class VodPage(
         if (sa != null && sa.isOpen && sa.spec?.continueRow == true) sa.remove(id)
     }
 
+    /**
+     * [title]'s Continue Watching card changed (Mark unwatched: back to 0:00): that card alone takes its new progress
+     * and caption in its rows (and their See all), now; gone from Continue Watching, it goes. The library's reload that
+     * follows finds the rows as they are (nothing redrawn).
+     */
+    override fun onContinueChanged(title: Title) {
+        val now = repo?.continueCard(title)
+        if (now == null) {
+            onLeftContinue(title.id)
+            return
+        }
+        for (row in rows) {
+            if (!row.spec.continueRow && row.spec.source !is Source.ContinueWatching) continue
+            val i = row.cards.indexOfFirst { it.title.id == title.id }
+            if (i < 0) continue
+            val card = RowRules.continueChanged(row.cards[i], now)
+            if (card == row.cards[i]) continue
+            showCards(row, row.cards.toMutableList().also { it[i] = card }, row.hasSeeAll, mine = true)
+        }
+        val sa = seeAll
+        if (sa != null && sa.isOpen && sa.spec?.continueRow == true) sa.replace(title.id) { RowRules.continueChanged(it, now) }
+    }
+
     override fun onHoldChanged() = updateHeaderPause()
 
     // ---- Title pages (TitleStack.Host) -------------------------------------------------------------------------------

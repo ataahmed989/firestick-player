@@ -39,7 +39,7 @@ enum class SettingsCategory(val title: String, val icon: Int, val settings: List
         R.drawable.ic_head_play,
         listOf(
             "Play next episode", "Resume where I left off", "Match frame rate", "Surround passthrough", "When a film keeps buffering",
-            "Faster downloads (2 connections)", "Skip buttons", "Next episode / Exit countdown",
+            "Faster downloads", "Skip buttons", "Next episode / Exit countdown",
         ),
     ),
     REMOTE(
@@ -55,11 +55,12 @@ enum class SettingsCategory(val title: String, val icon: Int, val settings: List
         R.drawable.ic_subtitles,
         listOf("Subtitle language", "Audio language", "Auto sync subtitles", "Subtitle style", "Font from your phone"),
     ),
-    // The three glasses, each a dropdown of its Tint and its Dimness or Charcoal (App settings' Look only, not the players' menus).
+    // The three glasses, each a dropdown of its Tint and its Dimness or Charcoal (App settings' Look only, not the players'
+    // menus), then the row that puts all three back to their defaults.
     LOOK(
         "Look",
         R.drawable.ic_head_look,
-        listOf("Glass look", "Glass refresh", "Info pods", "App glass", "Rail, cards & header", "Playback glass"),
+        listOf("Glass look", "Glass refresh", "Info pods", "App glass", "Rail, cards & header", "Playback glass", "Reset to defaults"),
     ),
     ACCOUNTS(
         "Accounts & services",

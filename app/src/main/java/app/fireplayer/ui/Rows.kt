@@ -67,6 +67,17 @@ class CenterScrollView @JvmOverloads constructor(
         super.onDetachedFromWindow()
     }
 
+    /**
+     * Glides the list on by [dy] px, within its ends: a window with nothing to select is read with Up and Down
+     * ([SidePanel.scrollsWithArrows]). A held key keeps adding to where it's going, so it scrolls in one smooth run.
+     */
+    fun glideBy(dy: Int) {
+        val content = getChildAt(0)?.height ?: 0
+        val maxScroll = (content - (height - paddingTop - paddingBottom)).coerceAtLeast(0)
+        if (!glide.moving) glide.snap(scrollY.toFloat())
+        glide.glideTo((glide.target + dy).coerceIn(0f, maxScroll.toFloat()))
+    }
+
     fun center(view: View, animate: Boolean) {
         if (!view.isLaidOut || view.isLayoutRequested) {
             view.viewTreeObserver.addOnGlobalLayoutListener(object : ViewTreeObserver.OnGlobalLayoutListener {

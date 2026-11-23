@@ -12,7 +12,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * One film read with up to two HTTP range requests at a time ("Faster downloads (2 connections)", Off by default).
+ * One film read with up to two HTTP range requests at a time ("Faster downloads", Off by default).
  *
  * A debrid server holds one connection to a speed below what the line carries (65-82 Mb/s measured on a 122 Mb/s line),
  * while a 4K remux needs about 69 Mb/s and more in busy scenes. Two requests for two different parts of the file each

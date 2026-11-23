@@ -12,11 +12,12 @@ import app.fireplayer.shell.Tokens
 import app.fireplayer.vod.Card
 import app.fireplayer.vod.Title
 import app.fireplayer.vod.VodRepository
+import app.fireplayer.vod.data.TitleMarks
 
 /**
  * Films & Shows' small window (hold OK), one per tab page, used by its rows, its See all grid and its title pages: Live
  * TV's [HoldPopup] (one look and one behaviour), beside what was held. A poster's window ([openPoster]) has "+ Add to
- * list" (or "− Remove from list", chosen first), Mark watched (or unwatched) and, on Continue cards, Remove; the title
+ * list" (or "− Remove from list", chosen first), Mark watched and/or unwatched and, on Continue cards, Remove; the title
  * page opens it with its own buttons ([open]: an episode's marks, the (⋯) window). When it closes, focus goes back to
  * what was held (or, if a change took that away, its row's chosen card, else the page's own place).
  */
@@ -29,6 +30,8 @@ class HoldWindow(private val t: Tokens, private val root: ViewGroup, private val
         fun onListChanged(title: Title, inList: Boolean)
         /** [id] left Continue Watching (Remove, Mark watched): its cards go from the continue rows now. */
         fun onLeftContinue(id: String)
+        /** [title]'s Continue Watching card changed (Mark unwatched: back to 0:00): changed in place in its rows now. */
+        fun onContinueChanged(title: Title)
         /** Focus back when what was held is gone: the page's own place. */
         fun takeFocus()
         /** The window opened or closed (the header's rotation holds still while it's open). */
@@ -101,7 +104,10 @@ class HoldWindow(private val t: Tokens, private val root: ViewGroup, private val
         host.onHoldChanged()
     }
 
-    /** A poster's (or a wide card's) window: + Add to list / − Remove from list, Mark watched and, on Continue, Remove. */
+    /**
+     * A poster's (or a wide card's) window: + Add to list / − Remove from list, Mark watched and Mark unwatched (each
+     * when it would change something: [TitleMarks.offer]) and, on Continue, Remove.
+     */
     fun openPoster(
         card: Card,
         continueRow: Boolean,
@@ -116,14 +122,17 @@ class HoldWindow(private val t: Tokens, private val root: ViewGroup, private val
     ) {
         val r = host.repo ?: return
         val title = card.title
-        val buttons = ArrayList<HoldPopup.Button>(4)
+        val buttons = ArrayList<HoldPopup.Button>(5)
         if (onTitlePage != null) buttons += HoldPopup.Button("Title page", DETAILS_ICON) {
             close(fade = false, focusBack = false)
             onTitlePage()
         }
         buttons += listButton(title, r.inMyList(title.id))
-        val watched = r.isWatched(title.id)
-        buttons += HoldPopup.Button(if (watched) "Mark unwatched" else "Mark watched", watchedIcon(watched)) { toggleWatched(title) }
+        // From memory: a show played since its mark (or on its Continue card) isn't fully watched; part watched, both.
+        val watched = TitleMarks.watched(title.kind, r.isWatched(title.id), r.lastPlayed(title), continueRow)
+        val offer = TitleMarks.offer(watched, r.hasHistory(title))
+        if (offer.watched) buttons += HoldPopup.Button("Mark watched", watchedIcon(false)) { markWatched(title, true) }
+        if (offer.unwatched) buttons += HoldPopup.Button("Mark unwatched", watchedIcon(true)) { markWatched(title, false) }
         if (continueRow) buttons += HoldPopup.Button("Remove", REMOVE_ICON) { removeFromContinue(title) }
         open(title.name, buttons, anchor, focusBack, area, row, listener, otherwise)
     }
@@ -154,18 +163,16 @@ class HoldWindow(private val t: Tokens, private val root: ViewGroup, private val
         host.onListChanged(title, inList)
     }
 
-    /** Mark watched also takes the title out of Continue Watching (until it's played again): at once, like Remove. */
-    fun toggleWatched(title: Title) {
-        val r = host.repo ?: return
-        markWatched(title, !r.isWatched(title.id))
-    }
-
-    /** Marks [title] (a show: the whole show) watched or not, closing the window; see [toggleWatched]. */
+    /**
+     * Marks [title] (a show: the whole show) watched or not, closing the window. Mark watched also takes the title out
+     * of Continue Watching (until it's played again): at once, like Remove. Mark unwatched clears its history; in
+     * Continue Watching its card stays, back at 0:00, at once.
+     */
     fun markWatched(title: Title, watched: Boolean) {
         val r = host.repo ?: return
         popup.close()
         r.setWatched(title, watched)
-        if (watched) host.onLeftContinue(title.id)
+        if (watched) host.onLeftContinue(title.id) else host.onContinueChanged(title)
         host.showNotice(if (watched) MARKED else UNMARKED)
     }
 

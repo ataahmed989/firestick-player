@@ -31,8 +31,8 @@ class SidePanel(private val activity: Activity) {
     private val rows = Rows(activity)
 
     // About a third of the screen, as in the design; wide windows (a playlist's groups and channels) show long names.
-    private val normalWidth = (activity.resources.displayMetrics.widthPixels * 0.31f).toInt()
-    private val wideWidth = (activity.resources.displayMetrics.widthPixels * 0.44f).toInt()
+    private val normalWidth = (activity.resources.displayMetrics.widthPixels * WIDTH_SHARE).toInt()
+    private val wideWidth = (activity.resources.displayMetrics.widthPixels * WIDE_WIDTH_SHARE).toInt()
     private var wide = false
 
     /** The long list shown in place of [scroll] by a window that has one ([longList]); made the first time. */
@@ -73,6 +73,12 @@ class SidePanel(private val activity: Activity) {
     /** The row last selected, by what it says: the one to come back to after a small window over this one. */
     private var lastKey: Pair<String, Int>? = null
 
+    /**
+     * What the window being shown writes again in place after a step ([stepper]) or a reset ([updateValues]): each
+     * stepper's value, and whatever else the window gave [liveValue]. Made again with the window's rows.
+     */
+    private val liveValues = ArrayList<() -> Unit>()
+
     init {
         root.layoutParams = root.layoutParams.apply { this.width = normalWidth }
         root.viewTreeObserver.addOnGlobalFocusChangeListener { _, now ->
@@ -82,11 +88,27 @@ class SidePanel(private val activity: Activity) {
             if (i >= 0) lastKey = rowKey(rows, i)
         }
         // While the window holds the selection itself (its rows being replaced, a long list's row not laid out yet),
-        // the arrows are used up here, so focus can't wander out of it.
-        root.setOnKeyListener { _, keyCode, _ ->
-            keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN ||
-                keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
+        // the arrows are used up here, so focus can't wander out of it. A window that reads with Up and Down
+        // ([scrollsWithArrows]) and has nothing to select glides its text on instead.
+        root.setOnKeyListener { _, keyCode, event ->
+            val vertical = keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN
+            if (vertical && arrowScroll && !longShown && event.action == KeyEvent.ACTION_DOWN && focusables().isEmpty()) {
+                val step = rows.dp(ARROW_SCROLL_DP)
+                scroll.glideBy(if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) step else -step)
+            }
+            vertical || keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
         }
+    }
+
+    /** Set by the window being drawn ([scrollsWithArrows]); every window starts without it. */
+    private var arrowScroll = false
+
+    /**
+     * This window is read rather than used (an episode's whole story): with nothing in it to select, Up and Down glide
+     * its text on by a few lines, so all of it can be read however long it is.
+     */
+    fun scrollsWithArrows() {
+        arrowScroll = true
     }
 
     /**
@@ -130,9 +152,10 @@ class SidePanel(private val activity: Activity) {
 
     /**
      * A window opened from a row of this one (a playlist from the list, a status's settings): Back ([back]) comes back
-     * to this window as it was, on that row. Closing ([close]) closes them all.
+     * to this window as it was, on that row. Closing ([close]) closes them all. [focusIndex]: the row it opens on (a
+     * list's current choice), the first by default.
      */
-    fun openSub(titleText: String, wide: Boolean = false, render: SidePanel.() -> Unit) {
+    fun openSub(titleText: String, wide: Boolean = false, focusIndex: Int = 0, render: SidePanel.() -> Unit) {
         // Only from an open window (a late answer mustn't bring a closed one back without its close callback).
         val current = renderer
         if (!isOpen || current == null) return
@@ -152,7 +175,7 @@ class SidePanel(private val activity: Activity) {
         title.text = titleText
         setWide(wide)
         scroll.scrollTo(0, 0)
-        rebuild(focusIndex = 0)
+        rebuild(focusIndex = focusIndex)
     }
 
     // Which parts of which window are open (Info pods ▾, Statuses ▾…), by the window's session: each opening starts
@@ -247,7 +270,9 @@ class SidePanel(private val activity: Activity) {
         if (!behind) root.requestFocus()
         val y = scroll.scrollY
         list.removeAllViews()
+        liveValues.clear()
         pendingLong = null
+        arrowScroll = false
         renderer?.invoke(this)
         val entries = pendingLong
         pendingLong = null
@@ -387,9 +412,35 @@ class SidePanel(private val activity: Activity) {
         list.addView(HeadingLine(activity, rows).apply { set(text, icon) }, rows.listParams(top = 12, bottom = 4))
     }
 
-    /** A note under the rows; [accent] makes it blue, for something that needs doing, such as a change to save. */
-    fun message(text: String, accent: Boolean = false) {
-        list.addView(noteText(activity, rows, accent).apply { this.text = text }, rows.listParams(top = 4, bottom = 4))
+    /**
+     * A note under the rows; [accent] makes it blue, for something that needs doing, such as a change to save. [maxLines]
+     * keeps a note with a name in it (one the viewer typed) as short as it was written to be.
+     */
+    fun message(text: String, accent: Boolean = false, maxLines: Int = Int.MAX_VALUE) {
+        list.addView(noteText(activity, rows, accent).apply {
+            this.text = text
+            if (maxLines != Int.MAX_VALUE) {
+                this.maxLines = maxLines
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            }
+        }, rows.listParams(top = 4, bottom = 4))
+    }
+
+    /**
+     * A short note in the card of the rows above it, in a row's place (what the setting above does, in a line): the
+     * D-pad passes it by, as it does a note under the rows ([message]).
+     */
+    fun cardNote(text: String) {
+        val row = rows.base().apply {
+            isFocusable = false
+            isClickable = false
+        }
+        row.addView(noteText(activity, rows).apply {
+            this.text = text
+            // The note's own muted colour, not the row's text colour.
+            tag = KEEP_COLORS
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        add(row)
     }
 
     /**
@@ -595,7 +646,7 @@ class SidePanel(private val activity: Activity) {
      */
     fun dropdownRow(label: String, badge: String?, style: Rows.Badge, open: Boolean, onClick: () -> Unit): View {
         val row = rows.build(label, null, null)
-        if (badge != null) row.addView(rows.badge(badge, style))
+        if (badge != null) row.addView(rows.badge(badge, style).apply { setTag(R.id.row_badge, style) })
         row.addView(ImageView(activity).apply {
             setImageResource(R.drawable.ic_chevron_down)
             imageTintList = rows.textColors
@@ -605,6 +656,27 @@ class SidePanel(private val activity: Activity) {
         row.setOnClickListener { onClick() }
         add(row)
         return row
+    }
+
+    /**
+     * Rewrites a [dropdownRow]'s badge in place ([badge], drawn as [style]), keeping the row, its focus and its arrow:
+     * for a badge a step changes ([liveValue]). Only a badge whose look changes is made again.
+     */
+    fun setBadge(row: View, badge: String, style: Rows.Badge) {
+        val target = row as? ViewGroup ?: return
+        for (i in 0 until target.childCount) {
+            val old = target.getChildAt(i) as? TextView ?: continue
+            if (old.getTag(R.id.row_badge) == null) continue
+            if (old.getTag(R.id.row_badge) == style) {
+                if (!android.text.TextUtils.equals(old.text, badge)) old.text = badge
+            } else {
+                val params = old.layoutParams
+                target.removeViewAt(i)
+                target.addView(rows.badge(badge, style).apply { setTag(R.id.row_badge, style) }, i, params)
+                target.refreshDrawableState()
+            }
+            return
+        }
     }
 
     /**
@@ -984,6 +1056,40 @@ class SidePanel(private val activity: Activity) {
     }
 
     /**
+     * A card that can be selected and opened (an episode in Show details): [card] keeps its own surface and takes the
+     * rows' selected look over it, the same highlight as every row; OK runs [onClick]. Its words turn dark with it when
+     * they follow its state ([RowLayout], with isDuplicateParentStateEnabled).
+     */
+    fun cardRow(card: View, top: Int = 2, bottom: Int = 2, onClick: () -> Unit): View {
+        val l = card.paddingLeft
+        val t = card.paddingTop
+        val r = card.paddingRight
+        val b = card.paddingBottom
+        val focus = RowGroups.focusOnly(activity)
+        card.background = card.background?.let { android.graphics.drawable.LayerDrawable(arrayOf(it, focus)) } ?: focus
+        card.setPadding(l, t, r, b)
+        card.isFocusable = true
+        card.isClickable = true
+        card.setOnClickListener { onClick() }
+        card.setOnKeyListener { v, keyCode, event ->
+            val vertical = keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN
+            // The window's one card (Show details): Up and Down glide its text instead, so what's above it can be read.
+            if (vertical && focusables().size < 2) {
+                if (event.action == KeyEvent.ACTION_DOWN) {
+                    val step = rows.dp(ARROW_SCROLL_DP)
+                    scroll.glideBy(if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) step else -step)
+                }
+                true
+            } else {
+                Rows.verticalNav(list, v, keyCode, event) ||
+                    keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
+            }
+        }
+        list.addView(card, rows.listParams(top, bottom))
+        return card
+    }
+
+    /**
      * A setting with several values: shows the current one and opens a small picker window. [alsoChecked] is ticked
      * there too: what the current value stands for (Auto's own pick). [valueText] is the value as the row shows it,
      * shorter than its name in the picker when that wouldn't fit the row.
@@ -1008,22 +1114,51 @@ class SidePanel(private val activity: Activity) {
         return row
     }
 
-    /** A row adjusted with left / right on the D-pad, like "Delay  ‹ 0 ms ›". */
-    fun stepper(label: String, value: String, onStep: (direction: Int) -> Unit): View {
+    /**
+     * A row adjusted with left / right on the D-pad, like "Delay  ‹ 0 ms ›": [onStep] changes it, then its [value] (and
+     * whatever else the window shows live, [liveValue]) is written again in place. The window isn't drawn again, so the
+     * row keeps the selection however long an arrow is held: a row made anew isn't laid out until the next frame, and
+     * the repeats that come before it would miss it and let Android move focus out of the window. Left and right are
+     * always used up here, at either end too (each value stops at its ends). [redrawOnRelease]: the window is drawn
+     * again once the arrow is let go, for rows the change adds or takes away (Auto sync's, after a subtitle delay).
+     */
+    fun stepper(label: String, value: () -> String, redrawOnRelease: Boolean = false, onStep: (direction: Int) -> Unit): View {
         // The value and its arrows in blue, like the other values that can be changed right here.
-        val row = rows.build(label, "‹  $value  ›", null, valueColors = rows.stepColors)
+        val row = rows.build(label, stepText(value()), null, valueColors = rows.stepColors)
+        val shown = row.getChildAt(row.childCount - 1) as TextView
+        liveValues += {
+            val now = stepText(value())
+            if (!android.text.TextUtils.equals(shown.text, now)) shown.text = now
+        }
         add(row) { keyCode, event ->
             if (keyCode != KeyEvent.KEYCODE_DPAD_LEFT && keyCode != KeyEvent.KEYCODE_DPAD_RIGHT) {
                 false
             } else {
                 if (event.action == KeyEvent.ACTION_DOWN) {
                     onStep(if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) -1 else 1)
+                    updateValues()
+                } else if (event.action == KeyEvent.ACTION_UP && redrawOnRelease) {
                     refresh()
                 }
                 true
             }
         }
         return row
+    }
+
+    private fun stepText(value: String) = "‹  $value  ›"
+
+    /**
+     * [update] writes again, in place, something this window shows that a step ([stepper]) or a reset can change: a
+     * dropdown's badge ([setBadge]), another row's value ([updateRow]). Kept until the window is drawn again.
+     */
+    fun liveValue(update: () -> Unit) {
+        liveValues += update
+    }
+
+    /** Every value this window shows live ([stepper], [liveValue]) written again in place: no row is made again. */
+    fun updateValues() {
+        for (i in liveValues.indices) liveValues[i]()
     }
 
     fun spacer(dp: Int) {
@@ -1042,6 +1177,13 @@ class SidePanel(private val activity: Activity) {
     }
 
     companion object {
+        /** The window's width, as a share of the screen's: the usual third, and a wide window's ([open]'s wide). */
+        const val WIDTH_SHARE = 0.31f
+        const val WIDE_WIDTH_SHARE = 0.44f
+
+        /** How far one press of Up or Down moves a window read with the arrows ([scrollsWithArrows]): about three lines. */
+        const val ARROW_SCROLL_DP = 60
+
         /** The icon beside each heading, by its name; headings not listed have none. */
         private val HEADING_ICONS = mapOf(
             "This film" to R.drawable.ic_head_film,

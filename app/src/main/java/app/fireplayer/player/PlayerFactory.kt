@@ -355,7 +355,7 @@ object PlayerFactory {
          * player that follows none.
          */
         keepBudgetBytes: Int = 0,
-        /** "Faster downloads (2 connections)" is on: this player's films may be read with two requests ([TwoRanges]). */
+        /** "Faster downloads" is on: this player's films may be read with two requests ([TwoRanges]). */
         twoRanges: TwoRanges? = null,
     ): Built {
         IndexCache.dir = context.cacheDir

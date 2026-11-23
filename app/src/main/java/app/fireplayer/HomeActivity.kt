@@ -213,6 +213,8 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         settingsPanels.onAssStylingChanged = { applyCaptionStyle() }
         // Info pods are one setting for films and live channels: the live controls follow a change at once.
         settingsPanels.onChipsChanged = { live.refreshPods() }
+        // Look › Reset to defaults forgets Default's unsaved display dimness: full screen's darkness follows at once.
+        settingsPanels.onShadesReset = { applyLiveDim() }
         filmMode = FilmMode(this, object : FilmMode.Hooks {
             override fun stopLive() {
                 // The channel stops and its player is released: its decoders are the film's now. Multiview's pictures
@@ -1537,7 +1539,11 @@ class HomeActivity : AppCompatActivity(), GlassSource.Host, LivePage.Host, VodPa
         if (panel.isOpen && !panel.root.hasFocus()) {
             if (before != null && before.isAttachedToWindow) before.requestFocus() else panel.focusRow(0)
         }
-        return handled
+        // Arrows the rows didn't use (a row drawn anew and not laid out yet gets none) would otherwise let Android move
+        // focus out of the window, onto the page behind it, as the player's window keeps them.
+        val arrow = event.keyCode == KeyEvent.KEYCODE_DPAD_LEFT || event.keyCode == KeyEvent.KEYCODE_DPAD_RIGHT ||
+            event.keyCode == KeyEvent.KEYCODE_DPAD_UP || event.keyCode == KeyEvent.KEYCODE_DPAD_DOWN
+        return handled || (panel.isOpen && arrow)
     }
 
     /**

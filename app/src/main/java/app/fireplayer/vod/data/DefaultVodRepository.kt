@@ -27,6 +27,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executor
 import java.util.concurrent.FutureTask
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Films & Shows' data: rows from Cinemeta, Top 10 from TMDB's trending lists with the user's key, and the library kept
@@ -60,6 +61,9 @@ class DefaultVodRepository(
 ) : VodRepository {
 
     private val listeners = CopyOnWriteArrayList<() -> Unit>()
+
+    /** [libraryVersion]: one up per library change. */
+    private val libraryVersion = AtomicLong()
 
     /** Shows whose meta Continue Watching has asked for while the app runs ([showEpisodes]): once each. */
     private val metaAsked: MutableSet<String> = java.util.Collections.synchronizedSet(HashSet<String>())
@@ -170,6 +174,7 @@ class DefaultVodRepository(
     override fun setInMyList(title: Title, inList: Boolean) = library.setInMyList(title, inList)
     override fun isWatched(id: String) = library.isWatched(id)
     override fun setWatched(title: Title, watched: Boolean) = library.setWatched(title, watched)
+    override fun hasHistory(title: Title): Boolean = library.hasHistory(title)
     override fun removeFromContinueWatching(id: String) = library.removeFromContinueWatching(id)
 
     override fun addLibraryListener(listener: () -> Unit) {
@@ -179,6 +184,10 @@ class DefaultVodRepository(
     override fun removeLibraryListener(listener: () -> Unit) {
         listeners -= listener
     }
+
+    override fun libraryVersion(): Long = libraryVersion.get()
+
+    override fun continueCard(title: Title): Card? = library.continueCard(title.kind, title.id)
 
     // ---- Title page (step 2) ----
 
@@ -430,6 +439,11 @@ class DefaultVodRepository(
     override fun markWatchedUpTo(details: TitleDetails, upTo: Episode) =
         library.setEpisodesWatched(EpisodeMarks.upTo(details.episodes, upTo, clock()), true)
 
+    override fun markUnwatchedUpTo(details: TitleDetails, upTo: Episode) {
+        val episodes = EpisodeMarks.upTo(details.episodes, upTo, clock())
+        if (episodes.isNotEmpty()) library.unwatchEpisodes(episodes, upTo)
+    }
+
     override fun inContinueWatching(id: String): Boolean = library.inContinueWatching(id)
 
     override fun lastPlayed(title: Title): LastPlayed? = library.lastPlayed(title.kind, title.id)
@@ -463,7 +477,11 @@ class DefaultVodRepository(
         return null
     }
 
-    private fun libraryChanged() = main.execute { listeners.forEach { it() } }
+    /** The version goes up at once, on the changing thread; the listeners are told on the main thread. */
+    private fun libraryChanged() {
+        libraryVersion.incrementAndGet()
+        main.execute { listeners.forEach { it() } }
+    }
 
     // ---- Details: Cinemeta's meta and TMDB's details, stored and fetched ----
 

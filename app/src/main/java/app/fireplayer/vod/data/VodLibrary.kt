@@ -24,13 +24,27 @@ interface LibraryStore {
         val releases: List<ReleaseRow> = emptyList(),
     )
 
+    /**
+     * The rows of one change, written together ([saveAll]): a season's marks, "Mark watched up to here", a mark
+     * unwatched with the positions and Continue Watching record it clears, a playback record with its mark.
+     */
+    class Change(
+        val watched: List<Watched> = emptyList(),
+        val positions: List<EpisodePosition> = emptyList(),
+        val progress: List<Progress> = emptyList(),
+    ) {
+        val isEmpty: Boolean get() = watched.isEmpty() && positions.isEmpty() && progress.isEmpty()
+    }
+
     fun load(): Saved
     fun saveListed(l: Listed)
     fun saveWatched(w: Watched)
 
-    /** Several marks in one write (a season's episodes, "Mark watched up to here"). */
-    fun saveWatchedAll(marks: List<Watched>) {
-        marks.forEach { saveWatched(it) }
+    /** Every row of [change] in one write (one transaction on the TV: hundreds of rows cost about what one does). */
+    fun saveAll(change: Change) {
+        change.watched.forEach { saveWatched(it) }
+        change.positions.forEach { saveEpisodePosition(it) }
+        change.progress.forEach { saveProgress(it) }
     }
 
     fun saveProgress(p: Progress)
@@ -78,7 +92,7 @@ class MemoryLibraryStore : LibraryStore {
     val progress = LinkedHashMap<String, Progress>()
     val positions = LinkedHashMap<String, EpisodePosition>()
     val releases = LinkedHashMap<String, ReleaseRow>()
-    /** How many writes of several marks ([saveWatchedAll]) were made. */
+    /** How many writes of several rows ([saveAll]) were made. */
     var batches = 0
     override fun load() = LibraryStore.Saved(
         listed.values.toList(), watched.values.toList(), progress.values.toList(), positions.values.toList(),
@@ -86,9 +100,9 @@ class MemoryLibraryStore : LibraryStore {
     )
     override fun saveListed(l: Listed) { listed["${l.title.kind.type}|${l.title.id}"] = l }
     override fun saveWatched(w: Watched) { watched["${w.kind.type}|${w.id}"] = w }
-    override fun saveWatchedAll(marks: List<Watched>) {
+    override fun saveAll(change: LibraryStore.Change) {
         batches++
-        marks.forEach { saveWatched(it) }
+        super.saveAll(change)
     }
     override fun saveProgress(p: Progress) { progress["${p.title.kind.type}|${p.title.id}"] = p }
     override fun saveEpisodePosition(p: EpisodePosition) { positions[p.id] = p }
@@ -157,24 +171,126 @@ class VodLibrary(
     fun isWatched(id: String): Boolean = state { Kind.entries.any { watched[key(it, id)]?.watched == true } }
 
     /**
-     * Marks [title] watched (it leaves Continue Watching), or its id not watched whichever kind was marked (as
-     * [isWatched] asks by id). A show is marked anew each time, so its mark covers the episodes aired by then; marked
-     * not watched, it clears its episodes' marks too (those aired by then).
+     * Whether [title] has a history Mark unwatched clears ([setWatched]): a watched mark (its id, either kind; a show's
+     * episodes' own), or where playback of it stopped (a show's: of any episode).
+     */
+    fun hasHistory(title: Title): Boolean = state {
+        if (Kind.entries.any { watched[key(it, title.id)]?.watched == true }) return@state true
+        if ((progress[key(title.kind, title.id)]?.positionMs ?: 0L) > 0L) return@state true
+        val prefix = "${title.id}:"
+        title.kind == Kind.SERIES &&
+            (anyEpisodeMarked(title.id) || positions.values.any { it.positionMs > 0 && it.id.startsWith(prefix) })
+    }
+
+    /**
+     * Marks [title] watched (it leaves Continue Watching), or not watched ([unwatch]). A show is marked anew each time,
+     * so its mark covers the episodes aired by then; its record [unwatch] kept out comes back, over at the mark.
      */
     fun setWatched(title: Title, watched: Boolean) {
-        val entries = state {
-            if (watched) {
-                val k = key(title.kind, title.id)
-                if (title.kind != Kind.SERIES && this.watched[k]?.watched == true) return
-                listOf(Watched(title.kind, title.id, stamp(), true).also { this.watched[k] = it })
-            } else {
-                Kind.entries.filter { k ->
-                    this.watched[key(k, title.id)]?.watched == true || (k == Kind.SERIES && anyEpisodeMarked(title.id))
-                }.map { k -> Watched(k, title.id, stamp(), false).also { this.watched[key(k, title.id)] = it } }
-            }
+        if (!watched) {
+            unwatch(title)
+            return
         }
-        if (entries.isEmpty()) return
-        writer.execute { entries.forEach { runCatching { store.saveWatched(it) } } }
+        val (mark, record) = state {
+            val k = key(title.kind, title.id)
+            if (title.kind != Kind.SERIES && this.watched[k]?.watched == true) return
+            val mark = Watched(title.kind, title.id, stamp(), true).also { this.watched[k] = it }
+            // A show's record Mark unwatched kept out at 0:00: back, over now ([unwatch] undone).
+            val record = progress[k]?.takeIf { title.kind == Kind.SERIES && it.hidden && it.positionMs == 0L }
+                ?.copy(hidden = false)?.also { progress[k] = it }
+            mark to record
+        }
+        val change = record?.let { LibraryStore.Change(watched = listOf(mark), progress = listOf(it)) }
+        writer.execute { runCatching { if (change == null) store.saveWatched(mark) else store.saveAll(change) } }
+        changed()
+    }
+
+    /**
+     * Mark unwatched on a film or a whole show, in one write and one call of [changed]: its watched marks (its id
+     * whichever kind was marked, as [isWatched] asks by id; a show's every episode's own mark too), where playback of
+     * it stopped (a show's: of each episode) and its Continue Watching record's place in it are cleared. In Continue
+     * Watching, it stays there (in its place in the row) at 0:00 of the film, or of the show's first episode; one not
+     * in it isn't put in it (its record is kept out). Nothing to clear: nothing written, nobody told.
+     */
+    private fun unwatch(title: Title) {
+        val show = title.kind == Kind.SERIES
+        val wasIn = continueEntry(title.kind, title.id) != null
+        // A show's record goes to its first episode: from its stored episodes (read outside the lock), else S1 E1.
+        val first = if (show && state { progress[key(title.kind, title.id)] } != null) {
+            EpisodeMarks.first(runCatching { episodesOf(title) }.getOrNull())
+        } else {
+            null
+        }
+        val change = state {
+            val at = stamp()
+            val marks = ArrayList<Watched>()
+            for (k in Kind.entries) {
+                if (watched[key(k, title.id)]?.watched == true || (k == Kind.SERIES && anyEpisodeMarked(title.id))) {
+                    marks += Watched(k, title.id, at, false)
+                }
+            }
+            val cleared = ArrayList<EpisodePosition>()
+            if (show) {
+                val prefix = "${title.id}:"
+                // Each episode's own mark too: the show's covers only episodes with an air date.
+                for (w in watched.values) {
+                    if (w.watched && w.kind == Kind.SERIES && w.id.startsWith(prefix)) marks += w.copy(at = at, watched = false)
+                }
+                for (p in positions.values) {
+                    if (p.positionMs > 0 && p.id.startsWith(prefix)) cleared += p.copy(positionMs = 0, at = at)
+                }
+            }
+            val records = listOfNotNull(
+                progress[key(title.kind, title.id)]?.let { p ->
+                    val ep = if (show) first?.ref ?: EpisodeMarks.FIRST else p.episode
+                    val length = if (show && ep != null) lengthOf(title.id, ep, first?.runtimeMin, p) else p.durationMs
+                    p.copy(episode = ep, positionMs = 0, durationMs = length, hidden = !wasIn).takeIf { it != p }
+                },
+            )
+            put(marks, cleared, records)
+        } ?: return
+        writer.execute { runCatching { store.saveAll(change) } }
+        changed()
+    }
+
+    /**
+     * Mark unwatched on episodes of one show (one, or "Mark unwatched up to here"), in one write and one call of
+     * [changed]: their watched marks and where playback of each stopped are cleared; the other episodes' are left as
+     * they are. The show in Continue Watching stays there (in its place in the row) at 0:00 of [at], the episode the
+     * action was used on; one not in it isn't put in it (a record about one of [episodes], or one the cleared marks
+     * would bring back in, goes to [at], kept out; Mark watched on [at] lets it out again). Nothing to clear: nothing
+     * written, nobody told.
+     */
+    fun unwatchEpisodes(episodes: List<Episode>, at: Episode) {
+        val list = (episodes + at).distinctBy { it.id }
+        val showId = at.showId
+        val wasIn = continueEntry(Kind.SERIES, showId) != null
+        // The show's episodes as Continue Watching reads them (outside the lock): whether the marks cleared bring it in.
+        val lists = state { progress[key(Kind.SERIES, showId)] }?.let { episodesFor(listOf(it)) }.orEmpty()
+        val change = state {
+            val now = stamp()
+            val marks = list.filter { episodeMark(it.id, it.released)?.watched == true }
+                .mapTo(ArrayList()) { Watched(Kind.SERIES, it.id, now, false) }
+            // In the library first, so the record below is worked out with them.
+            for (w in marks) watched[key(w.kind, w.id)] = w
+            val cleared = list.mapNotNull { e -> positions[e.id]?.takeIf { it.positionMs > 0 }?.copy(positionMs = 0, at = now) }
+            val records = listOfNotNull(
+                progress[key(Kind.SERIES, showId)]?.let { p ->
+                    val about = isAbout(p, list)
+                    // Not in Continue Watching and not about these: left as it is, unless the marks cleared would now
+                    // bring the show in (an episode after its record's, of a show done): then kept out as one about them.
+                    if (!wasIn && !about && (p.hidden || entryOf(p, upOf(p, lists, clock())) == null)) return@let null
+                    val length = lengthOf(showId, at.ref, at.runtimeMin, p)
+                    val moved = p.copy(episode = at.ref, positionMs = 0, durationMs = length, hidden = !wasIn)
+                    if (moved == p) return@let null
+                    // Its own mark, newer than any of the show's: the record never reads as watched since.
+                    if (wasIn && marks.none { it.id == at.id }) marks += Watched(Kind.SERIES, at.id, now, false)
+                    moved
+                },
+            )
+            put(marks, cleared, records)
+        } ?: return
+        writer.execute { runCatching { store.saveAll(change) } }
         changed()
     }
 
@@ -182,18 +298,27 @@ class VodLibrary(
     fun isEpisodeWatched(episode: Episode): Boolean = state { episodeMark(episode.id, episode.released)?.watched == true }
 
     /**
-     * Marks [episodes] watched or not: one write, one call of [changed]; those already so are left as they are
-     * (nothing to do: no write, no call).
+     * Marks [episodes] watched: one write, one call of [changed]; those already so are left as they are (nothing to
+     * do: no write, no call). Not watched: [unwatchEpisodes], about the last of them.
      */
     fun setEpisodesWatched(episodes: List<Episode>, watched: Boolean) {
-        val marks = state {
-            val at = stamp()
-            episodes.distinctBy { it.id }
-                .filter { (episodeMark(it.id, it.released)?.watched == true) != watched }
-                .map { Watched(Kind.SERIES, it.id, at, watched).also { w -> this.watched[key(Kind.SERIES, it.id)] = w } }
+        if (!watched) {
+            episodes.lastOrNull()?.let { unwatchEpisodes(episodes, it) }
+            return
         }
-        if (marks.isEmpty()) return
-        writer.execute { runCatching { store.saveWatchedAll(marks) } }
+        val change = state {
+            val at = stamp()
+            val marks = episodes.distinctBy { it.id }
+                .filter { episodeMark(it.id, it.released)?.watched != true }
+                .map { Watched(Kind.SERIES, it.id, at, true).also { w -> this.watched[key(Kind.SERIES, it.id)] = w } }
+            if (marks.isEmpty()) return
+            // A record Mark unwatched kept out at 0:00 of one of these: back, over now ([unwatchEpisodes] undone).
+            val record = episodes.firstOrNull()?.let { progress[key(Kind.SERIES, it.showId)] }
+                ?.takeIf { it.hidden && it.positionMs == 0L && isAbout(it, episodes) }
+                ?.copy(hidden = false)?.also { progress[key(Kind.SERIES, it.title.id)] = it }
+            LibraryStore.Change(watched = marks, progress = listOfNotNull(record))
+        }
+        writer.execute { runCatching { store.saveAll(change) } }
         changed()
     }
 
@@ -202,22 +327,29 @@ class VodLibrary(
      * carries its progress and caption ("12m left", "S2 E5 · 12m left"; a show gone on to its next episode "S3 E1", with
      * no progress until that one has been played).
      */
-    fun continueWatching(kind: Kind?): List<Card> = continueEntries(kind).map { p ->
-        Card(
-            title = p.title,
-            progress = Captions.fraction(p.positionMs, p.durationMs),
-            caption = Captions.caption(p.episode, p.positionMs, p.durationMs),
-            episode = p.episode,
-        )
-    }
+    fun continueWatching(kind: Kind?): List<Card> = continueEntries(kind).map { cardOf(it) }
+
+    /**
+     * [kind]/[id]'s Continue Watching card as [continueWatching] has it now; null when it isn't in it. A page changes
+     * that one card in place with it (Mark unwatched: back to 0:00), with no reload of its rows.
+     */
+    fun continueCard(kind: Kind, id: String): Card? = continueEntry(kind, id)?.let { cardOf(it) }
+
+    private fun cardOf(p: Progress) = Card(
+        title = p.title,
+        progress = Captions.fraction(p.positionMs, p.durationMs),
+        caption = Captions.caption(p.episode, p.positionMs, p.durationMs),
+        episode = p.episode,
+    )
 
     /**
      * Continue Watching's entries for [kind] (null: films and series), the latest played first, with where each stopped
      * and when (also Glass Home's Continue Watching row, history/VodContinue): titles played and not taken out of it.
      * A film leaves once marked watched (finishing it marks it). A show stays until there's nothing more to watch: one
      * whose episode is over (finished, or marked watched since) goes on with the next ([UpNext.of]: across seasons, from
-     * that episode's own resume point, else its start), is kept as it was while its episodes aren't known here, and
-     * leaves when no episode after it is left to watch, or when the next aired only after it was over ([nextEpisodes]).
+     * that episode's own resume point, else its start), is kept as it was while its episodes aren't known here (not
+     * once the whole show is marked watched since), and leaves when no episode after it is left to watch, or when the
+     * next aired only after it was over ([nextEpisodes]).
      */
     fun continueEntries(kind: Kind? = null): List<Progress> {
         val now = clock()
@@ -273,11 +405,9 @@ class VodLibrary(
             }
             Triple(entry, own, mark)
         }
-        writer.execute {
-            runCatching { store.saveProgress(entry) }
-            own?.let { runCatching { store.saveEpisodePosition(it) } }
-            mark?.let { runCatching { store.saveWatched(it) } }
-        }
+        // One write for the record, its episode's position and its mark.
+        val change = LibraryStore.Change(watched = listOfNotNull(mark), positions = listOfNotNull(own), progress = listOf(entry))
+        writer.execute { runCatching { store.saveAll(change) } }
         changed()
     }
 
@@ -399,6 +529,16 @@ class VodLibrary(
         return listOfNotNull(own, title).maxByOrNull { it.at }?.takeIf { it.watched && it.at >= p.at }
     }
 
+    /**
+     * Show record [p] is over by the whole show's mark, no episode's own mark set since: every episode aired by then is
+     * watched, so once its episodes are known it's done, or in Next Episodes (one aired since); never Continue Watching.
+     */
+    private fun overByShowMark(p: Progress): Boolean {
+        val mark = markSince(p)?.takeIf { it.id == p.title.id } ?: return false
+        val prefix = "${Kind.SERIES.type}|${p.title.id}:"
+        return watched.none { (k, w) -> w.at > mark.at && k.startsWith(prefix) }
+    }
+
     /** Show record [p]'s episode is over: finished ([Position.finished]), or marked watched since ([LastPlayed.finished]). */
     private fun isOver(p: Progress): Boolean = p.title.kind == Kind.SERIES && p.episode != null &&
         (markSince(p) != null || Position(p.positionMs, p.durationMs, p.at).finished)
@@ -416,7 +556,8 @@ class VodLibrary(
     /** [p] as Continue Watching shows it after [up] ([continueEntries]); null when it isn't there. */
     private fun entryOf(p: Progress, up: UpNext.Up): Progress? = when (up) {
         UpNext.Up.Own -> p.takeUnless { markedSince(it) }
-        UpNext.Up.Unknown -> p
+        // Kept while its episodes aren't known, unless the whole show was marked watched since: then never in it.
+        UpNext.Up.Unknown -> p.takeUnless { overByShowMark(it) }
         is UpNext.Up.Next -> if (up.fresh) null else {
             // From the next episode's own resume point when it has one, else its start: as its card plays it.
             val own = positions[up.episode.id]?.takeIf { Position(it.positionMs, it.durationMs, it.at).resumable }
@@ -424,6 +565,30 @@ class VodLibrary(
         }
         UpNext.Up.Done -> null
     }
+
+    /** Puts a change's rows in the library; null when there are none (nothing to write, nobody to tell). */
+    private fun put(marks: List<Watched>, cleared: List<EpisodePosition>, records: List<Progress>): LibraryStore.Change? {
+        if (marks.isEmpty() && cleared.isEmpty() && records.isEmpty()) return null
+        for (w in marks) watched[key(w.kind, w.id)] = w
+        for (p in cleared) positions[p.id] = p
+        for (p in records) progress[key(p.title.kind, p.title.id)] = p
+        return LibraryStore.Change(marks, cleared, records)
+    }
+
+    /**
+     * How long episode [ref] of [showId] is, as known here: its own position's length, else [p]'s when that record is
+     * about it, else its usual runtime ([runtimeMin]); 0 when none is known (its card then has no bar).
+     */
+    private fun lengthOf(showId: String, ref: EpisodeRef, runtimeMin: Int?, p: Progress): Long {
+        positions[Episode.idOf(showId, ref.season, ref.episode)]?.durationMs?.takeIf { it > 0 }?.let { return it }
+        val r = p.episode
+        if (r != null && r.season == ref.season && r.episode == ref.episode && p.durationMs > 0) return p.durationMs
+        return ((runtimeMin ?: 0) * 60_000L).takeIf { it > Position.END_MS } ?: 0L
+    }
+
+    /** Show record [p] is about one of [episodes]. */
+    private fun isAbout(p: Progress, episodes: List<Episode>): Boolean =
+        p.episode?.let { r -> episodes.any { it.season == r.season && it.episode == r.episode } } == true
 
     /** Some episode of [showId] has its own watched mark set. */
     private fun anyEpisodeMarked(showId: String): Boolean {

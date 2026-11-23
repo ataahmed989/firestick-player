@@ -97,6 +97,13 @@ internal object RowRules {
         return if (inList) listOf(Card(title)) + others else others
     }
 
+    /**
+     * A Continue Watching card [shown] after its title's record changed in place ([now]: the card as the row would load
+     * it now): its progress, caption and episode from [now], the rest as shown, so the card is redrawn, not rebuilt.
+     */
+    fun continueChanged(shown: Card, now: Card): Card =
+        shown.copy(progress = now.progress, caption = now.caption, episode = now.episode)
+
     /** "S2 E5 · 12m left · 2014 · Drama · Crime · ★ 8.4 · 49 min": the header's facts line, the parts that exist. */
     fun facts(title: Title, caption: String?): String = listOfNotNull(
         caption?.takeIf { it.isNotBlank() },

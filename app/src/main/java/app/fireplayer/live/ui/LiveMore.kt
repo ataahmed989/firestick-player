@@ -125,7 +125,7 @@ class LiveMore(
     }
 
     /** The VOD player's delay arrows: 50 ms a press, from −2 s to +450 ms. */
-    private fun delayStepper(p: SidePanel) = p.stepper("Delay", PlayerActivity.formatDelay(player.audioDelayUs)) { dir ->
+    private fun delayStepper(p: SidePanel) = p.stepper("Delay", { PlayerActivity.formatDelay(player.audioDelayUs) }) { dir ->
         player.audioDelayUs = (player.audioDelayUs + dir * 50_000L)
             .coerceIn(PlayerActivity.MIN_AUDIO_DELAY_US, PlayerActivity.MAX_AUDIO_DELAY_US)
         refreshValues()

@@ -45,6 +45,8 @@ import app.fireplayer.vod.TitleDetails
 import app.fireplayer.vod.VodRepository
 import app.fireplayer.vod.data.Callouts
 import app.fireplayer.vod.data.CinemetaDetails
+import app.fireplayer.vod.data.EpisodeMarks
+import app.fireplayer.vod.data.TitleMarks
 import app.fireplayer.vod.data.VodArt
 import app.fireplayer.vod.hasImdbId
 import app.fireplayer.vod.playTarget
@@ -171,6 +173,8 @@ class TitlePage(
     private var moreFresh = false
     private var paused = false
     private var released = false
+    /** The library as last shown ([VodRepository.libraryVersion]): its listener call for a change shown already is skipped. */
+    private var shownLibrary = -1L
 
     /** The title box: waiting (at most [VodSizes.LOGO_WAIT_MS]) for the logo, then the logo or the name for the visit. */
     private enum class TitleMode { WAITING, LOGO, NAME }
@@ -346,9 +350,20 @@ class TitlePage(
         if (part != Part.MORE) more.releaseImages()
     }
 
+    /** A library change: shown, unless this page showed it already (its own mark, redrawn at once by [marked]). */
     fun onLibraryChanged() {
         if (paused || released) return
+        if (host.repo?.libraryVersion() == shownLibrary) return
         refreshAll()
+    }
+
+    /**
+     * The viewer's own mark on this page: its ✓ marks, progress bars, chip and Play shown at once, in place (the
+     * library is in memory already), not when the listener's call comes; that call then finds nothing new.
+     */
+    private fun marked(notice: String) {
+        if (!paused && !released) refreshAll()
+        host.showNotice(notice)
     }
 
     private fun startLoads() {
@@ -436,6 +451,7 @@ class TitlePage(
     /** Everything that follows the details and the library: the buttons, the header's words, the seasons and cards. */
     private fun refreshAll() {
         val r = host.repo
+        shownLibrary = r?.libraryVersion() ?: -1L
         val now = System.currentTimeMillis()
         val year = thisYear()
         val last = r?.lastPlayed(opened)
@@ -1094,19 +1110,32 @@ class TitlePage(
                 // Nothing to mark on one that hasn't aired.
                 if (!ep.aired(System.currentTimeMillis())) return
                 val pod = episodes.items.getOrNull(index) ?: return
-                val watched = r.isEpisodeWatched(ep)
-                val actions = listOf(
-                    HoldPopup.Button(if (watched) "Mark unwatched" else "Mark watched", HoldWindow.watchedIcon(watched)) {
-                        hold.close()
-                        r.setEpisodesWatched(listOf(ep), !watched)
-                        host.showNotice(if (watched) HoldWindow.UNMARKED else HoldWindow.MARKED)
-                    },
-                    HoldPopup.Button("Mark watched up to here", HoldWindow.watchedIcon(false)) {
-                        hold.close()
-                        r.markWatchedUpTo(details, ep)
-                        host.showNotice(HoldWindow.MARKED)
-                    },
-                )
+                // Only what would change something: no "up to here" on a first episode, nor when it'd change only this one.
+                val offer = EpisodeMarks.offer(details.episodes, ep, System.currentTimeMillis(), { r.isEpisodeWatched(it) }) {
+                    (r.positionOf(it)?.positionMs ?: 0L) > 0L
+                }
+                val d = details
+                val actions = ArrayList<HoldPopup.Button>(4)
+                if (offer.watched) actions += HoldPopup.Button("Mark watched", HoldWindow.watchedIcon(false)) {
+                    hold.close()
+                    r.setEpisodesWatched(listOf(ep), true)
+                    marked(HoldWindow.MARKED)
+                }
+                if (offer.unwatched) actions += HoldPopup.Button("Mark unwatched", HoldWindow.watchedIcon(true)) {
+                    hold.close()
+                    r.setEpisodesWatched(listOf(ep), false)
+                    marked(HoldWindow.UNMARKED)
+                }
+                if (offer.watchedUpTo) actions += HoldPopup.Button("Mark watched up to here", HoldWindow.watchedIcon(false)) {
+                    hold.close()
+                    r.markWatchedUpTo(d, ep)
+                    marked(HoldWindow.MARKED)
+                }
+                if (offer.unwatchedUpTo) actions += HoldPopup.Button("Mark unwatched up to here", HoldWindow.watchedIcon(true)) {
+                    hold.close()
+                    r.markUnwatchedUpTo(d, ep)
+                    marked(HoldWindow.UNMARKED)
+                }
                 val name = listOfNotNull(TitleRules.episodeCode(ep.ref), ep.name.takeIf { it.isNotBlank() }).joinToString(" · ")
                 // The pod stays grown while its window is open ([EpisodeRow.Listener.onEpisodesLeft]).
                 hold.open(name, actions, pod, pod, hold.area(VodSizes.HOLD_INSET)) { takeFocusBack() }
@@ -1217,23 +1246,32 @@ class TitlePage(
         val hold = host.hold
         val title = details.title
         val now = System.currentTimeMillis()
+        val inContinue = r.inContinueWatching(opened.id)
         // A show reads as its episodes' ✓ marks do (the show's own mark covers only the episodes aired when it was
-        // set): with episodes aired since, it offers Mark watched again. Before its episodes are known, its own mark.
+        // set): with episodes aired since, it offers Mark watched again. Before its episodes are known, its own mark
+        // (as a poster's window reads it). Part watched: both, as an episode's window ([TitleMarks.offer]).
         val watched = if (isShow && details.episodes.isNotEmpty()) {
             TitleRules.allWatched(details.episodes, now) { r.isEpisodeWatched(it) }
         } else {
-            r.isWatched(opened.id)
+            TitleMarks.watched(title.kind, r.isWatched(opened.id), r.lastPlayed(opened), inContinue)
         }
-        val actions = ArrayList<HoldPopup.Button>(3)
-        actions += HoldPopup.Button(if (watched) "Mark unwatched" else "Mark watched", HoldWindow.watchedIcon(watched)) {
-            hold.markWatched(title, !watched)
-        }
-        if (r.inContinueWatching(opened.id)) {
+        val offer = TitleMarks.offer(watched, r.hasHistory(opened))
+        val actions = ArrayList<HoldPopup.Button>(4)
+        if (offer.watched) actions += HoldPopup.Button("Mark watched", HoldWindow.watchedIcon(false)) { mark(title, true) }
+        if (offer.unwatched) actions += HoldPopup.Button("Mark unwatched", HoldWindow.watchedIcon(true)) { mark(title, false) }
+        if (inContinue) {
             actions += HoldPopup.Button("Remove from Continue Watching", HoldWindow.REMOVE_ICON) { hold.removeFromContinue(title) }
         }
         actions += HoldPopup.Button("Details", HoldWindow.DETAILS_ICON) { openDetails() }
         val anchor = buttons.moreButton
         hold.open(title.name, actions, anchor, anchor, hold.area(VodSizes.HOLD_INSET)) { takeFocusBack() }
+    }
+
+    /** The (⋯) window's Mark watched or unwatched on the whole film or show ([title]). */
+    private fun mark(title: Title, watched: Boolean) {
+        host.hold.markWatched(title, watched)
+        // The page's ✓ marks, bars, chip and Play at once (the notice is the window's).
+        if (!paused && !released) refreshAll()
     }
 
     /** Details: the whole story, the facts, all the cast and crew, and where each came from (a wide settings window). */
