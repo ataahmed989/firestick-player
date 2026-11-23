@@ -189,7 +189,8 @@ object SourcesModel {
      * Why [best] is the copy Play uses, in plain words: "4K IMAX · Dolby Vision · Remux · cached", "1080p · BluRay ·
      * played here". "Lighter 4K: your connection keeps up with it" when a heavier copy as sharp or sharper was passed
      * over because this connection was measured too slow for it ([SourceRank.fit], [app.fireplayer.vod.sources.LineRate]).
-     * When even the best likely won't play well here, its warning ends the line.
+     * When even the best likely won't play well here, its warning ends the line. Its HDR is what this TV played of it,
+     * once it has ([SourceRank.asPlayedHere]).
      */
     fun reason(best: PlaybackSource, list: SourceList): String {
         val quality = PlayRules.quality(best)
@@ -203,7 +204,8 @@ object SourcesModel {
             else -> null
         }
         val warning = best.warning?.takeIf { best.fit == TvFit.LIKELY_NOT }?.let { "⚠ $it" }
-        return listOfNotNull(quality, PlayRules.hdrWords(best.facts), PlayRules.kind(best.facts.origin), state, warning).joinToString(" · ")
+        val hdr = PlayRules.hdrWords(SourceRank.asPlayedHere(best.facts, best.measured))
+        return listOfNotNull(quality, hdr, PlayRules.kind(best.facts.origin), state, warning).joinToString(" · ")
     }
 
     /** Set aside because this connection was measured too slow for it. */

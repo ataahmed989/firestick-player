@@ -88,6 +88,7 @@ import app.fireplayer.player.AssOverlay
 import app.fireplayer.player.BufferWait
 import app.fireplayer.player.DecoderCheck
 import app.fireplayer.player.Delays
+import app.fireplayer.player.DvBaseLayer
 import app.fireplayer.player.FilmMemory
 import app.fireplayer.player.FilmRoom
 import app.fireplayer.player.MemoryPressure
@@ -5508,7 +5509,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (video == null && audio == null) return null
         val link = p.currentMediaItem?.localConfiguration?.uri?.toString()
         val rates = embeddedCues.source(link)?.rates
-        val base = MediaSpec.of(video, audio)
+        // Dolby Vision profile 7 that this TV plays as its HDR10 base layer is described, and kept, as HDR10.
+        val base = MediaSpec.of(video, audio, DvBaseLayer.playedAsBase(video?.sampleMimeType, video?.codecs, DvBaseLayer.tvPlaysBase))
         val w = p.videoSize.width.takeIf { it > 0 } ?: base.width
         val h = p.videoSize.height.takeIf { it > 0 } ?: base.height
         val videoBps = rates?.bps(video?.id) ?: 0L

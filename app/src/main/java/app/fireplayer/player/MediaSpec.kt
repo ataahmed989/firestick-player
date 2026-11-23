@@ -44,6 +44,11 @@ data class MediaSpec(
     /** The languages of its sound tracks and of the subtitles inside the file, ISO 639-1, comma-separated ("en,fr"). */
     val audioLangs: String = "",
     val subLangs: String = "",
+    /**
+     * The Dolby Vision profile whose HDR10 base layer is what this TV played ([DvBaseLayer]: 7, its [hdr] then "HDR10");
+     * 0 when it played as the file has it.
+     */
+    val dvBaseLayer: Int = 0,
 ) {
     /** Where a number came from. */
     enum class How(val label: String) {
@@ -73,12 +78,16 @@ data class MediaSpec(
 
     /**
      * Picture & sound's "Range": "HDR10", "SDR", or, on a TV that reports no HDR ([hdrScreen] false), "HDR10 · shown as
-     * SDR (TV reports no HDR)": the Fire TV turns the picture into SDR for it, so its HDR isn't what's seen.
+     * SDR (TV reports no HDR)": the Fire TV turns the picture into SDR for it, so its HDR isn't what's seen. Dolby Vision
+     * played as its base layer says so: "HDR10 (Dolby Vision profile 7 base layer)".
      */
-    fun rangeLine(hdrScreen: Boolean): String = when {
-        hdr == null -> "Not stated by the file"
-        hdr != "SDR" && !hdrScreen -> "$hdr · shown as SDR (TV reports no HDR)"
-        else -> hdr
+    fun rangeLine(hdrScreen: Boolean): String {
+        val shown = if (dvBaseLayer > 0) DvBaseLayer.words(dvBaseLayer) else hdr
+        return when {
+            shown == null -> "Not stated by the file"
+            hdr != "SDR" && !hdrScreen -> "$shown · shown as SDR (TV reports no HDR)"
+            else -> shown
+        }
     }
 
     /** "TrueHD Atmos 7.1", "DD+ 5.1", "Stereo": the sound pod. */
@@ -94,7 +103,7 @@ data class MediaSpec(
             spec.videoCodec.orEmpty(), spec.profile.orEmpty(), spec.width, spec.height, spec.fps, spec.bitDepth,
             spec.hdr.orEmpty(), spec.videoBps, spec.videoHow.name, spec.audioCodec.orEmpty(), if (spec.atmos) 1 else 0,
             spec.channels, spec.sampleRate, spec.audioBps, spec.audioHow.name, spec.overallBps, spec.sizeBytes,
-            spec.measuredSecs, spec.audioLangs, spec.subLangs,
+            spec.measuredSecs, spec.audioLangs, spec.subLangs, spec.dvBaseLayer,
         ).joinToString(SEP) { it.toString().replace(SEP, " ") }
 
         fun decode(text: String): MediaSpec? {
@@ -111,6 +120,7 @@ data class MediaSpec(
                 measuredSecs = if (f.size > 17) l(17) else 0L,
                 audioLangs = f.getOrNull(18).orEmpty(),
                 subLangs = f.getOrNull(19).orEmpty(),
+                dvBaseLayer = f.getOrNull(20)?.toIntOrNull() ?: 0,
             )
         }
 
@@ -159,16 +169,21 @@ data class MediaSpec(
             else -> null
         }
 
-        /** The picture and sound tracks playing, as the file declares them (no bitrates: those are measured). */
+        /**
+         * The picture and sound tracks playing, as the file declares them (no bitrates: those are measured). [baseLayer]:
+         * the video is Dolby Vision played as its HDR10 base layer ([DvBaseLayer.playedAsBase]), so HDR10 is what's seen.
+         */
         @OptIn(UnstableApi::class)
-        fun of(video: Format?, audio: Format?): MediaSpec {
+        fun of(video: Format?, audio: Format?, baseLayer: Boolean = false): MediaSpec {
             val v = video
             val codecs = v?.codecs
             val mime = v?.sampleMimeType
             val color = v?.colorInfo
             val depth = color?.lumaBitdepth?.takeIf { it in 8..16 } ?: bitDepthIn(codecs)
             val dv = mime == MimeTypes.VIDEO_DOLBY_VISION || codecs?.let { DV_CODECS.containsMatchIn(it) } == true
+            val dvBase = if (baseLayer && dv) DvBaseLayer.profileOf(codecs) ?: 0 else 0
             val hdr = when {
+                dvBase > 0 -> "HDR10"
                 dv -> "Dolby Vision"
                 color?.colorTransfer == C.COLOR_TRANSFER_ST2084 -> "HDR10"
                 color?.colorTransfer == C.COLOR_TRANSFER_HLG -> "HLG"
@@ -194,6 +209,7 @@ data class MediaSpec(
                 sampleRate = a?.sampleRate?.takeIf { it > 0 } ?: 0,
                 audioBps = a?.averageBitrate?.takeIf { it > 0 }?.toLong() ?: a?.bitrate?.takeIf { it > 0 }?.toLong() ?: 0,
                 audioHow = if ((a?.averageBitrate ?: 0) > 0 || (a?.bitrate ?: 0) > 0) How.STATED else How.NONE,
+                dvBaseLayer = dvBase,
             )
         }
 
