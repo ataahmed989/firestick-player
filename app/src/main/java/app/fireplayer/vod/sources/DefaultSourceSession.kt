@@ -76,6 +76,8 @@ internal class DefaultSourceSession(
     private val refreshed = HashSet<String>()
     private val decoded = HashSet<String>()
     private val visited = LinkedHashSet<String>()
+    /** The files played in this session ([app.fireplayer.vod.ReleaseKey.storeKey]): their rows may have merged since. */
+    private val visitedFiles = HashSet<String>()
     private val fetchAgreed = HashSet<String>()
     /** The offer last tried for each source (by key): its own file is the one skipped when it fails. */
     private val triedOffer = HashMap<String, Offer>()
@@ -169,6 +171,7 @@ internal class DefaultSourceSession(
         playing = source
         playingOffer = offer
         visited += source.key
+        releaseOf(source, offer)?.let { visitedFiles += it.storeKey }
         tries += Attempt(source, repo.wall(), currentWhy, null)
         // The file that played: a merged row's offer can be another re-upload than the row's first.
         releaseOf(source, offer)?.let { release ->
@@ -198,7 +201,7 @@ internal class DefaultSourceSession(
         startedOnce && switches < MAX_SWITCHES && now - lastSwitchAt >= SWITCH_GAP_MS
 
     override fun lighter(maxMbps: Double): PlaybackSource? {
-        val current = playing?.key
+        val current = currentKey()
         // In "Best for this TV" order: the first that fits is the best that fits. One this TV likely can't play only
         // when nothing else does.
         val fits = (list ?: return null).sources.filter { s ->
@@ -207,6 +210,14 @@ internal class DefaultSourceSession(
         }
         return fits.firstOrNull { it.fit != TvFit.LIKELY_NOT } ?: fits.firstOrNull()
     }
+
+    override fun rowKey(source: PlaybackSource): String {
+        val offer = if (source.key == playing?.key) playingOffer else triedOffer[source.key]
+        val file = offer?.let { releaseOf(source, it) } ?: source.release ?: return source.key
+        return repo.rowKeyOf(target, file) ?: source.key
+    }
+
+    override fun nextPick(): PlaybackSource? = list?.let { if (closed) null else nextOf(it) }
 
     override fun lookUpNext(next: EpisodeRef, onList: (SourceList) -> Unit): Cancel =
         repo.lookUp(SourceTarget(target.title, next), LookupWhy.NEXT_EPISODE, null, onList)
@@ -238,9 +249,10 @@ internal class DefaultSourceSession(
             Step.TryNext
         }
         // This copy only: another of the same format may well show its picture (a profile 8 Dolby Vision file where a
-        // profile 5 one showed none).
+        // profile 5 one showed none); every copy of its format when no decoder here takes that format.
         FailureKind.NO_PICTURE -> {
             skip(source, hash = false)
+            if (f.detail == Failure.NO_DECODER) badFormats += formatKey(source)
             Step.TryNext
         }
         FailureKind.AUDIO -> if (decoded.add(source.key)) Step.DecodeOnDevice else {
@@ -383,6 +395,26 @@ internal class DefaultSourceSession(
      */
     private fun noPictureHere(s: PlaybackSource): Boolean = (s.measured?.health?.noPicture ?: 0) > 0
 
+    /**
+     * The row Next source goes on from: the copy playing, else (none played yet) the one tried last, under the key its
+     * file has in the list now ([rowKey]).
+     */
+    private fun currentKey(): String? = (playing ?: tries.lastOrNull()?.source)?.let { rowKey(it) }
+
+    /** Whether [s] played in this session: its row then, or its file, in a row it has joined since. */
+    private fun visited(s: PlaybackSource): Boolean =
+        s.key in visited || s.offers.any { o -> releaseOf(s, o)?.let { it.storeKey in visitedFiles } == true }
+
+    /**
+     * Next source and switches: down "Best for this TV" from the copy playing, its own group first
+     * ([SourceRank.nextOrder]), skipping what failed here and copies that showed no picture here before; first what
+     * hasn't played in this session.
+     */
+    private fun nextOf(l: SourceList): PlaybackSource? {
+        val next = SourceRank.nextOrder(l.sources, currentKey(), target.episode == null).filter { usable(it) && !noPictureHere(it) }
+        return next.firstOrNull { !visited(it) } ?: next.firstOrNull()
+    }
+
     private fun pick(op: Op, why: OpenWhy) {
         if (!op.live) return
         val l = list ?: blankList()
@@ -419,7 +451,7 @@ internal class DefaultSourceSession(
     }
 
     private fun choose(l: SourceList, why: OpenWhy): Pair<PlaybackSource?, Boolean> {
-        val current = playing?.key
+        val current = currentKey()
         val auto = l.sources.filter { it.automatic && usable(it) && !noPictureHere(it) && it.key != current }
         if (firstPick && !startedOnce) {
             request.chosen?.let { c ->
@@ -443,11 +475,7 @@ internal class DefaultSourceSession(
             request.like?.let { like -> SourceRank.mostLike(auto, like)?.let { return it to false } }
             return auto.firstOrNull() to false
         }
-        // Next source and switches go down "Best for this TV" from the copy playing, its own group first
-        // ([SourceRank.nextOrder]), skipping what failed here: first what hasn't played in this session.
-        val next = SourceRank.nextOrder(l.sources, current, target.episode == null).filter { usable(it) }
-        val fresh = next.firstOrNull { it.key !in visited } ?: next.firstOrNull()
-        return fresh to startedOnce
+        return nextOf(l) to startedOnce
     }
 
     private fun preferAddon(s: PlaybackSource, addon: Addon): PlaybackSource =

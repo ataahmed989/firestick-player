@@ -165,6 +165,14 @@ class Prefs(context: Context) {
         set(v) = sp.edit().putBoolean(IMAX_FIRST_KEY, v).apply()
 
     /**
+     * Settings › This TV › HDR10+ reaches this TV: the TV was seen to show HDR10+ from FirePlayer, so Best prefers
+     * HDR10+ copies and Picture & sound says HDR10+. Off (the default): on the user's Sticks it never reached the TV
+     * (the TV gets the HDR10 inside), so HDR10+ is only a fact of the file.
+     */
+    val hdr10PlusReaches: Boolean
+        get() = sp.getBoolean(HDR10_PLUS_KEY, false)
+
+    /**
      * "Keep embedded styling": ASS/SSA is drawn with libass (positions, fonts, effects) and other
      * subtitles keep their own colours. Off, the chosen preset always wins.
      */
@@ -374,6 +382,9 @@ class Prefs(context: Context) {
 
         /** [imaxFirstAlways], read by Settings › This TV's reader too ([app.fireplayer.vod.sources.ThisTvReader]). */
         const val IMAX_FIRST_KEY = "imax_first_always"
+
+        /** [hdr10PlusReaches], set in Settings › This TV ([app.fireplayer.vod.sources.ThisTvReader]). */
+        const val HDR10_PLUS_KEY = "hdr10_plus_reaches"
         private const val PREVIEWS_OFF_ONCE = "seek_previews_off_once"
 
         /**

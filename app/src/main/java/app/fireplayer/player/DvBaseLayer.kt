@@ -1,6 +1,9 @@
 package app.fireplayer.player
 
+import androidx.annotation.OptIn
 import androidx.media3.common.MimeTypes
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.container.NalUnitUtil
 
 /**
  * Dolby Vision profile 7 on a TV whose Dolby Vision decoders are single-layer: played as its HDR10 base layer.
@@ -114,23 +117,49 @@ object DvBaseLayer {
      * The colour to give the HEVC decoder for a Dolby Vision profile 8 track it decodes ([decoderMime] video/hevc:
      * Media3's own way back to HEVC for profile 8, on a TV without Dolby Vision): HDR10 colour and static metadata
      * ([hdr10]: the file's own values where it states them, else BT.2020, PQ, limited range and generic metadata) when
-     * the track states no HDR colour, or PQ without its static metadata. Measured on a Fire TV Stick 4K Max: a profile 8
+     * the track states PQ without its static metadata, or no colour at all and its picture's own (the SPS in [initData],
+     * as Media3's Matroska reader leaves it unread) is PQ or says none. Measured on a Fire TV Stick 4K Max: a profile 8
      * IMAX copy reached the screen as PQ with no static metadata at all (the TV left to guess the brightness). Null to
-     * leave the track's colour as it is: a track stating HLG (8.4) or SDR (8.2), or HDR10 in full; any other format,
-     * profile, or decoder.
+     * leave the track's colour as it is: one stating, or whose picture states, HLG (8.4), SDR (8.2) or a colour space
+     * other than BT.2020; HDR10 in full; any other format, profile, or decoder.
      */
+    @OptIn(UnstableApi::class)
     fun hevcColour(
         sampleMime: String?,
         codecs: String?,
         decoderMime: String?,
         own: androidx.media3.common.ColorInfo?,
+        initData: List<ByteArray>? = null,
     ): androidx.media3.common.ColorInfo? {
         if (sampleMime != MimeTypes.VIDEO_DOLBY_VISION || decoderMime != MimeTypes.VIDEO_H265) return null
         if (profileOf(codecs) != SINGLE_LAYER_PROFILE) return null
         val unstated = androidx.media3.common.Format.NO_VALUE
-        val transfer = own?.colorTransfer ?: unstated
+        var space = own?.colorSpace ?: unstated
+        var transfer = own?.colorTransfer ?: unstated
+        if (transfer == unstated) spsColour(initData)?.let { sps ->
+            if (space == unstated) space = sps.colorSpace
+            transfer = sps.colorTransfer
+        }
+        if (space != unstated && space != androidx.media3.common.C.COLOR_SPACE_BT2020) return null
         if (transfer != unstated && transfer != androidx.media3.common.C.COLOR_TRANSFER_ST2084) return null
         return hdr10(own).takeIf { it !== own }
+    }
+
+    /** The colour the first SPS in [initData] (Annex B, as Media3 keeps HEVC's parameter sets) states; null without one. */
+    @OptIn(UnstableApi::class)
+    private fun spsColour(initData: List<ByteArray>?): NalUnitUtil.H265SpsData? {
+        for (data in initData ?: return null) {
+            val flags = BooleanArray(3)
+            var at = NalUnitUtil.findNalUnit(data, 0, data.size, flags)
+            while (at + 3 < data.size) {
+                val next = NalUnitUtil.findNalUnit(data, at + 3, data.size, flags)
+                if (NalUnitUtil.getH265NalUnitType(data, at) == NalUnitUtil.H265_NAL_UNIT_TYPE_SPS) {
+                    return runCatching { NalUnitUtil.parseH265SpsNalUnit(data, at + 3, next, null) }.getOrNull()
+                }
+                at = next
+            }
+        }
+        return null
     }
 
     /** The log's one line when a profile 8 track's HEVC decoder is given HDR10 colour ([hevcColour]). */

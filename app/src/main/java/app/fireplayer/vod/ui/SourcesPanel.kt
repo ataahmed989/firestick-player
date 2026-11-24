@@ -30,6 +30,7 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
     private var attempts: List<Attempt> = emptyList()
     private var playingKey: String? = null
     private var smooth = false
+    private var next: (() -> PlaybackSource?)? = null
     private var server: () -> String? = { null }
     private var opened = HashSet<SourcesModel.Section>()
     private var items: List<SourcesModel.Item> = emptyList()
@@ -43,7 +44,7 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
     /**
      * Opens the window titled [title] ("Sources", "Sources · S2 E5 "Peacekeepers"") over the screen, or over the
      * window showing ([sub]: Back returns to it). In the player, [smooth] says whether the copy playing plays without
-     * stalling, and [server] how fast its server is delivering (its Details' "Server").
+     * stalling, [server] how fast its server is delivering (its Details' "Server"), and [next] what Next source plays.
      */
     fun open(
         title: String,
@@ -54,12 +55,14 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
         onClose: (() -> Unit)? = null,
         smooth: Boolean = false,
         server: () -> String? = { null },
+        next: (() -> PlaybackSource?)? = null,
         onPick: (source: PlaybackSource, fromBeginning: Boolean) -> Unit,
     ) {
         this.list = list
         this.attempts = attempts
         this.playingKey = playingKey
         this.smooth = smooth
+        this.next = next
         this.server = server
         this.onPick = onPick
         opened = HashSet()
@@ -78,7 +81,7 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
     }
 
     private fun entries(): LongList {
-        items = SourcesModel.items(list, android.os.SystemClock.elapsedRealtime(), opened, attempts, playingKey, smooth, ::time, ::day,
+        items = SourcesModel.items(list, android.os.SystemClock.elapsedRealtime(), opened, attempts, playingKey, smooth, next, ::time, ::day,
             VodSizes.SOURCES_LINE_CHARS, VodSizes.SOURCES_NOTE_CHARS)
         val shown = items
         return object : LongList {

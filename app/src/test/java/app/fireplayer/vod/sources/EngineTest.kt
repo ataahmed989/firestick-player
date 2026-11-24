@@ -465,10 +465,36 @@ class EngineTest {
         links.remove(Addon.MEDIAFUSION)
         val session = engine.session(PlayRequest(filmTarget, StartAt.Beginning, PlayOrigin.TITLE_PAGE))
         assertEquals(ReleaseKey(H2, 0), (open(session).last() as Opened.Ready).source.release)
+        // Best for this TV is the copy that plays, and the other row says why it isn't.
+        assertEquals(ReleaseKey(H2, 0), session.list!!.best?.release)
+        assertEquals(SourceRank.NO_PICTURE, session.list!!.sources.first { it.release == ReleaseKey(H1, 0) }.warning)
         // Picked in Sources, it plays.
         val row = session.list!!.sources.first { it.release == ReleaseKey(H1, 0) }
         val byHand = engine.session(PlayRequest(filmTarget, StartAt.Beginning, PlayOrigin.SOURCES_PANEL, chosen = row))
         assertEquals(ReleaseKey(H1, 0), (open(byHand).last() as Opened.Ready).source.release)
+    }
+
+    @Test
+    fun noDecoderForAFormatPassesOverItsOtherCopiesNoPictureOnlyThatCopy() {
+        answers[Addon.TORRENTIO] = {
+            answer(
+                torrentio(H1, quality = "4k HDR", name = "Film.2021.2160p.WEB-DL.HDR.x265-A", size = "30 GB"),
+                torrentio(H2, quality = "4k HDR", name = "Film.2021.2160p.WEB-DL.HDR.x265-B", size = "25 GB"),
+                torrentio(H3, quality = "1080p", name = "Film.2021.1080p.WEB-DL.x264-C", size = "8 GB"),
+            )
+        }
+        links.remove(Addon.MEDIAFUSION)
+        fun failed(detail: String): ReleaseKey? {
+            val session = engine.session(PlayRequest(filmTarget, StartAt.Beginning, PlayOrigin.TITLE_PAGE))
+            val first = (open(session).last() as Opened.Ready).source
+            assertEquals(ReleaseKey(H1, 0), first.release)
+            assertEquals(Step.TryNext, session.failed(first, Failure(FailureKind.NO_PICTURE, Addon.TORRENTIO, detail)))
+            return session.nextPick()?.release
+        }
+        // This TV's decoders take no copy of its format: the other HEVC copy is passed over too.
+        assertEquals(ReleaseKey(H3, 0), failed(Failure.NO_DECODER))
+        // A decoder took it and showed nothing: only that copy.
+        assertEquals(ReleaseKey(H2, 0), failed("no picture here"))
     }
 
     @Test
@@ -588,6 +614,39 @@ class EngineTest {
         assertEquals(asks + 1, asked.size)
         assertEquals(ready.source.key, (got.last() as Opened.Ready).source.key)
         assertTrue(session.maySwitch(loop.now))
+    }
+
+    @Test
+    fun nextSourceNeverPlaysTheSameFileAgainOnceItsRowsMerge() {
+        // One file from both add-ons: MediaFusion's exact size, Torrentio's rounded, so two rows until a play measures it.
+        answers[Addon.TORRENTIO] = {
+            answer(
+                torrentio(H2, quality = "4k HDR10+", name = "Film.2021.2160p.UHD.BD.Remux.HDR10+.TrueHD-T", size = "80.34 GB"),
+                torrentio(H3, quality = "4k HDR", name = "Film.2021.2160p.BluRay.REMUX.HDR.TrueHD-U", size = "60.00 GB"),
+            )
+        }
+        answers[Addon.MEDIAFUSION] = {
+            answer(mediaFusion(H1, hdr = "DV|HDR10+", origin = "BluRay REMUX", videoSize = 86_261_275_745L,
+                filename = "Film.2021.2160p.BluRay.REMUX.DV.HDR10Plus.TrueHD-M.mkv"))
+        }
+        val session = engine.session(PlayRequest(filmTarget, StartAt.Beginning, PlayOrigin.TITLE_PAGE))
+        open(session)
+        // MediaFusion's copy plays, picked in Sources.
+        val mf = session.list!!.sources.first { it.release == ReleaseKey(H1, 0) }
+        val got = ArrayList<Opened>()
+        session.open(mf, OpenWhy.USER) { got += it }
+        loop.advance()
+        val ready = got.last() as Opened.Ready
+        session.started(ready.source, ready.offer)
+        // Torrentio's copy had played before: its exact size is known now, and the two rows are one, under Torrentio's key.
+        kept["rd|$H2|0"] = Measured(app.fireplayer.player.MediaSpec(sizeBytes = 86_261_275_745L), null, 1L)
+        engine.rerank()
+        loop.advance()
+        val merged = session.list!!.sources.single { r -> r.offers.any { it.release == ReleaseKey(H1, 0) } }
+        assertTrue(merged.offers.any { it.release == ReleaseKey(H2, 0) })
+        assertEquals(merged.key, session.rowKey(ready.source))
+        // Next source is the other film file, not the one playing from the other add-on.
+        assertEquals(ReleaseKey(H3, 0), session.nextPick()?.release)
     }
 
     @Test

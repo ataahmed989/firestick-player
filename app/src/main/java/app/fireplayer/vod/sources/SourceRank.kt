@@ -42,8 +42,8 @@ class RankInput(
  * ([RankStep]) only breaking ties of the ones before:
  *
  * 1. Plays here: likely, or played here (the same: a short test play doesn't decide Best), then unknown, then "likely
- *    not" ([fit]: buffered here lately, Dolby Vision this TV can't show, over the data limit, faster than the
- *    connection, taller than the TV).
+ *    not" ([fit]: showed no picture here, buffered here lately, Dolby Vision this TV can't show, over the data limit,
+ *    faster than the connection, taller than the TV).
  * 2. Cached (played here smoothly, or the debrid service probably has it), then unknown, then not cached.
  * 3. Not known to lack both the film's own language and the viewer's.
  * 4. Room on the connection ([LineRate.room], steady figure; only once one was measured).
@@ -51,8 +51,8 @@ class RankInput(
  *    (about 40 Mb/s), copies within 15 % equal ([CopyRank.CLOSE]), HDR this TV prefers given its edge.
  * 6. Height. 7. The HDR this TV shows ([shownHdr]: Dolby Vision by what this TV does with each profile).
  * 8. Source kind (Remux, BluRay encode, WEB-DL, WEBRip, HDTV), then bit depth (10-bit taken for HDR and 4K HEVC).
- * 9. HDR10+ on a TV that reports it (Dolby Vision on a Dolby Vision TV); a picture played here without HDR10's
- *    brightness data last.
+ * 9. HDR10+ where it reaches the TV ([TvPlan.hdr10PlusReaches]; Dolby Vision on a Dolby Vision TV); a picture that
+ *    played here without HDR10's brightness data last.
  * 10. IMAX (films only: the name says IMAX, or a play measured 1.90:1, [ImaxAspect]); first of all with
  *    [RankInput.imaxAlways].
  * 11. The film's own language just above the viewer's dub ([language]), subtitles in the viewer's language a little
@@ -79,6 +79,7 @@ object SourceRank {
     const val DV7_WORDS = "Dolby Vision 7: may not play here"
     const val NEEDS_DV = "Needs a Dolby Vision TV"
     const val BUFFERED = "Buffered here before"
+    const val NO_PICTURE = "Showed no picture here"
     const val CLOSE_TO_LINE = "Close to your connection"
     const val HIGH_RATE = "High data rate"
 
@@ -221,8 +222,9 @@ object SourceRank {
         val mine = keys[at]
         val shown = shownHdr(asPlayedHere(best.facts, best.measured), input.plan)
         var rival = -1
+        // Never a cinema recording, nor a copy whose resolution isn't stated: its picture data has no frame to be judged by.
         for (i in ranked.indices) {
-            if (i == at || ranked[i].group == SourceGroup.CINEMA) continue
+            if (i == at || ranked[i].group == SourceGroup.CINEMA || ranked[i].fit == TvFit.UNKNOWN) continue
             if (better(keys[i], mine) && (rival < 0 || better(keys[i], keys[rival]))) rival = i
         }
         if (rival < 0) {
@@ -304,6 +306,8 @@ object SourceRank {
         val cap = plan.maxMbps
         val dv = dvProblem(facts, plan)
         return when {
+            // Its picture never showed on this Stick ([app.fireplayer.player.CopyHealth.noPicture]): never picked by itself.
+            (measured?.health?.noPicture ?: 0) > 0 -> TvFit.LIKELY_NOT to NO_PICTURE
             troubled(measured, avg, lineMbps, now) -> TvFit.LIKELY_NOT to BUFFERED
             dv != null -> TvFit.LIKELY_NOT to dv
             cap != null && avg != null && avg > cap -> TvFit.LIKELY_NOT to "Over your $cap Mb/s limit"
@@ -405,14 +409,15 @@ object SourceRank {
     }
 
     /**
-     * The HDR10+ step: 2 for the dynamic HDR this TV takes (HDR10+ on a TV that reports it without Dolby Vision, Dolby
-     * Vision on a Dolby Vision TV), 0 for a picture that played here without HDR10's brightness data, 1 otherwise.
+     * The HDR10+ step: 2 for the dynamic HDR this TV takes (HDR10+ on a TV that reports it without Dolby Vision, when
+     * it reaches the TV: [TvPlan.hdr10PlusReaches]; Dolby Vision on a Dolby Vision TV), 0 for a picture that played
+     * here without HDR10's brightness data, 1 otherwise.
      */
     private fun dynamicHdr(shown: Set<Hdr>, spec: MediaSpec?, plan: TvPlan): Int {
         if (shown.isEmpty()) return 1
         val top = when {
             plan.hdrOrder.any { Hdr.DOLBY_VISION in it } -> Hdr.DOLBY_VISION in shown
-            plan.hdrOrder.any { Hdr.HDR10_PLUS in it } -> Hdr.HDR10_PLUS in shown
+            plan.hdrOrder.any { Hdr.HDR10_PLUS in it } -> plan.hdr10PlusReaches && Hdr.HDR10_PLUS in shown
             else -> false
         }
         return when {

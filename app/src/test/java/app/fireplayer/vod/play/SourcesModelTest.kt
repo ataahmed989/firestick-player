@@ -306,7 +306,9 @@ class SourcesModelTest {
         }
         val q60r = plan.copy(sound = setOf(app.fireplayer.vod.SoundFormat.AC3, app.fireplayer.vod.SoundFormat.EAC3), dv7AsHdr10 = true)
         val d = SourcesModel.details(s, q60r, server = "137 Mb/s arriving · 2.4× what it needs") { "Nov 12" }.toMap()
-        assertEquals("HDR10+", d["This TV shows"])
+        // HDR10+ only where it reaches the TV (Settings › This TV): elsewhere the TV gets the HDR10 inside.
+        assertEquals("HDR10 (HDR10+ in the file)", d["This TV shows"])
+        assertEquals("HDR10+", SourcesModel.details(s, q60r.copy(hdr10PlusReaches = true)) { "" }.toMap()["This TV shows"])
         assertEquals("Profile 7 · played here as its HDR10 base layer", d["Dolby Vision"])
         assertEquals("TrueHD Atmos 7.1 · heard here as 7.1: Atmos not kept on this TV", d["Sound"])
         assertEquals("≈58 Mb/s average (from size)", d["Data rate"])

@@ -607,6 +607,9 @@ interface VodRepository {
      */
     fun originalLanguage(title: Title): String? = null
 
+    /** [listener] is told (main thread) as TMDB details naming a title's own language are stored: Sources rank again. */
+    fun setOnOriginalLanguage(listener: (() -> Unit)?) = Unit
+
     /**
      * Up to 15 POSTER cards like [title], never [title] itself, one per IMDb id. With a usable key: TMDB's
      * recommendations, topped up from its similar titles (those without a poster or with very few votes left out),

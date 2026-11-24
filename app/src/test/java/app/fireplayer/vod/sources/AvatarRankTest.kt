@@ -127,8 +127,11 @@ class AvatarRankTest {
 
     private val film = SourceTarget(Title("tt1757678", Kind.MOVIE, "Avatar: Fire and Ash", runtime = "3h 15m"))
 
-    private fun input(measured: (String) -> Measured? = { null }, imaxAlways: Boolean = false, p: app.fireplayer.vod.TvPlan = plan) =
-        RankInput(p, listOf("en"), measured, runtime, episode = false, imaxAlways = imaxAlways, now = 1_764_100_000_000L)
+    /** [plus]: Settings › This TV › HDR10+ reaches this TV, on as the order was decided (off by default, as found since). */
+    private fun input(measured: (String) -> Measured? = { null }, imaxAlways: Boolean = false, p: app.fireplayer.vod.TvPlan = plan,
+        plus: Boolean = true) =
+        RankInput(p.copy(hdr10PlusReaches = plus), listOf("en"), measured, runtime, episode = false, imaxAlways = imaxAlways,
+            now = 1_764_100_000_000L)
 
     private fun ranked(input: RankInput, measuredSize: (app.fireplayer.vod.ReleaseKey) -> Long? = { null }) =
         SourceRank.rank(SourceMerge.merge(answers, runtime, measuredSize), input)
@@ -187,6 +190,25 @@ class AvatarRankTest {
         assertNotNull(best.measured?.at)
         val reason = SourcesModel.reason(best, sourceList(ranked, input))
         assertTrue(reason, reason.startsWith("4K · HDR10+ · Remux · played here · ahead of the 84.9 GB Remux (no HDR10+)"))
+    }
+
+    @Test
+    fun whereHdr10PlusDoesntReachTheTvTheRemuxesTieOnWhatItGetsAndImaxBreaksTheTie() {
+        // Found since: from FirePlayer the Samsung shows HDR, not HDR10+ (This TV › HDR10+ reaches this TV: off).
+        val input = input(plus = false)
+        val ranked = ranked(input)
+        val list = sourceList(ranked, input)
+        val best = list.best!!
+        assertTrue(best.has(a))
+        assertEquals(RankStep.IMAX, list.why?.step)
+        assertEquals("4K IMAX · HDR10 · Remux · cached · ahead of the 86.3 GB Remux (not IMAX)", SourcesModel.reason(best, list))
+        // The HDR10+ copies keep the word (their files have it); none is put first for it.
+        assertEquals("4K · HDR10+ · Remux · 86.3 GB", PlayRules.mainLine(ranked.first { it.has(d) }, plan = plan))
+        // Once the IMAX copy played here without HDR10's brightness data, the biggest remux is Best.
+        val after = ranked(input(measured = { plays[it] }, plus = false)) { r -> plays[r.storeKey]?.spec?.sizeBytes }
+        val afterBest = SourceRank.best(after)!!
+        assertTrue(afterBest.has(d) && afterBest.has(c))
+        assertFalse(SourcesModel.reason(afterBest, sourceList(after, input(measured = { plays[it] }, plus = false))).contains("HDR10+)"))
     }
 
     @Test

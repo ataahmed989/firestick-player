@@ -124,16 +124,23 @@ object SourcesModel {
     /**
      * [list] as a [View]. [playingKey]: the copy playing; [attempts]: this play's tries (Next source skips those that
      * failed); [smooth]: the copy playing plays without stalling, so 1080p and the kinds under it start closed when it
-     * is a 4K one. Next source is the next copy down the list from the one playing (or the Best), its own kind first
-     * ([SourceRank.nextOrder]).
+     * is a 4K one. Next source is [next]'s, the play's own pick ([app.fireplayer.vod.SourceSession.nextPick]), in the
+     * player; else the next copy down the list from the Best, its own kind first ([SourceRank.nextOrder]).
      */
-    fun view(list: SourceList, playingKey: String? = null, attempts: List<Attempt> = emptyList(), smooth: Boolean = false): View {
+    fun view(
+        list: SourceList,
+        playingKey: String? = null,
+        attempts: List<Attempt> = emptyList(),
+        smooth: Boolean = false,
+        next: (() -> PlaybackSource?)? = null,
+    ): View {
         val film = film(list)
         val playing = list.sources.firstOrNull { it.key == playingKey }
         val best = list.best
         val playingIsBest = playing != null && playing.key == best?.key
         val failed = attempts.filter { it.failure != null }.mapTo(HashSet()) { it.source.key }
-        val next = SourceRank.nextOrder(list.sources, (playing ?: best)?.key, film).firstOrNull { it.key !in failed }
+        val nextOne = if (next != null) next() else
+            SourceRank.nextOrder(list.sources, (playing ?: best)?.key, film).firstOrNull { it.key !in failed }
         val fine = smooth && playing != null && sectionOf(playing, film).let { it == Section.IMAX || it == Section.UHD }
         val bySection = list.sources.groupBy { sectionOf(it, film) }
         val groups = Section.entries.mapNotNull { section ->
@@ -145,8 +152,8 @@ object SourcesModel {
             best = best?.takeIf { !playingIsBest },
             soFar = !list.complete,
             reason = best?.let { reason(it, list) }?.ifEmpty { null },
-            next = next,
-            nextSection = next?.let { sectionOf(it, film) },
+            next = nextOne,
+            nextSection = nextOne?.let { sectionOf(it, film) },
             groups = groups,
         )
     }
@@ -154,7 +161,8 @@ object SourcesModel {
     /**
      * The window's entries for [list] (null: nothing asked yet). [opened] are kinds the viewer opened (a closed one's
      * "Show N", or "Show N more" on an open one, which then lists all). [attempts] are this play's tries and
-     * [playingKey] the copy playing (the player's window), [smooth] whether it plays without stalling ([view]); [time]
+     * [playingKey] the copy playing (the player's window), [smooth] whether it plays without stalling and [next] what
+     * Next source plays ([view]); [time]
      * prints a try's time ("20:41"), [day] a played date. [lineChars] and [noteChars] are what a row's two lines have
      * room for ([PlayRules.mainLine], [PlayRules.noteLine]).
      */
@@ -165,6 +173,7 @@ object SourcesModel {
         attempts: List<Attempt> = emptyList(),
         playingKey: String? = null,
         smooth: Boolean = false,
+        next: (() -> PlaybackSource?)? = null,
         time: (Long) -> String = { "" },
         day: (Long) -> String = { "" },
         lineChars: Int = Int.MAX_VALUE,
@@ -181,7 +190,7 @@ object SourcesModel {
             out += Item("note:none", Kind.NOTE, if (list.complete) "No sources found." else "Looking for sources…")
             return out
         }
-        val v = view(list, playingKey, attempts, smooth)
+        val v = view(list, playingKey, attempts, smooth, next)
         val film = film(list)
         val bestKey = list.best?.key
         val lastKey = list.lastUsed?.key
@@ -328,7 +337,10 @@ object SourcesModel {
         val out = ArrayList<Pair<String, String>>()
         out += "Picture" to (listOfNotNull(PlayRules.resolution(f.height), Hdr.entries.filter { it in f.hdr }.joinToString(" ") { it.label }.ifEmpty { null },
             f.codec, f.bitDepth?.let { "$it-bit" }).joinToString(" · ").ifEmpty { "Not stated" })
-        if (plan != null) PlayRules.tvHdr(s, plan)?.let { out += "This TV shows" to it }
+        // HDR10+ only where it reaches the TV: elsewhere the TV gets the HDR10 inside.
+        if (plan != null) PlayRules.tvHdr(s, plan)?.let {
+            out += "This TV shows" to if (it == "HDR10+" && !plan.hdr10PlusReaches) "HDR10 (HDR10+ in the file)" else it
+        }
         (SourceRank.asPlayedHere(f, s.measured).dvProfile ?: f.dvProfile ?: spec?.dvProfile?.takeIf { it > 0 })?.let { p ->
             val how = when {
                 spec?.dvBaseLayer?.let { it > 0 } == true -> " · played here as its HDR10 base layer"

@@ -3,6 +3,7 @@ package app.fireplayer.vod.ui
 import android.text.format.DateFormat
 import app.fireplayer.ui.SettingsPanels
 import app.fireplayer.ui.SidePanel
+import app.fireplayer.vod.Hdr
 import app.fireplayer.vod.SoundFormat
 import app.fireplayer.vod.ThisTv
 import app.fireplayer.vod.play.TvPlanRules
@@ -46,6 +47,13 @@ object ThisTvSettings {
             refresh()
         }
         message(TvPlanRules.IMAX_NOTE)
+        if (caps?.hdr?.contains(Hdr.HDR10_PLUS) == true) {
+            row("HDR10+ reaches this TV", SettingsPanels.onOff(tv.hdr10PlusReaches())) {
+                tv.setHdr10PlusReaches(!tv.hdr10PlusReaches())
+                refresh()
+            }
+            message(TvPlanRules.HDR10_PLUS_NOTE)
+        }
         if (plan.automatic) {
             row("HDR order", TvPlanRules.hdrWords(plan.hdrOrder)) {}
             message(TvPlanRules.dolbyVisionNote(plan))

@@ -634,7 +634,12 @@ enum class FailureKind {
 }
 
 /** A failure, by add-on when known; [detail] is already redacted, for the attempted list's Details. */
-data class Failure(val kind: FailureKind, val addon: Addon? = null, val detail: String? = null)
+data class Failure(val kind: FailureKind, val addon: Addon? = null, val detail: String? = null) {
+    companion object {
+        /** [FailureKind.NO_PICTURE]'s [detail] when none of this TV's decoders takes the copy's format. */
+        const val NO_DECODER = "no decoder for its format"
+    }
+}
 
 /** What the player does after [SourceSession.failed]. */
 sealed class Step {
@@ -728,6 +733,15 @@ interface SourceSession {
      */
     fun lighter(maxMbps: Double): PlaybackSource? = null
 
+    /**
+     * The key [source]'s file has in [list] now: rows merge as plays learn a file's exact size (the same file from two
+     * add-ons), a merged row keeping the key of the add-on that answered first. [source]'s own key when unchanged.
+     */
+    fun rowKey(source: PlaybackSource): String = source.key
+
+    /** What Next source plays now ([open] with no source): the one Picture & sound and the Sources window name. */
+    fun nextPick(): PlaybackSource? = null
+
     /** The next episode's sources, once, in the last ~4 minutes ([LookupWhy.NEXT_EPISODE]); same-kind first. */
     fun lookUpNext(next: EpisodeRef, onList: (SourceList) -> Unit): Cancel
 
@@ -779,6 +793,11 @@ data class TvPlan(
     val maxMbps: Int? = null,
     /** [TvCapabilities.dv7AsHdr10] of the TV's reading, whatever the plan: what this Stick does with profile 7. */
     val dv7AsHdr10: Boolean? = null,
+    /**
+     * [ThisTv.hdr10PlusReaches], whatever the plan: only then is HDR10+ preferred, and said to be what this TV shows.
+     * Off by default: on the user's Sticks HDR10+ never reached the TV from FirePlayer (it gets the HDR10 inside).
+     */
+    val hdr10PlusReaches: Boolean = false,
 )
 
 /** Settings › This TV: the TV's capabilities, Check again, Automatic or a custom plan. Main thread. */
@@ -797,6 +816,11 @@ interface ThisTv {
     fun imaxAlways(): Boolean = false
 
     fun setImaxAlways(on: Boolean) = Unit
+
+    /** Settings › This TV › HDR10+ reaches this TV: off unless the TV was seen to show HDR10+ from FirePlayer. */
+    fun hdr10PlusReaches(): Boolean = false
+
+    fun setHdr10PlusReaches(on: Boolean) = Unit
 }
 
 // ---- The library: what playback records (stored on this TV; no syncing) --------------------------------------------

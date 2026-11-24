@@ -327,6 +327,11 @@ class QualityTest {
         assertEquals(listOf("en"), CopyLanguage.wanted(null, "en"))
         assertEquals(listOf("ko", "en"), CopyLanguage.wanted("ko", "en"))
         assertEquals(listOf("fr", "en"), CopyLanguage.wanted("fre", "eng"))
+        // A Cantonese film: TMDB says "cn", its tracks "yue" or "chi", its copies Chinese; all one language here.
+        assertEquals(listOf("zh", "en"), CopyLanguage.wanted("cn", "en"))
+        assertEquals("zh", CopyLanguage.code("yue"))
+        assertEquals("zh", CopyLanguage.code("chi"))
+        assertEquals(3, CopyLanguage.fit(CopyLanguage.wanted("cn", "en"), "yue,en", null))
         // A Korean film: Korean sound first, English next, then a copy that may have either.
         val w = listOf("ko", "en")
         assertEquals(3, CopyLanguage.fit(w, "ko,en", null))

@@ -95,8 +95,9 @@ object TvPlans {
 /**
  * Settings › This TV: reads what this Stick's TV reports (display HDR types and modes, sound passthrough) and what its
  * Dolby Vision decoders do with profile 7, and keeps the last reading and the user's own plan in [prefs]. The automatic
- * plan follows the last reading; a reading from before profile 7 was read is read again once. IMAX first: always is
- * one of the viewer's settings ([settings], [Prefs.IMAX_FIRST_KEY]). Main thread.
+ * plan follows the last reading; a reading from before profile 7 was read is read again once. IMAX first: always and
+ * HDR10+ reaches this TV are the viewer's settings ([settings], [Prefs.IMAX_FIRST_KEY], [Prefs.HDR10_PLUS_KEY]). Main
+ * thread.
  */
 class ThisTvReader(
     private val app: Context,
@@ -134,9 +135,10 @@ class ThisTvReader(
             readOnce = true
             runCatching { readNow() }
         }
-        // What this Stick does with profile 7 is the TV's, whatever the plan.
-        TvPlans.readPlan(prefs.getString(PLAN, null))?.let { return it.copy(dv7AsHdr10 = caps?.dv7AsHdr10) }
-        return TvPlans.automatic(caps)
+        // What this Stick does with profile 7, and whether HDR10+ reaches the TV, are the TV's, whatever the plan.
+        val plus = hdr10PlusReaches()
+        TvPlans.readPlan(prefs.getString(PLAN, null))?.let { return it.copy(dv7AsHdr10 = caps?.dv7AsHdr10, hdr10PlusReaches = plus) }
+        return TvPlans.automatic(caps).copy(hdr10PlusReaches = plus)
     }
 
     override fun imaxAlways(): Boolean = settings?.getBoolean(Prefs.IMAX_FIRST_KEY, false) == true
@@ -144,6 +146,14 @@ class ThisTvReader(
     override fun setImaxAlways(on: Boolean) {
         val s = settings ?: return
         s.edit().putBoolean(Prefs.IMAX_FIRST_KEY, on).apply()
+        onChanged?.invoke()
+    }
+
+    override fun hdr10PlusReaches(): Boolean = settings?.getBoolean(Prefs.HDR10_PLUS_KEY, false) == true
+
+    override fun setHdr10PlusReaches(on: Boolean) {
+        val s = settings ?: return
+        s.edit().putBoolean(Prefs.HDR10_PLUS_KEY, on).apply()
         onChanged?.invoke()
     }
 

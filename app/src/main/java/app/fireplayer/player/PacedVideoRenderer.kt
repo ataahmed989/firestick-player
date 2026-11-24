@@ -71,6 +71,8 @@ class PacedVideoRenderer(
     private var hevc = false
     /** HDR10+ was masked since the decoder was made: logged the first time, which shows the film has HDR10+. */
     private var masked = false
+    /** Samples looked at for HDR10+ that isn't masked ([PlayFacts.hdr10PlusSeen]): only a stream's first [PLUS_LOOKS]. */
+    private var plusLooks = 0
     /** The Dolby Vision format last looked at and its HEVC base layer (null: played as it is), made once a track. */
     @Volatile private var seen: BaseLayer? = null
     /**
@@ -109,6 +111,8 @@ class PacedVideoRenderer(
         firstSent = false
         hevc = Hdr10PlusMask.hevcStream(codecInfo?.mimeType, codecInputFormat?.codecs)
         PlayFacts.decoderMime = codecInfo?.mimeType
+        PlayFacts.hdr10PlusSeen = false
+        plusLooks = 0
         masked = false
         dvHidden = false
         // Tunnelled playback has Media3's own listener, and Media3 its own timing; the film never plays tunnelled here.
@@ -146,8 +150,10 @@ class PacedVideoRenderer(
 
     override fun onProcessedStreamChange() {
         super.onProcessedStreamChange()
-        // The next film or episode: Media3 waits for its first frame.
+        // The next film or episode: Media3 waits for its first frame, and whether it has HDR10+ is looked at afresh.
         firstSent = false
+        PlayFacts.hdr10PlusSeen = false
+        plusLooks = 0
     }
 
     override fun handleMessage(messageType: Int, message: Any?) {
@@ -183,17 +189,27 @@ class PacedVideoRenderer(
 
     /**
      * Each sample on its way to the decoder, after Media3 has put it together and before it's queued: HDR10+ is masked
-     * in place when the TV doesn't report HDR10+. Only the few hundred bytes before the picture data are read, with
-     * nothing made, so it costs microseconds a frame. A track played as its base layer has its Dolby Vision units
-     * hidden: the whole sample is searched for them, 8 bytes at a time, with nothing made (a quarter to a third of
-     * the time reading every byte takes). Encrypted samples are never touched.
+     * in place when the TV doesn't report HDR10+; else a stream's first [PLUS_LOOKS] samples are read for it, changing
+     * nothing. Either way what Picture & sound and the Sources ranking say of the film ([PlayFacts.hdr10PlusSeen]).
+     * Only the few hundred bytes before the picture data are read, with nothing made, so it costs microseconds a frame.
+     * A track played as its base layer has its Dolby Vision units hidden: the whole sample is searched for them, 8
+     * bytes at a time, with nothing made (a quarter to a third of the time reading every byte takes). Encrypted samples
+     * are never touched.
      */
     override fun onQueueInputBuffer(buffer: DecoderInputBuffer) {
-        if (hevc && hdr10Plus.mask && !buffer.isEncrypted) {
-            val data = buffer.data
-            if (data != null && Hdr10PlusMask.mask(data) > 0 && !masked) {
+        val plus = buffer.data?.takeIf { hevc && !buffer.isEncrypted }
+        if (plus != null && hdr10Plus.mask) {
+            if (Hdr10PlusMask.mask(plus) > 0 && !masked) {
                 masked = true
+                PlayFacts.hdr10PlusSeen = true
                 Log.i(TAG, "HDR10+ metadata in this video is masked before the decoder (the TV doesn't report HDR10+)")
+            }
+        } else if (plus != null && plusLooks < PLUS_LOOKS) {
+            plusLooks++
+            if (Hdr10PlusMask.count(plus) > 0) {
+                plusLooks = PLUS_LOOKS
+                PlayFacts.hdr10PlusSeen = true
+                Log.i(TAG, "HDR10+ metadata in this video goes to the decoder as it is (the TV reports HDR10+)")
             }
         }
         if (asBase && !buffer.isEncrypted) {
@@ -222,8 +238,9 @@ class PacedVideoRenderer(
 
     /**
      * The decoder's set-up: a Dolby Vision profile 8 track that Media3 gives to an HEVC decoder (its own way back on a
-     * TV without Dolby Vision) gets HDR10 colour and static metadata where the track states none
-     * ([DvBaseLayer.hevcColour]), so the TV isn't left to guess the brightness. Once per decoder, never per frame.
+     * TV without Dolby Vision) gets HDR10 colour and static metadata where the track states none and its picture isn't
+     * HLG or SDR ([DvBaseLayer.hevcColour]), so the TV isn't left to guess the brightness. Once per decoder, never per
+     * frame.
      */
     override fun getMediaFormat(
         format: Format,
@@ -235,7 +252,8 @@ class PacedVideoRenderer(
     ): MediaFormat {
         val made = super.getMediaFormat(format, codecMimeType, codecMaxValues, codecOperatingRate,
             deviceNeedsNoPostProcessWorkaround, tunnelingAudioSessionId)
-        val colour = DvBaseLayer.hevcColour(format.sampleMimeType, format.codecs, codecMimeType, format.colorInfo) ?: return made
+        val colour = DvBaseLayer.hevcColour(format.sampleMimeType, format.codecs, codecMimeType, format.colorInfo,
+            format.initializationData) ?: return made
         MediaFormatUtil.maybeSetColorInfo(made, colour)
         Log.i(TAG, DvBaseLayer.hevcColourLine(ownStaticInfo = format.colorInfo?.hdrStaticInfo != null))
         return made
@@ -291,5 +309,7 @@ class PacedVideoRenderer(
 
     private companion object {
         const val TAG = "FirePlayer"
+        /** A stream's samples read for HDR10+ it isn't masked for: about 2 s of film (HDR10+ comes with every frame). */
+        const val PLUS_LOOKS = 48
     }
 }

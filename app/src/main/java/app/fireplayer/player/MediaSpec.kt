@@ -56,8 +56,9 @@ data class MediaSpec(
     /** HDR10+ dynamic metadata was seen in the picture ([PlayFacts.hdr10PlusSeen]). */
     val hdr10Plus: Boolean = false,
     /**
-     * Whether HDR10's static brightness data (mastering display, MaxCLL) came with an HDR picture: true or false when
-     * known, null when not known or not HDR. A picture without it is tone-mapped blind by the TV.
+     * Whether HDR10's static brightness data (mastering display, MaxCLL) went to the TV with an HDR picture, the file's
+     * own or the generic data FirePlayer gives a Dolby Vision picture it plays as HDR10: true or false when known, null
+     * when not known or not HDR. A picture without it is tone-mapped blind by the TV.
      */
     val hdrInfo: Boolean? = null,
     /** The picture's steady aspect ratio, judged on [aspects] ([ImaxAspect.steady]: 1.90 for IMAX); 0 when not known. */
@@ -108,20 +109,25 @@ data class MediaSpec(
     /**
      * Picture & sound's "Range": "HDR10", "SDR", or, on a TV that reports no HDR ([hdrScreen] false), "HDR10 · shown as
      * SDR (TV reports no HDR)": the Fire TV turns the picture into SDR for it, so its HDR isn't what's seen. Dolby Vision
-     * played as its base layer says so: "HDR10 (Dolby Vision profile 7 base layer)". HDR10+ seen in the picture
-     * ([hdr10Plus]) is said: "HDR10+", "HDR10+ (Dolby Vision profile 7 file, base layer)". A Dolby Vision file the
-     * HEVC decoder played ([Decoder.PLAIN], not profile 5) is the HDR10 picture inside it: "HDR10 (Dolby Vision profile
-     * 8 file)", the Sources window's words.
+     * played as its base layer says so: "HDR10 (Dolby Vision profile 7 base layer)"; a Dolby Vision file the HEVC
+     * decoder played ([Decoder.PLAIN], not profile 5) is the HDR10 picture inside it: "HDR10 (Dolby Vision profile 8
+     * file)", the Sources window's words. HDR10+ seen in the picture ([hdr10Plus]) is said as what the TV gets of it:
+     * "HDR10+ in the file · TV gets HDR10" ("… · TV gets HDR10 (Dolby Vision profile 7 base layer)"), as on the user's
+     * Sticks, where it never reached the TV from FirePlayer; "HDR10+" only where Settings › This TV says it reaches the
+     * TV ([plusReaches]).
      */
-    fun rangeLine(hdrScreen: Boolean): String {
-        val plus = hdr10Plus && hdrScreen
+    fun rangeLine(hdrScreen: Boolean, plusReaches: Boolean = false): String {
         val plainDv = hdr == "Dolby Vision" && decoder == Decoder.PLAIN && dvProfile != 5
-        val shown = when {
-            dvBaseLayer > 0 && plus -> "HDR10+ (Dolby Vision profile $dvBaseLayer file, base layer)"
+        // What the TV is sent of the picture.
+        val tv = when {
             dvBaseLayer > 0 -> DvBaseLayer.words(dvBaseLayer)
-            plainDv -> (if (plus) "HDR10+" else "HDR10") + " (Dolby Vision " + (if (dvProfile > 0) "profile $dvProfile " else "") + "file)"
-            plus && hdr == "HDR10" -> "HDR10+"
+            plainDv -> "HDR10 (Dolby Vision " + (if (dvProfile > 0) "profile $dvProfile " else "") + "file)"
             else -> hdr
+        }
+        val shown = when {
+            tv == null || !hdr10Plus || !hdrScreen || !tv.startsWith("HDR10") -> tv
+            plusReaches -> "HDR10+" + tv.removePrefix("HDR10")
+            else -> "HDR10+ in the file · TV gets $tv"
         }
         return when {
             shown == null -> "Not stated by the file"
@@ -240,7 +246,7 @@ data class MediaSpec(
          * The picture and sound tracks playing, as the file declares them (no bitrates: those are measured). [baseLayer]:
          * the video is Dolby Vision played as its HDR10 base layer ([DvBaseLayer.playedAsBase]), so HDR10 is what's seen.
          * [decoderMime]: the video decoder's MIME type ([PlayFacts.decoderMime]); [hdr10Plus]: HDR10+ seen in the
-         * picture; [aspect]: its steady measured aspect ratio ([PlayFacts.aspect]).
+         * picture ([PlayFacts.hdr10PlusSeen]).
          */
         @OptIn(UnstableApi::class)
         fun of(
@@ -249,7 +255,6 @@ data class MediaSpec(
             baseLayer: Boolean = false,
             decoderMime: String? = null,
             hdr10Plus: Boolean = false,
-            aspect: Float = 0f,
         ): MediaSpec {
             val v = video
             val codecs = v?.codecs
@@ -296,13 +301,15 @@ data class MediaSpec(
                 dvProfile = if (dv) DvBaseLayer.profileOf(codecs) ?: 0 else 0,
                 decoder = decoder,
                 hdr10Plus = hdr10Plus,
-                // A base layer is given generic data when its file has none ([DvBaseLayer.hdr10]); the file's own otherwise.
+                // What reaches the TV: FirePlayer gives generic data where the file has none to a base layer
+                // ([DvBaseLayer.hdr10]) and to a profile 8 track on the HEVC decoder ([DvBaseLayer.hevcColour]); the
+                // file's own otherwise.
                 hdrInfo = when {
                     dvBase > 0 -> true
+                    dv && DvBaseLayer.hevcColour(mime, codecs, decoderMime, color, v?.initializationData) != null -> true
                     pq || (dv && color != null) -> color?.hdrStaticInfo != null
                     else -> null
                 },
-                aspect = aspect.takeIf { it > 0f } ?: 0f,
             )
         }
 

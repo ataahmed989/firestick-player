@@ -116,7 +116,8 @@ class PictureWatchTest {
         assertEquals("showed no picture here", failed.summary())
         assertFalse(failed.troubled)
         val text = CopyHealth.encode(failed)
-        assertEquals("8000|0|0|0|0|0|0|1", text)
+        // After the date (none known here).
+        assertEquals("8000|0|0|0|0|0|0|0|1", text)
         assertEquals(failed, CopyHealth.decode(text))
         // A copy that never failed so is kept as before (seven fields), and older strings read with none.
         assertEquals("8000|0|0|0|0|0|0", CopyHealth.encode(CopyHealth(watchedMs = 8_000)))

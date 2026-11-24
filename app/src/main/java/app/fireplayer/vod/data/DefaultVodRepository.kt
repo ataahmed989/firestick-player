@@ -565,6 +565,12 @@ class DefaultVodRepository(
         }
     }
 
+    @Volatile private var onOriginalLanguage: (() -> Unit)? = null
+
+    override fun setOnOriginalLanguage(listener: (() -> Unit)?) {
+        onOriginalLanguage = listener
+    }
+
     override fun originalLanguage(title: Title): String? = runCatching {
         val kind = title.kind
         val id = title.tmdbId ?: storedMeta(kind, title.id)?.value?.title?.tmdbId ?: tmdbIdOf(kind, title.id, fetch = false)
@@ -598,6 +604,7 @@ class DefaultVodRepository(
                 }
                 val got = TmdbDetails.parse(text, kind) ?: return@single null
                 cache.write(key, TmdbDetails.write(got), TmdbDetails.FRESH_MS, now)
+                if (got.originalLanguage != null) onOriginalLanguage?.let { main.execute(it) }
                 when {
                     got.imdbId != null -> ids.found(kind, tmdbId, got.imdbId)
                     ids.known(kind, tmdbId) == TmdbTrending.Known.Unknown -> ids.missed(kind, tmdbId)

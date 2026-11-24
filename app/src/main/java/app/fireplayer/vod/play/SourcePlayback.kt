@@ -512,17 +512,19 @@ class SourcePlayback(
      * picture, or no frame came while its sound played ([app.fireplayer.player.PictureWatch]). A failure, not a stall:
      * Settings › Playback › When a film keeps buffering has no say, and a source picked by hand is left too. The next
      * source down the list plays (the session skips this one, and the copies that showed none here before, within its
-     * limits on switches), and says why as it starts ([NO_PICTURE_NOTE]). Nothing left: the play stops and says so.
+     * limits on switches), and says why as it starts ([NO_PICTURE_NOTE], when [said]: none of its picture showed).
+     * [formatWide]: none of this TV's decoders takes its format, so the session passes over that format's copies too
+     * ([Failure.NO_DECODER]). Nothing left: the play stops and says so.
      */
-    fun noPicture() {
+    fun noPicture(formatWide: Boolean = false, said: Boolean = true) {
         val s = current ?: return
         if (closed || stopped) return
         playing = false
         loadTimer?.cancel()
         loadTimer = null
-        val step = session.failed(s, Failure(FailureKind.NO_PICTURE, offer?.addon, "no picture here"))
+        val step = session.failed(s, Failure(FailureKind.NO_PICTURE, offer?.addon, if (formatWide) Failure.NO_DECODER else "no picture here"))
         host.log("no picture from this source: " + stepWords(step))
-        switchNote = NO_PICTURE_NOTE
+        switchNote = if (said) NO_PICTURE_NOTE else null
         act(step)
     }
 

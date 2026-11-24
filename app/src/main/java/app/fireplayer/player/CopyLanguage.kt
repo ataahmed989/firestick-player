@@ -58,10 +58,14 @@ object CopyLanguage {
     /** "English", "French". */
     fun name(code: String): String = Locale(code).getDisplayLanguage(Locale.ENGLISH).ifEmpty { code }
 
-    /** ISO 639-1 of "en", "eng", "en-US" or "fre"; null for none or "und". */
+    /**
+     * ISO 639-1 of "en", "eng", "en-US" or "fre"; null for none or "und". Cantonese is Chinese ("zh") here, as its
+     * copies and their tracks say: TMDB's "cn" for a Cantonese film, and "yue".
+     */
     fun code(lang: String?): String? {
         val l = lang?.trim()?.lowercase(Locale.ROOT)?.substringBefore('-')?.substringBefore('_') ?: return null
         if (l.isEmpty() || l == "und" || l == "mul" || l == "zxx") return null
+        if (l == "cn" || l == "yue") return "zh"
         if (l.length == 2) return l
         return ISO3[l] ?: l
     }

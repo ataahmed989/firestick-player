@@ -69,6 +69,10 @@ object TvPlanRules {
     const val IMAX_NOTE = "Off: an IMAX copy goes first when it is as good as the best in picture, HDR and source. " +
         "On: a 4K IMAX copy this TV plays is always Best."
 
+    /** Settings › This TV › HDR10+ reaches this TV ([app.fireplayer.vod.ThisTv.hdr10PlusReaches]). */
+    const val HDR10_PLUS_NOTE = "Turn on only if the TV shows its HDR10+ sign while FirePlayer plays an HDR10+ copy. " +
+        "Off: the TV gets their HDR10, so they aren't preferred."
+
     /**
      * What Automatic does with Dolby Vision on this TV ([TvPlan.dv7AsHdr10]): on a TV without Dolby Vision a file counts
      * as the HDR10 or HDR10+ picture inside it.

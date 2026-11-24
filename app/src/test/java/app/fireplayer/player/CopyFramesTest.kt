@@ -104,15 +104,20 @@ class CopyFramesTest {
 
     @Test
     fun theRangeRowSaysHdr10PlusAndTheDolbyVisionFileItCameFrom() {
-        // HDR10+ seen in the picture: said, also for a profile 7 file played as its base layer (Avatar's UHD remuxes).
-        assertEquals("HDR10+", MediaSpec(hdr = "HDR10", hdr10Plus = true).rangeLine(hdrScreen = true))
-        assertEquals("HDR10+ (Dolby Vision profile 7 file, base layer)",
+        // HDR10+ seen in the picture, on the user's Sticks, where it never reached the TV from FirePlayer: in the file, and
+        // what the TV gets; also for a profile 7 file played as its base layer (Avatar's UHD remuxes).
+        assertEquals("HDR10+ in the file · TV gets HDR10", MediaSpec(hdr = "HDR10", hdr10Plus = true).rangeLine(hdrScreen = true))
+        assertEquals("HDR10+ in the file · TV gets HDR10 (Dolby Vision profile 7 base layer)",
             MediaSpec(hdr = "HDR10", dvBaseLayer = 7, hdr10Plus = true).rangeLine(hdrScreen = true))
+        // Where Settings › This TV says it reaches the TV.
+        assertEquals("HDR10+", MediaSpec(hdr = "HDR10", hdr10Plus = true).rangeLine(hdrScreen = true, plusReaches = true))
+        assertEquals("HDR10+ (Dolby Vision profile 7 base layer)",
+            MediaSpec(hdr = "HDR10", dvBaseLayer = 7, hdr10Plus = true).rangeLine(hdrScreen = true, plusReaches = true))
         assertEquals("HDR10 (Dolby Vision profile 7 base layer)", MediaSpec(hdr = "HDR10", dvBaseLayer = 7).rangeLine(hdrScreen = true))
         // Profile 8 on the HEVC decoder (a TV without Dolby Vision): the HDR10 picture inside it, not "Dolby Vision".
         val p8 = MediaSpec(hdr = "Dolby Vision", dvProfile = 8, decoder = MediaSpec.Decoder.PLAIN)
         assertEquals("HDR10 (Dolby Vision profile 8 file)", p8.rangeLine(hdrScreen = true))
-        assertEquals("HDR10+ (Dolby Vision profile 8 file)", p8.copy(hdr10Plus = true).rangeLine(hdrScreen = true))
+        assertEquals("HDR10+ in the file · TV gets HDR10 (Dolby Vision profile 8 file)", p8.copy(hdr10Plus = true).rangeLine(hdrScreen = true))
         // Shown as Dolby Vision, or profile 5 (no HDR10 inside): as the file has it.
         assertEquals("Dolby Vision", p8.copy(decoder = MediaSpec.Decoder.DOLBY_VISION).rangeLine(hdrScreen = true))
         assertEquals("Dolby Vision", p8.copy(dvProfile = 5).rangeLine(hdrScreen = true))

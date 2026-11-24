@@ -211,6 +211,26 @@ class DvBaseLayerTest {
     }
 
     @Test
+    fun aProfile8PictureThatSaysHlgOrSdrIsLeftAsItIsWhenItsFileStatesNoColour() {
+        val dv = MimeTypes.VIDEO_DOLBY_VISION
+        val hevc = MimeTypes.VIDEO_H265
+        // An MKV without a Colour element: Media3 states no colour, its picture's SPS (the initialization data) does.
+        // A 4K Main 10 SPS, BT.2020, its transfer PQ, HLG (8.4) or SDR (8.2).
+        fun sps(hex: String) = listOf(ByteArray(hex.length / 2) { hex.substring(2 * it, 2 * it + 2).toInt(16).toByte() })
+        val pq = sps("00000001420101022000000300900000030000030099a001e020021c4d965e4936b9a84880480000030000030000030004")
+        val hlg = sps("00000001420101022000000300900000030000030099a001e020021c4d965e4936b9a84890480000030000030000030004")
+        val sdr = sps("00000001420101022000000300900000030000030099a001e020021c4d965e4936b9a84808480000030000030000030004")
+        assertEquals(C.COLOR_TRANSFER_ST2084, DvBaseLayer.hevcColour(dv, "dvhe.08.06", hevc, null, pq)!!.colorTransfer)
+        assertNull(DvBaseLayer.hevcColour(dv, "dvhe.08.06", hevc, null, hlg))
+        assertNull(DvBaseLayer.hevcColour(dv, "dvhe.08.06", hevc, ColorInfo.Builder().build(), sdr))
+        // Stated by the file, its own word stands; no parameter sets to read: HDR10 colour, as before.
+        assertNull(DvBaseLayer.hevcColour(dv, "dvhe.08.06", hevc, ColorInfo.Builder().setColorTransfer(C.COLOR_TRANSFER_HLG).build(), pq))
+        assertTrue(DvBaseLayer.hevcColour(dv, "dvhe.08.06", hevc, null, emptyList()) != null)
+        // A colour space other than BT.2020, stated without a transfer, isn't made BT.2020.
+        assertNull(DvBaseLayer.hevcColour(dv, "dvhe.08.06", hevc, ColorInfo.Builder().setColorSpace(C.COLOR_SPACE_BT709).build()))
+    }
+
+    @Test
     fun theGenericStaticMetadataIsCta861Type1LittleEndian() {
         val info = DvBaseLayer.hdr10(null).hdrStaticInfo!!
         assertEquals(25, info.size)

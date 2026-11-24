@@ -20,17 +20,19 @@ class PlaySavesTest {
     private val pq = ColorInfo.Builder().setColorSpace(C.COLOR_SPACE_BT2020).setColorTransfer(C.COLOR_TRANSFER_ST2084).build()
 
     @Test
-    fun aDolbyVisionFileOnThePlainDecoderSavesItsProfileTheDecoderAndMissingBrightnessData() {
-        // Avatar's IMAX copy: profile 8, sent to the HEVC decoder by Media3, no static metadata in the file.
+    fun aDolbyVisionFileOnThePlainDecoderSavesItsProfileTheDecoderAndTheBrightnessDataTheTvGets() {
+        // Avatar's IMAX copy: profile 8, sent to the HEVC decoder by Media3, no static metadata in the file: FirePlayer
+        // gives the decoder HDR10's generic data (DvBaseLayer.hevcColour), so the TV gets brightness data.
         val dv8 = Format.Builder().setSampleMimeType(MimeTypes.VIDEO_DOLBY_VISION).setCodecs("dvhe.08.06")
             .setWidth(3840).setHeight(2160).setColorInfo(pq).build()
-        val spec = MediaSpec.of(dv8, null, decoderMime = MimeTypes.VIDEO_H265, hdr10Plus = false, aspect = 1.9f)
+        val spec = MediaSpec.of(dv8, null, decoderMime = MimeTypes.VIDEO_H265, hdr10Plus = false)
         assertEquals(8, spec.dvProfile)
         assertEquals(MediaSpec.Decoder.PLAIN, spec.decoder)
-        assertEquals(false, spec.hdrInfo)
-        assertEquals(1.9f, spec.aspect, 0.001f)
-        // On a Dolby Vision decoder; not known which.
-        assertEquals(MediaSpec.Decoder.DOLBY_VISION, MediaSpec.of(dv8, null, decoderMime = MimeTypes.VIDEO_DOLBY_VISION).decoder)
+        assertEquals(true, spec.hdrInfo)
+        // On a Dolby Vision decoder: the file's own, none; not known which decoder.
+        val onDv = MediaSpec.of(dv8, null, decoderMime = MimeTypes.VIDEO_DOLBY_VISION)
+        assertEquals(MediaSpec.Decoder.DOLBY_VISION, onDv.decoder)
+        assertEquals(false, onDv.hdrInfo)
         assertEquals(MediaSpec.Decoder.UNKNOWN, MediaSpec.of(dv8, null).decoder)
         // A profile 7 base layer is given brightness data when its file has none.
         val p7 = Format.Builder().setSampleMimeType(MimeTypes.VIDEO_DOLBY_VISION).setCodecs("dvhe.07.06").setColorInfo(pq).build()
@@ -70,6 +72,24 @@ class PlaySavesTest {
     }
 
     @Test
+    fun theLooksAtThePictureFromEveryPlayDecideItsSteadyShape() {
+        // Every look of one play at a 3840×2020 frame: IMAX by measure.
+        val looks = (0 until 8).map { AspectSample(1.9, 20_000L + it * 60_000L) }
+        assertEquals(1.9f, MediaSpec.merged(null, MediaSpec(measuredSecs = 60, aspects = looks)).aspect, 0.001f)
+        // Fewer looks say nothing yet; a later play's looks at other parts of the film add to them.
+        val few = MediaSpec.merged(null, MediaSpec(measuredSecs = 60, aspects = looks.take(5)))
+        assertEquals(0f, few.aspect, 0f)
+        val later = MediaSpec(measuredSecs = 60, aspects = (0 until 3).map { AspectSample(1.9, 3_600_000L + it * 60_000L) })
+        val both = MediaSpec.merged(few, later)
+        assertEquals(8, both.aspects.size)
+        assertEquals(1.9f, both.aspect, 0.001f)
+        // Kept between plays, after the fields before them.
+        assertEquals(both, MediaSpec.decode(MediaSpec.encode(both)))
+        // A 16:9 look among them: not sure, so not IMAX.
+        assertEquals(0f, MediaSpec.merged(both, MediaSpec(measuredSecs = 60, aspects = listOf(AspectSample(1.78, 7_200_000L)))).aspect, 0f)
+    }
+
+    @Test
     fun aCopysHealthKeepsWhenItLastPlayed() {
         val h = CopyHealth(watchedMs = 600_000, stalls = 12, stallMs = 120_000, at = 1_764_000_000_000L)
         assertEquals(h, CopyHealth.decode(CopyHealth.encode(h)))
@@ -77,6 +97,10 @@ class PlaySavesTest {
         // Without a date it is written as before.
         assertEquals("600000|12|120000|0|0|0|0", CopyHealth.encode(h.copy(at = 0)))
         assertEquals(1_764_000_000_000L, (h + h.copy(at = 5L)).at)
+        // A play with no picture here comes after the date.
+        val none = CopyHealth(failures = 1, at = 1_764_000_000_000L, noPicture = 1)
+        assertEquals("0|0|0|1|0|0|0|1764000000000|1", CopyHealth.encode(none))
+        assertEquals(none, CopyHealth.decode(CopyHealth.encode(none)))
     }
 
     // ---- IMAX, measured ----

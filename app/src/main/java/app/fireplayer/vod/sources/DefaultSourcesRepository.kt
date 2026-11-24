@@ -117,6 +117,8 @@ class DefaultSourcesRepository(
         var wanted: List<String> = emptyList()
         /** The row each release went into (merged copies). */
         var rowOf: Map<String, String> = emptyMap()
+        /** It was ranked knowing the title's own language ([originalLanguage]). */
+        var originalKnown = false
         var version = 0
         /** The add-ons whose answers are in [ranked]; one answered but not yet ranked still counts as looking. */
         var rankedFrom: Set<Addon> = emptySet()
@@ -194,6 +196,14 @@ class DefaultSourcesRepository(
     /** This TV's plan changed: the lists in memory rank again from the answers they have (nothing is asked again). */
     fun rerank() {
         for (entry in entries.values.toList()) if (entry.answers.isNotEmpty()) rebuild(entry)
+    }
+
+    /**
+     * A title's own language was stored (TMDB's details came after the add-ons' answers, or for a title never opened):
+     * the lists ranked without it rank again, so copies in it aren't left below the viewer's dub.
+     */
+    fun languageLearnt() {
+        for (entry in entries.values.toList()) if (entry.answers.isNotEmpty() && !entry.originalKnown) rebuild(entry)
     }
 
     // ---- For the session ----
@@ -459,7 +469,7 @@ class DefaultSourcesRepository(
                 val last = runCatching { library.lastRelease(target.title, target.episode) }.getOrNull()
                 val lastKey = last?.let { merged.rowOf[it.release.storeKey] }
                 val lastUsed = lastKey?.let { k -> ranked.firstOrNull { it.key == k } }
-                Ranked(merged.rowOf, ranked, best, lastUsed, SourceRank.why(ranked, input), input.wanted)
+                Ranked(merged.rowOf, ranked, best, lastUsed, SourceRank.why(ranked, input), input.wanted, original != null)
             }.getOrNull()
             main.post {
                 if (entry.version != v) return@post
@@ -472,6 +482,7 @@ class DefaultSourcesRepository(
                     entry.why = made.why
                     entry.plan = plan
                     entry.wanted = made.wanted
+                    entry.originalKnown = made.originalKnown
                 }
                 notify(entry)
             }
@@ -501,6 +512,7 @@ class DefaultSourcesRepository(
         val lastUsed: PlaybackSource?,
         val why: BestWhy?,
         val wanted: List<String>,
+        val originalKnown: Boolean,
     )
 
     private fun notify(entry: Entry) {
@@ -589,8 +601,10 @@ class DefaultSourcesRepository(
                 checks = checks,
             )
             engine = made
-            // A new plan for this TV (Settings › This TV): the lists kept in memory rank again.
+            // A new plan for this TV (Settings › This TV): the lists kept in memory rank again; and as a title's own
+            // language becomes known.
             tv.onChanged = { loop.post { made.rerank() } }
+            vod.setOnOriginalLanguage { made.languageLearnt() }
             watchNetwork(connectivity, loop) { made.forget() }
             return made
         }

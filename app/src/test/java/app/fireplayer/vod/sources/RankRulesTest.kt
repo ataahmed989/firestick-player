@@ -51,7 +51,9 @@ class RankRulesTest {
         line: Double? = null,
         imaxAlways: Boolean = false,
         subtitles: String? = null,
-    ) = RankInput(plan, wanted, measured, 120, episode, line, imaxAlways, subtitles, now)
+        /** Settings › This TV › HDR10+ reaches this TV: on here, as the order was decided; off by default. */
+        plus: Boolean = true,
+    ) = RankInput(plan.copy(hdr10PlusReaches = plus), wanted, measured, 120, episode, line, imaxAlways, subtitles, now)
 
     private fun src(
         key: String,
@@ -143,6 +145,8 @@ class RankRulesTest {
         val web = src("web", mbps = 20.0, origin = "WEB-DL", name = "Film.2021.IMAX.2160p.WEB-DL")
         assertEquals(listOf("plus", "imax", "web"), keys(listOf(web, imax, plus)))
         assertEquals(listOf("imax", "web", "plus"), keys(listOf(web, imax, plus), input(imaxAlways = true)))
+        // Where HDR10+ doesn't reach the TV (the default), it's no edge: IMAX breaks the tie.
+        assertEquals(listOf("imax", "plus", "web"), keys(listOf(web, imax, plus), input(plus = false)))
         // Open matte is mostly a 16:9 picture: not IMAX.
         assertFalse(SourceRank.isImax("Film.2021.Open.Matte.2160p"))
         assertTrue(SourceRank.isImax("Film.2021.IMX.2160p"))
@@ -217,6 +221,10 @@ class RankRulesTest {
         val plusWeb = src("plusWeb", hdr = setOf(Hdr.HDR10_PLUS), mbps = 25.0, origin = "WEB-DL")
         val hdrWeb = src("hdrWeb", mbps = 25.0, origin = "WEB-DL")
         assertEquals(listOf("plusRemux", "hdrRemux", "plusWeb", "hdrWeb"), keys(listOf(hdrWeb, plusWeb, hdrRemux, plusRemux)))
+        // Not where it doesn't reach the TV (Settings › This TV, off by default): the TV gets their HDR10, and the list
+        // keeps its order.
+        assertEquals(listOf("hdrRemux", "plusRemux"), keys(listOf(hdrRemux, plusRemux), input(plus = false)))
+        assertEquals(listOf("plusRemux", "hdrRemux"), keys(listOf(plusRemux, hdrRemux), input(plus = false)))
         // A TV without HDR10+: it shows HDR10+ as HDR10, so no edge for it either way.
         val hdr10Tv = TvPlans.automatic(TvCapabilities(setOf(Hdr.HDR10, Hdr.HLG), 3840, 2160, emptySet(), 1L))
         assertEquals(listOf(setOf(Hdr.HDR10), setOf(Hdr.HLG)), hdr10Tv.hdrOrder)
