@@ -15,19 +15,22 @@ import app.fireplayer.vod.play.SourcesModel
 import java.util.Date
 
 /**
- * The Sources panel (design-brief.md §6.5, r3_sources-organize §4): one merged list in the wide settings window, made of
- * the app's shared parts ([SidePanel]'s long list, its two-line rows, headings and notes). The same panel opens from a
- * title page's Sources button and from the player (Picture & sound › Sources). Answers arriving later redraw it in place
- * ([update]); focus stays on its row (rows are keyed). What it lists, and in what order: [SourcesModel].
+ * The Sources window (design-brief.md §6.5, the user's layout of 2026-11): one merged list in the wide settings window,
+ * made of the app's shared parts ([SidePanel]'s long list, its two-line rows, headings and notes). The same window opens
+ * from a title page's Sources button and from the player (This film › Sources, Picture & sound › Sources). Answers
+ * arriving later redraw it in place ([update]); focus stays on its row (rows are keyed). What it lists, and in what
+ * order: [SourcesModel].
  *
- * OK on a row plays it ([onPick], from the resume point); a row not cached by the debrid service asks first. Hold OK:
- * Play from beginning or Details. "Show N" opens a section in place. Back closes Details, then the panel.
+ * OK on a row plays it ([onPick], from the resume point); a row not cached by the debrid service asks first. Right:
+ * Details. Hold OK: Play from beginning or Details. "Show N" opens a kind in place. Back closes Details, then the window.
  */
 class SourcesPanel(private val activity: Activity, private val panel: SidePanel) {
 
     private var list: SourceList? = null
     private var attempts: List<Attempt> = emptyList()
     private var playingKey: String? = null
+    private var smooth = false
+    private var server: () -> String? = { null }
     private var opened = HashSet<SourcesModel.Section>()
     private var items: List<SourcesModel.Item> = emptyList()
     private var onPick: ((PlaybackSource, Boolean) -> Unit)? = null
@@ -38,8 +41,9 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
     val isOpen: Boolean get() = panel.isOpen && panel.session == session
 
     /**
-     * Opens the panel titled [title] ("Sources", "Sources · S2 E5 "Peacekeepers"") over the screen, or over the
-     * window showing ([sub]: Back returns to it).
+     * Opens the window titled [title] ("Sources", "Sources · S2 E5 "Peacekeepers"") over the screen, or over the
+     * window showing ([sub]: Back returns to it). In the player, [smooth] says whether the copy playing plays without
+     * stalling, and [server] how fast its server is delivering (its Details' "Server").
      */
     fun open(
         title: String,
@@ -48,11 +52,15 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
         playingKey: String? = null,
         sub: Boolean = false,
         onClose: (() -> Unit)? = null,
+        smooth: Boolean = false,
+        server: () -> String? = { null },
         onPick: (source: PlaybackSource, fromBeginning: Boolean) -> Unit,
     ) {
         this.list = list
         this.attempts = attempts
         this.playingKey = playingKey
+        this.smooth = smooth
+        this.server = server
         this.onPick = onPick
         opened = HashSet()
         held = false
@@ -70,7 +78,7 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
     }
 
     private fun entries(): LongList {
-        items = SourcesModel.items(list, android.os.SystemClock.elapsedRealtime(), opened, attempts, playingKey, ::time, ::day,
+        items = SourcesModel.items(list, android.os.SystemClock.elapsedRealtime(), opened, attempts, playingKey, smooth, ::time, ::day,
             VodSizes.SOURCES_LINE_CHARS, VodSizes.SOURCES_NOTE_CHARS)
         val shown = items
         return object : LongList {
@@ -102,6 +110,12 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
             }
 
             override fun onKey(index: Int, keyCode: Int, event: KeyEvent): Boolean {
+                // Right on a copy: its Details (what its row leaves out).
+                if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
+                    val s = shown.getOrNull(index)?.source ?: return false
+                    if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && !held) details(s)
+                    return true
+                }
                 val ok = keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER
                 if (!ok) return false
                 if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) held = false
@@ -144,7 +158,7 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
         FireDialog.hold(
             activity,
             // The row's own main line, so the window names the copy as the list did.
-            PlayRules.mainLine(s).ifEmpty { s.offers.firstOrNull()?.text?.take(60).orEmpty() },
+            mainLine(s),
             listOf(
                 "Play from beginning" to { play(s, beginning = true) },
                 "Details" to { details(s) },
@@ -153,10 +167,20 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
         )
     }
 
-    /** Details: the facts and each add-on's own words (never a link), over the panel; Back returns to it. */
+    private fun mainLine(s: PlaybackSource): String {
+        val l = list
+        val film = l == null || SourcesModel.film(l)
+        return PlayRules.mainLine(s, film = film, plan = l?.plan).ifEmpty { s.offers.firstOrNull()?.text?.take(60).orEmpty() }
+    }
+
+    /**
+     * Details: what the row leaves out, and each add-on's own words (never a link), over the window titled as the row
+     * names the copy; Back returns to it.
+     */
     private fun details(s: PlaybackSource) {
-        panel.openSub("Source details", wide = true) {
-            facts(SourcesModel.details(s, ::day).map { (k, v) -> k to fact(v) })
+        val serverNow = if (s.key == playingKey) server() else null
+        panel.openSub(mainLine(s), wide = true) {
+            facts(SourcesModel.details(s, list?.plan, serverNow, ::day).map { (k, v) -> k to fact(v) })
         }
     }
 

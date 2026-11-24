@@ -157,6 +157,14 @@ class Prefs(context: Context) {
         set(v) = sp.edit().putBoolean("faster_downloads", v).apply()
 
     /**
+     * Settings › This TV › IMAX first: always: a 4K IMAX copy this TV plays is Best whatever else is offered (the
+     * earlier order). Off (the default), IMAX breaks a tie after picture, HDR and source.
+     */
+    var imaxFirstAlways: Boolean
+        get() = sp.getBoolean(IMAX_FIRST_KEY, false)
+        set(v) = sp.edit().putBoolean(IMAX_FIRST_KEY, v).apply()
+
+    /**
      * "Keep embedded styling": ASS/SSA is drawn with libass (positions, fonts, effects) and other
      * subtitles keep their own colours. Off, the chosen preset always wins.
      */
@@ -363,6 +371,9 @@ class Prefs(context: Context) {
 
         /** TiviMate titles on or off ([tivimateTitles]), read by [Settings.syncTitles] too. */
         internal const val TITLES_KEY = "tivimate_titles"
+
+        /** [imaxFirstAlways], read by Settings › This TV's reader too ([app.fireplayer.vod.sources.ThisTvReader]). */
+        const val IMAX_FIRST_KEY = "imax_first_always"
         private const val PREVIEWS_OFF_ONCE = "seek_previews_off_once"
 
         /**

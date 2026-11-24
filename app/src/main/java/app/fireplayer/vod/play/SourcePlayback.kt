@@ -106,6 +106,9 @@ class SourcePlayback(
     /** The current source has shown its first frame (stage 4 from here; before it, stage 3). */
     var playing = false
         private set
+
+    /** The current source plays, with no stall under way and no switch for stalls being opened (the Sources window's "smoothly"). */
+    val smooth: Boolean get() = playing && !stalled && !stallSwitching
     private var everPlayed = false
     private var opening: Cancel? = null
     private var loadTimer: Cancel? = null

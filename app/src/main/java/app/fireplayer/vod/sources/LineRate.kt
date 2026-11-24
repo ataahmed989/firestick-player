@@ -9,12 +9,14 @@ import java.util.Locale
  *
  * Only a measurement goes in, never a guess: [seen] is told every film's sustained arrival once it's measured over
  * enough seconds, whatever was answered about its stalls, and [short] the same when a film stalled past the limit. The
- * newest replaces what was kept, up or down (a film arriving faster tonight lifts it, a slower evening lowers it), and
- * it's forgotten after [KEEP_MS] (the line, the router's place or the debrid service's servers may have changed). A
- * file needing more than [SHORT_SHARE] of it counts as "likely not" for this TV, and one needing more than
- * [SUSTAIN_SHARE] ranks after those that don't; the viewer can still pick any in Sources.
+ * last [KEPT] readings are kept with their times, each forgotten after [KEEP_MS] (the line, the router's place or the
+ * debrid service's servers may have changed), and the figure used is the lowest of them ([current]): a steady one, so
+ * Best doesn't flip between evenings. A reading within [MOVED] of the newest only renews its time. A file needing more
+ * than [SHORT_SHARE] of it counts as "likely not" for this TV, and one that doesn't leave it room ([room]) ranks after
+ * those that do; the viewer can still pick any in Sources.
  *
- * One line of text in a preference ("72.4|1700000000000"); no links, no titles. Any thread ([store] is a preference).
+ * One line of text in a preference ("72.4|1700000000000;80.1|1699990000000", newest first; an older version's single
+ * reading reads as one); no links, no titles. Any thread ([store] is a preference).
  */
 class LineRate(private val store: Store, private val wall: () -> Long) {
 
@@ -23,40 +25,53 @@ class LineRate(private val store: Store, private val wall: () -> Long) {
         fun write(text: String?)
     }
 
-    /** A film kept stalling with the download sustaining [mbps], about what the film needs: remembered from now. */
+    private class Reading(val mbps: Double, val at: Long)
+
+    /** A film kept stalling with the download sustaining [mbps], about what the film needs: kept from now. */
     fun short(mbps: Double) {
         if (!sane(mbps)) return
-        write(mbps)
+        write(listOf(Reading(mbps, wall())) + readings())
     }
 
     /**
-     * A film was seen to arrive at a sustained [mbps]: it replaces what was kept, up or down. Written when it moved
-     * [MOVED] or more from that, or what was kept is [REFRESH_MS] old (so the newest evening's figure is the one kept
-     * and expires last). True when what's kept moved, and the lists should rank again.
+     * A film was seen to arrive at a sustained [mbps]. Kept as a reading of its own when it is [MOVED] or more away from
+     * the newest; otherwise the newest's time is renewed when it is [REFRESH_MS] old. True when the figure used
+     * ([current]) moved, and the lists should rank again.
      */
     fun seen(mbps: Double): Boolean {
         if (!sane(mbps)) return false
-        val kept = read()
-        val moved = kept == null || kotlin.math.abs(mbps - kept.first) >= kept.first * MOVED
-        if (!moved && wall() - kept!!.second < REFRESH_MS) return false
-        write(mbps)
-        return moved
+        val kept = readings()
+        val newest = kept.firstOrNull()
+        if (newest != null && kotlin.math.abs(mbps - newest.mbps) < newest.mbps * MOVED) {
+            if (wall() - newest.at >= REFRESH_MS) write(listOf(Reading(newest.mbps, wall())) + kept.drop(1))
+            return false
+        }
+        val before = lowest(kept)
+        val now = listOf(Reading(mbps, wall())) + kept
+        write(now)
+        return lowest(now.take(KEPT)) != before
     }
 
-    /** The speed remembered, in Mb/s; null when there is none, or it's older than [KEEP_MS]. */
-    fun current(): Double? = read()?.first
+    /** The steady figure in Mb/s: the lowest reading of the last [KEPT] within [KEEP_MS]; null when there is none. */
+    fun current(): Double? = lowest(readings())
 
-    // What's kept and when, while it counts.
-    private fun read(): Pair<Double, Long>? {
-        val parts = store.read()?.split('|') ?: return null
-        val mbps = parts.getOrNull(0)?.toDoubleOrNull() ?: return null
-        val at = parts.getOrNull(1)?.toLongOrNull() ?: return null
-        val age = wall() - at
-        if (mbps <= 0.0 || age < 0 || age > KEEP_MS) return null
-        return mbps to at
+    private fun lowest(list: List<Reading>): Double? = list.minOfOrNull { it.mbps }
+
+    // The readings that count, newest first.
+    private fun readings(): List<Reading> {
+        val text = store.read() ?: return emptyList()
+        val now = wall()
+        return text.split(';').mapNotNull { part ->
+            val f = part.split('|')
+            val mbps = f.getOrNull(0)?.toDoubleOrNull() ?: return@mapNotNull null
+            val at = f.getOrNull(1)?.toLongOrNull() ?: return@mapNotNull null
+            val age = now - at
+            if (mbps <= 0.0 || age < 0 || age > KEEP_MS) null else Reading(mbps, at)
+        }.take(KEPT)
     }
 
-    private fun write(mbps: Double) = store.write(String.format(Locale.US, "%.1f|%d", mbps, wall()))
+    private fun write(list: List<Reading>) =
+        store.write(list.take(KEPT).joinToString(";") { String.format(Locale.US, "%.1f|%d", it.mbps, it.at) })
 
     private fun sane(mbps: Double) = mbps > 0.0 && !mbps.isNaN() && !mbps.isInfinite()
 
@@ -66,13 +81,19 @@ class LineRate(private val store: Store, private val wall: () -> Long) {
     companion object {
         /** A file needing more than this share of what the line sustains can't be kept from stalling. */
         const val SHORT_SHARE = 0.9
-        /** A file is one "this connection sustains" when it needs no more than this share: room for busy scenes. */
+        /** The share of the line a lighter source a stalling film switches to may need ([app.fireplayer.vod.play.FilmSupply]). */
         const val SUSTAIN_SHARE = 0.75
-        /** A speed seen this much away from the one remembered (a share of it) is written at once. */
-        const val MOVED = 0.05
-        /** Otherwise the one remembered is written again this often, to keep its time the newest evidence's. */
+        /** A remux's busiest scenes need this much more than its average: room it needs on the line. */
+        const val REMUX_ROOM = 1.5
+        /** Any other copy's. */
+        const val ROOM = 1.3
+        /** A reading this close to the newest (a share of it) only renews its time. */
+        const val MOVED = 0.15
+        /** Otherwise the newest is written again this often, to keep its time the newest evidence's. */
         const val REFRESH_MS = 60L * 60 * 1000
         const val KEEP_MS = 3L * 24 * 60 * 60 * 1000
+        /** Readings kept: the figure used is the lowest of them. */
+        const val KEPT = 3
 
         /** The preference file and key it's kept under ("fireplayer_sources", beside the add-ons' budget). */
         const val FILE = "fireplayer_sources"
@@ -85,11 +106,11 @@ class LineRate(private val store: Store, private val wall: () -> Long) {
             sourceMbps != null && lineMbps != null && lineMbps > 0.0 && sourceMbps > lineMbps * SHORT_SHARE
 
         /**
-         * Whether a file of [sourceMbps] leaves this line ([lineMbps]) room for its busy scenes: it needs no more than
-         * [SUSTAIN_SHARE] of it. True when either isn't known.
+         * Whether this line ([lineMbps]) leaves a file of [sourceMbps] room for its busy scenes: [REMUX_ROOM] times its
+         * average for a [remux], [ROOM] for any other. True when either isn't known.
          */
-        fun steady(sourceMbps: Double?, lineMbps: Double?): Boolean =
-            sourceMbps == null || lineMbps == null || lineMbps <= 0.0 || sourceMbps <= lineMbps * SUSTAIN_SHARE
+        fun room(sourceMbps: Double?, lineMbps: Double?, remux: Boolean): Boolean =
+            sourceMbps == null || lineMbps == null || lineMbps <= 0.0 || lineMbps >= sourceMbps * (if (remux) REMUX_ROOM else ROOM)
 
         /**
          * Whether a film's measurement belongs with the two-connection speed. [built]: its player was made with

@@ -49,7 +49,31 @@ data class MediaSpec(
      * 0 when it played as the file has it.
      */
     val dvBaseLayer: Int = 0,
+    /** The Dolby Vision profile of the track ("dvhe.08.06": 8); 0 when it isn't Dolby Vision or doesn't say. */
+    val dvProfile: Int = 0,
+    /** Which kind of decoder played the picture ([Decoder.PLAIN]: a Dolby Vision file on the HEVC decoder). */
+    val decoder: Decoder = Decoder.UNKNOWN,
+    /** HDR10+ dynamic metadata was seen in the picture ([PlayFacts.hdr10PlusSeen]). */
+    val hdr10Plus: Boolean = false,
+    /**
+     * Whether HDR10's static brightness data (mastering display, MaxCLL) came with an HDR picture: true or false when
+     * known, null when not known or not HDR. A picture without it is tone-mapped blind by the TV.
+     */
+    val hdrInfo: Boolean? = null,
+    /** The picture's steady aspect ratio measured while it played ([ImaxAspect.steady]: 1.90 for IMAX); 0 when not known. */
+    val aspect: Float = 0f,
+    /** When it last played here (epoch ms; the "✓ played" date); 0 when not known. */
+    val playedAt: Long = 0,
 ) {
+    /** The kind of video decoder that played it. */
+    enum class Decoder {
+        UNKNOWN,
+        /** A Dolby Vision decoder: the picture was shown as Dolby Vision. */
+        DOLBY_VISION,
+        /** A plain one (HEVC, AVC, AV1): a Dolby Vision file showed the HDR10 (or SDR) picture inside it. */
+        PLAIN,
+    }
+
     /** Where a number came from. */
     enum class How(val label: String) {
         NONE(""),
@@ -79,10 +103,21 @@ data class MediaSpec(
     /**
      * Picture & sound's "Range": "HDR10", "SDR", or, on a TV that reports no HDR ([hdrScreen] false), "HDR10 · shown as
      * SDR (TV reports no HDR)": the Fire TV turns the picture into SDR for it, so its HDR isn't what's seen. Dolby Vision
-     * played as its base layer says so: "HDR10 (Dolby Vision profile 7 base layer)".
+     * played as its base layer says so: "HDR10 (Dolby Vision profile 7 base layer)". HDR10+ seen in the picture
+     * ([hdr10Plus]) is said: "HDR10+", "HDR10+ (Dolby Vision profile 7 file, base layer)". A Dolby Vision file the
+     * HEVC decoder played ([Decoder.PLAIN], not profile 5) is the HDR10 picture inside it: "HDR10 (Dolby Vision profile
+     * 8 file)", the Sources window's words.
      */
     fun rangeLine(hdrScreen: Boolean): String {
-        val shown = if (dvBaseLayer > 0) DvBaseLayer.words(dvBaseLayer) else hdr
+        val plus = hdr10Plus && hdrScreen
+        val plainDv = hdr == "Dolby Vision" && decoder == Decoder.PLAIN && dvProfile != 5
+        val shown = when {
+            dvBaseLayer > 0 && plus -> "HDR10+ (Dolby Vision profile $dvBaseLayer file, base layer)"
+            dvBaseLayer > 0 -> DvBaseLayer.words(dvBaseLayer)
+            plainDv -> (if (plus) "HDR10+" else "HDR10") + " (Dolby Vision " + (if (dvProfile > 0) "profile $dvProfile " else "") + "file)"
+            plus && hdr == "HDR10" -> "HDR10+"
+            else -> hdr
+        }
         return when {
             shown == null -> "Not stated by the file"
             hdr != "SDR" && !hdrScreen -> "$shown · shown as SDR (TV reports no HDR)"
@@ -103,7 +138,8 @@ data class MediaSpec(
             spec.videoCodec.orEmpty(), spec.profile.orEmpty(), spec.width, spec.height, spec.fps, spec.bitDepth,
             spec.hdr.orEmpty(), spec.videoBps, spec.videoHow.name, spec.audioCodec.orEmpty(), if (spec.atmos) 1 else 0,
             spec.channels, spec.sampleRate, spec.audioBps, spec.audioHow.name, spec.overallBps, spec.sizeBytes,
-            spec.measuredSecs, spec.audioLangs, spec.subLangs, spec.dvBaseLayer,
+            spec.measuredSecs, spec.audioLangs, spec.subLangs, spec.dvBaseLayer, spec.dvProfile, spec.decoder.name,
+            if (spec.hdr10Plus) 1 else 0, spec.hdrInfo?.let { if (it) 1 else 0 } ?: "", spec.aspect, spec.playedAt,
         ).joinToString(SEP) { it.toString().replace(SEP, " ") }
 
         fun decode(text: String): MediaSpec? {
@@ -121,6 +157,16 @@ data class MediaSpec(
                 audioLangs = f.getOrNull(18).orEmpty(),
                 subLangs = f.getOrNull(19).orEmpty(),
                 dvBaseLayer = f.getOrNull(20)?.toIntOrNull() ?: 0,
+                dvProfile = f.getOrNull(21)?.toIntOrNull() ?: 0,
+                decoder = f.getOrNull(22)?.let { d -> Decoder.entries.firstOrNull { it.name == d } } ?: Decoder.UNKNOWN,
+                hdr10Plus = f.getOrNull(23) == "1",
+                hdrInfo = when (f.getOrNull(24)) {
+                    "1" -> true
+                    "0" -> false
+                    else -> null
+                },
+                aspect = f.getOrNull(25)?.toFloatOrNull()?.takeIf { it > 0f && it < 10f } ?: 0f,
+                playedAt = f.getOrNull(26)?.toLongOrNull() ?: 0L,
             )
         }
 
@@ -137,6 +183,13 @@ data class MediaSpec(
                 videoBps = mix(kept.videoBps, now.videoBps),
                 audioBps = mix(kept.audioBps, now.audioBps),
                 measuredSecs = (a + b).coerceAtMost(MAX_MEASURED_SECS),
+                // What one play saw and another may not have: the newest that says; HDR10+ once seen.
+                dvProfile = now.dvProfile.takeIf { it > 0 } ?: kept.dvProfile,
+                decoder = now.decoder.takeIf { it != Decoder.UNKNOWN } ?: kept.decoder,
+                hdr10Plus = now.hdr10Plus || kept.hdr10Plus,
+                hdrInfo = now.hdrInfo ?: kept.hdrInfo,
+                aspect = now.aspect.takeIf { it > 0f } ?: kept.aspect,
+                playedAt = maxOf(now.playedAt, kept.playedAt),
             )
         }
 
@@ -172,9 +225,18 @@ data class MediaSpec(
         /**
          * The picture and sound tracks playing, as the file declares them (no bitrates: those are measured). [baseLayer]:
          * the video is Dolby Vision played as its HDR10 base layer ([DvBaseLayer.playedAsBase]), so HDR10 is what's seen.
+         * [decoderMime]: the video decoder's MIME type ([PlayFacts.decoderMime]); [hdr10Plus]: HDR10+ seen in the
+         * picture; [aspect]: its steady measured aspect ratio ([PlayFacts.aspect]).
          */
         @OptIn(UnstableApi::class)
-        fun of(video: Format?, audio: Format?, baseLayer: Boolean = false): MediaSpec {
+        fun of(
+            video: Format?,
+            audio: Format?,
+            baseLayer: Boolean = false,
+            decoderMime: String? = null,
+            hdr10Plus: Boolean = false,
+            aspect: Float = 0f,
+        ): MediaSpec {
             val v = video
             val codecs = v?.codecs
             val mime = v?.sampleMimeType
@@ -182,6 +244,13 @@ data class MediaSpec(
             val depth = color?.lumaBitdepth?.takeIf { it in 8..16 } ?: bitDepthIn(codecs)
             val dv = mime == MimeTypes.VIDEO_DOLBY_VISION || codecs?.let { DV_CODECS.containsMatchIn(it) } == true
             val dvBase = if (baseLayer && dv) DvBaseLayer.profileOf(codecs) ?: 0 else 0
+            val decoder = when {
+                dvBase > 0 -> Decoder.PLAIN
+                decoderMime == null || v == null -> Decoder.UNKNOWN
+                decoderMime == MimeTypes.VIDEO_DOLBY_VISION -> Decoder.DOLBY_VISION
+                else -> Decoder.PLAIN
+            }
+            val pq = color?.colorTransfer == C.COLOR_TRANSFER_ST2084
             val hdr = when {
                 dvBase > 0 -> "HDR10"
                 dv -> "Dolby Vision"
@@ -210,6 +279,16 @@ data class MediaSpec(
                 audioBps = a?.averageBitrate?.takeIf { it > 0 }?.toLong() ?: a?.bitrate?.takeIf { it > 0 }?.toLong() ?: 0,
                 audioHow = if ((a?.averageBitrate ?: 0) > 0 || (a?.bitrate ?: 0) > 0) How.STATED else How.NONE,
                 dvBaseLayer = dvBase,
+                dvProfile = if (dv) DvBaseLayer.profileOf(codecs) ?: 0 else 0,
+                decoder = decoder,
+                hdr10Plus = hdr10Plus,
+                // A base layer is given generic data when its file has none ([DvBaseLayer.hdr10]); the file's own otherwise.
+                hdrInfo = when {
+                    dvBase > 0 -> true
+                    pq || (dv && color != null) -> color?.hdrStaticInfo != null
+                    else -> null
+                },
+                aspect = aspect.takeIf { it > 0f } ?: 0f,
             )
         }
 

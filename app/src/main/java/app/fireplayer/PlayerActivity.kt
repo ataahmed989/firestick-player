@@ -24,6 +24,7 @@ import app.fireplayer.vod.play.PlayRules
 import app.fireplayer.vod.play.PlayerMeta
 import app.fireplayer.vod.play.Recovery
 import app.fireplayer.vod.play.SourcePlayback
+import app.fireplayer.vod.play.SourcesModel
 import app.fireplayer.vod.play.VodFix
 import app.fireplayer.vod.ui.SourcesPanel
 import android.os.Build
@@ -5373,6 +5374,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             }
             row(if (ref != null) "Show details" else "Film details") { openDetails(show = ref != null) }.asSubRow()
             row("Picture & sound") { openQuality(show = ref != null) }.asSubRow()
+            // Every copy the add-ons offer, ranked for this TV: the same window as the title page's Sources.
+            row("Sources", vod.session.list?.sources?.size?.let { "$it" }) { openSourcesPanel(vod) }.asSubRow()
             return
         }
         val portal = NextEpisode.portal(entry.uri)
@@ -5510,7 +5513,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val link = p.currentMediaItem?.localConfiguration?.uri?.toString()
         val rates = embeddedCues.source(link)?.rates
         // Dolby Vision profile 7 that this TV plays as its HDR10 base layer is described, and kept, as HDR10.
-        val base = MediaSpec.of(video, audio, DvBaseLayer.playedAsBase(video?.sampleMimeType, video?.codecs, DvBaseLayer.tvPlaysBase))
+        val base = MediaSpec.of(video, audio, DvBaseLayer.playedAsBase(video?.sampleMimeType, video?.codecs, DvBaseLayer.tvPlaysBase),
+            app.fireplayer.player.PlayFacts.decoderMime, app.fireplayer.player.PlayFacts.hdr10PlusSeen, app.fireplayer.player.PlayFacts.aspect)
         val w = p.videoSize.width.takeIf { it > 0 } ?: base.width
         val h = p.videoSize.height.takeIf { it > 0 } ?: base.height
         val videoBps = rates?.bps(video?.id) ?: 0L
@@ -5740,8 +5744,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (keptPlay != playKey) {
             keptPlay = playKey
             keptBefore = before
+            keptAt = System.currentTimeMillis()
         }
-        val text = MediaSpec.encode(MediaSpec.merged(before, spec))
+        // The play's date, the same all through it: "✓ played" in Sources, and when it last played here.
+        val text = MediaSpec.encode(MediaSpec.merged(before, spec.copy(playedAt = keptAt)))
         if (qualitySeen.getString(key, null) == text) return
         val edit = qualitySeen.edit()
         if (qualitySeen.all.size >= MAX_QUALITY_SEEN && !qualitySeen.contains(key)) edit.clear()
@@ -5831,7 +5837,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val now = SystemClock.elapsedRealtime()
         val sofar = if (watchingSince > 0) health.copy(watchedMs = health.watchedMs + now - watchingSince) else health
         if (sofar == CopyHealth()) return
-        val text = CopyHealth.encode((healthBefore ?: CopyHealth()) + sofar)
+        val text = CopyHealth.encode((healthBefore ?: CopyHealth()) + sofar.copy(at = System.currentTimeMillis()))
         if (qualitySeen.getString("h|$key", null) != text) qualitySeen.edit().putString("h|$key", text).apply()
     }
 
@@ -5848,6 +5854,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     // The play being kept, and what earlier plays had measured of it when it started.
     private var keptPlay: String? = null
     private var keptBefore: MediaSpec? = null
+    private var keptAt = 0L
 
     /** What was measured of the copy at [uri] when it was played; null if it never was. Any thread. */
     private fun measuredQuality(uri: Uri): MediaSpec? =
@@ -6377,10 +6384,16 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
     }
 
-    /** Picture & sound's rows for a play from the add-ons: Next source (at the current position) and Sources. */
+    /**
+     * Picture & sound's rows for a play from the add-ons: Next source (at the current position), its note the copy it
+     * plays in the Sources window's words, and Sources.
+     */
     private fun SidePanel.sourceRows(s: SourcePlayback) {
-        val playing = s.current
-        val note = playing?.let { listOf(PlayRules.badges(it), "from ${PlayRules.addonsOf(it)}").filter { t -> t.isNotEmpty() }.joinToString(" · ") }
+        val list = s.session.list
+        val next = list?.let { SourcesModel.view(it, s.current?.key, s.session.attempts).next }
+        val note = if (list == null || next == null) null else
+            listOf(PlayRules.mainLine(next, film = SourcesModel.film(list), plan = list.plan), PlayRules.addonsOf(next))
+                .filter { t -> t.isNotEmpty() }.joinToString(" · ")
         actionRow("Next source", note, "Next", Rows.Badge.ACTIVE) {
             panel.close()
             hideControls()
@@ -6390,12 +6403,21 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         row("Sources", count?.let { "$it" }) { openSourcesPanel(s) }
     }
 
-    /** The Sources panel over Picture & sound: OK on a row plays it at the current position (or from the beginning). */
+    /**
+     * The Sources window over Settings or Picture & sound: OK on a row plays it at the current position (or from the
+     * beginning). It knows whether the copy playing plays smoothly, and its server's speed for its Details.
+     */
     private fun openSourcesPanel(s: SourcePlayback) {
         val sp = sourcesPanel ?: SourcesPanel(this, panel).also { sourcesPanel = it }
         val ep = s.request.target.episode
         val title = if (ep == null) "Sources" else "Sources · S${ep.season} E${ep.episode}"
-        sp.open(title, s.session.list, s.session.attempts, s.current?.key, sub = true) { picked, beginning ->
+        // As Picture & sound's Server says it: what arrives against what the whole file needs.
+        val server = {
+            val d = diag.download
+            val need = playingSpec()?.let { it.overallBps.takeIf { b -> b > 0 } ?: (it.videoBps + it.audioBps) } ?: 0L
+            if (diag.meter.bytes > 0L) app.fireplayer.player.ArrivalWords.server(d.sustainedMbps, d.sustainedSeconds, need / 1_000_000.0) else null
+        }
+        sp.open(title, s.session.list, s.session.attempts, s.current?.key, sub = true, smooth = s.smooth, server = server) { picked, beginning ->
             panel.close()
             hideControls()
             // The copy playing (its row at the top): it plays on, unless asked to start from the beginning.

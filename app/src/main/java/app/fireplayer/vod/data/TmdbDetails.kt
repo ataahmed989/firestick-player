@@ -74,6 +74,8 @@ object TmdbDetails {
         val writers: List<String> = emptyList(),
         val recommendations: List<Item> = emptyList(),
         val similar: List<Item> = emptyList(),
+        /** The language it was made in, ISO 639-1 ("en", "ko"); null when TMDB doesn't say. */
+        val originalLanguage: String? = null,
     )
 
     /** A details answer (with [append]'s parts) as [Extras]; null without an id. */
@@ -106,6 +108,7 @@ object TmdbDetails {
             writers = if (show) emptyList() else crew.filter { c -> c.text("job")?.let { it in WRITING_JOBS } == true }.mapNotNull { it.text("name") }.distinct(),
             recommendations = items(o.optJSONObject("recommendations"), kind),
             similar = items(o.optJSONObject("similar"), kind),
+            originalLanguage = o.text("original_language")?.lowercase(java.util.Locale.ROOT),
         )
     }
 
@@ -146,6 +149,7 @@ object TmdbDetails {
         e.releaseDate?.let { put("date", it) }
         e.status?.let { put("status", it) }
         e.backdrop?.let { put("backdrop", it) }
+        e.originalLanguage?.let { put("lang", it) }
         if (e.createdBy.isNotEmpty()) put("createdBy", JSONArray(e.createdBy))
         if (e.cast.isNotEmpty()) put("cast", JSONArray(e.cast))
         if (e.directors.isNotEmpty()) put("directors", JSONArray(e.directors))
@@ -174,6 +178,7 @@ object TmdbDetails {
             writers = o.optJSONArray("writers").texts(),
             recommendations = readItems(o.optJSONArray("recommendations")),
             similar = readItems(o.optJSONArray("similar")),
+            originalLanguage = o.text("lang"),
         )
     }
 

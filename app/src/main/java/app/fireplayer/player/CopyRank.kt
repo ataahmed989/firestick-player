@@ -21,9 +21,10 @@ import kotlin.math.abs
  * ([FULL]) doesn't count: a well-fed 4K copy isn't beaten by a 1080p one for the 1080p's bigger file.
  *
  * Before any of that, a copy that plays: one that keeps stopping to load, or loses frames ([CopyHealth.troubled]), is
- * only recommended when every copy known does the same. Failing to play isn't held against a copy. Then the sound wanted
- * ([CopyLanguage.fit]): a copy known to lack it only when no copy is known to have it. Subtitles in the viewer's
- * language only break a tie.
+ * only recommended when every copy known does the same. Failing to play isn't held against a copy. A copy known to lack
+ * every sound wanted ([CopyLanguage.fit] 0) only when no other is known. The film's own language over the viewer's is
+ * then a close call's tie-break, after width and bit depth (as "Best for this TV" ranks add-on copies): a dub with
+ * clearly more picture wins. Subtitles in the viewer's language only break a tie.
  */
 object CopyRank {
 
@@ -116,10 +117,9 @@ object CopyRank {
         if (known.isEmpty()) return Verdict(null, null, emptyList(), emptyList())
         val usePicture = known.all { picture(copies[it]) }
         val all = if (usePicture) known else known.filter { whole(copies[it]) > 0 }
-        // Copies that play come first: the others only when nothing else is known. Then the sound wanted.
+        // Copies that play come first: the others only when nothing else is known. Then one not known to lack the sound.
         val playing = all.filterNot { troubled(it) }.ifEmpty { all }
-        val bestFit = playing.maxOf { fit(it) }
-        val fitting = playing.filter { fit(it) == bestFit }
+        val fitting = playing.filter { fit(it) > 0 }.ifEmpty { playing }
         fun bits(i: Int) = if (usePicture) copies[i].videoBps else whole(copies[i])
         val codecs = fitting.mapNotNull { copies[it].videoCodec }.toSet()
         val mixed = codecs.size > 1
@@ -143,6 +143,7 @@ object CopyRank {
                 compareByDescending<Int> { copies[it].width }
                     .thenByDescending { groups.getOrNull(it) ?: 0 }
                     .thenByDescending { copies[it].bitDepth }
+                    .thenByDescending { fit(it) }
                     .thenByDescending { soundRank(copies[it]) }
                     .thenByDescending { copies[it].channels }
                     .thenByDescending { sub(it) }

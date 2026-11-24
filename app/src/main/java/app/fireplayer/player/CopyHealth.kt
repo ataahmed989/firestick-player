@@ -23,10 +23,12 @@ data class CopyHealth(
     val skips: Int = 0,
     val droppedFrames: Long = 0,
     val renderedFrames: Long = 0,
+    /** When it last played here (epoch ms), so "Buffered here before" can stop counting; 0 when not known. */
+    val at: Long = 0,
 ) {
     operator fun plus(o: CopyHealth) = CopyHealth(
         watchedMs + o.watchedMs, stalls + o.stalls, stallMs + o.stallMs, failures + o.failures, skips + o.skips,
-        droppedFrames + o.droppedFrames, renderedFrames + o.renderedFrames,
+        droppedFrames + o.droppedFrames, renderedFrames + o.renderedFrames, maxOf(at, o.at),
     )
 
     /**
@@ -80,12 +82,13 @@ data class CopyHealth(
             if (p < 10) String.format(Locale.US, "%.1f%%", p) else String.format(Locale.US, "%.0f%%", p)
 
         /**
-         * "watched|stalls|stallMs|failures|skips|droppedFrames|renderedFrames". The frame counts came later: a string
-         * kept before them has five fields, and still reads (with no frames counted); a version that only knows five
-         * reads the first five of these.
+         * "watched|stalls|stallMs|failures|skips|droppedFrames|renderedFrames|at". The frame counts and the date came
+         * later: a string kept before them has five or seven fields, and still reads (with none counted); a version that
+         * only knows fewer reads the first of these.
          */
         fun encode(h: CopyHealth): String =
-            "${h.watchedMs}|${h.stalls}|${h.stallMs}|${h.failures}|${h.skips}|${h.droppedFrames}|${h.renderedFrames}"
+            "${h.watchedMs}|${h.stalls}|${h.stallMs}|${h.failures}|${h.skips}|${h.droppedFrames}|${h.renderedFrames}" +
+                if (h.at > 0) "|${h.at}" else ""
 
         fun decode(text: String?): CopyHealth? {
             val f = text?.split('|') ?: return null
@@ -93,7 +96,7 @@ data class CopyHealth(
             return CopyHealth(
                 f[0].toLongOrNull() ?: 0, f[1].toIntOrNull() ?: 0, f[2].toLongOrNull() ?: 0,
                 f[3].toIntOrNull() ?: 0, f[4].toIntOrNull() ?: 0,
-                f.getOrNull(5)?.toLongOrNull() ?: 0, f.getOrNull(6)?.toLongOrNull() ?: 0,
+                f.getOrNull(5)?.toLongOrNull() ?: 0, f.getOrNull(6)?.toLongOrNull() ?: 0, f.getOrNull(7)?.toLongOrNull() ?: 0,
             )
         }
     }

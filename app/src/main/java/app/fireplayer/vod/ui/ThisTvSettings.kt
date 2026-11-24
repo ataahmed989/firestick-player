@@ -41,9 +41,14 @@ object ThisTvSettings {
         choice("Plan", listOf("Automatic", "Custom"), if (plan.automatic) 0 else 1) { i ->
             if (i == 0) tv.useAutomatic() else tv.setPlan(plan.copy(automatic = false))
         }
+        row("IMAX first: always", SettingsPanels.onOff(tv.imaxAlways())) {
+            tv.setImaxAlways(!tv.imaxAlways())
+            refresh()
+        }
+        message(TvPlanRules.IMAX_NOTE)
         if (plan.automatic) {
             row("HDR order", TvPlanRules.hdrWords(plan.hdrOrder)) {}
-            message("Automatic follows what the TV reports. Dolby Vision profile 8 counts as its HDR10 picture on a TV without Dolby Vision; profiles 5 and 7 come last.")
+            message(TvPlanRules.dolbyVisionNote(plan))
             return@with
         }
         val orders = TvPlanRules.HDR_ORDERS

@@ -69,29 +69,38 @@ class LineRateTest {
         assertNull(line.current())
     }
 
-    @Test fun theNewestMeasurementReplacesItUpOrDown() {
+    @Test fun theFigureUsedIsTheLowestOfTheLastThreeAndSmallChangesOnlyRenewIt() {
         line.short(72.0)
-        // A faster evening lifts it.
-        assertTrue(line.seen(85.0))
-        assertEquals(85.0, line.current()!!, 0.001)
-        // A slower one lowers it: the newest evidence counts.
+        // A faster evening is kept beside it: the figure stays the slower one, so Best doesn't flip.
+        assertFalse(line.seen(85.0))
+        assertEquals(72.0, line.current()!!, 0.001)
+        // A slower one lowers it at once.
         assertTrue(line.seen(47.0))
         assertEquals(47.0, line.current()!!, 0.001)
-        // Within a twentieth: nothing written, nothing to rank again...
+        // Within 15 % of the newest: nothing written, nothing to rank again...
         now += 60_000
-        assertFalse(line.seen(48.0))
-        assertEquals("47.0|1700000000000", store.text)
-        // ...unless what's kept is an hour old: written again (its time is the newest evidence's), still no rerank.
+        assertFalse(line.seen(52.0))
+        assertEquals("47.0|1700000000000;85.0|1700000000000;72.0|1700000000000", store.text)
+        // ...unless the newest is an hour old: its time renewed, its figure kept.
         now += LineRate.REFRESH_MS
-        assertFalse(line.seen(48.0))
-        assertEquals(48.0, line.current()!!, 0.001)
-        // A stalling film's measurement replaces it too.
+        assertFalse(line.seen(52.0))
+        assertEquals(47.0, line.current()!!, 0.001)
+        assertTrue(store.text!!.startsWith("47.0|$now;"))
+        // Only the last three count: three faster evenings since, and the slow one no longer does.
+        assertFalse(line.seen(90.0))
+        assertFalse(line.seen(110.0))
+        assertTrue(line.seen(130.0))
+        assertEquals(90.0, line.current()!!, 0.001)
+        // A stalling film's measurement is always kept.
         line.short(60.0)
         assertEquals(60.0, line.current()!!, 0.001)
         // Nonsense never counts.
         assertFalse(line.seen(Double.NaN))
         assertFalse(line.seen(0.0))
         assertEquals(60.0, line.current()!!, 0.001)
+        // Each reading is forgotten after three days.
+        now += LineRate.KEEP_MS + 1
+        assertNull(line.current())
     }
 
     @Test fun nonsenseIsNeverKeptOrRead() {
@@ -133,13 +142,14 @@ class LineRateTest {
         assertEquals(false, LineRate.tooFast(69.0, 0.0))
     }
 
-    @Test fun steadyIsThreeQuartersOfTheLineAtMost() {
-        // Tonight's line: 47 Mb/s arriving. A 35 Mb/s copy leaves room for busy scenes; a 40 Mb/s one doesn't.
-        assertTrue(LineRate.steady(35.0, 47.0))
-        assertFalse(LineRate.steady(40.0, 47.0))
-        assertTrue(LineRate.steady(null, 47.0))
-        assertTrue(LineRate.steady(76.0, null))
-        assertTrue(LineRate.steady(76.0, 0.0))
+    @Test fun roomIsHalfAgainARemuxsAverageAndAThirdMoreForOthers() {
+        // Tonight's line: 47 Mb/s arriving. A 35 Mb/s encode leaves room for busy scenes; a 40 Mb/s one, or a 35 Mb/s remux, doesn't.
+        assertTrue(LineRate.room(35.0, 47.0, remux = false))
+        assertFalse(LineRate.room(40.0, 47.0, remux = false))
+        assertFalse(LineRate.room(35.0, 47.0, remux = true))
+        assertTrue(LineRate.room(null, 47.0, remux = true))
+        assertTrue(LineRate.room(76.0, null, remux = true))
+        assertTrue(LineRate.room(76.0, 0.0, remux = true))
     }
 
     @Test fun bestForThisTvPrefersCopiesLeavingTheLineRoom() {

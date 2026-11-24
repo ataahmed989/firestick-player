@@ -2,10 +2,13 @@ package app.fireplayer.vod.sources
 
 import app.fireplayer.player.CopyLanguage
 import app.fireplayer.player.CopyRank
+import app.fireplayer.player.ImaxAspect
 import app.fireplayer.player.MediaSpec
+import app.fireplayer.vod.BestWhy
 import app.fireplayer.vod.Hdr
 import app.fireplayer.vod.Measured
 import app.fireplayer.vod.PlaybackSource
+import app.fireplayer.vod.RankStep
 import app.fireplayer.vod.Readiness
 import app.fireplayer.vod.SoundFormat
 import app.fireplayer.vod.SourceFacts
@@ -18,32 +21,66 @@ import kotlin.math.ln
 /** What "Best for this TV" weighs a list against. */
 class RankInput(
     val plan: TvPlan,
-    /** [CopyLanguage.wanted]: the sound to look for, best first. */
+    /** [CopyLanguage.wanted]: the film's own language first, then the viewer's (one when they're the same or unknown). */
     val wanted: List<String>,
     /** What FirePlayer measured of a release, by [app.fireplayer.vod.ReleaseKey.storeKey]; null when never played. */
     val measured: (String) -> Measured?,
     val runtimeMin: Int?,
     val episode: Boolean,
-    /**
-     * What this TV's connection was measured to sustain while a film kept stalling for want of it ([LineRate]), in
-     * Mb/s; null when nothing of the kind was measured lately.
-     */
+    /** This TV's connection, steady ([LineRate.current]), in Mb/s; null when nothing was measured lately. */
     val lineMbps: Double? = null,
+    /** Settings › This TV › IMAX first: always ([app.fireplayer.vod.ThisTv.imaxAlways]). */
+    val imaxAlways: Boolean = false,
+    /** The viewer's subtitle language ("en"): a copy known to carry it gets a small plus; null for none. */
+    val subtitles: String? = null,
+    /** Now, epoch ms: "Buffered here before" stops counting [SourceRank.TROUBLE_KEEP_MS] after; 0 never. */
+    val now: Long = 0L,
 )
 
 /**
- * "Best for this TV" (r3_sources-organize §4.4), the same order in every group: first a 4K IMAX or open-matte release
- * this TV plays ([imaxFirst], the user's wish), then plays on this TV (measured here > likely > unknown > likely not;
- * a file needing more than this connection was measured to sustain is "likely not", and its row says so), then one
- * leaving the connection room for busy scenes ([LineRate.steady]) before one that doesn't,
- * the debrid service's state (played here > probably cached > unknown), the sound wanted
- * ([CopyLanguage]), the picture ([CopyRank]'s data per pixel with codec efficiency, starved and full limits, and the HDR
- * the [TvPlan] prefers), then width, bit depth, source, sound for this TV's receiver, size. Pure.
+ * "Best for this TV" (r3_sources-organize §4.4, the user's order of 2026-11), the same order in every group, each step
+ * ([RankStep]) only breaking ties of the ones before:
+ *
+ * 1. Plays here: likely, or played here (the same: a short test play doesn't decide Best), then unknown, then "likely
+ *    not" ([fit]: buffered here lately, Dolby Vision this TV can't show, over the data limit, faster than the
+ *    connection, taller than the TV).
+ * 2. Cached (played here smoothly, or the debrid service probably has it), then unknown, then not cached.
+ * 3. Not known to lack both the film's own language and the viewer's.
+ * 4. Room on the connection ([LineRate.room], steady figure; only once one was measured).
+ * 5. Picture data: bits per pixel with codec efficiency, measured video rate once played, 4K counting up to [FULL_4K]
+ *    (about 40 Mb/s), copies within 15 % equal ([CopyRank.CLOSE]), HDR this TV prefers given its edge.
+ * 6. Height. 7. The HDR this TV shows ([shownHdr]: Dolby Vision by what this TV does with each profile).
+ * 8. Source kind (Remux, BluRay encode, WEB-DL, WEBRip, HDTV), then bit depth (10-bit taken for HDR and 4K HEVC).
+ * 9. HDR10+ on a TV that reports it (Dolby Vision on a Dolby Vision TV); a picture played here without HDR10's
+ *    brightness data last.
+ * 10. IMAX (films only: the name says IMAX, or a play measured 1.90:1, [ImaxAspect]); first of all with
+ *    [RankInput.imaxAlways].
+ * 11. The film's own language just above the viewer's dub ([language]), subtitles in the viewer's language a little
+ *    more; of equal quality the best of each sit side by side ([pairLanguages]).
+ * 12. Sound as heard: capped at what the TV or receiver takes as it is ([sound]). 13. Played smoothly here.
+ * 14. Size. 15. Seeders. Then the add-ons' order.
+ *
+ * Pure.
  */
 object SourceRank {
 
-    /** Above this average a row says "High data rate" (the user's Wi-Fi measured about 55-63 Mb/s). */
+    /** With no connection measured, above this average a row says "High data rate". */
     const val HIGH_MBPS = 60.0
+
+    /** For ranking a 4K copy, data counts up to this many bits per pixel (about 40 Mb/s of HEVC), not [CopyRank.FULL]. */
+    const val FULL_4K = 0.20
+
+    /** "Buffered here before" stops counting this long after the copy last played here... */
+    const val TROUBLE_KEEP_MS = 7L * 24 * 60 * 60 * 1000
+
+    /** ...or once the connection brings this many times its average (a stall-free evening for it). */
+    const val TROUBLE_LINE = 1.33
+
+    const val DV7_WORDS = "Dolby Vision 7: may not play here"
+    const val NEEDS_DV = "Needs a Dolby Vision TV"
+    const val BUFFERED = "Buffered here before"
+    const val CLOSE_TO_LINE = "Close to your connection"
+    const val HIGH_RATE = "High data rate"
 
     /** A film's or an episode's length when the add-ons' size is known but the runtime isn't (ranking only, never shown). */
     private const val FILM_MIN = 120
@@ -52,12 +89,19 @@ object SourceRank {
     /** Ranks [sources] best first, without SD copies when the title has better ([withoutSd]). */
     fun rank(sources: List<PlaybackSource>, input: RankInput): List<PlaybackSource> {
         val scored = withoutSd(sources).mapIndexed { i, s ->
-            val measured = s.release?.let { input.measured(it.storeKey) }
-            val (fit, warning) = fit(asPlayedHere(s.facts, measured), input.plan, measured, input.lineMbps)
+            val measured = measuredOf(s, input)
+            val (fit, warning) = fit(asPlayedHere(s.facts, measured), input.plan, measured, input.lineMbps, input.now)
             val ranked = s.copy(fit = fit, warning = warning, measured = measured)
             Scored(ranked, i, keyOf(ranked, input))
         }
-        return scored.sortedWith(ORDER).map { it.source }
+        return pairLanguages(scored.sortedWith(ORDER), input).map { it.source }
+    }
+
+    /** What was measured of a row's file: its own release's, else a merged offer's (the same file from another add-on). */
+    private fun measuredOf(s: PlaybackSource, input: RankInput): Measured? {
+        s.release?.let { r -> input.measured(r.storeKey)?.let { return it } }
+        for (o in s.offers) o.release?.let { r -> if (r != s.release) input.measured(r.storeKey)?.let { return it } }
+        return null
     }
 
     /** Below this height a copy is SD (480p, 576p): the user's "480p should not appear". */
@@ -79,151 +123,347 @@ object SourceRank {
     /** The automatic pick: the first ranked source that may be picked by itself. */
     fun best(ranked: List<PlaybackSource>): PlaybackSource? = ranked.firstOrNull { it.automatic }
 
-    private class Key(
-        val imax: Int,
-        val fit: Int,
-        val steady: Int,
-        val ready: Int,
-        val language: Int,
-        val picture: Int,
-        val height: Int,
-        val hdr: Int,
-        val bits: Int,
-        val origin: Int,
-        val sound: Int,
-        val size: Long,
-        val seeders: Int,
-    )
+    /** One value per [RankStep], higher first; [dub]: the viewer's language without the film's own. */
+    private class Key(val v: LongArray, val dub: Boolean)
 
     private class Scored(val source: PlaybackSource, val index: Int, val key: Key)
 
-    private val ORDER: Comparator<Scored> = compareByDescending<Scored> { it.key.imax }
-        .thenByDescending { it.key.fit }
-        .thenByDescending { it.key.steady }
-        .thenByDescending { it.key.ready }
-        .thenByDescending { it.key.language }
-        .thenByDescending { it.key.picture }
-        .thenByDescending { it.key.height }
-        .thenByDescending { it.key.hdr }
-        .thenByDescending { it.key.bits }
-        .thenByDescending { it.key.origin }
-        .thenByDescending { it.key.sound }
-        .thenByDescending { it.key.size }
-        .thenByDescending { it.key.seeders }
-        .thenBy { it.index }
+    private val STEPS = RankStep.entries
+
+    private val ORDER = Comparator<Scored> { a, b ->
+        for (i in STEPS.indices) {
+            val c = b.key.v[i].compareTo(a.key.v[i])
+            if (c != 0) return@Comparator c
+        }
+        a.index.compareTo(b.index)
+    }
+
+    /** The first step [a] and [b] differ in, from [from] on; null when they're equal there. */
+    private fun stepBetween(a: Key, b: Key, from: Int = 0, until: Int = STEPS.size): RankStep? {
+        for (i in from until until) if (a.v[i] != b.v[i]) return STEPS[i]
+        return null
+    }
 
     private fun keyOf(s: PlaybackSource, input: RankInput): Key {
         val f = asPlayedHere(s.facts, s.measured)
-        val ready = when {
-            s.measured?.spec != null && s.measured.health?.troubled != true -> 3
-            s.readiness == Readiness.PROBABLY_READY -> 2
+        val spec = s.measured?.spec
+        val plan = input.plan
+        val playedWell = spec != null && !troubled(s.measured, f.avgMbps, input.lineMbps, input.now)
+        val hdr = hdrRank(f, plan)
+        val known = knownLanguages(f.languages, spec?.audioLangs)
+        val level = language(f.languages, spec?.audioLangs, input.wanted)
+        val subs = input.subtitles?.let { CopyLanguage.code(it) }?.let { want ->
+            want in f.subs || CopyLanguage.hasSubs(spec?.subLangs.orEmpty(), want)
+        } == true
+        val v = LongArray(STEPS.size)
+        v[RankStep.IMAX_ALWAYS.ordinal] = if (input.imaxAlways && imaxFirst(s, !input.episode)) 1 else 0
+        v[RankStep.PLAYS.ordinal] = when (s.fit) {
+            TvFit.MEASURED_OK, TvFit.LIKELY -> 2
+            TvFit.UNKNOWN -> 1
+            TvFit.LIKELY_NOT -> 0
+        }
+        v[RankStep.CACHED.ordinal] = when {
+            playedWell || s.readiness == Readiness.PROBABLY_READY -> 2
             s.readiness == Readiness.UNKNOWN -> 1
             else -> 0
         }
-        val hdr = hdrRank(f, input.plan)
-        return Key(
-            imax = if (imaxFirst(s)) 1 else 0,
-            fit = when (s.fit) {
-                TvFit.MEASURED_OK -> 3
-                TvFit.LIKELY -> 2
-                TvFit.UNKNOWN -> 1
-                TvFit.LIKELY_NOT -> 0
-            },
-            steady = if (LineRate.steady(f.avgMbps, input.lineMbps)) 1 else 0,
-            ready = ready,
-            language = language(f.languages, s.measured?.spec?.audioLangs, input.wanted),
-            picture = pictureBucket(f, input, hdr),
-            height = f.height ?: 0,
-            hdr = hdr,
-            bits = f.bitDepth ?: 0,
-            origin = originRank(f.origin),
-            sound = sound(f, input.plan),
-            size = f.sizeBytes ?: 0L,
-            seeders = f.seeders ?: 0,
-        )
+        v[RankStep.LANGUAGE_KNOWN.ordinal] = if (level == 0) 0 else 1
+        v[RankStep.ROOM.ordinal] = if (LineRate.room(f.avgMbps, input.lineMbps, f.origin == REMUX)) 1 else 0
+        v[RankStep.PICTURE.ordinal] = pictureBucket(f, spec, input, hdr).toLong()
+        v[RankStep.HEIGHT.ordinal] = (f.height ?: 0).toLong()
+        v[RankStep.HDR.ordinal] = hdr.toLong()
+        v[RankStep.KIND.ordinal] = originRank(f.origin) * 100L + bitDepth(f)
+        v[RankStep.DYNAMIC_HDR.ordinal] = dynamicHdr(shownHdr(f, plan), spec, plan).toLong()
+        v[RankStep.IMAX.ordinal] = if (isImaxCopy(s, !input.episode)) 1 else 0
+        v[RankStep.LANGUAGE.ordinal] = level * 2L + if (subs) 1 else 0
+        v[RankStep.SOUND.ordinal] = sound(f, plan).toLong()
+        v[RankStep.SMOOTH.ordinal] = if (playedWell) 1 else 0
+        v[RankStep.SIZE.ordinal] = f.sizeBytes ?: 0L
+        v[RankStep.SEEDERS.ordinal] = (f.seeders ?: 0).toLong()
+        val dub = input.wanted.size > 1 && input.wanted[1] in known && input.wanted[0] !in known
+        return Key(v, dub)
     }
 
     /**
-     * Whether [facts] likely play well under [plan], and at most one warning for the row. [lineMbps] is what this
-     * connection was measured to sustain when a film kept stalling for want of it ([LineRate]; null: nothing measured).
+     * Of equal quality (every step before [RankStep.LANGUAGE] equal), the best copy in the film's own language and the
+     * best one dubbed in the viewer's sit side by side, the film's own first; the others keep their order.
      */
-    fun fit(facts: SourceFacts, plan: TvPlan, measured: Measured?, lineMbps: Double? = null): Pair<TvFit, String?> {
-        val dv = Hdr.DOLBY_VISION in facts.hdr
-        val tvDv = plan.hdrOrder.any { Hdr.DOLBY_VISION in it }
-        val base = Hdr.HDR10 in facts.hdr || Hdr.HDR10_PLUS in facts.hdr
+    private fun pairLanguages(sorted: List<Scored>, input: RankInput): List<Scored> {
+        if (input.wanted.size < 2) return sorted
+        val out = ArrayList(sorted)
+        val lang = RankStep.LANGUAGE.ordinal
+        var start = 0
+        while (start < out.size) {
+            var end = start + 1
+            while (end < out.size && stepBetween(out[start].key, out[end].key, until = lang) == null) end++
+            val own = (start until end).firstOrNull { out[it].key.v[lang] >= 4 }
+            val dub = (start until end).firstOrNull { out[it].key.dub }
+            if (own != null && dub != null && dub > own + 1) out.add(own + 1, out.removeAt(dub))
+            start = end
+        }
+        return out
+    }
+
+    // ---- Why the Best is first ----
+
+    /** The steps that are the picture: a copy better in these lost on an earlier one. */
+    private val QUALITY = RankStep.PICTURE.ordinal..RankStep.IMAX.ordinal
+
+    /**
+     * What put [ranked]'s Best first, and what it beat: a copy with a better picture that an earlier step put after it
+     * (not cached, no room on the connection…), else the first copy after it that lost on picture, HDR, source, IMAX or
+     * language. Copies that differ from it only in sound, size or seeders aren't named. Null without a Best.
+     */
+    fun why(ranked: List<PlaybackSource>, input: RankInput): BestWhy? {
+        val best = best(ranked) ?: return null
+        val at = ranked.indexOf(best)
+        val keys = ranked.map { keyOf(it, input) }
+        val mine = keys[at]
+        val shown = shownHdr(asPlayedHere(best.facts, best.measured), input.plan)
+        var rival = -1
+        for (i in ranked.indices) {
+            if (i == at || ranked[i].group == SourceGroup.CINEMA) continue
+            if (better(keys[i], mine) && (rival < 0 || better(keys[i], keys[rival]))) rival = i
+        }
+        if (rival < 0) {
+            for (i in at + 1 until ranked.size) {
+                if (ranked[i].group == SourceGroup.CINEMA) continue
+                val step = stepBetween(mine, keys[i]) ?: continue
+                if (step.ordinal in RankStep.PICTURE.ordinal..RankStep.LANGUAGE.ordinal) {
+                    rival = i
+                    break
+                }
+            }
+        }
+        if (rival < 0) return BestWhy(best.key, shown)
+        val step = stepBetween(mine, keys[rival]) ?: return BestWhy(best.key, shown)
+        return BestWhy(best.key, shown, ranked[rival].key, step, lacks(step, ranked[rival], keys[rival], input))
+    }
+
+    /** Whether [a]'s picture steps beat [b]'s. */
+    private fun better(a: Key, b: Key): Boolean {
+        for (i in QUALITY) if (a.v[i] != b.v[i]) return a.v[i] > b.v[i]
+        return false
+    }
+
+    /** What the copy beaten at [step] lacks, in plain words ("no HDR10+", "not cached yet"). */
+    private fun lacks(step: RankStep, b: PlaybackSource, key: Key, input: RankInput): String? {
+        val f = asPlayedHere(b.facts, b.measured)
+        return when (step) {
+            RankStep.IMAX_ALWAYS, RankStep.IMAX -> "not IMAX"
+            RankStep.PLAYS -> b.warning ?: if (b.fit == TvFit.UNKNOWN) "resolution not stated" else "more than this TV shows"
+            RankStep.CACHED -> if (b.readiness == Readiness.NOT_READY) "not cached yet" else "may not be cached"
+            RankStep.LANGUAGE_KNOWN -> "no " + input.wanted.joinToString(" or ") { CopyLanguage.name(it) } + " sound"
+            RankStep.ROOM -> {
+                val avg = f.avgMbps?.let { Math.round(it) }
+                val line = input.lineMbps?.let { Math.round(it) }
+                if (avg != null && line != null) "≈$avg Mb/s needs more room than your ≈$line Mb/s connection"
+                else "needs more room on your connection"
+            }
+            RankStep.PICTURE -> "less picture data"
+            RankStep.HEIGHT -> "lower resolution"
+            RankStep.HDR -> {
+                val shown = shownHdr(f, input.plan)
+                when {
+                    shown.isEmpty() -> "no HDR"
+                    Hdr.DOLBY_VISION in shown && input.plan.hdrOrder.none { Hdr.DOLBY_VISION in it } -> "Dolby Vision this TV can't show"
+                    Hdr.HLG in shown && Hdr.HDR10 !in shown && Hdr.HDR10_PLUS !in shown -> "HLG"
+                    else -> "HDR this TV ranks lower"
+                }
+            }
+            RankStep.KIND -> when (f.origin) {
+                null -> "source not stated"
+                REMUX -> "lower bit depth"
+                "BluRay", "DVD" -> "re-encoded"
+                "WEB-DL", "WEB", "WEBRip" -> "a streaming copy"
+                "HDTV" -> "a TV recording"
+                else -> f.origin
+            }
+            RankStep.DYNAMIC_HDR -> when {
+                key.v[RankStep.DYNAMIC_HDR.ordinal] == 0L -> "no HDR brightness data"
+                input.plan.hdrOrder.any { Hdr.DOLBY_VISION in it } -> "no Dolby Vision"
+                else -> "no HDR10+"
+            }
+            RankStep.LANGUAGE -> {
+                val level = key.v[RankStep.LANGUAGE.ordinal] / 2
+                if (level < 2 && input.wanted.isNotEmpty()) "not in ${CopyLanguage.name(input.wanted[0])}"
+                else input.subtitles?.let { "no ${CopyLanguage.name(it)} subtitles" }
+            }
+            else -> null
+        }
+    }
+
+    // ---- Plays here ----
+
+    /**
+     * Whether [facts] likely play well under [plan], and at most one warning for the row. [lineMbps] is this
+     * connection's steady figure ([LineRate.current]; null: nothing measured), [now] for how old a stall is.
+     */
+    fun fit(facts: SourceFacts, plan: TvPlan, measured: Measured?, lineMbps: Double? = null, now: Long = 0L): Pair<TvFit, String?> {
         val avg = facts.avgMbps
         val cap = plan.maxMbps
+        val dv = dvProblem(facts, plan)
         return when {
-            measured?.health?.troubled == true -> TvFit.LIKELY_NOT to "Buffered here before"
-            dv && facts.dvProfile == 7 -> TvFit.LIKELY_NOT to "Dolby Vision 7: may not play here"
-            dv && !tvDv && (facts.dvProfile == 5 || (facts.dvProfile == null && !base)) -> TvFit.LIKELY_NOT to "Needs a Dolby Vision TV"
+            troubled(measured, avg, lineMbps, now) -> TvFit.LIKELY_NOT to BUFFERED
+            dv != null -> TvFit.LIKELY_NOT to dv
             cap != null && avg != null && avg > cap -> TvFit.LIKELY_NOT to "Over your $cap Mb/s limit"
-            // Measured on this TV, not guessed: a film stalled past the limit while the download sustained this much.
+            // Measured on this TV, not guessed: what this connection keeps bringing.
             LineRate.tooFast(avg, lineMbps) ->
                 TvFit.LIKELY_NOT to "Needs ${Math.round(avg ?: 0.0)} Mb/s · this connection brought ${Math.round(lineMbps ?: 0.0)}"
             facts.height != null && facts.height > plan.topHeight -> TvFit.LIKELY_NOT to null
-            measured?.spec != null -> TvFit.MEASURED_OK to highRate(avg)
-            facts.height == null -> TvFit.UNKNOWN to highRate(avg)
-            else -> TvFit.LIKELY to highRate(avg)
+            measured?.spec != null -> TvFit.MEASURED_OK to rate(facts, lineMbps)
+            facts.height == null -> TvFit.UNKNOWN to rate(facts, lineMbps)
+            else -> TvFit.LIKELY to rate(facts, lineMbps)
         }
     }
 
-    private fun highRate(avg: Double?) = if (avg != null && avg > HIGH_MBPS) "High data rate" else null
+    /** With a connection measured: "Close to your connection" when it leaves no room; without, the old 60 Mb/s note. */
+    private fun rate(f: SourceFacts, lineMbps: Double?): String? {
+        val avg = f.avgMbps ?: return null
+        if (lineMbps != null && lineMbps > 0.0) return if (LineRate.room(avg, lineMbps, f.origin == REMUX)) null else CLOSE_TO_LINE
+        return if (avg > HIGH_MBPS) HIGH_RATE else null
+    }
 
     /**
-     * [facts] as this TV plays the file, by what FirePlayer [measured] when it played here: Dolby Vision this TV played
-     * as its HDR10 base layer ([MediaSpec.dvBaseLayer], a profile 7 file on single-layer Dolby Vision decoders) is HDR10
-     * here, not Dolby Vision, and plays. Otherwise [facts] as the add-ons have them.
+     * Whether a copy counts as one that buffered or dropped frames here ([app.fireplayer.player.CopyHealth.troubled]):
+     * not once it last played [TROUBLE_KEEP_MS] ago or more, nor, for buffering, once the connection ([lineMbps])
+     * brings [TROUBLE_LINE] times its average. A record with no date is judged by the connection only.
+     */
+    fun troubled(measured: Measured?, avgMbps: Double?, lineMbps: Double?, now: Long): Boolean {
+        val h = measured?.health ?: return false
+        if (!h.troubled) return false
+        if (now > 0 && h.at > 0 && now - h.at >= TROUBLE_KEEP_MS) return false
+        if (!h.choppy && avgMbps != null && lineMbps != null && lineMbps >= avgMbps * TROUBLE_LINE) return false
+        return true
+    }
+
+    /** Why this TV can't show a Dolby Vision copy as it is ([DV7_WORDS], [NEEDS_DV]); null when it can, or it isn't one. */
+    private fun dvProblem(f: SourceFacts, plan: TvPlan): String? {
+        if (Hdr.DOLBY_VISION !in f.hdr) return null
+        val tvDv = plan.hdrOrder.any { Hdr.DOLBY_VISION in it }
+        if (f.dvProfile == 7) return if (plan.dv7AsHdr10 == false && !tvDv) DV7_WORDS else null
+        if (tvDv) return null
+        val base = Hdr.HDR10 in f.hdr || Hdr.HDR10_PLUS in f.hdr
+        return if (f.dvProfile == 5 || (f.dvProfile == null && !base)) NEEDS_DV else null
+    }
+
+    /**
+     * [facts] as this TV played the file, by what FirePlayer [measured] when it played here: a Dolby Vision file played
+     * on a plain decoder (as its HDR10 base layer, or Media3's own way back to HEVC) is HDR10 here, not Dolby Vision; its
+     * profile is filled in from the play; HDR10+ seen in the picture is added. Otherwise [facts] as the add-ons have them.
      */
     fun asPlayedHere(facts: SourceFacts, measured: Measured?): SourceFacts {
-        if ((measured?.spec?.dvBaseLayer ?: 0) <= 0 || Hdr.DOLBY_VISION !in facts.hdr) return facts
-        return facts.copy(hdr = facts.hdr - Hdr.DOLBY_VISION + Hdr.HDR10, dvProfile = null)
-    }
-
-    /** IMAX, IMX or open matte as a word ("Film.2023.IMAX.2160p", "Open.Matte", "OpenMatte"), any case. */
-    private val IMAX = Regex("""(?<![a-z0-9])(imax|imx|open[ ._-]?matte)(?![a-z0-9])""", RegexOption.IGNORE_CASE)
-
-    /** Whether a release's name or file name ([text]) says IMAX, IMX or Open Matte. */
-    fun isImax(text: String?): Boolean = text != null && IMAX.containsMatchIn(text)
-
-    /**
-     * The user's wish ("4K IMAX (open matte) files at the top of the sources list"): a 2160p source whose name or file
-     * name says IMAX, IMX or Open Matte ranks above every other source, only when this TV plays it by the usual rules
-     * ([fit] measured or likely, never "likely not") and it isn't marked as troubled here. [s] has its [fit] set.
-     */
-    fun imaxFirst(s: PlaybackSource): Boolean {
-        if ((s.facts.height ?: 0) < 2160) return false
-        if (s.fit != TvFit.MEASURED_OK && s.fit != TvFit.LIKELY) return false
-        if (s.measured?.health?.troubled == true) return false
-        return s.offers.any { isImax(it.text) || isImax(it.filename) }
+        val spec = measured?.spec ?: return facts
+        var f = facts
+        if (Hdr.DOLBY_VISION in f.hdr) {
+            val plain = spec.dvBaseLayer > 0 || (spec.decoder == MediaSpec.Decoder.PLAIN && spec.dvProfile != 5)
+            val profile = spec.dvProfile.takeIf { it > 0 }
+            f = when {
+                plain -> f.copy(hdr = f.hdr - Hdr.DOLBY_VISION + Hdr.HDR10, dvProfile = null)
+                profile != null && f.dvProfile == null -> f.copy(dvProfile = profile)
+                else -> f
+            }
+        }
+        if (spec.hdr10Plus && Hdr.HDR10_PLUS !in f.hdr) f = f.copy(hdr = f.hdr + Hdr.HDR10_PLUS)
+        return f
     }
 
     /**
-     * How well the source's HDR suits the plan: the plan's first tier highest. Dolby Vision with an HDR10 base (or
-     * profile 8) counts as HDR10 on a TV without Dolby Vision. On a TV showing no HDR, SDR ranks first.
+     * The HDR this TV shows of [f] (as played here, [asPlayedHere]). Dolby Vision by what this TV does with each
+     * profile: profile 7 is the HDR10 (or HDR10+) picture inside it when this Stick plays its base layer
+     * ([TvPlan.dv7AsHdr10], on any TV: its decoders don't take profile 7); on a TV without Dolby Vision, profile 8, or a
+     * file that also names HDR10 or HDR10+, is that picture; profile 5 and a Dolby Vision file naming nothing else stay
+     * Dolby Vision (which such a TV can't show). On a Dolby Vision TV, Dolby Vision as it is. On an HDR TV without
+     * HDR10+, HDR10+ is HDR10.
      */
+    fun shownHdr(f: SourceFacts, plan: TvPlan): Set<Hdr> {
+        val kinds = dolbyVisionShown(f, plan)
+        val noPlus = plan.hdrOrder.isNotEmpty() && plan.hdrOrder.none { Hdr.HDR10_PLUS in it }
+        return if (noPlus && Hdr.HDR10_PLUS in kinds) kinds - Hdr.HDR10_PLUS + Hdr.HDR10 else kinds
+    }
+
+    private fun dolbyVisionShown(f: SourceFacts, plan: TvPlan): Set<Hdr> {
+        if (Hdr.DOLBY_VISION !in f.hdr) return f.hdr
+        val base = f.hdr - Hdr.DOLBY_VISION + Hdr.HDR10
+        if (f.dvProfile == 7 && plan.dv7AsHdr10 != false) return base
+        if (plan.hdrOrder.any { Hdr.DOLBY_VISION in it }) return f.hdr
+        return when {
+            f.dvProfile == 8 -> base
+            f.dvProfile == null && (Hdr.HDR10 in f.hdr || Hdr.HDR10_PLUS in f.hdr) -> base
+            else -> f.hdr
+        }
+    }
+
+    /** How well the HDR this TV shows of [facts] ([shownHdr]) suits the plan: the plan's first tier highest. On a TV showing no HDR, SDR first. */
     fun hdrRank(facts: SourceFacts, plan: TvPlan): Int {
         val tiers = plan.hdrOrder
-        val kinds = HashSet(facts.hdr)
-        val tvDv = tiers.any { Hdr.DOLBY_VISION in it }
-        if (Hdr.DOLBY_VISION in kinds && !tvDv && (facts.dvProfile == 8 || Hdr.HDR10 in kinds || Hdr.HDR10_PLUS in kinds)) {
-            kinds += Hdr.HDR10
-        }
         if (tiers.isEmpty()) return if (facts.hdr.isEmpty()) 2 else 1
         if (facts.hdr.isEmpty()) return 1
+        val kinds = shownHdr(facts, plan)
         val i = tiers.indexOfFirst { tier -> tier.any { it in kinds } }
         return if (i < 0) 0 else tiers.size - i + 1
     }
 
+    /**
+     * The HDR10+ step: 2 for the dynamic HDR this TV takes (HDR10+ on a TV that reports it without Dolby Vision, Dolby
+     * Vision on a Dolby Vision TV), 0 for a picture that played here without HDR10's brightness data, 1 otherwise.
+     */
+    private fun dynamicHdr(shown: Set<Hdr>, spec: MediaSpec?, plan: TvPlan): Int {
+        if (shown.isEmpty()) return 1
+        val top = when {
+            plan.hdrOrder.any { Hdr.DOLBY_VISION in it } -> Hdr.DOLBY_VISION in shown
+            plan.hdrOrder.any { Hdr.HDR10_PLUS in it } -> Hdr.HDR10_PLUS in shown
+            else -> false
+        }
+        return when {
+            top -> 2
+            spec?.hdrInfo == false -> 0
+            else -> 1
+        }
+    }
+
+    // ---- IMAX ----
+
+    /** IMAX or IMX as a word ("Film.2023.IMAX.2160p", "[IMX]"), any case. Open matte isn't: it is mostly a 16:9 picture. */
+    private val IMAX = Regex("""(?<![a-z0-9])(imax|imx)(?![a-z0-9])""", RegexOption.IGNORE_CASE)
+
+    /** Whether a release's name or file name ([text]) says IMAX or IMX. */
+    fun isImax(text: String?): Boolean = text != null && IMAX.containsMatchIn(text)
+
+    /**
+     * Whether [s] is an IMAX copy of a [film] (never a show's episode): its name says IMAX (trusted), or a play here
+     * measured its picture steadily at 1.90:1 ([ImaxAspect]). Other copies of the film aren't moved by that measure.
+     */
+    fun isImaxCopy(s: PlaybackSource, film: Boolean): Boolean {
+        if (!film) return false
+        if (s.offers.any { isImax(it.text) || isImax(it.filename) }) return true
+        return ImaxAspect.isImax(s.measured?.spec?.aspect ?: 0f)
+    }
+
+    /**
+     * IMAX first: always (the user's earlier wish, now a setting): a 2160p IMAX copy of a [film] ranks above every other
+     * source, only when this TV plays it by the usual rules ([fit] measured or likely, never "likely not"). [s] has its
+     * [fit] set.
+     */
+    fun imaxFirst(s: PlaybackSource, film: Boolean = true): Boolean {
+        if ((s.facts.height ?: 0) < 2160) return false
+        if (s.fit != TvFit.MEASURED_OK && s.fit != TvFit.LIKELY) return false
+        return isImaxCopy(s, film)
+    }
+
+    // ---- Picture, source, sound, language ----
+
     /** The picture's data for its frame, in 15 % steps ([CopyRank.CLOSE]): close figures tie and the next keys decide. */
-    private fun pictureBucket(f: SourceFacts, input: RankInput, hdr: Int): Int {
-        val bps = bitsPerSecond(f, input) ?: return 0
+    private fun pictureBucket(f: SourceFacts, spec: MediaSpec?, input: RankInput, hdr: Int): Int {
+        val played = spec?.takeIf { it.videoHow == MediaSpec.How.MEASURED && it.videoBps > 0 }?.videoBps
+        val bps = played ?: bitsPerSecond(f, input) ?: return 0
         val height = f.height ?: 0
         val codec = f.codec ?: if (height >= 2160) "HEVC" else null
-        val spec = MediaSpec(videoCodec = codec, width = widthOf(height), height = height, bitDepth = f.bitDepth ?: 0, overallBps = bps)
+        val frame = MediaSpec(videoCodec = codec, width = widthOf(height), height = height, bitDepth = f.bitDepth ?: 0, overallBps = bps)
         var score = bps * (CopyRank.EFFICIENCY[codec] ?: 1.0)
-        CopyRank.perPixel(spec, bps)?.let { each -> if (each > CopyRank.FULL) score = score * CopyRank.FULL / each }
-        if (CopyRank.starved(spec, bits = bps)) score *= CopyRank.FED_SHARE
+        val full = if (height >= 2160) FULL_4K else CopyRank.FULL
+        CopyRank.perPixel(frame, bps)?.let { each -> if (each > full) score = score * full / each }
+        if (CopyRank.starved(frame, bits = bps)) score *= CopyRank.FED_SHARE
         // HDR the TV prefers wins when it has about as much data (CopyRank.HDR_FLOOR); on an SDR TV, SDR does.
         val top = if (input.plan.hdrOrder.isEmpty()) 2 else input.plan.hdrOrder.size + 1
         score *= when {
@@ -253,8 +493,10 @@ object SourceRank {
         else -> 0
     }
 
+    private const val REMUX = "REMUX"
+
     private fun originRank(origin: String?): Int = when (origin) {
-        "REMUX" -> 6
+        REMUX -> 6
         "BluRay" -> 5
         "WEB-DL", "WEB" -> 4
         "WEBRip" -> 3
@@ -263,7 +505,17 @@ object SourceRank {
         else -> 0
     }
 
-    /** Lossless over lossy over stereo codecs ([CopyRank.soundRank]), a little more when the receiver takes it as it is. */
+    /** The bit depth stated, at least 10 for HDR and for 4K HEVC (they are 10-bit), so a "10bit" name doesn't win. */
+    private fun bitDepth(f: SourceFacts): Int {
+        val hevc4k = (f.height ?: 0) >= 2160 && (f.codec == null || f.codec == "HEVC")
+        return maxOf(f.bitDepth ?: 0, if (f.hdr.isNotEmpty() || hevc4k) 10 else 0)
+    }
+
+    /**
+     * Sound as heard ([CopyRank.soundRank]): no better than the best the TV or receiver takes as it is (lossless only
+     * with TrueHD or DTS-HD passed through, DD+ Atmos with Atmos passed through; else the usual lossy: what's decoded on
+     * the Stick loses the rest), a little more for a format it takes as it is, then channels.
+     */
     private fun sound(f: SourceFacts, plan: TvPlan): Int {
         val audio = f.audio ?: return 0
         val atmos = audio.contains("Atmos")
@@ -277,20 +529,61 @@ object SourceRank {
             "DD" -> SoundFormat.AC3
             else -> null
         }
-        val through = if (format != null && format in plan.sound) 1 else 0
+        val cap = when {
+            SoundFormat.TRUEHD in plan.sound || SoundFormat.DTS_HD in plan.sound -> 4
+            SoundFormat.EAC3_JOC in plan.sound -> 3
+            else -> 2
+        }
+        // DD+ Atmos goes through as DD+ where only that does (the Atmos part is then lost, so it gets no more).
+        val passes = format != null && (format in plan.sound || (format == SoundFormat.EAC3_JOC && SoundFormat.EAC3 in plan.sound))
+        val through = if (passes) 1 else 0
         val channels = f.channels?.substringBefore('.')?.toIntOrNull() ?: 0
-        return base * 20 + through * 10 + channels
+        return minOf(base, cap) * 20 + through * 10 + channels
     }
 
-    /** 3 has the first language wanted, 2 the second; 1 may have one (several, or not stated); 0 known to have neither. */
+    /** The sound languages known of a copy: its tracks' once played here, else the add-ons' named ones. */
+    private fun knownLanguages(languages: List<String>, measuredLangs: String?): List<String> =
+        if (!measuredLangs.isNullOrEmpty()) measuredLangs.split(',').mapNotNull { CopyLanguage.code(it) }
+        else languages.filter { it != Words.MULTI }
+
+    /**
+     * 2 has the film's own language ([wanted] first), 1 the viewer's only, or may have either (none named, or several);
+     * 0 known to have neither. Its tracks once it played here, else what the add-ons say.
+     */
     fun language(languages: List<String>, measuredLangs: String?, wanted: List<String>): Int {
-        if (!measuredLangs.isNullOrEmpty()) return CopyLanguage.fit(wanted, measuredLangs, null)
-        val langs = languages.filter { it != Words.MULTI }
-        if (langs.isEmpty()) return 1
-        if (wanted.isNotEmpty() && wanted[0] in langs) return 3
-        if (wanted.size > 1 && wanted[1] in langs) return 2
-        return if (Words.MULTI in languages) 1 else 0
+        if (wanted.isEmpty()) return 1
+        val known = knownLanguages(languages, measuredLangs)
+        return when {
+            known.isEmpty() -> 1
+            wanted[0] in known -> 2
+            wanted.size > 1 && wanted[1] in known -> 1
+            measuredLangs.isNullOrEmpty() && Words.MULTI in languages -> 1
+            else -> 0
+        }
     }
+
+    // ---- Next source ----
+
+    /**
+     * Next source's order after [currentKey] (the copy playing, or the Best): the copies below it in [ranked] in its own
+     * group first ([sameGroup]), then those below it in the others, then those above it the same way; only those that
+     * may be picked by themselves. With no [currentKey] in the list, [ranked]'s order.
+     */
+    fun nextOrder(ranked: List<PlaybackSource>, currentKey: String?, film: Boolean): List<PlaybackSource> {
+        val at = ranked.indexOfFirst { it.key == currentKey }
+        if (at < 0) return ranked.filter { it.automatic }
+        val current = ranked[at]
+        val below = ranked.subList(at + 1, ranked.size).filter { it.automatic }
+        val above = ranked.subList(0, at).filter { it.automatic }
+        val (belowSame, belowOther) = below.partition { sameGroup(it, current, film) }
+        val (aboveSame, aboveOther) = above.partition { sameGroup(it, current, film) }
+        return belowSame + belowOther + aboveSame + aboveOther
+    }
+
+    /** Whether [a] and [b] are listed in the same group of the Sources window (4K IMAX apart from 4K, SD apart from HD). */
+    fun sameGroup(a: PlaybackSource, b: PlaybackSource, film: Boolean): Boolean = a.group == b.group &&
+        (a.group != SourceGroup.UHD || isImaxCopy(a, film) == isImaxCopy(b, film)) &&
+        (a.group != SourceGroup.LOWER || isSd(a) == isSd(b))
 
     // ---- The same kind of source (next episode, §6.5) and the closest match (a Continue card's file gone) ----
 

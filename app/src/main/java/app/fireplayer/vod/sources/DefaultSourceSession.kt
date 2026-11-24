@@ -174,6 +174,7 @@ internal class DefaultSourceSession(
         releaseOf(source, offer)?.let { release ->
             runCatching { repo.library.recordRelease(target.title, target.episode, LastRelease(offer.addon, release, repo.wall())) }
         }
+        repo.usedNow(target, source.key)
         val now = repo.elapsed()
         watch.reset()
         watch.playing(now)
@@ -428,8 +429,10 @@ internal class DefaultSourceSession(
             request.like?.let { like -> SourceRank.mostLike(auto, like)?.let { return it to false } }
             return auto.firstOrNull() to false
         }
-        // Next source and switches go down the list: first what hasn't played in this session.
-        val fresh = auto.firstOrNull { it.key !in visited } ?: auto.firstOrNull()
+        // Next source and switches go down "Best for this TV" from the copy playing, its own group first
+        // ([SourceRank.nextOrder]), skipping what failed here: first what hasn't played in this session.
+        val next = SourceRank.nextOrder(l.sources, current, target.episode == null).filter { usable(it) }
+        val fresh = next.firstOrNull { it.key !in visited } ?: next.firstOrNull()
         return fresh to startedOnce
     }
 
