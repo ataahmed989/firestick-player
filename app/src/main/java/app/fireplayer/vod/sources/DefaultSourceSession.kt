@@ -203,7 +203,7 @@ internal class DefaultSourceSession(
         // when nothing else does.
         val fits = (list ?: return null).sources.filter { s ->
             val avg = s.facts.avgMbps
-            s.automatic && usable(s) && s.key != current && avg != null && avg > 0.0 && avg <= maxMbps
+            s.automatic && usable(s) && !noPictureHere(s) && s.key != current && avg != null && avg > 0.0 && avg <= maxMbps
         }
         return fits.firstOrNull { it.fit != TvFit.LIKELY_NOT } ?: fits.firstOrNull()
     }
@@ -235,6 +235,12 @@ internal class DefaultSourceSession(
         FailureKind.FORMAT -> {
             skip(source, hash = false)
             badFormats += formatKey(source)
+            Step.TryNext
+        }
+        // This copy only: another of the same format may well show its picture (a profile 8 Dolby Vision file where a
+        // profile 5 one showed none).
+        FailureKind.NO_PICTURE -> {
+            skip(source, hash = false)
             Step.TryNext
         }
         FailureKind.AUDIO -> if (decoded.add(source.key)) Step.DecodeOnDevice else {
@@ -360,7 +366,9 @@ internal class DefaultSourceSession(
     private fun findPreferred(l: SourceList?): PlaybackSource? {
         val p = request.preferred ?: return null
         val row = repo.rowKeyOf(target, p.release)
-        return l?.sources?.firstOrNull { (it.release == p.release || it.key == row) && it.automatic && usable(it) }
+        return l?.sources?.firstOrNull {
+            (it.release == p.release || it.key == row) && it.automatic && usable(it) && !noPictureHere(it)
+        }
     }
 
     // ---- Picking ----
@@ -368,6 +376,12 @@ internal class DefaultSourceSession(
     private fun usable(s: PlaybackSource): Boolean =
         s.key !in skipped && (s.release?.infoHash?.let { it !in skippedHashes } ?: true) &&
             s.offers.any { openable(s, it) } && formatKey(s) !in badFormats
+
+    /**
+     * This Stick showed no picture for [s] when it played here before ([app.fireplayer.player.CopyHealth.noPicture]):
+     * never picked by itself again (the viewer still may, in Sources).
+     */
+    private fun noPictureHere(s: PlaybackSource): Boolean = (s.measured?.health?.noPicture ?: 0) > 0
 
     private fun pick(op: Op, why: OpenWhy) {
         if (!op.live) return
@@ -406,7 +420,7 @@ internal class DefaultSourceSession(
 
     private fun choose(l: SourceList, why: OpenWhy): Pair<PlaybackSource?, Boolean> {
         val current = playing?.key
-        val auto = l.sources.filter { it.automatic && usable(it) && it.key != current }
+        val auto = l.sources.filter { it.automatic && usable(it) && !noPictureHere(it) && it.key != current }
         if (firstPick && !startedOnce) {
             request.chosen?.let { c ->
                 val fresh = l.sources.firstOrNull { it.key == c.key } ?: c

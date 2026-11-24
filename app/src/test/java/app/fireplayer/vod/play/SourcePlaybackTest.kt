@@ -250,6 +250,57 @@ class SourcePlaybackTest {
     }
 
     @Test
+    fun aCopyWithNoPictureGivesWayToTheNextWhichSaysWhy() {
+        val (p, s) = play()
+        s.ready(Fixtures.source(1))
+        p.firstFrame()
+        position = 1_200_000
+        p.noPicture()
+        // A failure of this copy, whatever the buffering setting says: the next one down the list.
+        assertEquals(FailureKind.NO_PICTURE, s.failures.single().kind)
+        assertEquals(null to OpenWhy.FAILED, s.opens.last())
+        assertFalse(p.playing)
+        assertTrue(questions.isEmpty())
+        s.ready(Fixtures.source(2))
+        assertEquals(Triple("k2", PlayRules.switchStart(1_200_000), true), starts.last())
+        // Said as it starts, in place of "Resumed near".
+        assertEquals("notice " + SourcePlayback.NO_PICTURE_NOTE, log.last())
+        assertEquals("This copy showed no picture here · playing the next one", SourcePlayback.NO_PICTURE_NOTE)
+        // Said once: the next switch is as before.
+        p.firstFrame()
+        p.nextSource()
+        s.ready(Fixtures.source(3))
+        assertTrue(log.last().startsWith("notice Resumed near"))
+    }
+
+    @Test
+    fun aCopyWithNoPictureFromItsStartGivesWayBeforeTheSlowStartQuestion() {
+        val (p, s) = play()
+        s.ready(Fixtures.source(1, mbps = 10.0))
+        // Its sound played, no frame came: never "first frame".
+        ticker.advance(5_000)
+        p.noPicture()
+        s.ready(Fixtures.source(2, mbps = 10.0))
+        // Where the play was asked to start: the copy before never played.
+        assertEquals(600_000L, starts.last().second)
+        assertEquals("notice " + SourcePlayback.NO_PICTURE_NOTE, log.last())
+        // The first copy's slow-start limit is gone with it.
+        ticker.advance(29_000)
+        assertTrue(questions.isEmpty())
+    }
+
+    @Test
+    fun aCopyWithNoPictureAndNoSwitchLeftStopsAndSaysSo() {
+        val (p, s) = play()
+        s.ready(Fixtures.source(1))
+        p.firstFrame()
+        p.noPicture()
+        s.answer(Opened.NoneLeft("Switched source twice already. Use Next source in Picture & sound to try another."))
+        assertEquals("stop Switched source twice already. Use Next source in Picture & sound to try another.", log.last())
+        assertFalse(log.any { it == "notice " + SourcePlayback.NO_PICTURE_NOTE })
+    }
+
+    @Test
     fun nothingLeftWhilePlayingIsANoteNotAStop() {
         val (p, s) = play()
         s.ready(Fixtures.source(1))

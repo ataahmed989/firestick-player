@@ -23,8 +23,8 @@ object ImaxAspect {
     /** A sample at or under this is a full-screen picture (16:9 is 1.78, IMAX's full frame 1.43). */
     const val FULL_SCREEN = 1.80f
 
-    /** Fewer samples than this say nothing. */
-    const val MIN_SAMPLES = 12
+    /** Fewer samples than this say nothing: every look of one play ([AspectSamples.PLAN_MS]), or of several together. */
+    const val MIN_SAMPLES = 8
 
     /** The share of the samples one ratio must hold to be the picture's steady ratio. */
     const val STEADY_SHARE = 0.85f
@@ -59,6 +59,10 @@ object ImaxAspect {
         if (ratio > FULL_SCREEN && full > n * FULL_SCREEN_SHARE) return 0f
         return (ratio * 100).roundToInt() / 100f
     }
+
+    /** [steady] over the looks kept of a copy ([MediaSpec.aspects], from every play of it). */
+    fun steady(samples: List<AspectSample>): Float =
+        if (samples.size < MIN_SAMPLES) 0f else steady(FloatArray(samples.size) { samples[it].ratio.toFloat() }, samples.size)
 
     /** Whether a steady measured [aspect] ([steady]) is IMAX's expanded ratio. */
     fun isImax(aspect: Float): Boolean = aspect > 0f && abs(aspect - IMAX) <= NEAR

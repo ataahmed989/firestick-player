@@ -142,6 +142,8 @@ class SourcePlayback(
     private var keepLogged = false
     /** The network is waited for (it dropped while the film played): the same link again once it's back ([Recovery]). */
     private var netWait: Cancel? = null
+    /** Said when the next source starts, in place of "Resumed near …": why the one before was left ([noPicture]). */
+    private var switchNote: String? = null
 
     /** The episode after this one (the page's, or found by the player), for the next episode's play; null for a film. */
     var next: EpisodeRef? = request.next
@@ -238,7 +240,10 @@ class SourcePlayback(
         netWait = null
         if (switching) host.log("another source starts at ${PlayRules.clock(start)}")
         host.startSource(o, start, switching)
-        if ((o.resumedNear || everPlayed) && start > 0) host.notice("Resumed near ${PlayRules.clock(start)}")
+        val why = switchNote
+        switchNote = null
+        if (why != null) host.notice(why)
+        else if ((o.resumedNear || everPlayed) && start > 0) host.notice("Resumed near ${PlayRules.clock(start)}")
         armLoad(o.source)
     }
 
@@ -259,6 +264,7 @@ class SourcePlayback(
 
     /** Over: while a source plays, a note (it plays on); before any did, the play stops with [message]. */
     private fun end(message: String) {
+        switchNote = null
         if (playing) {
             host.notice(message)
             return
@@ -501,6 +507,25 @@ class SourcePlayback(
         act(step)
     }
 
+    /**
+     * The Stick showed no picture for the source playing: its video decoder failed, none of this TV's decoders takes its
+     * picture, or no frame came while its sound played ([app.fireplayer.player.PictureWatch]). A failure, not a stall:
+     * Settings › Playback › When a film keeps buffering has no say, and a source picked by hand is left too. The next
+     * source down the list plays (the session skips this one, and the copies that showed none here before, within its
+     * limits on switches), and says why as it starts ([NO_PICTURE_NOTE]). Nothing left: the play stops and says so.
+     */
+    fun noPicture() {
+        val s = current ?: return
+        if (closed || stopped) return
+        playing = false
+        loadTimer?.cancel()
+        loadTimer = null
+        val step = session.failed(s, Failure(FailureKind.NO_PICTURE, offer?.addon, "no picture here"))
+        host.log("no picture from this source: " + stepWords(step))
+        switchNote = NO_PICTURE_NOTE
+        act(step)
+    }
+
     private fun awaitNetwork() {
         netWait?.cancel()
         host.log("no network: waiting for it with the same source at ${PlayRules.clock(host.positionMs())}")
@@ -624,6 +649,8 @@ class SourcePlayback(
 
     companion object {
         const val LIMIT_NOTE = "Playback keeps pausing · Next source in Picture & sound tries another"
+        /** Said as the next source starts after one this Stick showed no picture for ([noPicture]). */
+        const val NO_PICTURE_NOTE = "This copy showed no picture here · playing the next one"
         const val NOT_FETCHED = "Nothing played · Sources lists every file"
         const val GENERIC_STOP = "This title couldn't play · Sources lists every file"
         /** The network stayed away ([Recovery.NET_WAIT_MS]): the failure table's words for it. */
