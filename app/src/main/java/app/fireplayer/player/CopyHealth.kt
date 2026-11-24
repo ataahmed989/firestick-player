@@ -14,6 +14,10 @@ import java.util.Locale
  *
  * [droppedFrames] counts every frame lost (dropped by Media3, shown twice, put on the refresh of the frame before, never
  * decoded: see [FrameTally]); [renderedFrames] the frames sent to the screen.
+ *
+ * [noPicture] counts the plays in which this Stick showed no picture for the copy ([PictureWatch]): unlike a failure
+ * to start, that's the TV's and the copy's, so a copy with any is no longer picked for a play by itself. One play
+ * after it with its picture, for [FAILURE_FORGIVEN_MS] or more, clears it ([plus]).
  */
 data class CopyHealth(
     val watchedMs: Long = 0,
@@ -23,10 +27,13 @@ data class CopyHealth(
     val skips: Int = 0,
     val droppedFrames: Long = 0,
     val renderedFrames: Long = 0,
+    val noPicture: Int = 0,
 ) {
+    /** [o], a later play, on top of these: a copy that showed no picture and then played with it is forgiven. */
     operator fun plus(o: CopyHealth) = CopyHealth(
         watchedMs + o.watchedMs, stalls + o.stalls, stallMs + o.stallMs, failures + o.failures, skips + o.skips,
         droppedFrames + o.droppedFrames, renderedFrames + o.renderedFrames,
+        if (o.noPicture == 0 && o.renderedFrames > 0 && o.watchedMs >= FAILURE_FORGIVEN_MS) 0 else noPicture + o.noPicture,
     )
 
     /**
@@ -47,12 +54,13 @@ data class CopyHealth(
         if (droppedFrames + renderedFrames <= 0) 0.0 else 100.0 * droppedFrames / (droppedFrames + renderedFrames)
 
     /**
-     * "failed to play", "buffered 7× in 20 min", "loses 4.2% of frames", "smooth over 40 min", or null when too little is
-     * known.
+     * "showed no picture here", "failed to play", "buffered 7× in 20 min", "loses 4.2% of frames", "smooth over 40 min",
+     * or null when too little is known.
      */
     fun summary(): String? {
         val min = watchedMs / 60_000
         return when {
+            noPicture > 0 -> "showed no picture here"
             buffers -> if (min > 0) "buffered ${stalls}× in $min min" else "buffered ${stalls}× in the first minute"
             choppy -> "loses ${percent(lostPercent)} of frames"
             failures > 0 && watchedMs < FAILURE_FORGIVEN_MS -> if (failures == 1) "failed to play" else "failed to play $failures times"
@@ -80,12 +88,13 @@ data class CopyHealth(
             if (p < 10) String.format(Locale.US, "%.1f%%", p) else String.format(Locale.US, "%.0f%%", p)
 
         /**
-         * "watched|stalls|stallMs|failures|skips|droppedFrames|renderedFrames". The frame counts came later: a string
-         * kept before them has five fields, and still reads (with no frames counted); a version that only knows five
-         * reads the first five of these.
+         * "watched|stalls|stallMs|failures|skips|droppedFrames|renderedFrames", and "|noPicture" when there is one. The
+         * frame counts and [noPicture] came later: a string kept before them has five or seven fields, and still reads
+         * (with none counted); a version that knows fewer reads the first of these.
          */
         fun encode(h: CopyHealth): String =
-            "${h.watchedMs}|${h.stalls}|${h.stallMs}|${h.failures}|${h.skips}|${h.droppedFrames}|${h.renderedFrames}"
+            "${h.watchedMs}|${h.stalls}|${h.stallMs}|${h.failures}|${h.skips}|${h.droppedFrames}|${h.renderedFrames}" +
+                (if (h.noPicture > 0) "|${h.noPicture}" else "")
 
         fun decode(text: String?): CopyHealth? {
             val f = text?.split('|') ?: return null
@@ -94,6 +103,7 @@ data class CopyHealth(
                 f[0].toLongOrNull() ?: 0, f[1].toIntOrNull() ?: 0, f[2].toLongOrNull() ?: 0,
                 f[3].toIntOrNull() ?: 0, f[4].toIntOrNull() ?: 0,
                 f.getOrNull(5)?.toLongOrNull() ?: 0, f.getOrNull(6)?.toLongOrNull() ?: 0,
+                f.getOrNull(7)?.toIntOrNull() ?: 0,
             )
         }
     }

@@ -1,5 +1,6 @@
 package app.fireplayer.vod.sources
 
+import app.fireplayer.player.CopyHealth
 import app.fireplayer.vod.Addon
 import app.fireplayer.vod.AddonSave
 import app.fireplayer.vod.AddonSettings
@@ -11,6 +12,7 @@ import app.fireplayer.vod.Hdr
 import app.fireplayer.vod.Kind
 import app.fireplayer.vod.LastRelease
 import app.fireplayer.vod.LookupWhy
+import app.fireplayer.vod.Measured
 import app.fireplayer.vod.OpenWhy
 import app.fireplayer.vod.Opened
 import app.fireplayer.vod.PlayOrigin
@@ -99,6 +101,8 @@ class EngineTest {
     }
     private val recorded = ArrayList<LastRelease>()
     private var last: LastRelease? = null
+    /** What this TV measured of each file played before, by its store key. */
+    private val kept = HashMap<String, Measured>()
 
     private val library = object : PlaybackLibrary {
         override fun lastRelease(title: Title, episode: EpisodeRef?) = last
@@ -145,7 +149,7 @@ class EngineTest {
             { loop.now },
         ),
         budget = Budget(budgetStore) { wall },
-        measured = { null },
+        measured = { kept[it] },
         language = { "en" },
         main = loop,
         io = direct,
@@ -439,6 +443,32 @@ class EngineTest {
         assertEquals(setOf(Addon.MEDIAFUSION, Addon.TORRENTIO), asked.map { it.first }.toSet())
         assertTrue(ready.resumedNear)
         assertEquals(595_000L, ready.startMs)
+    }
+
+    @Test
+    fun aCopyWithNoPictureIsLeftForTheNextAndNotPickedByItselfAgain() {
+        answers[Addon.TORRENTIO] = { answer(torrentio(H1), torrentio(H2, quality = "1080p", name = "Film.1080p.WEB-DL.x264-B")) }
+        links.remove(Addon.MEDIAFUSION)
+        val session = engine.session(PlayRequest(filmTarget, StartAt.Beginning, PlayOrigin.TITLE_PAGE))
+        val first = open(session).last() as Opened.Ready
+        assertEquals(ReleaseKey(H1, 0), first.source.release)
+        session.started(first.source, first.offer)
+        // This copy only: the next one down the list, whatever its format.
+        assertEquals(Step.TryNext, session.failed(first.source, Failure(FailureKind.NO_PICTURE, Addon.TORRENTIO)))
+        assertEquals(ReleaseKey(H2, 0), (open(session, OpenWhy.FAILED).last() as Opened.Ready).source.release)
+    }
+
+    @Test
+    fun aCopyThatShowedNoPictureHereBeforeIsOnlyPlayedWhenPickedByHand() {
+        kept[ReleaseKey(H1, 0).storeKey] = Measured(null, CopyHealth(watchedMs = 8_000, noPicture = 1), null)
+        answers[Addon.TORRENTIO] = { answer(torrentio(H1), torrentio(H2, quality = "1080p", name = "Film.1080p.WEB-DL.x264-B")) }
+        links.remove(Addon.MEDIAFUSION)
+        val session = engine.session(PlayRequest(filmTarget, StartAt.Beginning, PlayOrigin.TITLE_PAGE))
+        assertEquals(ReleaseKey(H2, 0), (open(session).last() as Opened.Ready).source.release)
+        // Picked in Sources, it plays.
+        val row = session.list!!.sources.first { it.release == ReleaseKey(H1, 0) }
+        val byHand = engine.session(PlayRequest(filmTarget, StartAt.Beginning, PlayOrigin.SOURCES_PANEL, chosen = row))
+        assertEquals(ReleaseKey(H1, 0), (open(byHand).last() as Opened.Ready).source.release)
     }
 
     @Test

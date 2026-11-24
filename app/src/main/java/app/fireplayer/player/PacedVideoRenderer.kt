@@ -7,6 +7,7 @@ import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.Format
 import androidx.media3.common.MimeTypes
+import androidx.media3.common.util.MediaFormatUtil
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.decoder.DecoderInputBuffer
 import androidx.media3.exoplayer.DecoderReuseEvaluation
@@ -17,6 +18,7 @@ import androidx.media3.exoplayer.mediacodec.MediaCodecAdapter
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.mediacodec.MediaCodecUtil
 import androidx.media3.exoplayer.video.MediaCodecVideoRenderer
+import androidx.media3.exoplayer.video.MediaCodecVideoRenderer.CodecMaxValues
 
 /**
  * Media3's video renderer, showing each frame on its own refresh of a TV switched to the film's rate.
@@ -49,6 +51,7 @@ import androidx.media3.exoplayer.video.MediaCodecVideoRenderer
  * and the decoder is configured as video/hevc with the colour the track states (for profile 7, BT.2020 and PQ), without
  * the Dolby Vision profile Media3 sets for a Dolby Vision format, and HDR10 colour where the file states none
  * ([DvBaseLayer.hdr10]). Its samples go to it with their Dolby Vision units hidden ([DvBaseLayer.hideDolbyVision]).
+ * A profile 8 track Media3 itself gives to an HEVC decoder gets HDR10 colour the same way ([getMediaFormat]).
  */
 @OptIn(UnstableApi::class)
 class PacedVideoRenderer(
@@ -214,6 +217,27 @@ class PacedVideoRenderer(
             RendererCapabilities.getFormatSupport(c), RendererCapabilities.getAdaptiveSupport(c),
             RendererCapabilities.getTunnelingSupport(c), RendererCapabilities.getHardwareAccelerationSupport(c),
             RendererCapabilities.DECODER_SUPPORT_FALLBACK_MIMETYPE)
+    }
+
+    /**
+     * The decoder's set-up: a Dolby Vision profile 8 track that Media3 gives to an HEVC decoder (its own way back on a
+     * TV without Dolby Vision) gets HDR10 colour and static metadata where the track states none
+     * ([DvBaseLayer.hevcColour]), so the TV isn't left to guess the brightness. Once per decoder, never per frame.
+     */
+    override fun getMediaFormat(
+        format: Format,
+        codecMimeType: String,
+        codecMaxValues: CodecMaxValues,
+        codecOperatingRate: Float,
+        deviceNeedsNoPostProcessWorkaround: Boolean,
+        tunnelingAudioSessionId: Int,
+    ): MediaFormat {
+        val made = super.getMediaFormat(format, codecMimeType, codecMaxValues, codecOperatingRate,
+            deviceNeedsNoPostProcessWorkaround, tunnelingAudioSessionId)
+        val colour = DvBaseLayer.hevcColour(format.sampleMimeType, format.codecs, codecMimeType, format.colorInfo) ?: return made
+        MediaFormatUtil.maybeSetColorInfo(made, colour)
+        Log.i(TAG, DvBaseLayer.hevcColourLine(ownStaticInfo = format.colorInfo?.hdrStaticInfo != null))
+        return made
     }
 
     /** A new format for the decoder: a profile 7 track played as its base layer goes on as HEVC, said once in the log. */

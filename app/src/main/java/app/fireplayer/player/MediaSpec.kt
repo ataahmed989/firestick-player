@@ -49,6 +49,11 @@ data class MediaSpec(
      * 0 when it played as the file has it.
      */
     val dvBaseLayer: Int = 0,
+    /**
+     * The picture's shape, looked at a few times as a film played here ([AspectSamples]), from every play of it; empty
+     * when never looked at (an episode, a playlist's copy, a play too short).
+     */
+    val aspects: List<AspectSample> = emptyList(),
 ) {
     /** Where a number came from. */
     enum class How(val label: String) {
@@ -103,7 +108,7 @@ data class MediaSpec(
             spec.videoCodec.orEmpty(), spec.profile.orEmpty(), spec.width, spec.height, spec.fps, spec.bitDepth,
             spec.hdr.orEmpty(), spec.videoBps, spec.videoHow.name, spec.audioCodec.orEmpty(), if (spec.atmos) 1 else 0,
             spec.channels, spec.sampleRate, spec.audioBps, spec.audioHow.name, spec.overallBps, spec.sizeBytes,
-            spec.measuredSecs, spec.audioLangs, spec.subLangs, spec.dvBaseLayer,
+            spec.measuredSecs, spec.audioLangs, spec.subLangs, spec.dvBaseLayer, AspectSample.encode(spec.aspects),
         ).joinToString(SEP) { it.toString().replace(SEP, " ") }
 
         fun decode(text: String): MediaSpec? {
@@ -121,15 +126,20 @@ data class MediaSpec(
                 audioLangs = f.getOrNull(18).orEmpty(),
                 subLangs = f.getOrNull(19).orEmpty(),
                 dvBaseLayer = f.getOrNull(20)?.toIntOrNull() ?: 0,
+                aspects = AspectSample.decode(f.getOrNull(21)),
             )
         }
 
         /**
          * What was measured of a copy before ([kept]) and in this play ([now]), as one: each rate weighted by how much
          * film it was counted over, so a copy's figure firms up every time it's played instead of following one scene.
+         * The picture's shape looked at in other parts of the film before stays ([AspectSample.merged]).
          */
         fun merged(kept: MediaSpec?, now: MediaSpec): MediaSpec {
-            if (kept == null || kept.measuredSecs <= 0 || now.measuredSecs <= 0) return now
+            val aspects = AspectSample.merged(kept?.aspects.orEmpty(), now.aspects)
+            if (kept == null || kept.measuredSecs <= 0 || now.measuredSecs <= 0) {
+                return if (aspects == now.aspects) now else now.copy(aspects = aspects)
+            }
             val a = kept.measuredSecs
             val b = now.measuredSecs
             fun mix(x: Long, y: Long) = if (x > 0 && y > 0) (x * a + y * b) / (a + b) else maxOf(x, y)
@@ -137,6 +147,7 @@ data class MediaSpec(
                 videoBps = mix(kept.videoBps, now.videoBps),
                 audioBps = mix(kept.audioBps, now.audioBps),
                 measuredSecs = (a + b).coerceAtMost(MAX_MEASURED_SECS),
+                aspects = aspects,
             )
         }
 

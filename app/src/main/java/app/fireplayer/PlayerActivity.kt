@@ -67,11 +67,13 @@ import androidx.media3.common.text.Cue
 import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.HttpDataSource
+import androidx.media3.exoplayer.ExoPlaybackException
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.SeekParameters
 import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.source.LoadEventInfo
 import androidx.media3.exoplayer.source.MediaLoadData
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.SubtitleView
 import app.fireplayer.data.Dimmer
@@ -99,6 +101,7 @@ import app.fireplayer.player.GraphicsTrim
 import app.fireplayer.player.JumpFrameCheck
 import app.fireplayer.player.FrameRateMatcher
 import app.fireplayer.player.FreezeWatch
+import app.fireplayer.player.PictureWatch
 import app.fireplayer.player.FrameTally
 import app.fireplayer.player.PreviewGuard
 import app.fireplayer.player.IdleCloseDataSource
@@ -142,6 +145,7 @@ import app.fireplayer.subs.SubtitlePresets
 import app.fireplayer.subs.SubtitleStyler
 import app.fireplayer.subs.placedLikePicture
 import app.fireplayer.ui.BarWatch
+import app.fireplayer.ui.ShapeWatch
 import app.fireplayer.ui.CountdownPill
 import app.fireplayer.player.SkipTimes
 import app.fireplayer.player.MkvChapters
@@ -423,6 +427,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     // The film stood still while meant to be playing (see FreezeWatch): paused for a moment, and played again by itself.
     private var pausedForFreeze = false
     private val freezeWatch = FreezeWatch { SystemClock.elapsedRealtime() }
+    // A film from the add-ons whose picture this Stick doesn't show gives way to the next copy (see PictureWatch).
+    private val pictureWatch = PictureWatch()
+    // A film's picture shape, a few looks in its first minutes, kept with what was measured of the copy (ShapeWatch).
+    private var shapeWatch: ShapeWatch? = null
     /** Whether the current player's own thread still answers; one per player. */
     private var threadBeat: ThreadBeat? = null
     // The next quiet retry builds a new player instead of loading again (a film that froze).
@@ -693,6 +701,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // The frame is given its size outright (applyDisplayMode), never the film's shape to work out by itself.
         videoFrame.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FILL
         barWatch = BarWatch(surfaceView, { player?.isPlaying == true }) { applyDisplayMode() }
+        shapeWatch = ShapeWatch(surfaceView)
         root.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
             if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) applyDisplayMode()
         }
@@ -969,6 +978,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // Never left pointing at a screen that's gone (onStop's releasePlayer normally takes it away first).
         if (FilmRoom.film === filmRoom) FilmRoom.film = null
         barWatch?.release()
+        shapeWatch?.release()
         liveSettings?.release()
         if (diagMade.isInitialized()) diag.release()
         if (stale) return
@@ -1288,6 +1298,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (frozeOut) freezeWatch.reset()
         frozeOut = false
         freezeWatch.jumped()
+        pictureWatch.reset()
         // A rebuilt player's first load (back from Home, sound decoded here) isn't a stage-4 stall either.
         source?.jumped()
         cannotOpen = false
@@ -1958,6 +1969,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         playingIndex = now
         deviceRetries = 0
         freezeWatch.jumped()
+        pictureWatch.reset()
         measuredFps = 0f
         fpsMeter.reset()
         lineUpNext()
@@ -1970,6 +1982,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     override fun onTracksChanged(tracks: Tracks) {
         // Another sound track (or the same one set up again) gets its own time to start.
         freezeWatch.jumped()
+        pictureWatch.reset()
         pendingExternalSubId?.let { id ->
             val option = trackOptions(C.TRACK_TYPE_TEXT).firstOrNull { sameId(it, id) }
             if (option != null) {
@@ -2093,6 +2106,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
         // Every jump, the viewer's or FreezeWatch's own: the film's time starts afresh there.
         freezeWatch.jumped()
+        pictureWatch.reset()
         // The wait after a jump is the jump's, not the copy's.
         if (reason == Player.DISCONTINUITY_REASON_SEEK) jumpedAt = SystemClock.elapsedRealtime()
         if (reason == Player.DISCONTINUITY_REASON_SEEK) source?.jumped()
@@ -2233,6 +2247,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             hideBuffering()
             health = health.copy(failures = health.failures + 1)
             keepHealth()
+            // The picture's decoder failed: no picture here for this copy, so the next one plays, with a note.
+            val renderer = (error as? ExoPlaybackException)?.rendererFormat?.sampleMimeType
+            if (PictureWatch.decoderFailed(error.errorCode, renderer)) {
+                noPicture("the video decoder failed (error ${error.errorCode})")
+                return
+            }
             s.failed(error.errorCode, status)
             return
         }
@@ -2316,9 +2336,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private fun checkFreeze() {
         val p = player ?: return
         val now = SystemClock.elapsedRealtime()
-        // Held on purpose, or something in front of the film (Alexa, a system window): not watched.
-        val held = seeking || pausedForSwitch || pausedForFreeze || retryPending || resumeDialogShowing ||
-            errorBox.visibility == View.VISIBLE || completed || isFinishing || !hasWindowFocus()
+        val held = filmHeld()
         val event = freezeWatch.check(
             FreezeWatch.Sample(
                 playing = p.isPlaying,
@@ -2375,6 +2393,64 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             }
         }
         logHdmiSound()
+    }
+
+    /** Held on purpose, or something in front of the film (Alexa, a system window): not watched. */
+    private fun filmHeld(): Boolean = seeking || pausedForSwitch || pausedForFreeze || retryPending || resumeDialogShowing ||
+        errorBox.visibility == View.VISIBLE || completed || isFinishing || !hasWindowFocus()
+
+    /**
+     * From [postPlayTick], for a film or episode from the add-ons: a copy whose picture this Stick doesn't show (no
+     * frame while its sound plays, or none of the TV's decoders takes it: [PictureWatch]) gives way to the next copy,
+     * with a note. Never judged by what the frames show; not while held, or with no surface to show the picture on.
+     */
+    private fun checkPicture() {
+        if (source == null) return
+        val p = player ?: return
+        val tracks = p.currentTracks
+        val counters = p.videoDecoderCounters
+        counters?.ensureUpdated()
+        val why = pictureWatch.check(
+            playing = p.isPlaying,
+            held = filmHeld() || surfaceView.holder.surface?.isValid != true,
+            positionMs = p.currentPosition,
+            durationMs = p.duration,
+            hasVideo = tracks.containsType(C.TRACK_TYPE_VIDEO),
+            decodable = tracks.isTypeSupported(C.TRACK_TYPE_VIDEO, true),
+            framesShown = counters?.renderedOutputBufferCount?.toLong() ?: -1L,
+        ) ?: return
+        noPicture(
+            if (why == PictureWatch.Why.NO_DECODER) "none of this TV's video decoders takes its picture"
+            else "no frame while its sound played",
+        )
+    }
+
+    /** The copy playing showed no picture here ([why], for the log): kept with how it played, and the next copy plays. */
+    private fun noPicture(why: String) {
+        val s = source ?: return
+        val at = formatTime(player?.currentPosition ?: 0L, long = true)
+        android.util.Log.w(PlaybackDiag.TAG, "recovery no picture at $at: $why")
+        healthFor(player?.currentMediaItem?.localConfiguration?.uri)
+        health = health.copy(noPicture = health.noPicture + 1)
+        keepHealth()
+        s.noPicture()
+    }
+
+    /**
+     * From [postPlayTick], for a film from the add-ons (not an episode): its picture's shape, a few looks in its first
+     * minutes ([ShapeWatch]), from the decoder's frame size, or a tiny copy of a 16:9 frame (none when tunnelled or
+     * protected).
+     */
+    private fun lookAtShape() {
+        val s = source ?: return
+        if (s.request.target.episode != null) return
+        val p = player ?: return
+        val watch = shapeWatch ?: return
+        if (!watch.due(SystemClock.elapsedRealtime(), p.isPlaying && !filmHeld())) return
+        val size = p.videoSize
+        val tunnelled = (p.trackSelectionParameters as? DefaultTrackSelector.Parameters)?.tunnelingEnabled == true
+        val copyable = !tunnelled && selectedFormat(C.TRACK_TYPE_VIDEO)?.drmInitData == null
+        watch.look(size.width, size.height, size.pixelWidthHeightRatio, p.currentPosition, copyable)
     }
 
     private val resumeAfterFreeze = Runnable {
@@ -2842,6 +2918,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 s.tick(player?.totalBufferedDuration ?: 0L)
             }
             checkFreeze()
+            checkPicture()
+            lookAtShape()
             tellDamageSkip()
             // What the film has loaded ahead running low while the skip preview loads beside it: previews stop for it.
             if (previewGuard.active) player?.let {
@@ -5741,7 +5819,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             keptPlay = playKey
             keptBefore = before
         }
-        val text = MediaSpec.encode(MediaSpec.merged(before, spec))
+        // A film's picture shape as looked at so far in this play (ShapeWatch: the copy playing's, see healthFor).
+        val shapes = shapeWatch?.samples.orEmpty()
+        val now = if (shapes.isEmpty()) spec else spec.copy(aspects = shapes.toList())
+        val text = MediaSpec.encode(MediaSpec.merged(before, now))
         if (qualitySeen.getString(key, null) == text) return
         val edit = qualitySeen.edit()
         if (qualitySeen.all.size >= MAX_QUALITY_SEEN && !qualitySeen.contains(key)) edit.clear()
@@ -5794,6 +5875,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             readyOnce = false
             stallSince = 0
             if (watchingSince > 0) watchingSince = SystemClock.elapsedRealtime()
+            // Its picture's shape is looked at afresh.
+            shapeWatch?.reset()
         }
         return key
     }

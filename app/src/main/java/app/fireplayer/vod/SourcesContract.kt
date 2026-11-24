@@ -575,6 +575,11 @@ enum class FailureKind {
     NOT_READY,
     /** This device can't decode it: another format. */
     FORMAT,
+    /**
+     * This Stick showed no picture for it (its video decoder failed, none takes its picture, or no frame came while its
+     * sound played: [app.fireplayer.player.PictureWatch]): skip it, the next one; the player remembers it for the copy.
+     */
+    NO_PICTURE,
     /** The receiver/TV refused the sound: decode on the Stick, same source. */
     AUDIO,
     /** Link expired or bound to another connection: re-ask and re-check once. */

@@ -129,7 +129,7 @@ class DvBaseLayerTest {
         assertEquals("HEVC · 10-bit · HDR10", asBase.pictureLine())
         // Kept between plays; what was kept before it was known reads back as played as the file has it.
         assertEquals(asBase, MediaSpec.decode(MediaSpec.encode(asBase)))
-        assertEquals(0, MediaSpec.decode(MediaSpec.encode(asBase).substringBeforeLast('|'))?.dvBaseLayer)
+        assertEquals(0, MediaSpec.decode(MediaSpec.encode(asBase).substringBeforeLast('|').substringBeforeLast('|'))?.dvBaseLayer)
         // Where it plays as Dolby Vision, it's said as before.
         val asDv = MediaSpec.of(remux, null)
         assertEquals("Dolby Vision", asDv.hdr)
@@ -173,6 +173,41 @@ class DvBaseLayerTest {
         assertArrayEquals(info, noTransfer.hdrStaticInfo)
         assertEquals(C.COLOR_TRANSFER_ST2084, noTransfer.colorTransfer)
         assertEquals(C.COLOR_SPACE_BT2020, noTransfer.colorSpace)
+    }
+
+    // --- HDR10 colour for profile 8 on the HEVC decoder (Media3's own way back on a TV without Dolby Vision)
+
+    @Test
+    fun profile8OnTheHevcDecoderGetsHdr10ColourWhereItStatesNone() {
+        val dv = MimeTypes.VIDEO_DOLBY_VISION
+        val hevc = MimeTypes.VIDEO_H265
+        val generic = DvBaseLayer.hdr10(null).hdrStaticInfo
+        // The IMAX copy as measured: PQ with no static metadata (or no colour at all) reached the screen with none.
+        val pqOnly = ColorInfo.Builder().setColorSpace(C.COLOR_SPACE_BT2020).setColorTransfer(C.COLOR_TRANSFER_ST2084)
+            .setColorRange(C.COLOR_RANGE_LIMITED).build()
+        for (own in listOf(null, ColorInfo.Builder().build(), pqOnly)) {
+            val c = DvBaseLayer.hevcColour(dv, "dvhe.08.06", hevc, own)!!
+            assertEquals(C.COLOR_SPACE_BT2020, c.colorSpace)
+            assertEquals(C.COLOR_TRANSFER_ST2084, c.colorTransfer)
+            assertEquals(C.COLOR_RANGE_LIMITED, c.colorRange)
+            assertArrayEquals(generic, c.hdrStaticInfo)
+        }
+        // The file's own brightness data, where it states it without the rest.
+        val info = ByteArray(25) { (it + 3).toByte() }
+        val stated = ColorInfo.Builder().setHdrStaticInfo(info).build()
+        assertArrayEquals(info, DvBaseLayer.hevcColour(dv, "dvh1.08.06", hevc, stated)!!.hdrStaticInfo)
+        // HDR10 in full is left as it is; an HLG (8.4) or SDR (8.2) base keeps its own colour.
+        val full = pqOnly.buildUpon().setHdrStaticInfo(info).build()
+        assertNull(DvBaseLayer.hevcColour(dv, "dvhe.08.06", hevc, full))
+        assertNull(DvBaseLayer.hevcColour(dv, "dvhe.08.06", hevc, ColorInfo.Builder().setColorTransfer(C.COLOR_TRANSFER_HLG).build()))
+        assertNull(DvBaseLayer.hevcColour(dv, "dvhe.08.06", hevc, ColorInfo.SDR_BT709_LIMITED))
+        // Only Dolby Vision profile 8, and only on the HEVC decoder: played as Dolby Vision, or another profile (7 goes
+        // as its base layer with its own colour; 5 has no HDR10 inside), or an HEVC film, nothing changes.
+        assertNull(DvBaseLayer.hevcColour(dv, "dvhe.08.06", dv, null))
+        assertNull(DvBaseLayer.hevcColour(dv, "dvhe.05.06", hevc, null))
+        assertNull(DvBaseLayer.hevcColour(dv, "dvhe.07.06", hevc, null))
+        assertNull(DvBaseLayer.hevcColour(dv, null, hevc, null))
+        assertNull(DvBaseLayer.hevcColour(hevc, "hvc1.2.4.L153.B0", hevc, null))
     }
 
     @Test

@@ -107,6 +107,37 @@ object DvBaseLayer {
             .build()
     }
 
+    /** Dolby Vision's single-layer profile with an HDR10, SDR or HLG base (8.1, 8.2, 8.4): streaming's Dolby Vision. */
+    const val SINGLE_LAYER_PROFILE = 8
+
+    /**
+     * The colour to give the HEVC decoder for a Dolby Vision profile 8 track it decodes ([decoderMime] video/hevc:
+     * Media3's own way back to HEVC for profile 8, on a TV without Dolby Vision): HDR10 colour and static metadata
+     * ([hdr10]: the file's own values where it states them, else BT.2020, PQ, limited range and generic metadata) when
+     * the track states no HDR colour, or PQ without its static metadata. Measured on a Fire TV Stick 4K Max: a profile 8
+     * IMAX copy reached the screen as PQ with no static metadata at all (the TV left to guess the brightness). Null to
+     * leave the track's colour as it is: a track stating HLG (8.4) or SDR (8.2), or HDR10 in full; any other format,
+     * profile, or decoder.
+     */
+    fun hevcColour(
+        sampleMime: String?,
+        codecs: String?,
+        decoderMime: String?,
+        own: androidx.media3.common.ColorInfo?,
+    ): androidx.media3.common.ColorInfo? {
+        if (sampleMime != MimeTypes.VIDEO_DOLBY_VISION || decoderMime != MimeTypes.VIDEO_H265) return null
+        if (profileOf(codecs) != SINGLE_LAYER_PROFILE) return null
+        val unstated = androidx.media3.common.Format.NO_VALUE
+        val transfer = own?.colorTransfer ?: unstated
+        if (transfer != unstated && transfer != androidx.media3.common.C.COLOR_TRANSFER_ST2084) return null
+        return hdr10(own).takeIf { it !== own }
+    }
+
+    /** The log's one line when a profile 8 track's HEVC decoder is given HDR10 colour ([hevcColour]). */
+    fun hevcColourLine(ownStaticInfo: Boolean): String =
+        "Dolby Vision profile $SINGLE_LAYER_PROFILE on the HEVC decoder: given HDR10 colour with " +
+            (if (ownStaticInfo) "the file's own brightness data" else "generic brightness data (the file states none)")
+
     /**
      * CTA-861.3 static metadata (type 1, little-endian, as MediaFormat.KEY_HDR_STATIC_INFO): P3-D65 primaries, D65 white,
      * 1000 nits peak, 0.0001 nits black, MaxCLL 1000, MaxFALL 400: the usual 4K Blu-ray master.
