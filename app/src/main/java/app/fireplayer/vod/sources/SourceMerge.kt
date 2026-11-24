@@ -4,16 +4,19 @@ import app.fireplayer.vod.Addon
 import app.fireplayer.vod.Offer
 import app.fireplayer.vod.PlaybackSource
 import app.fireplayer.vod.Readiness
+import app.fireplayer.vod.ReleaseKey
 import app.fireplayer.vod.SourceFacts
 import app.fireplayer.vod.SourceGroup
 import kotlin.math.abs
 import kotlin.math.max
 
 /**
- * One row per file (r3_sources-organize §4.7): the same info hash + file index, or the same normalised file name with
- * the size within 1 %, is one source; across add-ons it reads "Both add-ons" (any two or more), under several hashes "×N". Facts merge:
- * HDR kinds joined, MediaFusion's exact size, Torrentio's seeders. Offers are tried ready mark first, then Torrentio.
- * Answers are merged in the order they arrived, so a row keeps its key as later answers join it.
+ * One row per file (r3_sources-organize §4.7): the same info hash + file index, the same exact size in bytes from two
+ * add-ons (both known exactly: an add-on's videoSize, or what a play here measured of the file), or the same normalised
+ * file name with the size within 1 %, is one source; across add-ons it reads "Both add-ons" (any two or more), under several
+ * hashes "×N". Facts merge: HDR kinds joined (one add-on's "DV" and the other's "HDR10+"), MediaFusion's exact size,
+ * Torrentio's seeders. Offers are tried ready mark first, then Torrentio. Answers are merged in the order they
+ * arrived, so a row keeps its key as later answers join it.
  */
 object SourceMerge {
 
@@ -28,17 +31,24 @@ object SourceMerge {
     /** Merged rows, and the row each release (by [app.fireplayer.vod.ReleaseKey.storeKey]) went into ("×N" copies). */
     class Merged(val sources: List<PlaybackSource>, val rowOf: Map<String, String>)
 
-    /** [answers]: each add-on's streams, in the order the add-ons answered. Unranked: [SourceRank] orders them. */
-    fun merge(answers: List<List<ParsedStream>>, runtimeMin: Int?): List<PlaybackSource> = mergeKeyed(answers, runtimeMin).sources
+    /**
+     * [answers]: each add-on's streams, in the order the add-ons answered. [measuredSize]: a file's exact size in bytes
+     * as a play here measured it, by release; null when it never played. Unranked: [SourceRank] orders them.
+     */
+    fun merge(answers: List<List<ParsedStream>>, runtimeMin: Int?, measuredSize: (ReleaseKey) -> Long? = { null }): List<PlaybackSource> =
+        mergeKeyed(answers, runtimeMin, measuredSize).sources
 
-    fun mergeKeyed(answers: List<List<ParsedStream>>, runtimeMin: Int?): Merged {
+    fun mergeKeyed(answers: List<List<ParsedStream>>, runtimeMin: Int?, measuredSize: (ReleaseKey) -> Long? = { null }): Merged {
         val rows = ArrayList<Row>()
         val byRelease = HashMap<String, Row>()
         val byName = HashMap<String, MutableList<Row>>()
+        val bySize = HashMap<Long, Row>()
         val keys = HashSet<String>()
         for (answer in answers) {
             for (p in answer) {
+                val exact = exactSize(p, measuredSize)
                 val row = p.release?.let { byRelease[it.storeKey] }
+                    ?: exact?.let { bySize[it] }?.takeIf { sameFile(it, p) }
                     ?: p.sameName?.let { n -> byName[n]?.firstOrNull { sizeClose(it.first.facts.sizeBytes, p.facts.sizeBytes) } }
                 if (row != null) {
                     row.items += p
@@ -46,6 +56,7 @@ object SourceMerge {
                         row.releases += r.storeKey
                         if (!byRelease.containsKey(r.storeKey)) byRelease[r.storeKey] = row
                     }
+                    exact?.let { if (!bySize.containsKey(it)) bySize[it] = row }
                     continue
                 }
                 val base = p.release?.storeKey
@@ -57,12 +68,27 @@ object SourceMerge {
                 val fresh = Row(p, key)
                 rows += fresh
                 p.release?.let { byRelease[it.storeKey] = fresh }
+                exact?.let { bySize[it] = fresh }
                 p.sameName?.let { byName.getOrPut(it) { ArrayList() } += fresh }
             }
         }
         val rowOf = HashMap<String, String>()
         for (row in rows) for (r in row.releases) rowOf[r] = row.key
         return Merged(rows.map { build(it, runtimeMin) }, rowOf)
+    }
+
+    /**
+     * Whether [p], of the same exact size as [row], is the same file from another add-on: not one more from an add-on
+     * already in the row (its own copies of one size are told apart by name, as before), and no height that differs.
+     */
+    private fun sameFile(row: Row, p: ParsedStream): Boolean = row.items.none { item ->
+        item.offer.addon == p.offer.addon || (item.facts.height != null && p.facts.height != null && item.facts.height != p.facts.height)
+    }
+
+    /** A file's exact size: the add-on's own (videoSize), else what a play here measured of its release; null otherwise. */
+    private fun exactSize(p: ParsedStream, measuredSize: (ReleaseKey) -> Long?): Long? {
+        if (p.exactSize) p.facts.sizeBytes?.takeIf { it > 0 }?.let { return it }
+        return p.release?.let { measuredSize(it) }?.takeIf { it > 0 }
     }
 
     private fun build(row: Row, runtimeMin: Int?): PlaybackSource {
@@ -100,7 +126,8 @@ object SourceMerge {
         return when {
             readiness == Readiness.NOT_READY -> SourceGroup.NOT_ON_RD
             cinema -> SourceGroup.CINEMA
-            threeD || height == null -> SourceGroup.OTHER
+            threeD -> SourceGroup.THREE_D
+            height == null -> SourceGroup.OTHER
             height >= 2160 -> SourceGroup.UHD
             height >= 1080 -> SourceGroup.FHD
             else -> SourceGroup.LOWER
@@ -124,6 +151,7 @@ object SourceMerge {
             avgMbps = StreamParser.avgMbps(size, runtimeMin) ?: first { it.avgMbps },
             group = first { it.group },
             languages = items.flatMap { it.facts.languages }.distinct(),
+            subs = items.flatMap { it.facts.subs }.distinct(),
             seeders = torrentioSeeders ?: items.mapNotNull { it.facts.seeders }.maxOrNull(),
             pack = items.any { it.facts.pack },
         )

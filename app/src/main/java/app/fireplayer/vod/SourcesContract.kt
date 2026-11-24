@@ -180,8 +180,10 @@ enum class SourceGroup(val label: String, val startsOpen: Boolean) {
     UHD("4K", true),
     FHD("1080p", true),
     LOWER("720p and lower", false),
-    /** Resolution not stated, 3D. */
-    OTHER("Other", false),
+    /** 3D (side by side, over-under), whatever its resolution. */
+    THREE_D("3D", false),
+    /** Resolution not stated. */
+    OTHER("Resolution not stated", false),
     /** CAM, TeleSync, TeleCine, screener: never picked automatically. */
     CINEMA("Cinema recordings", false),
     /** Not cached by the debrid service yet (the name stays: it is only an id). */
@@ -190,6 +192,29 @@ enum class SourceGroup(val label: String, val startsOpen: Boolean) {
 
 /** How likely a source plays well on this TV under its [TvPlan] (ranked first). */
 enum class TvFit { MEASURED_OK, LIKELY, UNKNOWN, LIKELY_NOT }
+
+/**
+ * The steps of "Best for this TV" ([app.fireplayer.vod.sources.SourceRank]), in order: each only breaks ties of the
+ * ones before. [IMAX_ALWAYS] is first only with Settings › This TV › IMAX first: always.
+ */
+enum class RankStep {
+    IMAX_ALWAYS, PLAYS, CACHED, LANGUAGE_KNOWN, ROOM, PICTURE, HEIGHT, HDR, KIND, DYNAMIC_HDR, IMAX, LANGUAGE, SOUND,
+    SMOOTH, SIZE, SEEDERS,
+}
+
+/**
+ * Why the Best is first: the copy it beat ([beatenKey], a row of the same list) and the [step] that decided it, with
+ * what the beaten copy lacks in plain words ([lacks]: "no HDR10+", "not cached yet"), and the HDR this TV shows of the
+ * Best ([hdr]: a Dolby Vision file played as HDR10+ on a TV without Dolby Vision is HDR10+). No beaten copy when the
+ * others differ from it only in sound, size or seeders.
+ */
+data class BestWhy(
+    val bestKey: String,
+    val hdr: Set<Hdr>,
+    val beatenKey: String? = null,
+    val step: RankStep? = null,
+    val lacks: String? = null,
+)
 
 /**
  * What the add-ons say about a file, parsed from their text (r3_sources-organize §1.3). Missing facts are null or empty,
@@ -217,6 +242,8 @@ data class SourceFacts(
     val group: String? = null,
     /** Short language codes ("en", "ru"); empty when not stated. */
     val languages: List<String> = emptyList(),
+    /** Subtitle languages the name states ("ESub": "en"); empty when not stated. */
+    val subs: List<String> = emptyList(),
     val seeders: Int? = null,
     /** The file sits in a season pack or collection. */
     val pack: Boolean = false,
@@ -312,6 +339,8 @@ data class SourceList(
     val best: PlaybackSource?,
     /** The release used last time for this film or episode, when offered and different from [best]. */
     val lastUsed: PlaybackSource? = null,
+    /** What put [best] first and what it beat ([app.fireplayer.vod.sources.SourceRank.why]); null when not worked out. */
+    val why: BestWhy? = null,
 ) {
     /** Every add-on is final: Play goes straight to checking the link. */
     val complete: Boolean get() = states.values.all { it.final }
@@ -717,12 +746,19 @@ data class TvCapabilities(
     /** Sound the TV or receiver takes as it is. */
     val passthrough: Set<SoundFormat>,
     val checkedAt: Long,
+    /**
+     * Whether this Stick plays Dolby Vision profile 7 as its HDR10 base layer (its Dolby Vision decoders are
+     * single-layer, or it has none: [app.fireplayer.player.DvBaseLayer.baseLayerInstead]); false when a decoder takes
+     * profile 7 itself; null for a reading from before it was read.
+     */
+    val dv7AsHdr10: Boolean? = null,
 )
 
 /**
  * How "Best for this TV" ranks: [automatic] from [TvCapabilities], or the user's own. [hdrOrder] is in tiers, best
- * first, each tier equal (the user's Samsung: [[HDR10, HDR10_PLUS], [HLG]]; Dolby Vision profile 8 counts as its HDR10
- * base on a TV without Dolby Vision, profiles 5 and 7 last; SDR first when the TV shows no HDR).
+ * first, each tier equal (the user's Samsung: [[HDR10, HDR10_PLUS], [HLG]]; on a TV without Dolby Vision a Dolby Vision
+ * file counts as the HDR10 or HDR10+ picture inside it: profile 8 always, profile 7 when [dv7AsHdr10]; profile 5 last;
+ * SDR first when the TV shows no HDR).
  */
 data class TvPlan(
     val automatic: Boolean,
@@ -732,6 +768,8 @@ data class TvPlan(
     val sound: Set<SoundFormat>,
     /** An optional data-rate cap (Mb/s), never a file size. */
     val maxMbps: Int? = null,
+    /** [TvCapabilities.dv7AsHdr10] of the TV's reading, whatever the plan: what this Stick does with profile 7. */
+    val dv7AsHdr10: Boolean? = null,
 )
 
 /** Settings › This TV: the TV's capabilities, Check again, Automatic or a custom plan. Main thread. */
@@ -745,6 +783,11 @@ interface ThisTv {
     fun plan(): TvPlan
     fun setPlan(plan: TvPlan)
     fun useAutomatic()
+
+    /** Settings › This TV › IMAX first: always: a 4K IMAX copy this TV plays ranks first, as before (off: a tie-break). */
+    fun imaxAlways(): Boolean = false
+
+    fun setImaxAlways(on: Boolean) = Unit
 }
 
 // ---- The library: what playback records (stored on this TV; no syncing) --------------------------------------------

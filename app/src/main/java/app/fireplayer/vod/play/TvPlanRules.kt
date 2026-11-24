@@ -65,6 +65,26 @@ object TvPlanRules {
         return "${c.maxWidth}×${c.maxHeight}$name"
     }
 
+    /** Under Settings › This TV › IMAX first: always. */
+    const val IMAX_NOTE = "Off: an IMAX copy goes first when it is as good as the best in picture, HDR and source. " +
+        "On: a 4K IMAX copy this TV plays is always Best."
+
+    /**
+     * What Automatic does with Dolby Vision on this TV ([TvPlan.dv7AsHdr10]): on a TV without Dolby Vision a file counts
+     * as the HDR10 or HDR10+ picture inside it.
+     */
+    fun dolbyVisionNote(plan: TvPlan): String {
+        val tvDv = plan.hdrOrder.any { Hdr.DOLBY_VISION in it }
+        val seven = when (plan.dv7AsHdr10) {
+            true -> "profile 7 plays as its HDR10 picture on this Stick"
+            false -> "profile 7 goes to this Stick's Dolby Vision decoder"
+            null -> "profile 7 as this Stick plays it (checked with Check again)"
+        }
+        return if (tvDv) "Automatic follows what the TV reports: Dolby Vision first; $seven."
+        else "Automatic follows what the TV reports. Without Dolby Vision on this TV, a Dolby Vision file counts as the HDR10 or " +
+            "HDR10+ picture inside it: profile 8 always, $seven. Profile 5 comes last."
+    }
+
     /** "Dolby Digital, Dolby Digital Plus" or "PCM and AAC only". */
     fun soundReport(formats: Set<SoundFormat>?): String {
         if (formats == null) return "Not checked yet"

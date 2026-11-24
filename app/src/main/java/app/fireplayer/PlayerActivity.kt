@@ -5510,7 +5510,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val link = p.currentMediaItem?.localConfiguration?.uri?.toString()
         val rates = embeddedCues.source(link)?.rates
         // Dolby Vision profile 7 that this TV plays as its HDR10 base layer is described, and kept, as HDR10.
-        val base = MediaSpec.of(video, audio, DvBaseLayer.playedAsBase(video?.sampleMimeType, video?.codecs, DvBaseLayer.tvPlaysBase))
+        val base = MediaSpec.of(video, audio, DvBaseLayer.playedAsBase(video?.sampleMimeType, video?.codecs, DvBaseLayer.tvPlaysBase),
+            app.fireplayer.player.PlayFacts.decoderMime, app.fireplayer.player.PlayFacts.hdr10PlusSeen, app.fireplayer.player.PlayFacts.aspect)
         val w = p.videoSize.width.takeIf { it > 0 } ?: base.width
         val h = p.videoSize.height.takeIf { it > 0 } ?: base.height
         val videoBps = rates?.bps(video?.id) ?: 0L
@@ -5740,8 +5741,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (keptPlay != playKey) {
             keptPlay = playKey
             keptBefore = before
+            keptAt = System.currentTimeMillis()
         }
-        val text = MediaSpec.encode(MediaSpec.merged(before, spec))
+        // The play's date, the same all through it: "✓ played" in Sources, and when it last played here.
+        val text = MediaSpec.encode(MediaSpec.merged(before, spec.copy(playedAt = keptAt)))
         if (qualitySeen.getString(key, null) == text) return
         val edit = qualitySeen.edit()
         if (qualitySeen.all.size >= MAX_QUALITY_SEEN && !qualitySeen.contains(key)) edit.clear()
@@ -5831,7 +5834,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val now = SystemClock.elapsedRealtime()
         val sofar = if (watchingSince > 0) health.copy(watchedMs = health.watchedMs + now - watchingSince) else health
         if (sofar == CopyHealth()) return
-        val text = CopyHealth.encode((healthBefore ?: CopyHealth()) + sofar)
+        val text = CopyHealth.encode((healthBefore ?: CopyHealth()) + sofar.copy(at = System.currentTimeMillis()))
         if (qualitySeen.getString("h|$key", null) != text) qualitySeen.edit().putString("h|$key", text).apply()
     }
 
@@ -5848,6 +5851,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     // The play being kept, and what earlier plays had measured of it when it started.
     private var keptPlay: String? = null
     private var keptBefore: MediaSpec? = null
+    private var keptAt = 0L
 
     /** What was measured of the copy at [uri] when it was played; null if it never was. Any thread. */
     private fun measuredQuality(uri: Uri): MediaSpec? =

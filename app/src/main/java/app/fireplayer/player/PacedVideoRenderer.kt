@@ -105,6 +105,7 @@ class PacedVideoRenderer(
         gaps.reset()
         firstSent = false
         hevc = Hdr10PlusMask.hevcStream(codecInfo?.mimeType, codecInputFormat?.codecs)
+        PlayFacts.decoderMime = codecInfo?.mimeType
         masked = false
         dvHidden = false
         // Tunnelled playback has Media3's own listener, and Media3 its own timing; the film never plays tunnelled here.

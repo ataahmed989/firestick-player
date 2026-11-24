@@ -565,6 +565,12 @@ class DefaultVodRepository(
         }
     }
 
+    override fun originalLanguage(title: Title): String? = runCatching {
+        val kind = title.kind
+        val id = title.tmdbId ?: storedMeta(kind, title.id)?.value?.title?.tmdbId ?: tmdbIdOf(kind, title.id, fetch = false)
+        id?.let { storedExtras(kind, it)?.value?.originalLanguage }
+    }.getOrNull()
+
     /** TMDB's stored details; a stored null value: TMDB had no such title lately. */
     private fun storedExtras(kind: Kind, tmdbId: Int): Stored<TmdbDetails.Extras?>? {
         val key = TmdbDetails.key(kind, tmdbId)

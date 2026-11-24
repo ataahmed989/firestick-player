@@ -129,7 +129,7 @@ class DvBaseLayerTest {
         assertEquals("HEVC · 10-bit · HDR10", asBase.pictureLine())
         // Kept between plays; what was kept before it was known reads back as played as the file has it.
         assertEquals(asBase, MediaSpec.decode(MediaSpec.encode(asBase)))
-        assertEquals(0, MediaSpec.decode(MediaSpec.encode(asBase).substringBeforeLast('|'))?.dvBaseLayer)
+        assertEquals(0, MediaSpec.decode(MediaSpec.encode(asBase).split('|').take(20).joinToString("|"))?.dvBaseLayer)
         // Where it plays as Dolby Vision, it's said as before.
         val asDv = MediaSpec.of(remux, null)
         assertEquals("Dolby Vision", asDv.hdr)

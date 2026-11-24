@@ -14,10 +14,11 @@ import java.util.Locale
 /**
  * What the Sources panel lists (design-brief.md §6.5, r3_sources-organize §4), pure: at the top the add-ons' states and
  * the totals, then one "Best for this TV" row (the copy Play uses, and why in plain words), then the copies by kind:
- * 4K IMAX, 4K, 1080p, 720p, Other, Cinema recordings, Not cached yet and, only when the title has nothing at 720p or
- * above ([SourceRank.withoutSd]), Lower quality. A heading shows only with rows, with their count. 4K IMAX, 4K, 1080p
- * and Lower quality start open with 5 rows and "Show N more", as does the first kind listed; the others start closed
- * with one "Show N" row. Every item has a stable [Item.key], so rows keep focus as answers arrive.
+ * 4K IMAX, 4K, 1080p, 720p, 3D, Resolution not stated, Cinema recordings, Not cached yet and, only when the title has
+ * nothing at 720p or above ([SourceRank.withoutSd]), Lower quality. A heading shows only with rows, with their count.
+ * 4K IMAX, 4K, 1080p and Lower quality start open with 5 rows and "Show N more", as does the first kind listed; the
+ * others start closed with one "Show N" row. Every item has a stable [Item.key], so rows keep focus as answers arrive.
+ * [view] is the same list as a model for a window to draw itself.
  */
 object SourcesModel {
 
@@ -31,8 +32,8 @@ object SourcesModel {
         FHD("1080p", true),
         /** 720p and up to 1080p. */
         HD("720p", false),
-        /** Resolution not stated, 3D. */
-        OTHER("Other", false),
+        THREE_D("3D", false),
+        UNSTATED("Resolution not stated", false),
         CINEMA("Cinema recordings", false),
         NOT_CACHED("Not cached yet", false),
         /** Under 720p: only there when the title has nothing better ([SourceRank.withoutSd]). */
@@ -76,14 +77,66 @@ object SourcesModel {
     /** The words [SourceRank.fit] gives a copy this connection was measured too slow for ("Needs 69 Mb/s · this connection brought 72"). */
     private const val SLOW_LINE_WORDS = "this connection brought"
 
-    /** The section [s] is listed under. */
-    fun sectionOf(s: PlaybackSource): Section = when (s.group) {
+    /** The section [s] is listed under; 4K IMAX for a [film]'s IMAX copies only ([SourceRank.isImaxCopy]). */
+    fun sectionOf(s: PlaybackSource, film: Boolean = true): Section = when (s.group) {
         SourceGroup.NOT_ON_RD -> Section.NOT_CACHED
         SourceGroup.CINEMA -> Section.CINEMA
-        SourceGroup.OTHER -> Section.OTHER
-        SourceGroup.UHD -> if (PlayRules.imax(s)) Section.IMAX else Section.UHD
+        SourceGroup.THREE_D -> Section.THREE_D
+        SourceGroup.OTHER -> Section.UNSTATED
+        SourceGroup.UHD -> if (PlayRules.imax(s, film)) Section.IMAX else Section.UHD
         SourceGroup.FHD -> Section.FHD
         SourceGroup.LOWER -> if (SourceRank.isSd(s)) Section.LOWER else Section.HD
+    }
+
+    /** Whether [list] is a film's (IMAX is a film's only). */
+    fun film(list: SourceList): Boolean = list.target.episode == null
+
+    /** A group of the Sources window: its copies in "Best for this TV" order, so its best ([best]) first. */
+    class Group(val section: Section, val rows: List<PlaybackSource>) {
+        val best: PlaybackSource get() = rows.first()
+    }
+
+    /**
+     * The Sources window as a model to draw: the copy [playing] (the player's; null on the title page) and whether it is
+     * the Best ([playingIsBest]); the [best] otherwise ("Best so far" while [soFar]) with its [reason]; what Next source
+     * plays ([next], in [nextSection]); and the [groups] in order, each its best first.
+     */
+    class View(
+        val playing: PlaybackSource?,
+        val playingIsBest: Boolean,
+        /** Best for this TV; null when it is the copy playing. */
+        val best: PlaybackSource?,
+        val soFar: Boolean,
+        val reason: String?,
+        val next: PlaybackSource?,
+        val nextSection: Section?,
+        val groups: List<Group>,
+    )
+
+    /**
+     * [list] as a [View]. [playingKey]: the copy playing; [attempts]: this play's tries (Next source skips those that
+     * failed). Next source is the next copy down the list from the one playing (or the Best), its own group first
+     * ([SourceRank.nextOrder]).
+     */
+    fun view(list: SourceList, playingKey: String? = null, attempts: List<Attempt> = emptyList()): View {
+        val film = film(list)
+        val playing = list.sources.firstOrNull { it.key == playingKey }
+        val best = list.best
+        val playingIsBest = playing != null && playing.key == best?.key
+        val failed = attempts.filter { it.failure != null }.mapTo(HashSet()) { it.source.key }
+        val next = SourceRank.nextOrder(list.sources, (playing ?: best)?.key, film).firstOrNull { it.key !in failed }
+        val bySection = list.sources.groupBy { sectionOf(it, film) }
+        val groups = Section.entries.mapNotNull { section -> bySection[section]?.takeIf { it.isNotEmpty() }?.let { Group(section, it) } }
+        return View(
+            playing = playing,
+            playingIsBest = playingIsBest,
+            best = best?.takeIf { !playingIsBest },
+            soFar = !list.complete,
+            reason = best?.let { reason(it, list) }?.ifEmpty { null },
+            next = next,
+            nextSection = next?.let { sectionOf(it, film) },
+            groups = groups,
+        )
     }
 
     /**
@@ -123,6 +176,7 @@ object SourcesModel {
         out += Item("note:ready", Kind.NOTE, READY_NOTE)
 
         val best = list.best
+        val film = film(list)
         val lastKey = list.lastUsed?.key
         val tried = attempts.associateBy({ it.source.key }, { it })
 
@@ -145,7 +199,7 @@ object SourcesModel {
 
         fun row(s: PlaybackSource, section: Section) = Item(
             "src:${section.name}:${s.key}", Kind.SOURCE,
-            PlayRules.mainLine(s, lineChars).ifEmpty { s.offers.firstOrNull()?.text.orEmpty() },
+            PlayRules.mainLine(s, lineChars, film).ifEmpty { s.offers.firstOrNull()?.text.orEmpty() },
             PlayRules.detailLine(s, noteChars).ifEmpty { null },
             marks(s, bestRow = false), s, section, chosen = s.key == playingKey,
         )
@@ -153,7 +207,7 @@ object SourcesModel {
         // In the player: the copy playing, with its details, first (the user's wish), then Best for this TV.
         list.sources.firstOrNull { it.key == playingKey }?.let { s ->
             out += Item(PLAYING_KEY, Kind.SOURCE,
-                PlayRules.mainLine(s, lineChars).ifEmpty { s.offers.firstOrNull()?.text.orEmpty() },
+                PlayRules.mainLine(s, lineChars, film).ifEmpty { s.offers.firstOrNull()?.text.orEmpty() },
                 PlayRules.detailLine(s, noteChars).ifEmpty { null },
                 PLAYING_NOW, s, chosen = true)
         }
@@ -162,7 +216,7 @@ object SourcesModel {
             out += Item(BEST_KEY, Kind.SOURCE, if (list.complete) BEST_LABEL else BEST_SO_FAR, reason(best, list).ifEmpty { null },
                 marks(best, bestRow = true), best, chosen = best.key == playingKey)
         }
-        val bySection = list.sources.groupBy { sectionOf(it) }
+        val bySection = list.sources.groupBy { sectionOf(it, film) }
         // The first kind listed is open even when its kind starts closed (a film with nothing above 720p).
         val first = Section.entries.firstOrNull { it != Section.CINEMA && it != Section.NOT_CACHED && !bySection[it].isNullOrEmpty() }
         for (section in Section.entries) {
@@ -186,13 +240,35 @@ object SourcesModel {
     }
 
     /**
-     * Why [best] is the copy Play uses, in plain words: "4K IMAX · Dolby Vision · Remux · cached", "1080p · BluRay ·
-     * played here". "Lighter 4K: your connection keeps up with it" when a heavier copy as sharp or sharper was passed
-     * over because this connection was measured too slow for it ([SourceRank.fit], [app.fireplayer.vod.sources.LineRate]).
-     * When even the best likely won't play well here, its warning ends the line. Its HDR is what this TV played of it,
-     * once it has ([SourceRank.asPlayedHere]).
+     * Why [best] is the copy Play uses, in plain words: what it is (quality, the HDR this TV shows of it, what it was
+     * made from, cached or played here), then what decided it and what it beat, from the engine's [SourceList.why]:
+     * "4K · HDR10+ · Remux · cached · ahead of the IMAX copy (no HDR10+)". When even the best likely won't play well
+     * here, its warning comes before that. A list without the engine's why (made by hand) says it as before: "Lighter
+     * 4K: your connection keeps up with it" when a heavier copy was passed over for this connection.
      */
     fun reason(best: PlaybackSource, list: SourceList): String {
+        val why = list.why?.takeIf { it.bestKey == best.key } ?: return plainReason(best, list)
+        val film = film(list)
+        val state = when {
+            best.fit == TvFit.MEASURED_OK -> "played here"
+            best.readiness == Readiness.PROBABLY_READY -> "cached"
+            else -> null
+        }
+        val warning = best.warning?.takeIf { best.fit == TvFit.LIKELY_NOT }?.let { "⚠ $it" }
+        val hdr = PlayRules.hdrWords(best.facts.copy(hdr = why.hdr))
+        val beaten = why.beatenKey?.let { k -> list.sources.firstOrNull { it.key == k } }
+        val ahead = beaten?.let { b -> "ahead of ${nameOf(b, best, film)}" + (why.lacks?.let { " ($it)" } ?: "") }
+        return listOfNotNull(PlayRules.quality(best, film), hdr, PlayRules.kind(best.facts.origin), state, warning, ahead).joinToString(" · ")
+    }
+
+    /** A copy beaten, by what tells it from the Best: "the IMAX copy", "the 1080p Remux", "the 81.4 GB Remux". */
+    private fun nameOf(b: PlaybackSource, best: PlaybackSource, film: Boolean): String {
+        if (PlayRules.imax(b, film) && !PlayRules.imax(best, film)) return "the IMAX copy"
+        val what = if (b.facts.height != best.facts.height) PlayRules.resolution(b.facts.height) else b.facts.sizeBytes?.let { PlayRules.size(it) }
+        return "the " + listOfNotNull(what, PlayRules.kind(b.facts.origin) ?: "copy").joinToString(" ")
+    }
+
+    private fun plainReason(best: PlaybackSource, list: SourceList): String {
         val quality = PlayRules.quality(best)
         val height = best.facts.height ?: 0
         val lighter = quality != null && best.facts.avgMbps != null && !slowLine(best) &&

@@ -133,6 +133,7 @@ object StreamParser {
             avgMbps = avgMbps(size, runtimeMin),
             group = Words.group(releaseName),
             languages = Words.languages(langLine),
+            subs = fromName.subs,
             seeders = Words.seeders(statsLine),
             pack = file != null && file != torrent,
         )
@@ -176,6 +177,7 @@ object StreamParser {
             avgMbps = avgMbps(size, runtimeMin),
             group = filename?.let { Words.group(it) },
             languages = Words.languageNames(Words.field(text, "🌐")),
+            subs = fromName.subs,
             seeders = Words.seeders(text),
             pack = false,
         )
@@ -232,6 +234,7 @@ object StreamParser {
             avgMbps = avgMbps(size, runtimeMin),
             group = releaseName?.let { Words.group(it) } ?: torzField(text, "⚙"),
             languages = Words.languages(torzField(text, "🌐") ?: torzField(text, "🎙").orEmpty()),
+            subs = fromName.subs,
             seeders = Words.seeders(text),
             pack = false,
         )
@@ -340,6 +343,8 @@ internal object Words {
         val channels: String? = null,
         val cinema: Boolean = false,
         val threeD: Boolean = false,
+        /** Subtitle languages the name states ("ESub", "Eng.Subs": "en"). */
+        val subs: List<String> = emptyList(),
     )
 
     private fun rx(p: String) = Regex(p, RegexOption.IGNORE_CASE)
@@ -382,6 +387,7 @@ internal object Words {
     private val PCM = rx("""(?<![a-z0-9])l?pcm(?![a-z])""")
     private val ATMOS = rx("""(?<![a-z0-9])atmos(?![a-z])""")
     private val CHANNELS = Regex("""(?<![0-9])(?<![0-9]\.)([1257])[ .]([01])(?![0-9])""")
+    private val ENGLISH_SUBS = rx("""(?<![a-z0-9])(e[ .-]?subs?|eng(lish)?[ ._-]?subs?)(?![a-z0-9])""")
 
     fun read(text: String, quality: Boolean = false): Read {
         if (text.isBlank()) return Read()
@@ -436,7 +442,8 @@ internal object Words {
             else -> audioName
         }
         val channels = CHANNELS.find(t)?.let { "${it.groupValues[1]}.${it.groupValues[2]}" }
-        return Read(height, hdr, dvProfile, origin, codec, bits, audio, channels, cinema, THREE_D.containsMatchIn(t))
+        val subs = if (ENGLISH_SUBS.containsMatchIn(t)) listOf("en") else emptyList()
+        return Read(height, hdr, dvProfile, origin, codec, bits, audio, channels, cinema, THREE_D.containsMatchIn(t), subs)
     }
 
     private fun cinemaWord(t: String): String {

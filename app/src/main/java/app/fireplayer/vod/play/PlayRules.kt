@@ -129,7 +129,7 @@ object PlayRules {
             list.complete -> "Best for this TV"
             else -> "Best so far"
         }
-        return listOf(lead, mainLine(pick), "from ${addonsOf(pick)}").filter { it.isNotEmpty() }.joinToString(" · ")
+        return listOf(lead, mainLine(pick, film = list.target.episode == null), "from ${addonsOf(pick)}").filter { it.isNotEmpty() }.joinToString(" · ")
     }
 
     /** The Sources button: "Sources", then "Sources · 40" once an add-on has answered. */
@@ -170,12 +170,14 @@ object PlayRules {
 
     // ---- A Sources row's two lines (and the title page's source line) ----------------------------------------------
 
-    /** A 2160p copy whose name or file name says IMAX, IMX or Open Matte ([SourceRank.isImax]): the "4K IMAX" ones. */
-    fun imax(s: PlaybackSource): Boolean =
-        (s.facts.height ?: 0) >= 2160 && s.offers.any { SourceRank.isImax(it.text) || SourceRank.isImax(it.filename) }
+    /**
+     * A 2160p IMAX copy of a [film] ([SourceRank.isImaxCopy]: its name says IMAX or IMX, or a play here measured 1.90:1):
+     * the "4K IMAX" ones.
+     */
+    fun imax(s: PlaybackSource, film: Boolean = true): Boolean = (s.facts.height ?: 0) >= 2160 && SourceRank.isImaxCopy(s, film)
 
     /** "4K IMAX", "4K", "1080p", "720p"…; null when the add-ons didn't say. */
-    fun quality(s: PlaybackSource): String? = resolution(s.facts.height)?.let { if (imax(s)) "$it IMAX" else it }
+    fun quality(s: PlaybackSource, film: Boolean = true): String? = resolution(s.facts.height)?.let { if (imax(s, film)) "$it IMAX" else it }
 
     /**
      * The HDR kind, short: "DV", "DV · HDR10+" (what a TV without Dolby Vision plays of it), "HDR10+", "HDR10", "HLG";
@@ -205,9 +207,9 @@ object PlayRules {
      * HDR10+ · Remux · 58.3 GB"). Over [chars] characters (what the row has room for, so it's never cut inside a word),
      * the HDR kind keeps its first part. The HDR kind is the one this TV played, once it has ([SourceRank.asPlayedHere]).
      */
-    fun mainLine(s: PlaybackSource, chars: Int = Int.MAX_VALUE): String {
+    fun mainLine(s: PlaybackSource, chars: Int = Int.MAX_VALUE, film: Boolean = true): String {
         val f = SourceRank.asPlayedHere(s.facts, s.measured)
-        fun line(one: Boolean) = listOfNotNull(quality(s), hdrKind(f, one), kind(f.origin), f.sizeBytes?.let { size(it) }).joinToString(" · ")
+        fun line(one: Boolean) = listOfNotNull(quality(s, film), hdrKind(f, one), kind(f.origin), f.sizeBytes?.let { size(it) }).joinToString(" · ")
         return line(one = false).takeIf { it.length <= chars } ?: line(one = true)
     }
 
