@@ -174,6 +174,7 @@ internal class DefaultSourceSession(
         releaseOf(source, offer)?.let { release ->
             runCatching { repo.library.recordRelease(target.title, target.episode, LastRelease(offer.addon, release, repo.wall())) }
         }
+        repo.usedNow(target, source.key)
         val now = repo.elapsed()
         watch.reset()
         watch.playing(now)

@@ -233,4 +233,52 @@ class AvatarRankTest {
         assertFalse(onImax.playingIsBest)
         assertTrue(onImax.next!!.has(b))
     }
+
+    @Test
+    fun theWindowSaysWhatThisTvShowsAndWhatDecidedTheBest() {
+        val input = input()
+        // As the engine hands it over: with the plan and the languages it was ranked for.
+        val list = sourceList(ranked(input), input).copy(plan = plan, wanted = listOf("en"))
+        val items = SourcesModel.items(list, 0, emptySet(), lineChars = 40, noteChars = 96)
+        fun at(key: String) = items.first { it.key == key }
+        assertEquals(listOf("Best for this TV", "4K IMAX · 1", "4K · 6", "1080p · 6", "720p · 2", "3D · 3", "Resolution not stated · 2",
+            "Cinema recordings · 1"), items.filter { it.kind == SourcesModel.Kind.HEADING }.map { it.label })
+        // The Best: an HDR10+ remux, and why, in the rows' words.
+        val best = at(SourcesModel.BEST_KEY)
+        assertTrue(best.source!!.has(d))
+        assertEquals("4K · HDR10+ · Remux · 86.3 GB", best.label)
+        assertTrue(best.note, best.note!!.startsWith("Cached · ahead of the IMAX copy (no HDR10+) · English"))
+        // The IMAX copy (profile 8 on a TV without Dolby Vision) is its HDR10 picture; its TrueHD Atmos is heard as 7.1.
+        val imax = at("src:IMAX:${keyOf(list.sources, a)}")
+        assertEquals("4K IMAX · HDR10 · Remux · 74.8 GB", imax.label)
+        assertTrue(imax.note, imax.note!!.contains("7.1") && !imax.note!!.contains("Atmos") && imax.note!!.endsWith("MediaFusion"))
+        // The profile 7 remux: HDR10, with no "may not play here".
+        val p7 = at("src:UHD:${keyOf(list.sources, b)}")
+        assertEquals("4K · HDR10 · Remux · 84.9 GB", p7.label)
+        assertEquals("English · 7.1 · Torrentio", p7.note)
+        // No row says DV on this TV, nor a codec, bit depth, language list or "High data rate".
+        val rows = items.filter { it.kind == SourcesModel.Kind.SOURCE }
+        assertFalse(rows.any { it.label.contains("DV") })
+        assertFalse(rows.any { (it.note.orEmpty()).let { n -> n.contains("HEVC") || n.contains("10-bit") || n.contains("RU") || n.contains("High data rate") } })
+        // Every row fits its lines: none past what the row has room for.
+        assertTrue(rows.all { it.label.length <= 40 && it.note.orEmpty().length <= 96 })
+        // 3D copies say so in their first line.
+        val threeD = SourcesModel.items(list, 0, setOf(Section.THREE_D)).filter { it.section == Section.THREE_D && it.kind == SourcesModel.Kind.SOURCE }
+        assertEquals(3, threeD.size)
+        assertTrue(threeD.all { it.label.startsWith("1080p 3D") })
+
+        // In the player, the IMAX copy playing smoothly: it first (not the Best), then the Best; 1080p and under closed.
+        val onImax = SourcesModel.items(list, 0, emptySet(), playingKey = keyOf(list.sources, a), smooth = true)
+        assertEquals(listOf("note:status", "head:playing", SourcesModel.PLAYING_KEY, "head:best", SourcesModel.BEST_KEY), onImax.take(5).map { it.key })
+        assertNull(onImax.first { it.key == SourcesModel.PLAYING_KEY }.value)
+        assertTrue(onImax.none { it.key.startsWith("src:FHD:") })
+        assertTrue(onImax.any { it.key == "more:FHD" })
+        // The Best playing: marked Best at the top, and Next source in the Best's place: the same file's other 4K copy.
+        val onBest = SourcesModel.items(list, 0, emptySet(), playingKey = list.best!!.key, smooth = true)
+        assertEquals("Best", onBest.first { it.key == SourcesModel.PLAYING_KEY }.value)
+        val next = onBest.first { it.key == SourcesModel.NEXT_KEY }
+        assertTrue(next.source!!.has(c))
+        assertEquals("4K · HDR10+ · Remux · 86.3 GB", next.label)
+        assertTrue(onBest.none { it.key == SourcesModel.BEST_KEY })
+    }
 }

@@ -337,10 +337,14 @@ data class SourceList(
     val sources: List<PlaybackSource>,
     /** The top automatic pick, or null (none ready). Shows as "Best so far" until [complete]. */
     val best: PlaybackSource?,
-    /** The release used last time for this film or episode, when offered and different from [best]. */
+    /** The release used last time for this film or episode, when offered (it may be [best] too). */
     val lastUsed: PlaybackSource? = null,
     /** What put [best] first and what it beat ([app.fireplayer.vod.sources.SourceRank.why]); null when not worked out. */
     val why: BestWhy? = null,
+    /** The plan it was ranked for: what this TV shows of each copy, in the Sources window's words; null when not ranked. */
+    val plan: TvPlan? = null,
+    /** The sound languages it was ranked for ([app.fireplayer.player.CopyLanguage.wanted]: the film's own first); empty when not known. */
+    val wanted: List<String> = emptyList(),
 ) {
     /** Every add-on is final: Play goes straight to checking the link. */
     val complete: Boolean get() = states.values.all { it.final }

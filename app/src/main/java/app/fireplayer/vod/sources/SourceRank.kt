@@ -80,6 +80,7 @@ object SourceRank {
     const val NEEDS_DV = "Needs a Dolby Vision TV"
     const val BUFFERED = "Buffered here before"
     const val CLOSE_TO_LINE = "Close to your connection"
+    const val HIGH_RATE = "High data rate"
 
     /** A film's or an episode's length when the add-ons' size is known but the runtime isn't (ranking only, never shown). */
     private const val FILM_MIN = 120
@@ -320,7 +321,7 @@ object SourceRank {
     private fun rate(f: SourceFacts, lineMbps: Double?): String? {
         val avg = f.avgMbps ?: return null
         if (lineMbps != null && lineMbps > 0.0) return if (LineRate.room(avg, lineMbps, f.origin == REMUX)) null else CLOSE_TO_LINE
-        return if (avg > HIGH_MBPS) "High data rate" else null
+        return if (avg > HIGH_MBPS) HIGH_RATE else null
     }
 
     /**

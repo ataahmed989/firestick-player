@@ -1241,6 +1241,10 @@ class SidePanel(private val activity: Activity) {
             "StremThru Torz" to R.drawable.ic_server,
             "This TV" to R.drawable.ic_display,
             "Best for this TV" to R.drawable.ic_head_star,
+            // The Sources window's top: the copy playing, the Best, or what Next source plays.
+            "Best so far" to R.drawable.ic_head_star,
+            "Playing" to R.drawable.ic_head_play,
+            "Next source" to R.drawable.ic_head_skip,
             "Sound formats" to R.drawable.ic_audio,
         )
 

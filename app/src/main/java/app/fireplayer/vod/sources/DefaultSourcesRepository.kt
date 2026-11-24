@@ -33,6 +33,7 @@ import app.fireplayer.vod.SourceTarget
 import app.fireplayer.vod.SourcesRepository
 import app.fireplayer.vod.ThisTv
 import app.fireplayer.vod.TitleDetails
+import app.fireplayer.vod.TvPlan
 import app.fireplayer.vod.data.VodRepositories
 import java.io.IOException
 import java.net.SocketTimeoutException
@@ -111,6 +112,9 @@ class DefaultSourcesRepository(
         var best: PlaybackSource? = null
         var lastUsed: PlaybackSource? = null
         var why: BestWhy? = null
+        /** What it was last ranked for: this TV's plan and the sound languages wanted. */
+        var plan: TvPlan? = null
+        var wanted: List<String> = emptyList()
         /** The row each release went into (merged copies). */
         var rowOf: Map<String, String> = emptyMap()
         var version = 0
@@ -216,6 +220,15 @@ class DefaultSourcesRepository(
 
     /** The key of [target]'s row holding [release], also when it was merged into another release's row (×N). */
     internal fun rowKeyOf(target: SourceTarget, release: ReleaseKey): String? = entries[target.key]?.rowOf?.get(release.storeKey)
+
+    /** [key]'s row of [target] started playing: it is Last used now, in the lists shown (not only once they rank again). */
+    internal fun usedNow(target: SourceTarget, key: String) {
+        val entry = entries[target.key] ?: return
+        val row = entry.ranked.firstOrNull { it.key == key } ?: return
+        if (entry.lastUsed?.key == key) return
+        entry.lastUsed = row
+        notify(entry)
+    }
 
     // ---- Asking ----
 
@@ -445,8 +458,8 @@ class DefaultSourcesRepository(
                 val best = SourceRank.best(ranked)
                 val last = runCatching { library.lastRelease(target.title, target.episode) }.getOrNull()
                 val lastKey = last?.let { merged.rowOf[it.release.storeKey] }
-                val lastUsed = lastKey?.let { k -> ranked.firstOrNull { it.key == k } }?.takeIf { it.key != best?.key }
-                Ranked(merged.rowOf, ranked, best, lastUsed, SourceRank.why(ranked, input))
+                val lastUsed = lastKey?.let { k -> ranked.firstOrNull { it.key == k } }
+                Ranked(merged.rowOf, ranked, best, lastUsed, SourceRank.why(ranked, input), input.wanted)
             }.getOrNull()
             main.post {
                 if (entry.version != v) return@post
@@ -457,6 +470,8 @@ class DefaultSourcesRepository(
                     entry.best = made.best
                     entry.lastUsed = made.lastUsed
                     entry.why = made.why
+                    entry.plan = plan
+                    entry.wanted = made.wanted
                 }
                 notify(entry)
             }
@@ -476,7 +491,7 @@ class DefaultSourcesRepository(
                 state
             }
         }
-        return SourceList(entry.target, states, entry.ranked, entry.best, entry.lastUsed, entry.why)
+        return SourceList(entry.target, states, entry.ranked, entry.best, entry.lastUsed, entry.why, entry.plan, entry.wanted)
     }
 
     private class Ranked(
@@ -485,6 +500,7 @@ class DefaultSourcesRepository(
         val best: PlaybackSource?,
         val lastUsed: PlaybackSource?,
         val why: BestWhy?,
+        val wanted: List<String>,
     )
 
     private fun notify(entry: Entry) {

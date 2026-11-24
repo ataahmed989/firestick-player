@@ -103,10 +103,21 @@ data class MediaSpec(
     /**
      * Picture & sound's "Range": "HDR10", "SDR", or, on a TV that reports no HDR ([hdrScreen] false), "HDR10 · shown as
      * SDR (TV reports no HDR)": the Fire TV turns the picture into SDR for it, so its HDR isn't what's seen. Dolby Vision
-     * played as its base layer says so: "HDR10 (Dolby Vision profile 7 base layer)".
+     * played as its base layer says so: "HDR10 (Dolby Vision profile 7 base layer)". HDR10+ seen in the picture
+     * ([hdr10Plus]) is said: "HDR10+", "HDR10+ (Dolby Vision profile 7 file, base layer)". A Dolby Vision file the
+     * HEVC decoder played ([Decoder.PLAIN], not profile 5) is the HDR10 picture inside it: "HDR10 (Dolby Vision profile
+     * 8 file)", the Sources window's words.
      */
     fun rangeLine(hdrScreen: Boolean): String {
-        val shown = if (dvBaseLayer > 0) DvBaseLayer.words(dvBaseLayer) else hdr
+        val plus = hdr10Plus && hdrScreen
+        val plainDv = hdr == "Dolby Vision" && decoder == Decoder.PLAIN && dvProfile != 5
+        val shown = when {
+            dvBaseLayer > 0 && plus -> "HDR10+ (Dolby Vision profile $dvBaseLayer file, base layer)"
+            dvBaseLayer > 0 -> DvBaseLayer.words(dvBaseLayer)
+            plainDv -> (if (plus) "HDR10+" else "HDR10") + " (Dolby Vision " + (if (dvProfile > 0) "profile $dvProfile " else "") + "file)"
+            plus && hdr == "HDR10" -> "HDR10+"
+            else -> hdr
+        }
         return when {
             shown == null -> "Not stated by the file"
             hdr != "SDR" && !hdrScreen -> "$shown · shown as SDR (TV reports no HDR)"
