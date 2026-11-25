@@ -68,8 +68,15 @@ object Hdr10PlusMask {
      * decoder). Stops at the first picture (VCL) NAL unit, so the picture data, and a suffix SEI or Dolby Vision's RPU
      * after it, are never read. The position and limit stay as they were. Returns how many messages were masked.
      */
-    fun mask(buffer: ByteBuffer): Int {
-        if (buffer.isReadOnly) return 0
+    fun mask(buffer: ByteBuffer): Int = if (buffer.isReadOnly) 0 else scan(buffer, write = true)
+
+    /**
+     * How many HDR10+ messages the prefix SEI of the access unit in [buffer] carries, read as [mask] reads it, with
+     * nothing changed: whether the film has HDR10+ ([PlayFacts.hdr10PlusSeen]) on a TV it isn't masked for.
+     */
+    fun count(buffer: ByteBuffer): Int = scan(buffer, write = false)
+
+    private fun scan(buffer: ByteBuffer, write: Boolean): Int {
         val limit = buffer.limit()
         var search = buffer.position()
         if (limit - search < 4) return 0
@@ -83,7 +90,7 @@ object Hdr10PlusMask {
             if (type == PREFIX_SEI) {
                 // Its messages start after the two-byte header and end where the next NAL unit starts.
                 val end = startCode(buffer, nal + 5, limit)
-                masked += maskMessages(buffer, nal + 5, end)
+                masked += maskMessages(buffer, nal + 5, end, write)
                 search = end
             } else {
                 search = nal + 3
@@ -92,8 +99,8 @@ object Hdr10PlusMask {
         return masked
     }
 
-    /** Masks the HDR10+ messages of one prefix SEI NAL unit, whose messages lie from [from] to [end]. */
-    private fun maskMessages(buffer: ByteBuffer, from: Int, end: Int): Int {
+    /** Masks ([write]) or counts the HDR10+ messages of one prefix SEI NAL unit, whose messages lie from [from] to [end]. */
+    private fun maskMessages(buffer: ByteBuffer, from: Int, end: Int, write: Boolean): Int {
         var at = from
         // Zero bytes just read, carried across the whole NAL unit: 00 00 03 is an emulation-prevention byte, which the
         // encoder put in so the data can't look like a start code, and which isn't part of the message.
@@ -143,7 +150,7 @@ object Hdr10PlusMask {
             }
             if (!sizeRead) break
             if (typeAt >= 0 && isHdr10Plus(buffer, at, end, zeros, payloadSize)) {
-                buffer.put(typeAt, MASKED_TYPE.toByte())
+                if (write) buffer.put(typeAt, MASKED_TYPE.toByte())
                 masked++
             }
             // Past the payload: payloadSize bytes of the message, not counting emulation-prevention bytes.

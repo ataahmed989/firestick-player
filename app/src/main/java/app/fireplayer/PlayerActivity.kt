@@ -24,6 +24,7 @@ import app.fireplayer.vod.play.PlayRules
 import app.fireplayer.vod.play.PlayerMeta
 import app.fireplayer.vod.play.Recovery
 import app.fireplayer.vod.play.SourcePlayback
+import app.fireplayer.vod.play.SourcesModel
 import app.fireplayer.vod.play.VodFix
 import app.fireplayer.vod.ui.SourcesPanel
 import android.os.Build
@@ -67,6 +68,7 @@ import androidx.media3.common.text.Cue
 import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.HttpDataSource
+import androidx.media3.exoplayer.ExoPlaybackException
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.SeekParameters
 import androidx.media3.exoplayer.analytics.AnalyticsListener
@@ -99,6 +101,7 @@ import app.fireplayer.player.GraphicsTrim
 import app.fireplayer.player.JumpFrameCheck
 import app.fireplayer.player.FrameRateMatcher
 import app.fireplayer.player.FreezeWatch
+import app.fireplayer.player.PictureWatch
 import app.fireplayer.player.FrameTally
 import app.fireplayer.player.PreviewGuard
 import app.fireplayer.player.IdleCloseDataSource
@@ -423,6 +426,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     // The film stood still while meant to be playing (see FreezeWatch): paused for a moment, and played again by itself.
     private var pausedForFreeze = false
     private val freezeWatch = FreezeWatch { SystemClock.elapsedRealtime() }
+    // A film from the add-ons whose picture this Stick doesn't show gives way to the next copy (see PictureWatch).
+    private val pictureWatch = PictureWatch()
     /** Whether the current player's own thread still answers; one per player. */
     private var threadBeat: ThreadBeat? = null
     // The next quiet retry builds a new player instead of loading again (a film that froze).
@@ -1288,6 +1293,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (frozeOut) freezeWatch.reset()
         frozeOut = false
         freezeWatch.jumped()
+        pictureWatch.reset()
         // A rebuilt player's first load (back from Home, sound decoded here) isn't a stage-4 stall either.
         source?.jumped()
         cannotOpen = false
@@ -1839,6 +1845,16 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         if (state == Player.STATE_READY) {
             launchMark(LaunchLog.LOADED)
+            // A film's copy far shorter than the film, picked by FirePlayer, gives way to the next copy at once: the
+            // wrong video is held meanwhile (SourcePlayback.lengthKnown), and the end of a refresh-rate switch for it
+            // doesn't start it again (the next copy's own rate is matched as it starts). With no copy left, its stop
+            // message stays up.
+            val held = source?.let { s -> player?.duration?.takeIf { it > 0 }?.let { d -> s.lengthKnown(d) } } == true
+            if (held) {
+                handler.removeCallbacks(resumeAfterSwitch)
+                pausedForSwitch = false
+                player?.pause()
+            }
             pictureText.go()
             noteEpisodeLength()
             // The film's picture is known by now: how often the black-bar watch looks.
@@ -1848,7 +1864,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 backdrop?.frameChanged()
             }
             findNextEpisode()
-            errorBox.visibility = View.GONE
+            if (!held) errorBox.visibility = View.GONE
             // The stopped player loaded again behind the freeze message (a subtitle added): it plays, so it's answered.
             if (frozeOut) {
                 frozeOut = false
@@ -1877,8 +1893,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             return
         }
         if (state == Player.STATE_ENDED) {
-            completed = true
             val s = source
+            // A copy that ended without really playing (a switch started it past its end), or a film's copy far shorter
+            // than the film, isn't the film's end: nothing is recorded or closed, and the next copy plays from where the
+            // film was (SourcePlayback.reachedEnd).
+            if (s != null && !s.reachedEnd(player?.duration?.takeIf { it > 0 } ?: 0L)) {
+                updateProgress()
+                return
+            }
+            completed = true
             if (s != null) {
                 // Watched to the end; the next episode then starts from its own sources, when there is one.
                 player?.duration?.takeIf { it > 0 }?.let { d -> s.record(d, d, segments?.creditsAt) }
@@ -1911,6 +1934,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         watchPause()
         // Only while still paused there: a jump back made at the very end has already set it playing again.
         if (sleepAtEnd && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM && player?.playWhenReady == false) {
+            // A copy from the add-ons that isn't the whole film didn't end it: the next copy plays (as at STATE_ENDED),
+            // and the sleep waits for the film's own end.
+            val s = source
+            if (s != null && !s.reachedEnd(player?.duration?.takeIf { it > 0 } ?: 0L)) return
             completed = true
             entries.getOrNull(player?.currentMediaItemIndex ?: -1)?.let { prefs.savePosition(it.key, 0L) }
             finishWithResult()
@@ -1958,6 +1985,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         playingIndex = now
         deviceRetries = 0
         freezeWatch.jumped()
+        pictureWatch.reset()
         measuredFps = 0f
         fpsMeter.reset()
         lineUpNext()
@@ -1970,6 +1998,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     override fun onTracksChanged(tracks: Tracks) {
         // Another sound track (or the same one set up again) gets its own time to start.
         freezeWatch.jumped()
+        pictureWatch.reset()
         pendingExternalSubId?.let { id ->
             val option = trackOptions(C.TRACK_TYPE_TEXT).firstOrNull { sameId(it, id) }
             if (option != null) {
@@ -2093,6 +2122,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
         // Every jump, the viewer's or FreezeWatch's own: the film's time starts afresh there.
         freezeWatch.jumped()
+        pictureWatch.reset()
         // The wait after a jump is the jump's, not the copy's.
         if (reason == Player.DISCONTINUITY_REASON_SEEK) jumpedAt = SystemClock.elapsedRealtime()
         if (reason == Player.DISCONTINUITY_REASON_SEEK) source?.jumped()
@@ -2233,6 +2263,16 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             hideBuffering()
             health = health.copy(failures = health.failures + 1)
             keepHealth()
+            // The picture's decoder failed: no picture here for this copy, so the next one plays, with a note. The copy's
+            // doing when the decoder failed on it (4003-4005), not when one couldn't be set up (4001, 4002: the device's);
+            // its format's when the decoder doesn't take that format.
+            val exo = error as? ExoPlaybackException
+            if (PictureWatch.decoderFailed(error.errorCode, exo?.rendererFormat?.sampleMimeType)) {
+                val format = exo != null && exo.type == ExoPlaybackException.TYPE_RENDERER && exo.rendererFormatSupport != C.FORMAT_HANDLED
+                noPicture("the video decoder failed (error ${error.errorCode})", copyFault = format || error.errorCode >= 4003,
+                    formatWide = format)
+                return
+            }
             s.failed(error.errorCode, status)
             return
         }
@@ -2316,9 +2356,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private fun checkFreeze() {
         val p = player ?: return
         val now = SystemClock.elapsedRealtime()
-        // Held on purpose, or something in front of the film (Alexa, a system window): not watched.
-        val held = seeking || pausedForSwitch || pausedForFreeze || retryPending || resumeDialogShowing ||
-            errorBox.visibility == View.VISIBLE || completed || isFinishing || !hasWindowFocus()
+        val held = filmHeld()
         val event = freezeWatch.check(
             FreezeWatch.Sample(
                 playing = p.isPlaying,
@@ -2375,6 +2413,52 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             }
         }
         logHdmiSound()
+    }
+
+    /** Held on purpose, or something in front of the film (Alexa, a system window): not watched. */
+    private fun filmHeld(): Boolean = seeking || pausedForSwitch || pausedForFreeze || retryPending || resumeDialogShowing ||
+        errorBox.visibility == View.VISIBLE || completed || isFinishing || !hasWindowFocus()
+
+    /**
+     * From [postPlayTick], for a film or episode from the add-ons: a copy whose picture this Stick doesn't show (no
+     * frame while its sound plays, or none of the TV's decoders takes it: [PictureWatch]) gives way to the next copy,
+     * with a note. Never judged by what the frames show; not while held, or with no surface to show the picture on.
+     */
+    private fun checkPicture() {
+        if (source == null) return
+        val p = player ?: return
+        val tracks = p.currentTracks
+        val counters = p.videoDecoderCounters
+        counters?.ensureUpdated()
+        val why = pictureWatch.check(
+            playing = p.isPlaying,
+            held = filmHeld() || surfaceView.holder.surface?.isValid != true,
+            positionMs = p.currentPosition,
+            durationMs = p.duration,
+            hasVideo = tracks.containsType(C.TRACK_TYPE_VIDEO),
+            decodable = tracks.isTypeSupported(C.TRACK_TYPE_VIDEO, true),
+            framesShown = counters?.renderedOutputBufferCount?.toLong() ?: -1L,
+        ) ?: return
+        val none = why == PictureWatch.Why.NO_DECODER
+        noPicture(if (none) "none of this TV's video decoders takes its picture" else "no frame while its sound played",
+            copyFault = true, formatWide = none)
+    }
+
+    /**
+     * The copy playing showed no picture here ([why], for the log): the next copy plays. Kept with how the copy played
+     * ([CopyHealth.noPicture]: not picked by itself again) only when none of its picture showed in this play and the copy
+     * is the cause ([copyFault]), not the device (a decoder that couldn't be set up) nor a picture that stopped after
+     * playing; only then the note says so. [formatWide]: this TV takes no copy of its format, so they're passed over too.
+     */
+    private fun noPicture(why: String, copyFault: Boolean, formatWide: Boolean) {
+        val s = source ?: return
+        val at = formatTime(player?.currentPosition ?: 0L, long = true)
+        android.util.Log.w(PlaybackDiag.TAG, "recovery no picture at $at: $why")
+        healthFor(player?.currentMediaItem?.localConfiguration?.uri)
+        val never = health.renderedFrames == 0L
+        if (never && copyFault) health = health.copy(noPicture = health.noPicture + 1)
+        keepHealth()
+        s.noPicture(formatWide, said = never)
     }
 
     private val resumeAfterFreeze = Runnable {
@@ -2842,6 +2926,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 s.tick(player?.totalBufferedDuration ?: 0L)
             }
             checkFreeze()
+            checkPicture()
             tellDamageSkip()
             // What the film has loaded ahead running low while the skip preview loads beside it: previews stop for it.
             if (previewGuard.active) player?.let {
@@ -5373,6 +5458,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             }
             row(if (ref != null) "Show details" else "Film details") { openDetails(show = ref != null) }.asSubRow()
             row("Picture & sound") { openQuality(show = ref != null) }.asSubRow()
+            // Every copy the add-ons offer, ranked for this TV: the same window as the title page's Sources.
+            row("Sources", vod.session.list?.sources?.size?.let { "$it" }) { openSourcesPanel(vod) }.asSubRow()
             return
         }
         val portal = NextEpisode.portal(entry.uri)
@@ -5510,7 +5597,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val link = p.currentMediaItem?.localConfiguration?.uri?.toString()
         val rates = embeddedCues.source(link)?.rates
         // Dolby Vision profile 7 that this TV plays as its HDR10 base layer is described, and kept, as HDR10.
-        val base = MediaSpec.of(video, audio, DvBaseLayer.playedAsBase(video?.sampleMimeType, video?.codecs, DvBaseLayer.tvPlaysBase))
+        val base = MediaSpec.of(video, audio, DvBaseLayer.playedAsBase(video?.sampleMimeType, video?.codecs, DvBaseLayer.tvPlaysBase),
+            app.fireplayer.player.PlayFacts.decoderMime, app.fireplayer.player.PlayFacts.hdr10PlusSeen)
         val w = p.videoSize.width.takeIf { it > 0 } ?: base.width
         val h = p.videoSize.height.takeIf { it > 0 } ?: base.height
         val videoBps = rates?.bps(video?.id) ?: 0L
@@ -5568,8 +5656,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             if (spec.width > 0 && spec.height > 0) "${spec.width}×${spec.height}" else null,
             spec.fps.takeIf { it > 0 }?.let { fpsLabel(it).replace(" FPS", " fps") },
         ).joinToString(" · ").ifEmpty { null }?.let { pairs += "Frame" to fact(it) }
-        // On a TV that reports no HDR the Fire TV turns HDR into SDR: said, so the row doesn't claim what isn't seen.
-        pairs += "Range" to fact(spec.rangeLine(hdrScreen()))
+        // On a TV that reports no HDR the Fire TV turns HDR into SDR, and HDR10+ reaches the TV only where Settings › This
+        // TV says so: said, so the row doesn't claim what isn't seen.
+        pairs += "Range" to fact(spec.rangeLine(hdrScreen(), prefs.hdr10PlusReaches && hdr10PlusGate?.mask == false))
         // The picture's own rate; while it's measured, the file's average stands in, said as such.
         pairs += "Data" to fact(
             if (spec.videoBps > 0) "${MediaSpec.mbps(spec.videoBps)} · " +
@@ -5674,7 +5763,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // Frames dropped while the film catches up after a jump are the jump's, and while the skip preview loads beside
         // it (or just did) the preview's: not the copy's (as with its waits).
         val jumped = now - jumpedAt < JUMP_WAIT_MS
-        val lost = if (jumped || previewGuard.covers(now)) 0L else diag.tally.addedLost
+        val guarded = jumped || previewGuard.covers(now)
+        val lost = if (guarded) 0L else diag.tally.addedLost
         // The film's decoder losing frames while the preview decodes beside it (not catching up after a jump): previews
         // stop for it.
         val late = if (jumped) 0L else diag.tally.added(FrameTally.DROPPED) + diag.tally.added(FrameTally.NEVER)
@@ -5682,7 +5772,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val shown = diag.tally.addedRendered
         if (lost > 0 || shown > 0) {
             healthFor(p.currentMediaItem?.localConfiguration?.uri)
-            health = health.copy(droppedFrames = health.droppedFrames + lost, renderedFrames = health.renderedFrames + shown)
+            // The decoder's share of the frames lost, kept apart for Best for this TV ([CopyHealth.lateFrames]).
+            health = health.copy(droppedFrames = health.droppedFrames + lost, renderedFrames = health.renderedFrames + shown,
+                lateFrames = health.lateFrames + if (guarded) 0L else late)
         }
         val v = droppedFact ?: return
         if (!v.isAttachedToWindow) droppedFact = null
@@ -5740,12 +5832,23 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (keptPlay != playKey) {
             keptPlay = playKey
             keptBefore = before
+            keptAt = System.currentTimeMillis()
+            keptSized = (before?.sizeBytes ?: 0L) > 0L
         }
-        val text = MediaSpec.encode(MediaSpec.merged(before, spec))
+        // The play's date, the same all through it: "✓ played" in Sources, and when it last played here.
+        val now = spec.copy(playedAt = keptAt)
+        val text = MediaSpec.encode(MediaSpec.merged(before, now))
         if (qualitySeen.getString(key, null) == text) return
         val edit = qualitySeen.edit()
         if (qualitySeen.all.size >= MAX_QUALITY_SEEN && !qualitySeen.contains(key)) edit.clear()
         edit.putString(key, text).apply()
+        // The file's exact size, first known: the same file from the other add-on joins its row now (SourceMerge), so
+        // Next source and Sources don't offer it again as another copy. Only this title's list: the size is of its file.
+        val s = source
+        if (!keptSized && spec.sizeBytes > 0L && s != null) {
+            keptSized = true
+            (Sources.get(this) as? app.fireplayer.vod.sources.DefaultSourcesRepository)?.rerank(s.request.target)
+        }
     }
 
     /** A title's name as copies of it are matched: letters and digits only, no year ("missionimpossiblefallout"). */
@@ -5778,6 +5881,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private var health = CopyHealth()
     private var healthKey: String? = null
     private var healthBefore: CopyHealth? = null
+    // When this play of it began (epoch ms): the date kept with its counters.
+    private var healthAt = 0L
     private var watchingSince = 0L
     private var stallSince = 0L
     private var jumpedAt = 0L
@@ -5790,6 +5895,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             keepHealth()
             healthKey = key
             healthBefore = key?.let { CopyHealth.decode(qualitySeen.getString("h|$it", null)) }
+            healthAt = System.currentTimeMillis()
             health = CopyHealth()
             readyOnce = false
             stallSince = 0
@@ -5831,7 +5937,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val now = SystemClock.elapsedRealtime()
         val sofar = if (watchingSince > 0) health.copy(watchedMs = health.watchedMs + now - watchingSince) else health
         if (sofar == CopyHealth()) return
-        val text = CopyHealth.encode((healthBefore ?: CopyHealth()) + sofar)
+        // Dated once per play (as the picture's playedAt): a play with nothing new to keep writes nothing.
+        val text = CopyHealth.encode((healthBefore ?: CopyHealth()) + sofar.copy(at = healthAt))
         if (qualitySeen.getString("h|$key", null) != text) qualitySeen.edit().putString("h|$key", text).apply()
     }
 
@@ -5848,6 +5955,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     // The play being kept, and what earlier plays had measured of it when it started.
     private var keptPlay: String? = null
     private var keptBefore: MediaSpec? = null
+    private var keptAt = 0L
+    // Whether the copy's exact size was known when the play being kept started, or has been told since.
+    private var keptSized = false
 
     /** What was measured of the copy at [uri] when it was played; null if it never was. Any thread. */
     private fun measuredQuality(uri: Uri): MediaSpec? =
@@ -6292,6 +6402,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             hideBuffering()
             if (panel.isOpen) panel.close()
             player?.pause()
+            // Nor does the end of a refresh-rate switch start it again behind the message.
+            handler.removeCallbacks(resumeAfterSwitch)
+            pausedForSwitch = false
             updateTitle()
             errorText.text = message
             errorHint.text = "Press Back for Sources"
@@ -6358,6 +6471,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             sourcePrefs.edit().putString(STALL_CHOICE + key, choice).apply()
         }
 
+        override fun notWhole() {
+            // Kept with how the copy played (CopyHealth.notWhole): not picked by itself again, and Sources says why.
+            healthFor(player?.currentMediaItem?.localConfiguration?.uri)
+            if (health.notWhole == 0) health = health.copy(notWhole = 1)
+            keepHealth()
+        }
+
+        override fun runtimeMinutes(): Int = source?.request?.let { PlayerMeta.runtimeMinutes(it, vodDetails) } ?: 0
+
         override fun lineShort(mbps: Double) {
             // Two connections' combined speed is kept apart from one connection's: each ranks the lists with its own.
             // Under the key the lists are ranked by, so a film the server kept on one request still teaches them.
@@ -6377,10 +6499,16 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
     }
 
-    /** Picture & sound's rows for a play from the add-ons: Next source (at the current position) and Sources. */
+    /**
+     * Picture & sound's rows for a play from the add-ons: Next source (at the current position), its note the copy it
+     * plays ([app.fireplayer.vod.SourceSession.nextPick]) in the Sources window's words, and Sources.
+     */
     private fun SidePanel.sourceRows(s: SourcePlayback) {
-        val playing = s.current
-        val note = playing?.let { listOf(PlayRules.badges(it), "from ${PlayRules.addonsOf(it)}").filter { t -> t.isNotEmpty() }.joinToString(" · ") }
+        val list = s.session.list
+        val next = s.session.nextPick()
+        val note = if (list == null || next == null) null else
+            listOf(PlayRules.mainLine(next, film = SourcesModel.film(list), plan = list.plan), PlayRules.addonsOf(next))
+                .filter { t -> t.isNotEmpty() }.joinToString(" · ")
         actionRow("Next source", note, "Next", Rows.Badge.ACTIVE) {
             panel.close()
             hideControls()
@@ -6390,20 +6518,35 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         row("Sources", count?.let { "$it" }) { openSourcesPanel(s) }
     }
 
-    /** The Sources panel over Picture & sound: OK on a row plays it at the current position (or from the beginning). */
+    /**
+     * The Sources window over Settings or Picture & sound: OK on a row plays it at the current position (or from the
+     * beginning). It knows whether the copy playing plays smoothly, and its server's speed for its Details.
+     */
     private fun openSourcesPanel(s: SourcePlayback) {
+        // A Continue card's resume asked only its copy's add-on: the others are asked now, not 15 s after the start.
+        s.session.widen()
         val sp = sourcesPanel ?: SourcesPanel(this, panel).also { sourcesPanel = it }
         val ep = s.request.target.episode
         val title = if (ep == null) "Sources" else "Sources · S${ep.season} E${ep.episode}"
-        sp.open(title, s.session.list, s.session.attempts, s.current?.key, sub = true) { picked, beginning ->
+        // As Picture & sound's Server says it: what arrives against what the whole file needs.
+        val server = {
+            val d = diag.download
+            val need = playingSpec()?.let { it.overallBps.takeIf { b -> b > 0 } ?: (it.videoBps + it.audioBps) } ?: 0L
+            if (diag.meter.bytes > 0L) app.fireplayer.player.ArrivalWords.server(d.sustainedMbps, d.sustainedSeconds, need / 1_000_000.0) else null
+        }
+        sp.open(title, s.session.list, s.session.attempts, playingRow(s), sub = true, smooth = s.smooth, server = server,
+            next = s.session::nextPick, move = { src, imax -> Sources.get(this).moveImax(s.request.target, src, imax) }) { picked, beginning ->
             panel.close()
             hideControls()
             // The copy playing (its row at the top): it plays on, unless asked to start from the beginning.
-            if (picked.key == s.current?.key && !beginning) return@open
+            if (picked.key == playingRow(s) && !beginning) return@open
             s.pick(picked, beginning)
         }
-        s.session.setListener { sp.update(s.session.list, s.session.attempts, s.current?.key) }
+        s.session.setListener { sp.update(s.session.list, s.session.attempts, playingRow(s)) }
     }
+
+    /** The Sources row of the copy playing: its file's row now ([app.fireplayer.vod.SourceSession.rowKey]: the same file may have merged). */
+    private fun playingRow(s: SourcePlayback): String? = s.current?.let { s.session.rowKey(it) }
 
     /** A subtitle or sound track as a wish (see reapplyChoices): a track labelled forced or signs counts as forced. */
     private fun wishOf(f: Format) = TrackWish(f.language, f.label, f.roleFlags, forcedish(f), f.channelCount)

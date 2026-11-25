@@ -11,6 +11,7 @@ import kotlin.random.Random
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -129,7 +130,7 @@ class DvBaseLayerTest {
         assertEquals("HEVC · 10-bit · HDR10", asBase.pictureLine())
         // Kept between plays; what was kept before it was known reads back as played as the file has it.
         assertEquals(asBase, MediaSpec.decode(MediaSpec.encode(asBase)))
-        assertEquals(0, MediaSpec.decode(MediaSpec.encode(asBase).substringBeforeLast('|'))?.dvBaseLayer)
+        assertEquals(0, MediaSpec.decode(MediaSpec.encode(asBase).split('|').take(20).joinToString("|"))?.dvBaseLayer)
         // Where it plays as Dolby Vision, it's said as before.
         val asDv = MediaSpec.of(remux, null)
         assertEquals("Dolby Vision", asDv.hdr)
@@ -173,6 +174,140 @@ class DvBaseLayerTest {
         assertArrayEquals(info, noTransfer.hdrStaticInfo)
         assertEquals(C.COLOR_TRANSFER_ST2084, noTransfer.colorTransfer)
         assertEquals(C.COLOR_SPACE_BT2020, noTransfer.colorSpace)
+    }
+
+    // --- HDR10 colour for profile 8 on the HEVC decoder (Media3's own way back on a TV without Dolby Vision)
+
+    @Test
+    fun profile8OnTheHevcDecoderGetsHdr10ColourWhereItStatesNone() {
+        val dv = MimeTypes.VIDEO_DOLBY_VISION
+        val hevc = MimeTypes.VIDEO_H265
+        val generic = DvBaseLayer.hdr10(null).hdrStaticInfo
+        // The IMAX copy as measured: PQ with no static metadata (or no colour at all) reached the screen with none.
+        val pqOnly = ColorInfo.Builder().setColorSpace(C.COLOR_SPACE_BT2020).setColorTransfer(C.COLOR_TRANSFER_ST2084)
+            .setColorRange(C.COLOR_RANGE_LIMITED).build()
+        for (own in listOf(null, ColorInfo.Builder().build(), pqOnly)) {
+            val c = DvBaseLayer.hevcColour(dv, "dvhe.08.06", hevc, own)!!
+            assertEquals(C.COLOR_SPACE_BT2020, c.colorSpace)
+            assertEquals(C.COLOR_TRANSFER_ST2084, c.colorTransfer)
+            assertEquals(C.COLOR_RANGE_LIMITED, c.colorRange)
+            assertArrayEquals(generic, c.hdrStaticInfo)
+        }
+        // The file's own brightness data, where it states it without the rest.
+        val info = ByteArray(25) { (it + 3).toByte() }
+        val stated = ColorInfo.Builder().setHdrStaticInfo(info).build()
+        assertArrayEquals(info, DvBaseLayer.hevcColour(dv, "dvh1.08.06", hevc, stated)!!.hdrStaticInfo)
+        // HDR10 in full is left as it is; an HLG (8.4) or SDR (8.2) base keeps its own colour.
+        val full = pqOnly.buildUpon().setHdrStaticInfo(info).build()
+        assertNull(DvBaseLayer.hevcColour(dv, "dvhe.08.06", hevc, full))
+        assertNull(DvBaseLayer.hevcColour(dv, "dvhe.08.06", hevc, ColorInfo.Builder().setColorTransfer(C.COLOR_TRANSFER_HLG).build()))
+        assertNull(DvBaseLayer.hevcColour(dv, "dvhe.08.06", hevc, ColorInfo.SDR_BT709_LIMITED))
+        // Only Dolby Vision profile 8, and only on the HEVC decoder: played as Dolby Vision, or another profile (7 goes
+        // as its base layer with its own colour; 5 has no HDR10 inside), or an HEVC film, nothing changes.
+        assertNull(DvBaseLayer.hevcColour(dv, "dvhe.08.06", dv, null))
+        assertNull(DvBaseLayer.hevcColour(dv, "dvhe.05.06", hevc, null))
+        assertNull(DvBaseLayer.hevcColour(dv, "dvhe.07.06", hevc, null))
+        assertNull(DvBaseLayer.hevcColour(dv, null, hevc, null))
+        assertNull(DvBaseLayer.hevcColour(hevc, "hvc1.2.4.L153.B0", hevc, null))
+    }
+
+    @Test
+    fun aProfile8PictureThatSaysHlgOrSdrIsLeftAsItIsWhenItsFileStatesNoColour() {
+        val dv = MimeTypes.VIDEO_DOLBY_VISION
+        val hevc = MimeTypes.VIDEO_H265
+        // An MKV without a Colour element: Media3 states no colour, its picture's SPS (the initialization data) does.
+        // A 4K Main 10 SPS, BT.2020, its transfer PQ, HLG (8.4) or SDR (8.2).
+        fun sps(hex: String) = listOf(ByteArray(hex.length / 2) { hex.substring(2 * it, 2 * it + 2).toInt(16).toByte() })
+        val pq = sps("00000001420101022000000300900000030000030099a001e020021c4d965e4936b9a84880480000030000030000030004")
+        val hlg = sps("00000001420101022000000300900000030000030099a001e020021c4d965e4936b9a84890480000030000030000030004")
+        val sdr = sps("00000001420101022000000300900000030000030099a001e020021c4d965e4936b9a84808480000030000030000030004")
+        assertEquals(C.COLOR_TRANSFER_ST2084, DvBaseLayer.hevcColour(dv, "dvhe.08.06", hevc, null, pq)!!.colorTransfer)
+        assertNull(DvBaseLayer.hevcColour(dv, "dvhe.08.06", hevc, null, hlg))
+        assertNull(DvBaseLayer.hevcColour(dv, "dvhe.08.06", hevc, ColorInfo.Builder().build(), sdr))
+        // Stated by the file, its own word stands; no parameter sets to read: HDR10 colour, as before.
+        assertNull(DvBaseLayer.hevcColour(dv, "dvhe.08.06", hevc, ColorInfo.Builder().setColorTransfer(C.COLOR_TRANSFER_HLG).build(), pq))
+        assertTrue(DvBaseLayer.hevcColour(dv, "dvhe.08.06", hevc, null, emptyList()) != null)
+        // A colour space other than BT.2020, stated without a transfer, isn't made BT.2020.
+        assertNull(DvBaseLayer.hevcColour(dv, "dvhe.08.06", hevc, ColorInfo.Builder().setColorSpace(C.COLOR_SPACE_BT709).build()))
+    }
+
+    // --- What a Dolby Vision file's base layer is: its configuration record (dvcC, dvvC, dvwC)
+
+    /** A Dolby Vision decoder configuration record (24 bytes): version 1.0, [profile], level 6, RPU and BL, [signal]. */
+    private fun record(signal: Int, profile: Int = 8) = ByteArray(24).also {
+        it[0] = 1
+        it[2] = (profile shl 1).toByte()
+        it[3] = 0x35
+        it[4] = (signal shl 4).toByte()
+    }
+
+    @Test
+    fun aProfile8FilesRecordSaysWhatItsBaseLayerIs() {
+        assertEquals(listOf(1, 2, 4, 6), listOf(1, 2, 4, 6).map { DvBaseLayer.signalOf(record(it)) })
+        // An HEVC parameter set, a cut-off record, a profile out of range: none.
+        assertNull(DvBaseLayer.signalOf(byteArrayOf(0, 0, 0, 1, 0x40, 1, 0x0c)))
+        assertNull(DvBaseLayer.signalOf(record(4).copyOf(4)))
+        assertNull(DvBaseLayer.signalOf(record(4, profile = 2)))
+        // MP4: the record follows the parameter sets in the initialization data.
+        val dv = MimeTypes.VIDEO_DOLBY_VISION
+        val hevc = MimeTypes.VIDEO_H265
+        val mp4 = Format.Builder().setSampleMimeType(dv).setCodecs("dvh1.08.06").setWidth(3840).setHeight(2160)
+            .setInitializationData(listOf(byteArrayOf(0, 0, 0, 1, 0x40, 1, 0x0c), record(DvBaseLayer.SIGNAL_HLG))).build()
+        assertEquals(DvBaseLayer.SIGNAL_HLG, DvBaseLayer.recordSignal(mp4))
+        // MKV: kept on the format by the reader.
+        val mkv = Format.Builder().setSampleMimeType(dv).setCodecs("dvhe.08.06").setCustomData(DvBaseLayer.Signal(DvBaseLayer.SIGNAL_SDR)).build()
+        assertEquals(DvBaseLayer.SIGNAL_SDR, DvBaseLayer.recordSignal(mkv))
+        val bare = mkv.buildUpon().setCustomData(null).build()
+        assertNull(DvBaseLayer.recordSignal(bare))
+        // With no record, the transfer the track states; nothing stated, not known.
+        val pq = ColorInfo.Builder().setColorSpace(C.COLOR_SPACE_BT2020).setColorTransfer(C.COLOR_TRANSFER_ST2084).build()
+        assertEquals(DvBaseLayer.SIGNAL_HDR10, DvBaseLayer.baseSignal(bare.buildUpon().setColorInfo(pq).build()))
+        assertEquals(0, DvBaseLayer.baseSignal(bare))
+        // An HLG or SDR base is never given HDR10 colour, even when the track states no colour at all.
+        assertNull(DvBaseLayer.hevcColour(dv, "dvhe.08.06", hevc, null, null, DvBaseLayer.SIGNAL_HLG))
+        assertNull(DvBaseLayer.hevcColour(dv, "dvhe.08.06", hevc, null, null, DvBaseLayer.SIGNAL_SDR))
+        assertNotNull(DvBaseLayer.hevcColour(dv, "dvhe.08.06", hevc, null, null, DvBaseLayer.SIGNAL_HDR10))
+        // Played on the HEVC decoder: kept as HLG, said as HLG, and not "no HDR brightness data".
+        val spec = MediaSpec.of(mp4, null, decoderMime = hevc)
+        assertEquals(MediaSpec.Decoder.PLAIN, spec.decoder)
+        assertEquals(DvBaseLayer.SIGNAL_HLG, spec.dvSignal)
+        assertNull(spec.hdrInfo)
+        assertEquals("HLG (Dolby Vision profile 8 file)", spec.rangeLine(hdrScreen = true))
+        assertEquals("HDR10 (Dolby Vision profile 8 file)", MediaSpec.of(bare.buildUpon().setColorInfo(pq).build(), null, decoderMime = hevc)
+            .rangeLine(hdrScreen = true))
+    }
+
+    /** An EBML element: [id] in its own bytes, a one-byte size, then [body]. */
+    private fun ebml(id: Long, vararg body: ByteArray): ByteArray {
+        val payload = body.fold(ByteArray(0)) { a, b -> a + b }
+        val n = when {
+            id > 0xFFFFFF -> 4
+            id > 0xFFFF -> 3
+            id > 0xFF -> 2
+            else -> 1
+        }
+        return ByteArray(n) { ((id shr (8 * (n - 1 - it))) and 0xFF).toByte() } + byteArrayOf((0x80 or payload.size).toByte()) + payload
+    }
+
+    private fun uint(v: Long, n: Int) = ByteArray(n) { ((v shr (8 * (n - 1 - it))) and 0xFF).toByte() }
+
+    @Test
+    fun theMkvReaderTakesTheVideoTracksRecordFromTheFilesFirstBytes() {
+        // Segment › Tracks › an audio TrackEntry, then the video one with its DefaultDuration and BlockAdditionMapping.
+        fun header(type: Long, signal: Int) = ebml(0x18538067, ebml(0x1654AE6B,
+            ebml(0xAE, ebml(0x83, uint(2, 1))),
+            ebml(0xAE, ebml(0x83, uint(1, 1)), ebml(0x23E383, uint(41_708_333, 4)),
+                ebml(0x41E4, ebml(0x41E7, uint(type, 4)), ebml(0x41ED, record(signal))))))
+        val dvcC = header(0x64766343, DvBaseLayer.SIGNAL_HLG)
+        val video = MkvHeader.video(dvcC, dvcC.size)!!
+        assertEquals(DvBaseLayer.SIGNAL_HLG, video.dvSignal)
+        assertEquals(23.976f, video.frameRate, 0.001f)
+        val dvvC = header(0x64767643, DvBaseLayer.SIGNAL_HDR10)
+        assertEquals(DvBaseLayer.SIGNAL_HDR10, MkvHeader.video(dvvC, dvvC.size)!!.dvSignal)
+        // Another kind of block addition: no record.
+        val other = header(0x6D766343, DvBaseLayer.SIGNAL_HLG)
+        assertNull(MkvHeader.video(other, other.size)!!.dvSignal)
+        assertEquals(23.976f, MkvHeader.video(other, other.size)!!.frameRate, 0.001f)
     }
 
     @Test

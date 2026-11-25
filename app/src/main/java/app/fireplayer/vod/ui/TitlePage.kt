@@ -629,7 +629,7 @@ class TitlePage(
             panelLookup?.cancel()
             panelLookup = null
             if (!released && back.isShown) back.requestFocus() else if (!released) takeFocusBack()
-        }) { source, fromBeginning ->
+        }, move = { source, imax -> s.moveImax(tgt, source, imax) }) { source, fromBeginning ->
             host.sidePanel.close()
             val start = if (fromBeginning) StartAt.Beginning else currentStart()
             stopped = null

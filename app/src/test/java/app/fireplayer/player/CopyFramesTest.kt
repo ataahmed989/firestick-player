@@ -101,4 +101,30 @@ class CopyFramesTest {
         assertEquals("SDR", MediaSpec(hdr = "SDR").rangeLine(hdrScreen = false))
         assertEquals("Not stated by the file", MediaSpec().rangeLine(hdrScreen = false))
     }
+
+    @Test
+    fun theRangeRowSaysHdr10PlusAndTheDolbyVisionFileItCameFrom() {
+        // HDR10+ seen in the picture, on the user's Sticks, where it never reached the TV from FirePlayer: in the file, and
+        // what the TV gets; also for a profile 7 file played as its base layer (Avatar's UHD remuxes).
+        assertEquals("HDR10+ in the file · TV gets HDR10", MediaSpec(hdr = "HDR10", hdr10Plus = true).rangeLine(hdrScreen = true))
+        assertEquals("HDR10+ in the file · TV gets HDR10 (Dolby Vision profile 7 base layer)",
+            MediaSpec(hdr = "HDR10", dvBaseLayer = 7, hdr10Plus = true).rangeLine(hdrScreen = true))
+        // Where Settings › This TV says it reaches the TV.
+        assertEquals("HDR10+", MediaSpec(hdr = "HDR10", hdr10Plus = true).rangeLine(hdrScreen = true, plusReaches = true))
+        assertEquals("HDR10+ (Dolby Vision profile 7 base layer)",
+            MediaSpec(hdr = "HDR10", dvBaseLayer = 7, hdr10Plus = true).rangeLine(hdrScreen = true, plusReaches = true))
+        assertEquals("HDR10 (Dolby Vision profile 7 base layer)", MediaSpec(hdr = "HDR10", dvBaseLayer = 7).rangeLine(hdrScreen = true))
+        // Profile 8 on the HEVC decoder (a TV without Dolby Vision): the HDR10 picture inside it, not "Dolby Vision", once
+        // its record or picture said HDR10 (8.1); not called HDR10 before that was read.
+        val p8 = MediaSpec(hdr = "Dolby Vision", dvProfile = 8, decoder = MediaSpec.Decoder.PLAIN, dvSignal = DvBaseLayer.SIGNAL_HDR10)
+        assertEquals("HDR10 (Dolby Vision profile 8 file)", p8.rangeLine(hdrScreen = true))
+        assertEquals("Dolby Vision profile 8 file", p8.copy(dvSignal = 0).rangeLine(hdrScreen = true))
+        assertEquals("HDR10+ in the file · TV gets HDR10 (Dolby Vision profile 8 file)", p8.copy(hdr10Plus = true).rangeLine(hdrScreen = true))
+        // Shown as Dolby Vision, or profile 5 (no HDR10 inside): as the file has it.
+        assertEquals("Dolby Vision", p8.copy(decoder = MediaSpec.Decoder.DOLBY_VISION).rangeLine(hdrScreen = true))
+        assertEquals("Dolby Vision", p8.copy(dvProfile = 5).rangeLine(hdrScreen = true))
+        // HDR10+ only describes an HDR10 picture, and not on a TV that shows HDR as SDR.
+        assertEquals("HLG", MediaSpec(hdr = "HLG", hdr10Plus = true).rangeLine(hdrScreen = true))
+        assertEquals("HDR10 · shown as SDR (TV reports no HDR)", MediaSpec(hdr = "HDR10", hdr10Plus = true).rangeLine(hdrScreen = false))
+    }
 }

@@ -602,6 +602,15 @@ interface VodRepository {
     fun details(title: Title, onDetails: (details: TitleDetails, fresh: Boolean) -> Unit): Cancel
 
     /**
+     * The language [title] was made in (ISO 639-1, "en", "ko"), from TMDB's details already stored on this TV (never
+     * fetched here: any thread, quick); null when none are stored or they don't say. Sources rank its sound first.
+     */
+    fun originalLanguage(title: Title): String? = null
+
+    /** [listener] is told (main thread) as TMDB details naming a title's own language are stored: Sources rank again. */
+    fun setOnOriginalLanguage(listener: (() -> Unit)?) = Unit
+
+    /**
      * Up to 15 POSTER cards like [title], never [title] itself, one per IMDb id. With a usable key: TMDB's
      * recommendations, topped up from its similar titles (those without a poster or with very few votes left out),
      * from the same TMDB call as [details]. Without a key, or when TMDB fails: Cinemeta's, for a film its director's

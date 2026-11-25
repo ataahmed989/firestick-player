@@ -2,6 +2,7 @@ package app.fireplayer.vod.sources
 
 import app.fireplayer.data.Prefs
 import app.fireplayer.data.Settings
+import app.fireplayer.data.SettingsWriter
 import android.annotation.SuppressLint
 import android.content.Context
 import android.net.ConnectivityManager
@@ -18,6 +19,7 @@ import app.fireplayer.player.MediaSpec
 import app.fireplayer.vod.Addon
 import app.fireplayer.vod.AddonSettings
 import app.fireplayer.vod.AddonState
+import app.fireplayer.vod.BestWhy
 import app.fireplayer.vod.Cancel
 import app.fireplayer.vod.LookupWhy
 import app.fireplayer.vod.Measured
@@ -32,6 +34,7 @@ import app.fireplayer.vod.SourceTarget
 import app.fireplayer.vod.SourcesRepository
 import app.fireplayer.vod.ThisTv
 import app.fireplayer.vod.TitleDetails
+import app.fireplayer.vod.TvPlan
 import app.fireplayer.vod.data.VodRepositories
 import java.io.IOException
 import java.net.SocketTimeoutException
@@ -76,8 +79,16 @@ class DefaultSourcesRepository(
     internal val online: () -> Boolean,
     /** What this connection was measured to sustain when a film kept stalling for want of it ([LineRate.current]). */
     private val lineMbps: () -> Double? = { null },
+    /** Settings › Playback › Preferred bitrate, Mb/s ([RankInput.preferredMbps]). */
+    private val preferredMbps: () -> Double = { SourceRank.PREFERRED_MBPS.toDouble() },
     /** The add-ons' statuses: real use notes in them what it finds ([noted]). */
     override val checks: AddonChecks? = null,
+    /** The language a title was made in, from what's stored of it ([app.fireplayer.vod.VodRepository.originalLanguage]); any thread. */
+    private val originalLanguage: (app.fireplayer.vod.Title) -> String? = { null },
+    /** The viewer's subtitle language ("en"); null when subtitles are off. */
+    private val subtitles: () -> String? = { null },
+    /** The viewer's moves of films' copies between 4K IMAX and 4K ([moveImax]). */
+    private val moves: ImaxMoves? = null,
 ) : SourcesRepository {
 
     private class Answer(val parsed: ParsedAnswer, val keepUntil: Long)
@@ -105,8 +116,14 @@ class DefaultSourcesRepository(
         var ranked: List<PlaybackSource> = emptyList()
         var best: PlaybackSource? = null
         var lastUsed: PlaybackSource? = null
+        var why: BestWhy? = null
+        /** What it was last ranked for: this TV's plan and the sound languages wanted. */
+        var plan: TvPlan? = null
+        var wanted: List<String> = emptyList()
         /** The row each release went into (merged copies). */
         var rowOf: Map<String, String> = emptyMap()
+        /** It was ranked knowing the title's own language ([originalLanguage]). */
+        var originalKnown = false
         var version = 0
         /** The add-ons whose answers are in [ranked]; one answered but not yet ranked still counts as looking. */
         var rankedFrom: Set<Addon> = emptySet()
@@ -186,6 +203,25 @@ class DefaultSourcesRepository(
         for (entry in entries.values.toList()) if (entry.answers.isNotEmpty()) rebuild(entry)
     }
 
+    override fun moveImax(target: SourceTarget, source: PlaybackSource, imax: Boolean) {
+        if (target.episode != null) return
+        moves?.save(target.title.id, source, imax)
+        rerank(target)
+    }
+
+    /** Only [target]'s list ranks again (a file of it played here and its exact size is known: its rows merge anew). */
+    fun rerank(target: SourceTarget) {
+        entries[target.key]?.takeIf { it.answers.isNotEmpty() }?.let(::rebuild)
+    }
+
+    /**
+     * A title's own language was stored (TMDB's details came after the add-ons' answers, or for a title never opened):
+     * the lists ranked without it rank again, so copies in it aren't left below the viewer's dub.
+     */
+    fun languageLearnt() {
+        for (entry in entries.values.toList()) if (entry.answers.isNotEmpty() && !entry.originalKnown) rebuild(entry)
+    }
+
     // ---- For the session ----
 
     /** Drops [addon]'s kept answer for [target] (a link expired: refresh it once). */
@@ -210,6 +246,15 @@ class DefaultSourcesRepository(
 
     /** The key of [target]'s row holding [release], also when it was merged into another release's row (×N). */
     internal fun rowKeyOf(target: SourceTarget, release: ReleaseKey): String? = entries[target.key]?.rowOf?.get(release.storeKey)
+
+    /** [key]'s row of [target] started playing: it is Last used now, in the lists shown (not only once they rank again). */
+    internal fun usedNow(target: SourceTarget, key: String) {
+        val entry = entries[target.key] ?: return
+        val row = entry.ranked.firstOrNull { it.key == key } ?: return
+        if (entry.lastUsed?.key == key) return
+        entry.lastUsed = row
+        notify(entry)
+    }
 
     // ---- Asking ----
 
@@ -411,24 +456,40 @@ class DefaultSourcesRepository(
         val from = entry.order.filterTo(EnumSet.noneOf(Addon::class.java)) { entry.answers.containsKey(it) }
         val answers = entry.order.mapNotNull { entry.answers[it]?.parsed?.streams }
         val target = entry.target
-        val input = RankInput(
-            plan = thisTv.plan(),
-            wanted = CopyLanguage.wanted(null, language()),
-            measured = measured,
-            runtimeMin = TitleDetails.runtimeMinutes(target.title.runtime),
-            episode = target.episode != null,
-            lineMbps = runCatching { lineMbps() }.getOrNull(),
-        )
+        val plan = thisTv.plan()
+        val imaxAlways = runCatching { thisTv.imaxAlways() }.getOrDefault(false)
+        val line = runCatching { lineMbps() }.getOrNull()
+        val aimMbps = runCatching { preferredMbps() }.getOrDefault(SourceRank.PREFERRED_MBPS.toDouble())
+        val preferred = runCatching { language() }.getOrDefault("en")
+        val subs = runCatching { subtitles() }.getOrNull()
+        val moved = moves?.takeIf { target.episode == null }?.of(target.title.id)
+        val now = wall()
         work.execute {
             // Always posted, so an answer never stays "looking" (a rank that throws keeps the list it had).
             val made = runCatching {
-                val merged = SourceMerge.mergeKeyed(answers, input.runtimeMin)
+                // The film's own language, from what's stored of it (read here, off the main thread).
+                val original = runCatching { originalLanguage(target.title) }.getOrNull()
+                val input = RankInput(
+                    plan = plan,
+                    wanted = CopyLanguage.wanted(original, preferred),
+                    measured = measured,
+                    runtimeMin = TitleDetails.runtimeMinutes(target.title.runtime),
+                    episode = target.episode != null,
+                    lineMbps = line,
+                    imaxAlways = imaxAlways,
+                    subtitles = subs,
+                    now = now,
+                    imaxMove = moved ?: { null },
+                    preferredMbps = aimMbps,
+                )
+                // The same file from two add-ons is one row: by the exact size a play here measured, too.
+                val merged = SourceMerge.mergeKeyed(answers, input.runtimeMin) { r -> measured(r.storeKey)?.spec?.sizeBytes?.takeIf { it > 0 } }
                 val ranked = SourceRank.rank(merged.sources, input)
                 val best = SourceRank.best(ranked)
                 val last = runCatching { library.lastRelease(target.title, target.episode) }.getOrNull()
                 val lastKey = last?.let { merged.rowOf[it.release.storeKey] }
-                val lastUsed = lastKey?.let { k -> ranked.firstOrNull { it.key == k } }?.takeIf { it.key != best?.key }
-                Ranked(merged.rowOf, ranked, best, lastUsed)
+                val lastUsed = lastKey?.let { k -> ranked.firstOrNull { it.key == k } }
+                Ranked(merged.rowOf, ranked, best, lastUsed, SourceRank.why(ranked, input), input.wanted, original != null)
             }.getOrNull()
             main.post {
                 if (entry.version != v) return@post
@@ -438,6 +499,10 @@ class DefaultSourcesRepository(
                     entry.ranked = made.sources
                     entry.best = made.best
                     entry.lastUsed = made.lastUsed
+                    entry.why = made.why
+                    entry.plan = plan
+                    entry.wanted = made.wanted
+                    entry.originalKnown = made.originalKnown
                 }
                 notify(entry)
             }
@@ -457,10 +522,18 @@ class DefaultSourcesRepository(
                 state
             }
         }
-        return SourceList(entry.target, states, entry.ranked, entry.best, entry.lastUsed)
+        return SourceList(entry.target, states, entry.ranked, entry.best, entry.lastUsed, entry.why, entry.plan, entry.wanted)
     }
 
-    private class Ranked(val rowOf: Map<String, String>, val sources: List<PlaybackSource>, val best: PlaybackSource?, val lastUsed: PlaybackSource?)
+    private class Ranked(
+        val rowOf: Map<String, String>,
+        val sources: List<PlaybackSource>,
+        val best: PlaybackSource?,
+        val lastUsed: PlaybackSource?,
+        val why: BestWhy?,
+        val wanted: List<String>,
+        val originalKnown: Boolean,
+    )
 
     private fun notify(entry: Entry) {
         if (entry.subs.isEmpty()) return
@@ -512,7 +585,9 @@ class DefaultSourcesRepository(
                 online = online,
             )
             val vod = VodRepositories.repository(app)
-            val tv = ThisTvReader(app, app.getSharedPreferences(ThisTvReader.FILE, Context.MODE_PRIVATE), System::currentTimeMillis)
+            val tv = ThisTvReader(app, app.getSharedPreferences(ThisTvReader.FILE, Context.MODE_PRIVATE), System::currentTimeMillis,
+                Settings.of(app))
+            val viewer = Prefs(app)
             val made = DefaultSourcesRepository(
                 addons = vault,
                 links = vault::link,
@@ -527,9 +602,15 @@ class DefaultSourcesRepository(
                 measured = { key ->
                     val spec = quality.getString(key, null)?.let { MediaSpec.decode(it) }
                     val health = CopyHealth.decode(quality.getString("h|$key", null))
-                    if (spec == null && health == null) null else Measured(spec, health, null)
+                    // When it last played here: "✓ played" in Sources.
+                    val at = spec?.playedAt?.takeIf { it > 0 } ?: health?.at?.takeIf { it > 0 }
+                    if (spec == null && health == null) null else Measured(spec, health, at)
                 },
-                language = { Locale.getDefault().language.ifEmpty { "en" } },
+                // The sound FirePlayer is set to (Settings › Playback), after the film's own language.
+                language = { viewer.audioLanguage.ifEmpty { Locale.getDefault().language.ifEmpty { "en" } } },
+                originalLanguage = { title -> vod.originalLanguage(title) },
+                subtitles = { viewer.subtitleLanguage.ifEmpty { null } },
+                moves = ImaxMoves(Settings.records(app)) { SettingsWriter.shared.flush(it) },
                 main = loop,
                 io = Executors.newFixedThreadPool(3, VodRepositories.threads("FirePlayerSources", Process.THREAD_PRIORITY_BACKGROUND)),
                 work = Executors.newSingleThreadExecutor(VodRepositories.threads("FirePlayerSourcesRank", Process.THREAD_PRIORITY_BACKGROUND)),
@@ -537,12 +618,15 @@ class DefaultSourcesRepository(
                 wall = System::currentTimeMillis,
                 online = online,
                 // With Faster downloads on, what two connections were measured to bring; one connection's otherwise.
-                lineMbps = { LineRate.of(budgetPrefs, two = Prefs(app).fasterDownloads).current() },
+                lineMbps = { LineRate.of(budgetPrefs, two = viewer.fasterDownloads).current() },
+                preferredMbps = { viewer.preferredMbps.toDouble() },
                 checks = checks,
             )
             engine = made
-            // A new plan for this TV (Settings › This TV): the lists kept in memory rank again.
+            // A new plan for this TV (Settings › This TV): the lists kept in memory rank again; and as a title's own
+            // language becomes known.
             tv.onChanged = { loop.post { made.rerank() } }
+            vod.setOnOriginalLanguage { made.languageLearnt() }
             watchNetwork(connectivity, loop) { made.forget() }
             return made
         }

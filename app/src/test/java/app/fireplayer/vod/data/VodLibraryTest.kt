@@ -23,6 +23,42 @@ class VodLibraryTest {
     private val show = Title("tt0903747", Kind.SERIES, "Breaking Bad", year = "2008–2013")
 
     @Test
+    fun theCopyLeftIsForgottenWhenTheTitleLeavesContinueWatching() {
+        fun keep(kind: Kind, id: String) = library.recordRelease(ReleaseRow(kind, id, "TORRENTIO", "a".repeat(40), 0, now))
+        fun kept(kind: Kind, id: String) = library.lastRelease(kind, id) != null
+        library.recordProgress(film, null, 600_000, 7_200_000)
+        keep(Kind.MOVIE, film.id)
+        // Mark unwatched keeps it in Continue Watching, and its copy.
+        library.setWatched(film, false)
+        assertTrue(kept(Kind.MOVIE, film.id))
+        // Mark watched: it leaves, and its copy is forgotten, on the TV too.
+        library.setWatched(film, true)
+        assertFalse(kept(Kind.MOVIE, film.id))
+        assertTrue(store.releases.isEmpty())
+        // Remove from Continue Watching, and watched to the end: the same.
+        library.recordProgress(film, null, 600_000, 7_200_000)
+        keep(Kind.MOVIE, film.id)
+        library.removeFromContinueWatching(film.id)
+        assertFalse(kept(Kind.MOVIE, film.id))
+        library.recordProgress(film, null, 600_000, 7_200_000)
+        keep(Kind.MOVIE, film.id)
+        library.recordProgress(film, null, 7_200_000, 7_200_000)
+        assertFalse(kept(Kind.MOVIE, film.id))
+        // A show: an episode watched to the end while the show stays keeps its episodes' copies.
+        keep(Kind.SERIES, "${show.id}:1:1")
+        keep(Kind.SERIES, "${show.id}:1:2")
+        keep(Kind.SERIES, "${show.id}0:1:1")
+        library.recordProgress(show, EpisodeRef(1, 1), 2_700_000, 2_700_000)
+        assertTrue(kept(Kind.SERIES, "${show.id}:1:1"))
+        // Taken out: every episode's copy goes, nothing of another title's.
+        library.removeFromContinueWatching(show.id)
+        assertFalse(kept(Kind.SERIES, "${show.id}:1:1"))
+        assertFalse(kept(Kind.SERIES, "${show.id}:1:2"))
+        assertTrue(kept(Kind.SERIES, "${show.id}0:1:1"))
+        assertEquals(setOf("series|${show.id}0:1:1"), store.releases.keys)
+    }
+
+    @Test
     fun myListAddsRemovesAndIsKept() {
         assertFalse(library.inMyList(film.id))
         library.setInMyList(film, true)

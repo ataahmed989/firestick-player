@@ -157,6 +157,32 @@ class Prefs(context: Context) {
         set(v) = sp.edit().putBoolean("faster_downloads", v).apply()
 
     /**
+     * Settings › Playback › Preferred bitrate, Mb/s: the data rate Best for this TV and the automatic picks lean toward
+     * among copies of the same picture ([app.fireplayer.vod.sources.SourceRank.PREFERRED_MBPS] unless changed, within
+     * its ends). Any copy can still be picked by hand.
+     */
+    var preferredMbps: Int
+        get() = app.fireplayer.vod.sources.SourceRank.preferredMbps(
+            sp.getInt("preferred_mbps", app.fireplayer.vod.sources.SourceRank.PREFERRED_MBPS))
+        set(v) = sp.edit().putInt("preferred_mbps", app.fireplayer.vod.sources.SourceRank.preferredMbps(v)).apply()
+
+    /**
+     * Settings › This TV › IMAX first: always: a 4K IMAX copy this TV plays is Best whatever else is offered (the
+     * earlier order). Off (the default), IMAX breaks a tie after picture, HDR and source.
+     */
+    var imaxFirstAlways: Boolean
+        get() = sp.getBoolean(IMAX_FIRST_KEY, false)
+        set(v) = sp.edit().putBoolean(IMAX_FIRST_KEY, v).apply()
+
+    /**
+     * Settings › This TV › HDR10+ reaches this TV: the TV was seen to show HDR10+ from FirePlayer, so Best prefers
+     * HDR10+ copies and Picture & sound says HDR10+. Off (the default): on the user's Sticks it never reached the TV
+     * (the TV gets the HDR10 inside), so HDR10+ is only a fact of the file.
+     */
+    val hdr10PlusReaches: Boolean
+        get() = sp.getBoolean(HDR10_PLUS_KEY, false)
+
+    /**
      * "Keep embedded styling": ASS/SSA is drawn with libass (positions, fonts, effects) and other
      * subtitles keep their own colours. Off, the chosen preset always wins.
      */
@@ -363,6 +389,12 @@ class Prefs(context: Context) {
 
         /** TiviMate titles on or off ([tivimateTitles]), read by [Settings.syncTitles] too. */
         internal const val TITLES_KEY = "tivimate_titles"
+
+        /** [imaxFirstAlways], read by Settings › This TV's reader too ([app.fireplayer.vod.sources.ThisTvReader]). */
+        const val IMAX_FIRST_KEY = "imax_first_always"
+
+        /** [hdr10PlusReaches], set in Settings › This TV ([app.fireplayer.vod.sources.ThisTvReader]). */
+        const val HDR10_PLUS_KEY = "hdr10_plus_reaches"
         private const val PREVIEWS_OFF_ONCE = "seek_previews_off_once"
 
         /**

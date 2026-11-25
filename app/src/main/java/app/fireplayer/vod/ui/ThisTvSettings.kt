@@ -3,6 +3,7 @@ package app.fireplayer.vod.ui
 import android.text.format.DateFormat
 import app.fireplayer.ui.SettingsPanels
 import app.fireplayer.ui.SidePanel
+import app.fireplayer.vod.Hdr
 import app.fireplayer.vod.SoundFormat
 import app.fireplayer.vod.ThisTv
 import app.fireplayer.vod.play.TvPlanRules
@@ -41,9 +42,21 @@ object ThisTvSettings {
         choice("Plan", listOf("Automatic", "Custom"), if (plan.automatic) 0 else 1) { i ->
             if (i == 0) tv.useAutomatic() else tv.setPlan(plan.copy(automatic = false))
         }
+        row("IMAX first: always", SettingsPanels.onOff(tv.imaxAlways())) {
+            tv.setImaxAlways(!tv.imaxAlways())
+            refresh()
+        }
+        message(TvPlanRules.IMAX_NOTE)
+        if (caps?.hdr?.contains(Hdr.HDR10_PLUS) == true) {
+            row("HDR10+ reaches this TV", SettingsPanels.onOff(tv.hdr10PlusReaches())) {
+                tv.setHdr10PlusReaches(!tv.hdr10PlusReaches())
+                refresh()
+            }
+            message(TvPlanRules.HDR10_PLUS_NOTE)
+        }
         if (plan.automatic) {
             row("HDR order", TvPlanRules.hdrWords(plan.hdrOrder)) {}
-            message("Automatic follows what the TV reports. Dolby Vision profile 8 counts as its HDR10 picture on a TV without Dolby Vision; profiles 5 and 7 come last.")
+            message(TvPlanRules.dolbyVisionNote(plan))
             return@with
         }
         val orders = TvPlanRules.HDR_ORDERS

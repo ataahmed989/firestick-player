@@ -1,5 +1,6 @@
 package app.fireplayer.vod.play
 
+import app.fireplayer.player.CopyHealth
 import app.fireplayer.player.MediaSpec
 import app.fireplayer.vod.Addon
 import app.fireplayer.vod.AddonState
@@ -11,9 +12,15 @@ import app.fireplayer.vod.LookupWhy
 import app.fireplayer.vod.Measured
 import app.fireplayer.vod.Position
 import app.fireplayer.vod.Readiness
+import app.fireplayer.vod.SoundFormat
 import app.fireplayer.vod.SourceGroup
 import app.fireplayer.vod.SourceTarget
 import app.fireplayer.vod.StartAt
+import app.fireplayer.vod.TvFit
+import app.fireplayer.vod.TvPlan
+import app.fireplayer.vod.countsAsWatched
+import app.fireplayer.vod.play.PlayRules.CopyEnd
+import app.fireplayer.vod.sources.SourceRank
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -92,7 +99,9 @@ class PlayRulesTest {
         val soFar = done.copy(states = mapOf(Addon.TORRENTIO to AddonState.Answered(1), Addon.MEDIAFUSION to AddonState.Asking(0, 25_000)))
         assertTrue(PlayRules.sourceLine(soFar)!!.startsWith("Best so far · "))
         val last = Fixtures.source(2, also = Addon.MEDIAFUSION)
-        assertTrue(PlayRules.sourceLine(done.copy(lastUsed = last))!!.let { it.startsWith("Last used · ") && it.endsWith("from Both add-ons") })
+        assertTrue(PlayRules.sourceLine(done.copy(lastUsed = last))!!.let { it.startsWith("Last used · ") && it.endsWith("from Torrentio + MediaFusion") })
+        // The Best used last time: still said as the Best.
+        assertEquals("Best for this TV · 4K · HDR10 · WEB · 29.3 GB · from Torrentio", PlayRules.sourceLine(done.copy(lastUsed = best)))
         assertEquals("No sources found", PlayRules.sourceLine(Fixtures.list(target, emptyList())))
         val notReady = Fixtures.source(3, readiness = Readiness.NOT_READY, group = SourceGroup.NOT_ON_RD)
         assertEquals("None ready on your debrid service · 1 to fetch in Sources", PlayRules.sourceLine(Fixtures.list(target, listOf(notReady))))
@@ -109,6 +118,10 @@ class PlayRulesTest {
         assertEquals("Sources · 2", PlayRules.sourcesLabel(Fixtures.list(target, listOf(Fixtures.source(1), Fixtures.source(2)))))
     }
 
+    /** The second Stick's Samsung: HDR10 and HDR10+ alike, then HLG; Dolby Digital and Dolby Digital Plus passed through. */
+    private val q60r = TvPlan(true, listOf(setOf(Hdr.HDR10, Hdr.HDR10_PLUS), setOf(Hdr.HLG)), 2160, setOf(SoundFormat.AC3, SoundFormat.EAC3),
+        dv7AsHdr10 = true)
+
     @Test
     fun aSourcesTwoLinesCarryNoLinkAndOneWarning() {
         val s = Fixtures.source(1).let {
@@ -116,82 +129,122 @@ class PlayRulesTest {
                 warning = "Dolby Vision 7: may not play here")
         }
         assertEquals("4K · DV7 · HDR · WEB-DL · 29.3 GB · ≈25 Mb/s · Pack · ×3", PlayRules.badges(s))
-        // The Sources row: quality · HDR kind · made from · size, then the quieter line ending with the add-on.
+        // The Sources row: quality · HDR · made from · size, then the quieter line: warning, language, sound, add-ons.
         assertEquals("4K · DV · WEB · 29.3 GB", PlayRules.mainLine(s))
-        assertEquals("⚠ Dolby Vision 7: may not play here · HEVC 10-bit · DD+ 5.1 · EN · Pack · Torrentio", PlayRules.detailLine(s))
+        assertEquals("⚠ Dolby Vision 7: may not play here · English · 5.1 · Torrentio", PlayRules.noteLine(s, null, listOf("en")))
         assertFalse(PlayRules.badges(s).contains("invalid"))
-        assertFalse((PlayRules.mainLine(s) + PlayRules.detailLine(s)).contains("invalid"))
+        assertFalse((PlayRules.mainLine(s) + PlayRules.noteLine(s, null, emptyList())).contains("invalid"))
         // Seeders only for files not cached yet, before the add-on.
         val nr = Fixtures.source(2, readiness = Readiness.NOT_READY).let { it.copy(facts = it.facts.copy(seeders = 12)) }
-        assertTrue(PlayRules.detailLine(nr).endsWith("12 seeders · Torrentio"))
+        assertTrue(PlayRules.noteLine(nr, null, emptyList()).endsWith("12 seeders · Torrentio"))
+        assertFalse(PlayRules.noteLine(Fixtures.source(2).let { it.copy(facts = it.facts.copy(seeders = 12)) }, null, emptyList()).contains("seeders"))
         assertEquals("from Torrentio", PlayRules.factsFrom(Fixtures.source(1)) { "Nov 12" })
     }
 
     @Test
-    fun aRowsMainLineSaysQualityHdrKindMadeFromAndSize() {
-        fun of(hdr: Set<Hdr>, origin: String?, text: String = "Film.2160p.mkv") = Fixtures.source(1).let {
-            it.copy(facts = it.facts.copy(hdr = hdr, origin = origin, sizeBytes = 58_300_000_000L), offers = listOf(it.offers[0].copy(text = text)))
+    fun aRowsMainLineSaysQualityWhatThisTvShowsMadeFromAndSize() {
+        fun of(hdr: Set<Hdr>, origin: String?, text: String = "Film.2160p.mkv", dv: Int? = null) = Fixtures.source(1).let {
+            it.copy(facts = it.facts.copy(hdr = hdr, origin = origin, sizeBytes = 58_300_000_000L, dvProfile = dv),
+                offers = listOf(it.offers[0].copy(text = text)))
         }
+        // The add-ons' words, for a list not ranked for a TV.
         assertEquals("4K · DV · HDR10+ · Remux · 58.3 GB", PlayRules.mainLine(of(setOf(Hdr.DOLBY_VISION, Hdr.HDR10_PLUS, Hdr.HDR10), "REMUX")))
-        assertEquals("4K · HDR10+ · BluRay · 58.3 GB", PlayRules.mainLine(of(setOf(Hdr.HDR10_PLUS, Hdr.HDR10), "BluRay")))
+        assertEquals("4K · HDR10+ · Encode · 58.3 GB", PlayRules.mainLine(of(setOf(Hdr.HDR10_PLUS, Hdr.HDR10), "BluRay")))
         assertEquals("4K · HLG · WEB · 58.3 GB", PlayRules.mainLine(of(setOf(Hdr.HLG), "WEBRip")))
         assertEquals("4K · HDTV · 58.3 GB", PlayRules.mainLine(of(emptySet(), "HDTV")))
-        // IMAX, IMX or open matte in a 2160p copy's name: "4K IMAX".
+        // What this TV shows: a Dolby Vision file with HDR10+ inside is HDR10+ on a TV without Dolby Vision; profile 7
+        // too where this Stick plays its base layer; profile 5 stays DV (its row warns); on a Dolby Vision TV, DV.
+        val hybrid = of(setOf(Hdr.DOLBY_VISION, Hdr.HDR10_PLUS, Hdr.HDR10), "REMUX")
+        assertEquals("4K · HDR10+ · Remux · 58.3 GB", PlayRules.mainLine(hybrid, plan = q60r))
+        assertEquals("4K · HDR10 · Remux · 58.3 GB", PlayRules.mainLine(of(setOf(Hdr.DOLBY_VISION), "REMUX", dv = 7), plan = q60r))
+        // Profile 8 naming its HDR10 base is HDR10; a bare one keeps the add-on's DV until a play reads its base layer.
+        assertEquals("4K · HDR10 · WEB · 58.3 GB", PlayRules.mainLine(of(setOf(Hdr.DOLBY_VISION, Hdr.HDR10), "WEB-DL", dv = 8), plan = q60r))
+        assertEquals("4K · DV · WEB · 58.3 GB", PlayRules.mainLine(of(setOf(Hdr.DOLBY_VISION), "WEB-DL", dv = 8), plan = q60r))
+        assertEquals("4K · DV · WEB · 58.3 GB", PlayRules.mainLine(of(setOf(Hdr.DOLBY_VISION), "WEB-DL", dv = 5), plan = q60r))
+        val dvTv = q60r.copy(hdrOrder = listOf(setOf(Hdr.DOLBY_VISION), setOf(Hdr.HDR10, Hdr.HDR10_PLUS)))
+        assertEquals("4K · DV · Remux · 58.3 GB", PlayRules.mainLine(hybrid, plan = dvTv))
+        // An HDR TV without HDR10+ shows its HDR10 picture.
+        assertEquals("4K · HDR10 · Remux · 58.3 GB", PlayRules.mainLine(hybrid, plan = q60r.copy(hdrOrder = listOf(setOf(Hdr.HDR10)))))
+        // IMAX or IMX in a 2160p copy's name: "4K IMAX".
         val imax = of(setOf(Hdr.DOLBY_VISION, Hdr.HDR10_PLUS), "REMUX", "The.Film.2026.IMAX.2160p.REMUX")
         assertTrue(PlayRules.imax(imax))
         assertEquals("4K IMAX · DV · HDR10+ · Remux · 58.3 GB", PlayRules.mainLine(imax))
-        // Too long for the row: the HDR kind keeps its first part, never a word cut.
+        assertEquals("4K IMAX · HDR10+ · Remux · 58.3 GB", PlayRules.mainLine(imax, plan = q60r))
+        // Too long for the row (the add-ons' words): the HDR kind keeps its first part, never a word cut.
         assertEquals("4K IMAX · DV · Remux · 58.3 GB", PlayRules.mainLine(imax, chars = 38))
         assertFalse(PlayRules.imax(Fixtures.source(2, height = 1080).let { it.copy(offers = listOf(it.offers[0].copy(text = "Film.IMAX.1080p"))) }))
+        // A 3D copy says so where its resolution is.
+        assertEquals("1080p 3D · HDR10 · WEB · 29.3 GB", PlayRules.mainLine(Fixtures.source(3, group = SourceGroup.THREE_D, height = 1080)))
     }
 
     @Test
-    fun aRowsSecondLineDropsTheLeastUsefulPartsWhenLong() {
+    fun aRowsSecondLineSaysOnlyWhatMayChangeTheChoice() {
         val s = Fixtures.source(1, also = Addon.MEDIAFUSION).let {
-            it.copy(facts = it.facts.copy(audio = "TrueHD Atmos", channels = "7.1", languages = listOf("en", "fr", "de", "es", "it")),
+            it.copy(facts = it.facts.copy(audio = "TrueHD Atmos", channels = "7.1", languages = listOf("ru", "uk", "kk", "en")),
                 warning = "Needs 69 Mb/s · this connection brought 72")
         }
-        val full = "⚠ Needs 69 Mb/s · this connection brought 72 · HEVC 10-bit · TrueHD Atmos 7.1 · EN + FR + DE + 2 more · Both add-ons"
-        assertEquals(full, PlayRules.detailLine(s))
-        // The languages shorten first, then the codec and the sound go, the languages last; the warning and the add-on stay.
-        assertEquals("⚠ Needs 69 Mb/s · this connection brought 72 · HEVC 10-bit · TrueHD Atmos 7.1 · EN + 4 more · Both add-ons",
-            PlayRules.detailLine(s, chars = 110))
-        assertEquals("⚠ Needs 69 Mb/s · this connection brought 72 · TrueHD Atmos 7.1 · EN + 4 more · Both add-ons", PlayRules.detailLine(s, chars = 92))
-        assertEquals("⚠ Needs 69 Mb/s · this connection brought 72 · EN + 4 more · Both add-ons", PlayRules.detailLine(s, chars = 80))
-        assertEquals("⚠ Needs 69 Mb/s · this connection brought 72 · Both add-ons", PlayRules.detailLine(s, chars = 10))
-        // At the Sources panel's width, a copy with a warning and a pack still says its language: the codec goes first.
-        val dv = Fixtures.source(2).let {
-            it.copy(facts = it.facts.copy(pack = true), warning = "Dolby Vision 7: may not play here")
-        }
-        assertEquals("⚠ Dolby Vision 7: may not play here · DD+ 5.1 · EN · Pack · Torrentio", PlayRules.detailLine(dv, chars = 80))
+        val full = "⚠ Needs 69 Mb/s · this connection brought 72 · English · 7.1 · Torrentio + MediaFusion"
+        assertEquals(full, PlayRules.noteLine(s, q60r, listOf("en")))
+        // The sound goes first, then the language; the warning and the add-ons stay.
+        assertEquals("⚠ Needs 69 Mb/s · this connection brought 72 · English · Torrentio + MediaFusion", PlayRules.noteLine(s, q60r, listOf("en"), chars = 82))
+        assertEquals("⚠ Needs 69 Mb/s · this connection brought 72 · Torrentio + MediaFusion", PlayRules.noteLine(s, q60r, listOf("en"), chars = 10))
+        // The Best's lead comes after the warning; then the add-ons may go too.
+        assertEquals("⚠ Needs 69 Mb/s · this connection brought 72 · cached", PlayRules.noteLine(s, q60r, listOf("en"), chars = 10, lead = listOf("cached")))
+        // Not a warning worth a row: "High data rate" (every remux has it; Details keeps it). Set aside only for being
+        // more than this TV shows: said.
+        assertEquals("English · 7.1 · Torrentio + MediaFusion", PlayRules.noteLine(s.copy(warning = SourceRank.HIGH_RATE), q60r, listOf("en")))
+        assertEquals("⚠ More than this TV shows · English · 7.1 · Torrentio + MediaFusion",
+            PlayRules.noteLine(s.copy(warning = null, fit = TvFit.LIKELY_NOT), q60r, listOf("en")))
+        // Three add-ons: counted.
+        val three = s.copy(offers = s.offers + s.offers[0].copy(addon = Addon.TORZ))
+        assertEquals("3 add-ons", PlayRules.addonsOf(three))
     }
 
     @Test
-    fun aRowSaysItsAudioLanguagesMeasuredFirst() {
-        fun of(vararg langs: String, measured: String? = null) = Fixtures.source(1).let {
-            it.copy(facts = it.facts.copy(languages = langs.toList()),
+    fun theLanguageThatMattersIsTheFilmsOwnAndTheViewersByName() {
+        fun of(vararg langs: String, measured: String? = null, subs: List<String> = emptyList()) = Fixtures.source(1).let {
+            it.copy(facts = it.facts.copy(languages = langs.toList(), subs = subs),
                 measured = measured?.let { m -> Measured(MediaSpec(audioLangs = m), null, 1L) })
         }
-        assertEquals("EN", PlayRules.audioLanguages(of("en")))
-        assertEquals("EN + FR", PlayRules.audioLanguages(of("en", "fr")))
-        assertEquals("EN + FR + DE", PlayRules.audioLanguages(of("en", "fr", "de")))
-        assertEquals("EN + FR + DE + 2 more", PlayRules.audioLanguages(of("en", "fr", "de", "es", "it")))
-        assertEquals("EN + 4 more", PlayRules.audioLanguages(of("en", "fr", "de", "es", "it"), short = true))
-        // Two stay as they are when short: nothing shorter says as much.
-        assertEquals("EN + FR", PlayRules.audioLanguages(of("en", "fr"), short = true))
-        // "Multi Audio" alone, with one language named, and with several (which say it already).
-        assertEquals("Multi", PlayRules.audioLanguages(of("multi")))
-        assertEquals("EN + more", PlayRules.audioLanguages(of("multi", "en")))
-        assertEquals("EN + FR", PlayRules.audioLanguages(of("multi", "en", "fr")))
-        assertNull(PlayRules.audioLanguages(of()))
+        val english = listOf("en")
+        // An English film: English, or "No English" for a copy known to lack it; nothing when nothing is known.
+        assertEquals("English", PlayRules.languageWord(of("ru", "uk", "kk", "en"), english))
+        assertEquals("No English", PlayRules.languageWord(of("ru", "uk"), english))
+        assertNull(PlayRules.languageWord(of(), english))
+        assertNull(PlayRules.languageWord(of("multi"), english))
+        assertNull(PlayRules.languageWord(of("multi", "ru"), english))
         // Once played here, the file's own tracks (three-letter codes, "und" left out) say it, not the add-on's guess.
-        assertEquals("FR + EN", PlayRules.audioLanguages(of("multi", measured = "fre,eng,und,fra")))
-        assertEquals("JA", PlayRules.audioLanguages(of(measured = "jpn")))
-        // Tracks that name no language: the add-on's word again.
-        assertEquals("EN", PlayRules.audioLanguages(of("en", measured = "und")))
-        // The row's second line carries it in place of the add-on's.
-        assertEquals("HEVC 10-bit · DD+ 5.1 · FR · Torrentio", PlayRules.detailLine(of("en", measured = "fre")))
+        assertEquals("No English", PlayRules.languageWord(of("en", measured = "jpn"), english))
+        assertEquals("English", PlayRules.languageWord(of("multi", measured = "fre,eng,und,fra"), english))
+        assertEquals("English", PlayRules.languageWord(of("en", measured = "und"), english))
         assertEquals(listOf("fr"), PlayRules.languageCodes(of("en", measured = "fre")))
+        // A Japanese film, for an English viewer: its own language first, by name.
+        val japanese = listOf("ja", "en")
+        assertEquals("Japanese", PlayRules.languageWord(of("ja"), japanese))
+        assertEquals("Japanese + English", PlayRules.languageWord(of("ja", "en"), japanese))
+        assertEquals("Japanese, English subtitles", PlayRules.languageWord(of("ja", subs = listOf("en")), japanese))
+        assertEquals("English", PlayRules.languageWord(of("en"), japanese))
+        assertEquals("No English", PlayRules.languageWord(of("fr"), japanese))
+        // A list not ranked (no languages): the viewer's taken as English.
+        assertEquals("English", PlayRules.languageWord(of("en"), emptyList()))
+    }
+
+    @Test
+    fun theSoundWordIsWhatIsHeardOnThisTv() {
+        fun of(audio: String?, channels: String?, measured: MediaSpec? = null) = Fixtures.source(1).let {
+            it.copy(facts = it.facts.copy(audio = audio, channels = channels), measured = measured?.let { m -> Measured(m, null, 1L) })
+        }
+        // TrueHD is decoded on the Stick where the TV takes Dolby Digital Plus at most: Atmos isn't heard, the 7.1 is.
+        assertEquals("7.1", PlayRules.soundWord(of("TrueHD Atmos", "7.1"), q60r))
+        assertEquals("Atmos", PlayRules.soundWord(of("TrueHD Atmos", "7.1"), q60r.copy(sound = q60r.sound + SoundFormat.TRUEHD)))
+        assertEquals("5.1", PlayRules.soundWord(of("DD+ Atmos", "5.1"), q60r))
+        assertEquals("Atmos", PlayRules.soundWord(of("DD+ Atmos", "5.1"), q60r.copy(sound = q60r.sound + SoundFormat.EAC3_JOC)))
+        assertEquals("Stereo", PlayRules.soundWord(of("AAC", "2.0"), q60r))
+        assertNull(PlayRules.soundWord(of("DTS", null), q60r))
+        // What played here first.
+        assertEquals("7.1", PlayRules.soundWord(of("DD+ Atmos", "5.1", MediaSpec(audioCodec = "TrueHD", channels = 8)), q60r))
+        // No plan (a list not ranked): the file's Atmos.
+        assertEquals("Atmos", PlayRules.soundWord(of("TrueHD Atmos", "7.1"), null))
     }
 
     @Test
@@ -217,5 +270,125 @@ class PlayRulesTest {
         assertNull(PlayRules.nextEpisode(eps, EpisodeRef(2, 1), 5_000L))
         assertNull(PlayRules.nextEpisode(eps, EpisodeRef(2, 2), 50_000L))
         assertNull(PlayRules.nextEpisode(eps, EpisodeRef(0, 1), 5_000L))
+    }
+
+    // ---- A copy's end: a copy that ends without really playing is not the film's end ------------------------------
+
+    /** Avatar: Fire and Ash: about 198 min (11,880 s). */
+    private val avatarMin = 198
+    private val avatarMs = 11_880_000L
+    /** Its "1080p · HDR10 · Encode · 16.8 GB" copy: really a 5,708 s video (the making-of from the same torrent). */
+    private val makingOfMs = 5_708_000L
+
+    @Test
+    fun aCopyStartedPastItsEndIsntTheFilmsEnd() {
+        // Next source at 2:51:24 started it 5 s earlier, past its own end; it ended 1.3 s later. Runtime unknown: only
+        // "it barely played" tells.
+        assertEquals(CopyEnd.BARELY_PLAYED, PlayRules.copyEnd(10_279_000, 1_300, makingOfMs, null, episode = false))
+        // It never showed a frame.
+        assertEquals(CopyEnd.BARELY_PLAYED, PlayRules.copyEnd(10_279_000, 0, makingOfMs, null, episode = false))
+        // With the runtime known it's also far shorter than the film.
+        assertEquals(CopyEnd.SHORT, PlayRules.copyEnd(10_279_000, 1_300, makingOfMs, avatarMin, episode = false))
+        // An episode's copy that ends at once is no end either.
+        assertEquals(CopyEnd.BARELY_PLAYED, PlayRules.copyEnd(2_400_000, 900, 1_200_000, 45, episode = true))
+    }
+
+    @Test
+    fun aFilmsCopyFarShorterThanTheFilmIsntItsEndEvenWatchedThrough() {
+        assertTrue(PlayRules.shortCopy(makingOfMs, avatarMin, episode = false))
+        assertEquals(CopyEnd.SHORT, PlayRules.copyEnd(0, makingOfMs, makingOfMs, avatarMin, episode = false))
+        // Under 60 % of the runtime: 7,128 s of 11,880 s is the line.
+        assertTrue(PlayRules.shortCopy(7_127_999, avatarMin, episode = false))
+        assertFalse(PlayRules.shortCopy(7_128_000, avatarMin, episode = false))
+        // Its credits never mark the film watched (Exit after the credits, or leaving there).
+        assertFalse(PlayRules.keepsPlace(CopyEnd.SHORT, 0, 5_600_000, makingOfMs, 5_500_000))
+    }
+
+    @Test
+    fun aWholeCopyPlayedToItsEndIsTheFilmsEndAsBefore() {
+        assertEquals(CopyEnd.END, PlayRules.copyEnd(0, avatarMs, avatarMs, avatarMin, episode = false))
+        // Resumed, then watched to the end.
+        assertEquals(CopyEnd.END, PlayRules.copyEnd(9_000_000, 2_880_000, avatarMs, avatarMin, episode = false))
+        // A cut a little shorter than the runtime says is the film.
+        assertEquals(CopyEnd.END, PlayRules.copyEnd(0, 10_000_000, 10_000_000, avatarMin, episode = false))
+        // A switch in the film's last seconds: what it had left is all it could play.
+        assertEquals(CopyEnd.END, PlayRules.copyEnd(avatarMs - 8_000, 7_500, avatarMs, avatarMin, episode = false))
+        assertTrue(PlayRules.keepsPlace(CopyEnd.END, 9_000_000, avatarMs, avatarMs, null))
+        // An end the credits rule reached (Exit, or the next episode, once the credits began): watched, as before.
+        assertTrue(PlayRules.keepsPlace(CopyEnd.END, 9_000_000, 11_300_000, avatarMs, 11_200_000))
+        assertTrue(countsAsWatched(11_300_000, avatarMs, 11_200_000))
+    }
+
+    @Test
+    fun episodesAreNeverJudgedByTheirRuntime() {
+        // A 20 min file for a 45 (or 90) min episode, played through: its end. Episode runtimes aren't reliable.
+        assertFalse(PlayRules.shortCopy(1_200_000, 45, episode = true))
+        assertFalse(PlayRules.shortCopy(1_200_000, 90, episode = true))
+        assertEquals(CopyEnd.END, PlayRules.copyEnd(0, 1_200_000, 1_200_000, 90, episode = true))
+        assertTrue(PlayRules.keepsPlace(CopyEnd.END, 0, 1_200_000, 1_200_000, null))
+    }
+
+    @Test
+    fun anUnknownRuntimeOrOneUnderAnHourIsNeverJudged() {
+        assertFalse(PlayRules.shortCopy(600_000, null, episode = false))
+        assertEquals(CopyEnd.END, PlayRules.copyEnd(0, 600_000, 600_000, null, episode = false))
+        // A 59 min film's 20 min copy isn't judged by length; a 60 min one's is.
+        assertFalse(PlayRules.shortCopy(1_200_000, 59, episode = false))
+        assertEquals(CopyEnd.END, PlayRules.copyEnd(0, 1_200_000, 1_200_000, 59, episode = false))
+        assertTrue(PlayRules.shortCopy(1_200_000, PlayRules.LONG_FILM_MIN, episode = false))
+        // Nor a copy whose length isn't known.
+        assertFalse(PlayRules.shortCopy(0, avatarMin, episode = false))
+    }
+
+    @Test
+    fun whereACopyStandsIsKeptMidWayButNeverAnEndItDidntPlay() {
+        // A copy just switched to, mid-film: kept as before.
+        assertTrue(PlayRules.keepsPlace(CopyEnd.BARELY_PLAYED, 3_595_000, 3_600_000, 7_200_000, null))
+        // One started at or past its end: that "end" isn't kept (it would mark the film watched).
+        assertFalse(PlayRules.keepsPlace(CopyEnd.BARELY_PLAYED, 10_279_000, makingOfMs, makingOfMs, null))
+        assertFalse(PlayRules.keepsPlace(CopyEnd.BARELY_PLAYED, 10_279_000, 10_279_000, makingOfMs, null))
+        // A whole copy opened at 10:00 and jumped into its credits at once: watched, as before.
+        assertTrue(PlayRules.keepsPlace(CopyEnd.BARELY_PLAYED, 600_000, 6_600_000, 7_200_000, 6_500_000))
+        // Nothing from a film's copy far shorter than the film.
+        assertFalse(PlayRules.keepsPlace(CopyEnd.SHORT, 0, 600_000, makingOfMs, null))
+    }
+
+    @Test
+    fun anEndTheViewerJumpedToIsTheirsHoweverSoon() {
+        // Resumed at 1:00:00, then held Right to the end within 10 s of the first frame: the film's end, as before.
+        assertEquals(CopyEnd.END, PlayRules.copyEnd(3_600_000, 6_000, avatarMs, avatarMin, episode = false, jumped = true))
+        assertEquals(CopyEnd.BARELY_PLAYED, PlayRules.copyEnd(3_600_000, 6_000, avatarMs, avatarMin, episode = false))
+        // A jump never makes a film's copy far shorter than the film whole.
+        assertEquals(CopyEnd.SHORT, PlayRules.copyEnd(0, 6_000, makingOfMs, avatarMin, episode = false, jumped = true))
+    }
+
+    @Test
+    fun onlyACopyPlainlyAnotherVideoOrStoppingShortIsKeptAsNotWhole() {
+        // The making-of: far shorter than the film, and far shorter than where Next source started it (runtime unknown).
+        assertTrue(PlayRules.marksNotWhole(CopyEnd.SHORT, 10_279_000, makingOfMs))
+        assertTrue(PlayRules.marksNotWhole(CopyEnd.BARELY_PLAYED, 10_279_000, makingOfMs))
+        // One that ran out at once though it had more than 10 s left from where it started: its file stops short.
+        assertTrue(PlayRules.marksNotWhole(CopyEnd.BARELY_PLAYED, 600_000, 7_200_000))
+        assertTrue(PlayRules.marksNotWhole(CopyEnd.BARELY_PLAYED, 0, 5_000))
+        // A theatrical cut (2:30) a switch started at 2:45 of the extended one: passed over for this play only.
+        assertFalse(PlayRules.marksNotWhole(CopyEnd.BARELY_PLAYED, 9_900_000, 9_000_000))
+        // A 25 fps copy of a 2:00:00 film (1:55:12), switched to in the credits; an episode's file without its last minute.
+        assertFalse(PlayRules.marksNotWhole(CopyEnd.BARELY_PLAYED, 7_080_000, 6_912_000))
+        assertFalse(PlayRules.marksNotWhole(CopyEnd.BARELY_PLAYED, 2_670_000, 2_640_000))
+        // The film's end, or a copy whose length isn't known: nothing kept.
+        assertFalse(PlayRules.marksNotWhole(CopyEnd.END, 0, avatarMs))
+        assertFalse(PlayRules.marksNotWhole(CopyEnd.BARELY_PLAYED, 10_279_000, 0))
+    }
+
+    @Test
+    fun aCopyThatWasntTheWholeFilmHereSaysSoInsteadOfPlayed() {
+        val short = Fixtures.source(3).copy(measured = Measured(null, CopyHealth(watchedMs = 1_300, notWhole = 1, at = 5L), 5L))
+        assertTrue(PlayRules.notWhole(short))
+        assertEquals("Shorter than the film here · played Nov 24", PlayRules.factsFrom(short) { "Nov 24" })
+        assertEquals("Shorter than the episode here · played Nov 24", PlayRules.factsFrom(short, film = false) { "Nov 24" })
+        // A copy that played whole, as before.
+        val whole = short.copy(measured = Measured(null, CopyHealth(watchedMs = 60_000, at = 5L), 5L))
+        assertFalse(PlayRules.notWhole(whole))
+        assertEquals("✓ played Nov 24", PlayRules.factsFrom(whole) { "Nov 24" })
     }
 }

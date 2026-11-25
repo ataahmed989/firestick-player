@@ -327,6 +327,11 @@ class QualityTest {
         assertEquals(listOf("en"), CopyLanguage.wanted(null, "en"))
         assertEquals(listOf("ko", "en"), CopyLanguage.wanted("ko", "en"))
         assertEquals(listOf("fr", "en"), CopyLanguage.wanted("fre", "eng"))
+        // A Cantonese film: TMDB says "cn", its tracks "yue" or "chi", its copies Chinese; all one language here.
+        assertEquals(listOf("zh", "en"), CopyLanguage.wanted("cn", "en"))
+        assertEquals("zh", CopyLanguage.code("yue"))
+        assertEquals("zh", CopyLanguage.code("chi"))
+        assertEquals(3, CopyLanguage.fit(CopyLanguage.wanted("cn", "en"), "yue,en", null))
         // A Korean film: Korean sound first, English next, then a copy that may have either.
         val w = listOf("ko", "en")
         assertEquals(3, CopyLanguage.fit(w, "ko,en", null))
@@ -359,10 +364,13 @@ class QualityTest {
         val v = CopyRank.rank(copies, 0, false, fits = listOf(0, 3), fitName = { if (it == 3) "English" else null })
         assertEquals(1, v.best)
         assertEquals("English sound", v.reasons.first())
-        // The film's own language over English.
+        // The film's own language over English only when the picture is about the same: a dub with clearly more wins.
         val korean = CopyRank.rank(copies, 0, false, fits = listOf(2, 3), fitName = { mapOf(3 to "Korean", 2 to "English")[it] })
-        assertEquals(1, korean.best)
-        assertEquals("Korean sound", korean.reasons.first())
+        assertEquals(0, korean.best)
+        val close = listOf(copy("HEVC", 10.0), copy("HEVC", 9.6))
+        val own = CopyRank.rank(close, 0, false, fits = listOf(2, 3), fitName = { mapOf(3 to "Korean", 2 to "English")[it] })
+        assertEquals(1, own.best)
+        assertEquals("Korean sound", own.reasons.first())
     }
 
     @Test

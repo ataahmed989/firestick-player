@@ -15,31 +15,41 @@ import app.fireplayer.vod.play.SourcesModel
 import java.util.Date
 
 /**
- * The Sources panel (design-brief.md §6.5, r3_sources-organize §4): one merged list in the wide settings window, made of
- * the app's shared parts ([SidePanel]'s long list, its two-line rows, headings and notes). The same panel opens from a
- * title page's Sources button and from the player (Picture & sound › Sources). Answers arriving later redraw it in place
- * ([update]); focus stays on its row (rows are keyed). What it lists, and in what order: [SourcesModel].
+ * The Sources window (design-brief.md §6.5, the user's layout of 2026-11): one merged list in the wide settings window,
+ * made of the app's shared parts ([SidePanel]'s long list, its two-line rows, headings and notes). The same window opens
+ * from a title page's Sources button and from the player (This film › Sources, Picture & sound › Sources). Answers
+ * arriving later redraw it in place ([update]); focus stays on its row (rows are keyed). What it lists, and in what
+ * order: [SourcesModel].
  *
- * OK on a row plays it ([onPick], from the resume point); a row not cached by the debrid service asks first. Hold OK:
- * Play from beginning or Details. "Show N" opens a section in place. Back closes Details, then the panel.
+ * OK on a row plays it ([onPick], from the resume point); a row not cached by the debrid service asks first. Right:
+ * Details, where a film's 4K copy can be moved to the IMAX group or back to 4K ([move]). Hold OK: Play from beginning or
+ * Details. "Show N" opens a kind in place. Back closes Details, then the window.
  */
 class SourcesPanel(private val activity: Activity, private val panel: SidePanel) {
 
     private var list: SourceList? = null
     private var attempts: List<Attempt> = emptyList()
     private var playingKey: String? = null
+    private var smooth = false
+    private var next: (() -> PlaybackSource?)? = null
+    private var move: ((PlaybackSource, Boolean) -> Unit)? = null
+    private var server: () -> String? = { null }
     private var opened = HashSet<SourcesModel.Section>()
     private var items: List<SourcesModel.Item> = emptyList()
     private var onPick: ((PlaybackSource, Boolean) -> Unit)? = null
     private var session = -1
     private var held = false
+    /** The moved copy's row in its new kind ([details]), until the list has it (it ranks again on its own thread). */
+    private var landOn: String? = null
 
     /** Whether this panel is the window showing now. */
     val isOpen: Boolean get() = panel.isOpen && panel.session == session
 
     /**
-     * Opens the panel titled [title] ("Sources", "Sources · S2 E5 "Peacekeepers"") over the screen, or over the
-     * window showing ([sub]: Back returns to it).
+     * Opens the window titled [title] ("Sources", "Sources · S2 E5 "Peacekeepers"") over the screen, or over the
+     * window showing ([sub]: Back returns to it). In the player, [smooth] says whether the copy playing plays without
+     * stalling, [server] how fast its server is delivering (its Details' "Server"), and [next] what Next source plays.
+     * [move] keeps a film's copy moved to 4K IMAX (true) or to 4K in its Details ([SourcesModel.moveLabel]).
      */
     fun open(
         title: String,
@@ -48,14 +58,23 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
         playingKey: String? = null,
         sub: Boolean = false,
         onClose: (() -> Unit)? = null,
+        smooth: Boolean = false,
+        server: () -> String? = { null },
+        next: (() -> PlaybackSource?)? = null,
+        move: ((source: PlaybackSource, imax: Boolean) -> Unit)? = null,
         onPick: (source: PlaybackSource, fromBeginning: Boolean) -> Unit,
     ) {
         this.list = list
         this.attempts = attempts
         this.playingKey = playingKey
+        this.smooth = smooth
+        this.next = next
+        this.move = move
+        this.server = server
         this.onPick = onPick
         opened = HashSet()
         held = false
+        landOn = null
         val render: SidePanel.() -> Unit = { longList(entries()) }
         if (sub && panel.isOpen) panel.openSub(title, wide = true, render = render) else panel.open(title, onClose, wide = true, render = render)
         session = panel.session
@@ -66,12 +85,19 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
         this.list = list
         this.attempts = attempts
         this.playingKey = playingKey
-        if (isOpen && !FireDialog.isShowing(activity)) panel.refresh()
+        if (isOpen && !FireDialog.isShowing(activity)) {
+            val to = landOn
+            panel.refresh()
+            // Back after a move came before the list ranked again: focus goes to the copy's new row, now listed.
+            if (to != null && landOn == null) panel.focusEntry(to)
+        }
     }
 
     private fun entries(): LongList {
-        items = SourcesModel.items(list, android.os.SystemClock.elapsedRealtime(), opened, attempts, playingKey, ::time, ::day,
+        items = SourcesModel.items(list, android.os.SystemClock.elapsedRealtime(), opened, attempts, playingKey, smooth, next, ::time, ::day,
             VodSizes.SOURCES_LINE_CHARS, VodSizes.SOURCES_NOTE_CHARS)
+        // The moved copy's new row is listed: Back lands on it by its key, or update() moves focus to it.
+        if (landOn != null && items.any { it.key == landOn }) landOn = null
         val shown = items
         return object : LongList {
             override val size: Int get() = shown.size
@@ -102,6 +128,13 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
             }
 
             override fun onKey(index: Int, keyCode: Int, event: KeyEvent): Boolean {
+                // Right on a copy: its Details (what its row leaves out).
+                if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
+                    val item = shown.getOrNull(index) ?: return false
+                    val s = item.source ?: return false
+                    if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && !held) details(s)
+                    return true
+                }
                 val ok = keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER
                 if (!ok) return false
                 if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) held = false
@@ -144,7 +177,7 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
         FireDialog.hold(
             activity,
             // The row's own main line, so the window names the copy as the list did.
-            PlayRules.mainLine(s).ifEmpty { s.offers.firstOrNull()?.text?.take(60).orEmpty() },
+            mainLine(s),
             listOf(
                 "Play from beginning" to { play(s, beginning = true) },
                 "Details" to { details(s) },
@@ -153,10 +186,39 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
         )
     }
 
-    /** Details: the facts and each add-on's own words (never a link), over the panel; Back returns to it. */
+    private fun mainLine(s: PlaybackSource): String {
+        val l = list
+        val film = l == null || SourcesModel.film(l)
+        return PlayRules.mainLine(s, film = film, plan = l?.plan).ifEmpty { s.offers.firstOrNull()?.text?.take(60).orEmpty() }
+    }
+
+    /**
+     * Details: what the row leaves out, and each add-on's own words (never a link), over the window titled as the row
+     * names the copy; Back returns to it. A film's 4K copy has one more row, Move to IMAX group (or to 4K group): kept at
+     * once ([move]), the list ranks again, and Back lands on the copy's row in its new kind, opened (from the rows at the
+     * top too: what they show may change with the move).
+     */
     private fun details(s: PlaybackSource) {
-        panel.openSub("Source details", wide = true) {
-            facts(SourcesModel.details(s, ::day).map { (k, v) -> k to fact(v) })
+        val serverNow = if (s.key == playingKey) server() else null
+        var copy = s
+        panel.openSub(mainLine(s), wide = true) {
+            facts(SourcesModel.details(copy, list?.plan, serverNow, film = list?.target?.episode == null, day = ::day).map { (k, v) -> k to fact(v) })
+            val l = list ?: return@openSub
+            val keep = move ?: return@openSub
+            val film = SourcesModel.film(l)
+            val label = SourcesModel.moveLabel(copy, film) ?: return@openSub
+            row(label) {
+                val imax = label == SourcesModel.TO_IMAX
+                copy = copy.copy(imaxMove = imax)
+                keep(copy, imax)
+                val to = SourcesModel.sectionOf(copy, film)
+                opened += to
+                val key = SourcesModel.rowKey(to, copy)
+                landOn = key
+                backTo(key)
+                setTitle(mainLine(copy))
+                refresh()
+            }
         }
     }
 

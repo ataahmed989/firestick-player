@@ -71,6 +71,8 @@ class SettingsCategoryTest {
             "When a film keeps buffering",
             // Playback: a film read with two requests at a time, Off by default.
             "Faster downloads",
+            // Playback: the data rate Best for this TV leans toward, 60 Mb/s unless changed.
+            "Preferred bitrate",
             // Multiview: how many pictures at most, and how 3 or 4 open.
             "Multiview pictures", "Multiview with 3 or 4",
             // Picture-in-picture: the live picture on Home and Search, and whether it starts with its sound.

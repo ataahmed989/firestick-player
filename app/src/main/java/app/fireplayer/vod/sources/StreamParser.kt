@@ -133,6 +133,7 @@ object StreamParser {
             avgMbps = avgMbps(size, runtimeMin),
             group = Words.group(releaseName),
             languages = Words.languages(langLine),
+            subs = fromName.subs,
             seeders = Words.seeders(statsLine),
             pack = file != null && file != torrent,
         )
@@ -176,6 +177,7 @@ object StreamParser {
             avgMbps = avgMbps(size, runtimeMin),
             group = filename?.let { Words.group(it) },
             languages = Words.languageNames(Words.field(text, "🌐")),
+            subs = fromName.subs,
             seeders = Words.seeders(text),
             pack = false,
         )
@@ -232,6 +234,7 @@ object StreamParser {
             avgMbps = avgMbps(size, runtimeMin),
             group = releaseName?.let { Words.group(it) } ?: torzField(text, "⚙"),
             languages = Words.languages(torzField(text, "🌐") ?: torzField(text, "🎙").orEmpty()),
+            subs = fromName.subs,
             seeders = Words.seeders(text),
             pack = false,
         )
@@ -340,6 +343,8 @@ internal object Words {
         val channels: String? = null,
         val cinema: Boolean = false,
         val threeD: Boolean = false,
+        /** Subtitle languages the name states ("ESub", "Eng.Subs": "en"). */
+        val subs: List<String> = emptyList(),
     )
 
     private fun rx(p: String) = Regex(p, RegexOption.IGNORE_CASE)
@@ -347,7 +352,8 @@ internal object Words {
     private val HEIGHT = rx("""(?<![0-9])(2160|1440|1080|720|576|480|360)[pi](?![a-z0-9])""")
     private val UHD = rx("""(?<![a-z0-9])(4k|uhd)(?![a-z0-9])""")
     private val DV = rx("""(?<![a-z0-9])(dv|dovi|dolby[ ._-]?vision)(?![a-z0-9])""")
-    private val DV_PROFILE = rx("""(?<![a-z0-9])(?:dv|dovi)[ ._-]?(?:p|profile[ ._-]?)([578])(?![0-9])""")
+    /** "DV.P8", "DoVi Profile 7", and profile 8's base after it: "DV.P8.4" (HLG), "P8.1" (HDR10), "P8.6" (HDR10). */
+    private val DV_PROFILE = rx("""(?<![a-z0-9])(?:dv|dovi)[ ._-]?(?:p|profile[ ._-]?)([578])(?:[._]([1246]))?(?![0-9])""")
     private val DV_FEL = rx("""(?<![a-z0-9])(fel|mel)(?![a-z0-9])""")
     private val HDR10P = rx("""hdr10(\+|plus|p(?![a-z]))""")
     private val HDR = rx("""(?<![a-z0-9])hdr(10)?(?![+a-z0-9])""")
@@ -382,6 +388,7 @@ internal object Words {
     private val PCM = rx("""(?<![a-z0-9])l?pcm(?![a-z])""")
     private val ATMOS = rx("""(?<![a-z0-9])atmos(?![a-z])""")
     private val CHANNELS = Regex("""(?<![0-9])(?<![0-9]\.)([1257])[ .]([01])(?![0-9])""")
+    private val ENGLISH_SUBS = rx("""(?<![a-z0-9])(e[ .-]?subs?|eng(lish)?[ ._-]?subs?)(?![a-z0-9])""")
 
     fun read(text: String, quality: Boolean = false): Read {
         if (text.isBlank()) return Read()
@@ -392,8 +399,14 @@ internal object Words {
         if (HDR10P.containsMatchIn(t)) hdr += Hdr.HDR10_PLUS
         if (HDR.containsMatchIn(t)) hdr += Hdr.HDR10
         if (HLG.containsMatchIn(t)) hdr += Hdr.HLG
-        val dvProfile = DV_PROFILE.find(t)?.groupValues?.get(1)?.toIntOrNull()
+        val dvMatch = DV_PROFILE.find(t)
+        val dvProfile = dvMatch?.groupValues?.get(1)?.toIntOrNull()
             ?: if (Hdr.DOLBY_VISION in hdr && DV_FEL.containsMatchIn(t)) 7 else null
+        // Profile 8's base layer, where the name says it: 8.4 is HLG, 8.1 and 8.6 HDR10.
+        if (dvProfile == 8) when (dvMatch?.groupValues?.get(2)) {
+            "4" -> hdr += Hdr.HLG
+            "1", "6" -> hdr += Hdr.HDR10
+        }
         val codec = when {
             HEVC.containsMatchIn(t) -> "HEVC"
             AV1.containsMatchIn(t) -> "AV1"
@@ -436,7 +449,8 @@ internal object Words {
             else -> audioName
         }
         val channels = CHANNELS.find(t)?.let { "${it.groupValues[1]}.${it.groupValues[2]}" }
-        return Read(height, hdr, dvProfile, origin, codec, bits, audio, channels, cinema, THREE_D.containsMatchIn(t))
+        val subs = if (ENGLISH_SUBS.containsMatchIn(t)) listOf("en") else emptyList()
+        return Read(height, hdr, dvProfile, origin, codec, bits, audio, channels, cinema, THREE_D.containsMatchIn(t), subs)
     }
 
     private fun cinemaWord(t: String): String {

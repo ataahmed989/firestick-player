@@ -50,44 +50,52 @@ class SourcesModelTest {
     private fun List<SourcesModel.Item>.at(key: String) = first { it.key == key }
 
     @Test
-    fun theBestRowThenSectionsInOrderEachWithItsCount() {
+    fun theBestThenTheKindsInOrderEachWithItsCountAndOneNote() {
         val items = SourcesModel.items(list, 0, emptySet())
         assertEquals(
-            listOf("note:status", "note:totals", "note:ready", SourcesModel.BEST_KEY,
+            listOf("note:status", "head:best", SourcesModel.BEST_KEY,
                 "head:IMAX", "src:IMAX:k41", "src:IMAX:k42",
                 "head:UHD") + (1..5).map { "src:UHD:k$it" } + listOf("more:UHD",
                 "head:FHD", "src:FHD:k11", "src:FHD:k12",
                 "head:HD", "more:HD",
-                "head:NOT_CACHED", "note:NOT_CACHED", "more:NOT_CACHED"),
+                "head:NOT_CACHED", "more:NOT_CACHED"),
             keys(items),
         )
-        assertEquals(listOf("4K IMAX · 2", "4K · 7", "1080p · 2", "720p · 3", "Not cached yet · 1"),
+        assertEquals(listOf("Best for this TV", "4K IMAX · 2", "4K · 7", "1080p · 2", "720p · 3", "Not cached yet · 1"),
             items.filter { it.kind == SourcesModel.Kind.HEADING }.map { it.label })
+        // One note: the add-ons' states (no totals, no explanations).
+        assertEquals(1, items.count { it.kind == SourcesModel.Kind.NOTE })
         assertEquals("Show 2 more", items.at("more:UHD").label)
         // 720p and Not cached yet start closed with one "Show N" row.
         assertEquals("Show 3", items.at("more:HD").label)
         assertEquals("Show 1", items.at("more:NOT_CACHED").label)
-        // A row: quality · HDR kind · made from · size, then the quieter line ending with the add-on.
+        // A row: quality · HDR · made from · size, then only what may change the choice: language, sound, add-ons.
         assertEquals("4K · HDR10 · WEB · 29.3 GB", items.at("src:UHD:k1").label)
-        assertEquals("HEVC 10-bit · DD+ 5.1 · EN · Torrentio", items.at("src:UHD:k1").note)
+        assertEquals("English · 5.1 · Torrentio", items.at("src:UHD:k1").note)
         assertEquals("4K IMAX · DV · Remux · 29.3 GB", items.at("src:IMAX:k41").label)
-        // Every row's text is the add-ons' words, never a link.
+        // No codec, bit depth or language list on a row (Details has them); never a link.
+        assertFalse(items.any { (it.label + it.note).let { t -> t.contains("HEVC") || t.contains("10-bit") || t.contains("EN +") } })
         assertFalse(items.any { (it.label + it.note + it.value).contains("invalid") })
     }
 
     @Test
-    fun theBestRowIsTheCopyPlayUsesWithWhyAndLastUsedIsOnlyAMarkOnItsOwnRow() {
+    fun theBestSaysWhatDecidedItAndLastUsedIsMarkedWhereverItIs() {
         val items = SourcesModel.items(list, 0, emptySet())
         val best = items.at(SourcesModel.BEST_KEY)
-        assertEquals("Best for this TV", best.label)
         assertEquals("k41", best.source!!.key)
-        assertEquals("4K IMAX · Dolby Vision · Remux · cached", best.note)
+        // Its first line as its row's; its second what decided it, then its row's words.
+        assertEquals(items.at("src:IMAX:k41").label, best.label)
+        assertEquals("Cached · English · 5.1 · Torrentio", best.note)
         assertNull(best.value)
-        // Its own row says Best; the last used one says so where it sits, not in a row above the best.
+        assertFalse(best.chosen)
+        // Its own row says Best; the last used one says so where it sits.
         assertEquals("Best", items.at("src:IMAX:k41").value)
         assertEquals("Last used", items.at("src:FHD:k12").value)
         assertEquals(listOf("src:FHD:k12"), items.filter { it.value?.contains("Last used") == true }.map { it.key })
-        assertEquals(1, items.count { it.source?.key == "k12" })
+        // The Best used last time: Last used on the Best row too.
+        val again = SourcesModel.items(list.copy(lastUsed = imax[0]), 0, emptySet())
+        assertEquals("Last used", again.at(SourcesModel.BEST_KEY).value)
+        assertEquals("Best\nLast used", again.at("src:IMAX:k41").value)
     }
 
     @Test
@@ -118,27 +126,55 @@ class SourcesModelTest {
         assertTrue(items.at("src:UHD:k3").chosen)
         assertEquals("✓ played Nov 12", items.at("src:UHD:k4").value)
         assertNull(items.at("src:UHD:k5").value)
-        // Playing the best: its row at the top is the chosen one too.
-        val onBest = SourcesModel.items(l, 0, emptySet(), playingKey = "k41")
-        assertTrue(onBest.at(SourcesModel.BEST_KEY).chosen)
-        assertEquals("Playing", onBest.at(SourcesModel.BEST_KEY).value)
-        assertEquals("Playing\nBest", onBest.at("src:IMAX:k41").value)
     }
 
     @Test
-    fun inThePlayerTheCopyPlayingComesFirstWithItsDetailsThenTheBest() {
+    fun inThePlayerTheCopyPlayingComesFirstThenTheBest() {
         val items = SourcesModel.items(list, 0, emptySet(), playingKey = "k3")
-        val keys = keys(items)
-        val at = keys.indexOf(SourcesModel.PLAYING_KEY)
-        assertTrue(at >= 0)
-        assertEquals(at + 1, keys.indexOf(SourcesModel.BEST_KEY))
+        assertEquals(listOf("note:status", "head:playing", SourcesModel.PLAYING_KEY, "head:best", SourcesModel.BEST_KEY), keys(items).take(5))
+        assertEquals("Playing", items.at("head:playing").label)
         val row = items.at(SourcesModel.PLAYING_KEY)
         assertEquals("k3", row.source?.key)
-        assertEquals(SourcesModel.PLAYING_NOW, row.value)
+        // Not the Best: no mark; its details as its row's.
+        assertNull(row.value)
         assertTrue(row.chosen)
         assertEquals(items.at("src:UHD:k3").label, row.label)
+        assertEquals(items.at("src:UHD:k3").note, row.note)
+        assertFalse(keys(items).contains(SourcesModel.NEXT_KEY))
         // Nothing playing (the title page): no such row.
         assertFalse(keys(SourcesModel.items(list, 0, emptySet())).contains(SourcesModel.PLAYING_KEY))
+    }
+
+    @Test
+    fun playingTheBestItIsMarkedBestAndNextSourceTakesTheBestsPlace() {
+        val items = SourcesModel.items(list, 0, emptySet(), playingKey = "k41")
+        assertEquals(listOf("note:status", "head:playing", SourcesModel.PLAYING_KEY, "head:next", SourcesModel.NEXT_KEY, "head:IMAX"),
+            keys(items).take(6))
+        assertFalse(keys(items).contains(SourcesModel.BEST_KEY))
+        val row = items.at(SourcesModel.PLAYING_KEY)
+        assertEquals("Best", row.value)
+        assertEquals("Cached · English · 5.1 · Torrentio", row.note)
+        assertEquals("Playing\nBest", items.at("src:IMAX:k41").value)
+        // Next source: the next copy down, in its own kind first.
+        assertEquals("Next source", items.at("head:next").label)
+        assertEquals("k42", items.at(SourcesModel.NEXT_KEY).source?.key)
+        // Past a copy that failed here.
+        val failed = listOf(Attempt(imax[1], 0L, OpenWhy.USER, Failure(FailureKind.FILE)))
+        assertEquals("k1", SourcesModel.items(list, 0, emptySet(), failed, playingKey = "k41").at(SourcesModel.NEXT_KEY).source?.key)
+    }
+
+    @Test
+    fun aFourKCopyPlayingSmoothlyClosesTenEightyAndTheKindsUnderIt() {
+        val smooth = keys(SourcesModel.items(list, 0, emptySet(), playingKey = "k1", smooth = true))
+        assertFalse(smooth.contains("src:FHD:k11"))
+        assertTrue(smooth.containsAll(listOf("head:FHD", "more:FHD", "src:IMAX:k41", "src:UHD:k1")))
+        assertEquals("Show 2", SourcesModel.items(list, 0, emptySet(), playingKey = "k1", smooth = true).at("more:FHD").label)
+        // Opened by the viewer, it stays open.
+        assertTrue(keys(SourcesModel.items(list, 0, setOf(Section.FHD), playingKey = "k1", smooth = true)).contains("src:FHD:k11"))
+        // Stalling, or a 1080p copy playing: 1080p stays open.
+        assertTrue(keys(SourcesModel.items(list, 0, emptySet(), playingKey = "k1", smooth = false)).contains("src:FHD:k11"))
+        assertTrue(keys(SourcesModel.items(list, 0, emptySet(), playingKey = "k11", smooth = true)).contains("src:FHD:k11"))
+        assertEquals(listOf(true, true, false, false, false), SourcesModel.view(list, "k1", smooth = true).groups.map { it.open })
     }
 
     @Test
@@ -146,7 +182,8 @@ class SourcesModelTest {
         val soFar = list.copy(states = mapOf(Addon.TORRENTIO to AddonState.Answered(13), Addon.MEDIAFUSION to AddonState.Asking(0, 25_000)))
         val items = SourcesModel.items(soFar, 9_000, emptySet())
         assertEquals("Torrentio ✓ 13 · MediaFusion still looking 9 s of 25", items[0].label)
-        assertEquals("Best so far", items.at(SourcesModel.BEST_KEY).label)
+        assertEquals("Best so far", items.at("head:best").label)
+        assertEquals("Best so far", SourcesModel.items(soFar, 9_000, emptySet(), playingKey = "k41").at(SourcesModel.PLAYING_KEY).value)
     }
 
     @Test
@@ -155,10 +192,10 @@ class SourcesModelTest {
         val none = SourcesModel.items(Fixtures.list(target, emptyList()), 0, emptySet())
         assertEquals(listOf("note:status", "note:none"), keys(none))
         assertEquals("No sources found.", none[1].label)
-        // Nothing cached: no Best row, the copies to fetch closed under their heading.
+        // Nothing cached: no Best, the copies to fetch closed under their heading.
         val fetch = keys(SourcesModel.items(Fixtures.list(target, listOf(notReady)), 0, emptySet()))
         assertFalse(fetch.contains(SourcesModel.BEST_KEY))
-        assertEquals(listOf("head:NOT_CACHED", "note:NOT_CACHED", "more:NOT_CACHED"), fetch.drop(3))
+        assertEquals(listOf("head:NOT_CACHED", "more:NOT_CACHED"), fetch.drop(1))
     }
 
     // ---- The SD rule
@@ -194,8 +231,8 @@ class SourcesModelTest {
         assertEquals(3, onlySd.size)
         val best = SourceRank.best(onlySd)!!
         val items = SourcesModel.items(Fixtures.list(target, onlySd, best = best), 0, emptySet())
-        assertEquals(listOf(SourcesModel.BEST_KEY, "head:NOT_CACHED", "note:NOT_CACHED", "more:NOT_CACHED", "head:LOWER", "src:LOWER:${onlySd[0].key}", "src:LOWER:${onlySd[1].key}"),
-            keys(items).drop(3))
+        assertEquals(listOf(SourcesModel.BEST_KEY, "head:NOT_CACHED", "more:NOT_CACHED", "head:LOWER", "src:LOWER:${onlySd[0].key}", "src:LOWER:${onlySd[1].key}"),
+            keys(items).drop(2))
         assertEquals("Lower quality · 2", items.at("head:LOWER").label)
         assertTrue(SourceRank.isSd(best))
     }
@@ -207,7 +244,10 @@ class SourcesModelTest {
         assertEquals("4K IMAX · Dolby Vision · Remux · cached", SourcesModel.reason(imax[0], list))
         assertEquals("1080p · HDR10 · WEB · played here", SourcesModel.reason(fhd[0].copy(fit = TvFit.MEASURED_OK), list))
         val sdr = fhd[0].let { it.copy(facts = it.facts.copy(hdr = emptySet(), origin = "BluRay"), readiness = Readiness.UNKNOWN) }
-        assertEquals("1080p · BluRay", SourcesModel.reason(sdr, list))
+        assertEquals("1080p · Encode", SourcesModel.reason(sdr, list))
+        // What decided it, for the Best row's second line (its first line says the rest).
+        assertEquals(listOf("cached"), SourcesModel.decided(imax[0], list))
+        assertEquals(emptyList<String>(), SourcesModel.decided(sdr, list))
     }
 
     @Test
@@ -243,13 +283,81 @@ class SourcesModelTest {
         val text = d.joinToString("\n") { "${it.first}: ${it.second}" }
         assertTrue(text.contains("Torrentio says: Release.5.2160p.WEB-DL"))
         assertTrue(text.contains("MediaFusion says: Release 5"))
-        assertTrue(text.contains("Offered by: Both add-ons"))
+        assertTrue(text.contains("Offered by: Torrentio + MediaFusion"))
         assertTrue(text.contains("Probably on your debrid service"))
-        assertTrue(text.contains("Audio languages: EN"))
+        assertTrue(text.contains("Audio languages: English"))
+        assertTrue(text.contains("Picture: 4K · HDR · HEVC · 10-bit"))
+        assertFalse(text.contains("Server"))
         val multi = both.copy(facts = both.facts.copy(languages = listOf("multi", "en", "fr")))
-        assertTrue(SourcesModel.details(multi) { "" }.contains("Audio languages" to "Multi, EN, FR"))
+        assertTrue(SourcesModel.details(multi) { "" }.contains("Audio languages" to "Multi, English, French"))
         assertFalse(text.contains("invalid"))
         assertTrue(SourcesModel.asksFirst(notReady))
         assertFalse(SourcesModel.asksFirst(both))
+    }
+
+    @Test
+    fun detailsHaveWhatTheRowLeavesOut() {
+        // A profile 7 TrueHD Atmos remux this TV played as its HDR10 base layer, with HDR10+, measured at 51 Mb/s.
+        val spec = app.fireplayer.player.MediaSpec(hdr = "HDR10", dvBaseLayer = 7, dvProfile = 7, hdr10Plus = true, audioCodec = "TrueHD",
+            atmos = true, channels = 8, videoBps = 51_000_000, videoHow = app.fireplayer.player.MediaSpec.How.MEASURED, subLangs = "en,fr")
+        val s = Fixtures.source(7).let {
+            it.copy(facts = it.facts.copy(hdr = setOf(Hdr.DOLBY_VISION, Hdr.HDR10), origin = "REMUX", audio = "TrueHD Atmos", channels = "7.1",
+                avgMbps = 58.0), warning = SourceRank.HIGH_RATE, measured = Measured(spec, null, 1L))
+        }
+        val q60r = plan.copy(sound = setOf(app.fireplayer.vod.SoundFormat.AC3, app.fireplayer.vod.SoundFormat.EAC3), dv7AsHdr10 = true)
+        val d = SourcesModel.details(s, q60r, server = "137 Mb/s arriving · 2.4× what it needs") { "Nov 12" }.toMap()
+        // HDR10+ only where it reaches the TV (Settings › This TV): elsewhere the TV gets the HDR10 inside.
+        assertEquals("HDR10 (HDR10+ in the file)", d["This TV shows"])
+        assertEquals("HDR10+", SourcesModel.details(s, q60r.copy(hdr10PlusReaches = true)) { "" }.toMap()["This TV shows"])
+        assertEquals("Profile 7 · played here as its HDR10 base layer", d["Dolby Vision"])
+        assertEquals("TrueHD Atmos 7.1 · heard here as 7.1: Atmos not kept on this TV", d["Sound"])
+        assertEquals("≈58 Mb/s average (from size)", d["Data rate"])
+        assertTrue(d["Picture data"]!!.endsWith("· measured here"))
+        assertEquals("137 Mb/s arriving · 2.4× what it needs", d["Server"])
+        assertEquals("English, French", d["Subtitles"])
+        // "High data rate" isn't on the row; Details keeps it.
+        assertEquals(SourceRank.HIGH_RATE, d["Warning"])
+        assertEquals("English · 7.1 · Torrentio", PlayRules.noteLine(s, q60r, listOf("en")))
+    }
+
+    @Test
+    fun detailsSayTheSoundMeasuredHereWhenTheAddonsDont() {
+        // The playing Avatar copy: the add-ons' words don't name its sound; the play here measured DD+ 5.1 at 48 kHz.
+        val spec = app.fireplayer.player.MediaSpec(audioCodec = "DD+", channels = 6, sampleRate = 48_000, audioLangs = "en")
+        val quiet = Fixtures.source(9).let { it.copy(facts = it.facts.copy(audio = null, channels = null), measured = Measured(spec, null, 1L)) }
+        assertEquals("DD+ 5.1 · measured here", SourcesModel.details(quiet, plan) { "Nov 24" }.toMap()["Sound"])
+        // The row's sound word is the same sound.
+        assertEquals("English · 5.1 · Torrentio", PlayRules.noteLine(quiet, plan, listOf("en")))
+        // Neither said nor measured: as before.
+        assertEquals("Not stated", SourcesModel.details(quiet.copy(measured = null), plan) { "" }.toMap()["Sound"])
+        // Said by the add-ons: their words, as before.
+        assertEquals("DD+ 5.1", SourcesModel.details(Fixtures.source(9).copy(measured = Measured(spec, null, 1L)), plan) { "" }.toMap()["Sound"])
+        // Measured Atmos this TV doesn't keep says so, as the add-ons' words do.
+        val atmos = quiet.copy(measured = Measured(spec.copy(atmos = true), null, 1L))
+        assertEquals("DD+ Atmos 5.1 · measured here · heard here as 5.1: Atmos not kept on this TV",
+            SourcesModel.details(atmos, plan) { "" }.toMap()["Sound"])
+    }
+
+    @Test
+    fun aCopyThatWasntTheWholeFilmSaysSoInsteadOfPlayed() {
+        val health = app.fireplayer.player.CopyHealth(watchedMs = 1_300, at = 5L, notWhole = 1)
+        val shortKey = Fixtures.source(2).release!!.storeKey
+        val ranked = SourceRank.rank((1..3).map { Fixtures.source(it) },
+            RankInput(plan, listOf("en"), { if (it == shortKey) Measured(null, health, 5L) else null }, 198, episode = false))
+        val short = ranked.first { it.key == "k2" }
+        assertEquals(SourceRank.NOT_WHOLE, short.warning)
+        assertTrue(PlayRules.noteLine(short, plan, listOf("en")).startsWith("⚠ Shorter than the film here"))
+        // Not "✓ played" on its row (its warning says what happened), but in Details, with the date.
+        val items = SourcesModel.items(Fixtures.list(target, ranked), 0, setOf(Section.UHD), day = { "Nov 24" })
+        assertFalse(items.at("src:UHD:k2").value.orEmpty().contains("played"))
+        val details = SourcesModel.details(short, plan) { "Nov 24" }.toMap()
+        assertEquals("Shorter than the film here · played Nov 24", details["Facts"])
+        // Said once: no Warning line repeating it.
+        assertFalse(details.containsKey("Warning"))
+        // An episode's copy, in an episode's words.
+        val episode = SourceRank.rank(listOf(Fixtures.source(2)),
+            RankInput(plan, listOf("en"), { Measured(null, health, 5L) }, 45, episode = true)).single()
+        assertEquals(SourceRank.NOT_WHOLE_EPISODE, episode.warning)
+        assertEquals("Shorter than the episode here · played Nov 24", SourcesModel.details(episode, plan, film = false) { "Nov 24" }.toMap()["Facts"])
     }
 }

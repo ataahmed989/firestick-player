@@ -188,6 +188,13 @@ class FakeSession(override val request: PlayRequest) : SourceSession {
         return step
     }
 
+    /** Copies chosen by hand that turned out not to be the whole film ([SourceSession.notWhole]). */
+    val notWholes = ArrayList<PlaybackSource>()
+
+    override fun notWhole(source: PlaybackSource) {
+        notWholes += source
+    }
+
     /** The TV's network is away, as the test sets it. */
     var netDown = false
 

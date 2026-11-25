@@ -1,12 +1,15 @@
 package app.fireplayer.vod.play
 
+import app.fireplayer.vod.Addon
 import app.fireplayer.vod.EpisodeRef
 import app.fireplayer.vod.FailureKind
+import app.fireplayer.vod.LastRelease
 import app.fireplayer.vod.OpenWhy
 import app.fireplayer.vod.Opened
 import app.fireplayer.vod.PlayOrigin
 import app.fireplayer.vod.PlayRequest
 import app.fireplayer.vod.Readiness
+import app.fireplayer.vod.ReleaseKey
 import app.fireplayer.vod.SourceGroup
 import app.fireplayer.vod.SourceTarget
 import app.fireplayer.vod.StartAt
@@ -39,7 +42,12 @@ class SourcePlaybackTest {
         override fun retryAfter(ms: Long) { log += "retry $ms" }
         override fun decodeOnDevice() { log += "decode" }
         override fun playNext(next: PlayRequest) { nextPlay = next }
+        override fun notWhole() { log += "not whole" }
+        override fun runtimeMinutes() = runtime
     }
+
+    /** The film's runtime as the title's details give it (0: the title's own). */
+    private var runtime = 0
 
     private fun play(
         start: StartAt = StartAt.At(600_000),
@@ -65,6 +73,30 @@ class SourcePlaybackTest {
         assertEquals(listOf(Triple("k1", 600_000L, false)), starts)
         assertEquals("k1", p.current?.key)
         assertTrue(questions.isEmpty())
+    }
+
+    @Test
+    fun aResumeOnAnotherCopySaysTheOneLeftIsntAvailable() {
+        val request = PlayRequest(SourceTarget(Fixtures.film), StartAt.At(600_000), PlayOrigin.CONTINUE_CARD,
+            preferred = LastRelease(Addon.TORRENTIO, ReleaseKey(Fixtures.hash(9), 0), 1L))
+        val session = FakeSession(request)
+        session.list = Fixtures.list(request.target, listOf(Fixtures.source(1)))
+        SourcePlayback(request, session, library, ticker, host).start()
+        session.ready(Fixtures.source(1), startMs = 595_000, resumedNear = true)
+        assertEquals(Triple("k1", 595_000L, false), starts.single())
+        assertEquals("notice ${SourcePlayback.COPY_GONE_NOTE}", log.last())
+    }
+
+    @Test
+    fun aResumeOnAnotherCopyWhileTheOneLeftIsListedIsOnlyResumedNear() {
+        // The copy left was listed after the pick (a late answer): it isn't said to be unavailable.
+        val request = PlayRequest(SourceTarget(Fixtures.film), StartAt.At(600_000), PlayOrigin.TITLE_PAGE,
+            preferred = LastRelease(Addon.MEDIAFUSION, ReleaseKey(Fixtures.hash(2), 0), 1L))
+        val session = FakeSession(request)
+        session.list = Fixtures.list(request.target, listOf(Fixtures.source(1), Fixtures.source(2, Addon.MEDIAFUSION)))
+        SourcePlayback(request, session, library, ticker, host).start()
+        session.ready(Fixtures.source(1), startMs = 595_000, resumedNear = true)
+        assertEquals("notice Resumed near ${PlayRules.clock(595_000)}", log.last())
     }
 
     @Test
@@ -250,6 +282,57 @@ class SourcePlaybackTest {
     }
 
     @Test
+    fun aCopyWithNoPictureGivesWayToTheNextWhichSaysWhy() {
+        val (p, s) = play()
+        s.ready(Fixtures.source(1))
+        p.firstFrame()
+        position = 1_200_000
+        p.noPicture()
+        // A failure of this copy, whatever the buffering setting says: the next one down the list.
+        assertEquals(FailureKind.NO_PICTURE, s.failures.single().kind)
+        assertEquals(null to OpenWhy.FAILED, s.opens.last())
+        assertFalse(p.playing)
+        assertTrue(questions.isEmpty())
+        s.ready(Fixtures.source(2))
+        assertEquals(Triple("k2", PlayRules.switchStart(1_200_000), true), starts.last())
+        // Said as it starts, in place of "Resumed near".
+        assertEquals("notice " + SourcePlayback.NO_PICTURE_NOTE, log.last())
+        assertEquals("This copy showed no picture here · playing the next one", SourcePlayback.NO_PICTURE_NOTE)
+        // Said once: the next switch is as before.
+        p.firstFrame()
+        p.nextSource()
+        s.ready(Fixtures.source(3))
+        assertTrue(log.last().startsWith("notice Resumed near"))
+    }
+
+    @Test
+    fun aCopyWithNoPictureFromItsStartGivesWayBeforeTheSlowStartQuestion() {
+        val (p, s) = play()
+        s.ready(Fixtures.source(1, mbps = 10.0))
+        // Its sound played, no frame came: never "first frame".
+        ticker.advance(5_000)
+        p.noPicture()
+        s.ready(Fixtures.source(2, mbps = 10.0))
+        // Where the play was asked to start: the copy before never played.
+        assertEquals(600_000L, starts.last().second)
+        assertEquals("notice " + SourcePlayback.NO_PICTURE_NOTE, log.last())
+        // The first copy's slow-start limit is gone with it.
+        ticker.advance(29_000)
+        assertTrue(questions.isEmpty())
+    }
+
+    @Test
+    fun aCopyWithNoPictureAndNoSwitchLeftStopsAndSaysSo() {
+        val (p, s) = play()
+        s.ready(Fixtures.source(1))
+        p.firstFrame()
+        p.noPicture()
+        s.answer(Opened.NoneLeft("Switched source twice already. Use Next source in Picture & sound to try another."))
+        assertEquals("stop Switched source twice already. Use Next source in Picture & sound to try another.", log.last())
+        assertFalse(log.any { it == "notice " + SourcePlayback.NO_PICTURE_NOTE })
+    }
+
+    @Test
     fun nothingLeftWhilePlayingIsANoteNotAStop() {
         val (p, s) = play()
         s.ready(Fixtures.source(1))
@@ -335,5 +418,240 @@ class SourcePlaybackTest {
         p.pick(Fixtures.source(2), beginning = true)
         s.ready(Fixtures.source(2))
         assertEquals(Triple("k2", 0L, true), starts.last())
+    }
+
+    // ---- A copy that ends without really playing is not the film's end ---------------------------------------------
+
+    /** Avatar: Fire and Ash, about 198 min; its copy that is really a 5,708 s video. */
+    private val avatar = SourceTarget(Fixtures.film.copy(runtime = "198 min"))
+    private val makingOfMs = 5_708_000L
+
+    @Test
+    fun aCopyStartedPastItsEndGivesWayAtTheFilmsPlaceAndMarksNothingWatched() {
+        // The film's runtime unknown (the title's 136 min: the copy isn't under 60 % of it): only its end gives it away.
+        val (p, s) = play(start = StartAt.At(9_000_000))
+        s.ready(Fixtures.source(1))
+        p.firstFrame()
+        ticker.advance(1_284_000)
+        p.record(10_284_000, 11_880_000, null)
+        assertEquals(1, library.recorded.size)
+        // Next source at 2:51:24: the next copy starts 5 s earlier, past its own end, and ends 1.3 s later.
+        position = 10_284_000
+        p.nextSource()
+        s.ready(Fixtures.source(2))
+        assertEquals(Triple("k2", 10_279_000L, true), starts.last())
+        p.firstFrame()
+        ticker.advance(1_300)
+        position = makingOfMs
+        // Leaving now keeps nothing of it either (its "end" would mark the film watched).
+        p.record(makingOfMs, makingOfMs, null)
+        assertEquals(1, library.recorded.size)
+        assertFalse(p.reachedEnd(makingOfMs))
+        assertEquals(FailureKind.NOT_WHOLE, s.failures.single().kind)
+        assertEquals(null to OpenWhy.FAILED, s.opens.last())
+        assertTrue(log.contains("not whole"))
+        assertFalse(p.playing)
+        p.record(makingOfMs, makingOfMs, null)
+        assertEquals(1, library.recorded.size)
+        // The next copy plays from where the film was, not from the broken copy's end, and says why.
+        s.ready(Fixtures.source(3))
+        assertEquals(Triple("k3", 10_279_000L, true), starts.last())
+        assertEquals("notice " + SourcePlayback.NOT_WHOLE_NOTE, log.last())
+        assertEquals("This copy isn't the whole film · playing the next one", SourcePlayback.NOT_WHOLE_NOTE)
+        // It plays and is kept as usual.
+        p.firstFrame()
+        ticker.advance(60_000)
+        p.record(10_339_000, 11_880_000, null)
+        assertEquals(listOf<Any?>(Fixtures.film.id, null, 10_339_000L, 11_880_000L, null), library.recorded.last())
+    }
+
+    @Test
+    fun aFilmsCopyFarShorterThanTheFilmPickedByItselfGivesWayAsSoonAsItsLengthIsKnown() {
+        val (p, s) = play(start = StartAt.At(600_000), target = avatar)
+        s.ready(Fixtures.source(1))
+        // The first READY: 1:35:08 of a 198 min film. Not played to its end.
+        assertTrue(p.lengthKnown(makingOfMs))
+        assertEquals(FailureKind.NOT_WHOLE, s.failures.single().kind)
+        assertTrue(log.contains("not whole"))
+        s.ready(Fixtures.source(2))
+        assertEquals(600_000L, starts.last().second)
+        assertEquals("notice " + SourcePlayback.NOT_WHOLE_NOTE, log.last())
+        // A whole copy's length changes nothing, and is judged once.
+        assertFalse(p.lengthKnown(11_880_000))
+        assertFalse(p.lengthKnown(makingOfMs))
+        assertEquals(1, s.failures.size)
+        // The title's details' runtime counts too.
+        runtime = 198
+        val (q, t) = play(start = StartAt.At(600_000))
+        t.ready(Fixtures.source(4))
+        assertTrue(q.lengthKnown(makingOfMs))
+    }
+
+    @Test
+    fun aCopysLengthIsJudgedOnceTheFilmsRuntimeIsKnown() {
+        // No runtime at the first READY (the title's details not in yet): judged at a later READY, once they are.
+        val (p, s) = play(start = StartAt.At(600_000), target = SourceTarget(Fixtures.film.copy(runtime = null)))
+        s.ready(Fixtures.source(1))
+        assertFalse(p.lengthKnown(makingOfMs))
+        assertTrue(s.failures.isEmpty())
+        runtime = 198
+        assertTrue(p.lengthKnown(makingOfMs))
+        assertEquals(FailureKind.NOT_WHOLE, s.failures.single().kind)
+    }
+
+    @Test
+    fun aShortCopyChosenByHandPlaysButItsEndNeverMarksTheFilmWatched() {
+        val short = Fixtures.source(7)
+        val (p, s) = play(start = StartAt.At(600_000), target = avatar, origin = PlayOrigin.SOURCES_PANEL, chosen = short)
+        s.ready(short)
+        assertFalse(p.lengthKnown(makingOfMs))
+        assertTrue(s.failures.isEmpty())
+        // Kept as such all the same: not picked by itself again, nor the copy the title goes on from.
+        assertTrue(log.contains("not whole"))
+        assertEquals(listOf(short.key), s.notWholes.map { it.key })
+        p.firstFrame()
+        ticker.advance(makingOfMs)
+        // Nothing of where it stands is the film's: not mid-way, nor its credits.
+        p.record(3_000_000, makingOfMs, null)
+        p.record(5_600_000, makingOfMs, 5_500_000)
+        assertTrue(library.recorded.isEmpty())
+        // Its end isn't the film's: the next copy, from where the film was when it started.
+        assertFalse(p.reachedEnd(makingOfMs))
+        assertEquals(FailureKind.NOT_WHOLE, s.failures.single().kind)
+        s.ready(Fixtures.source(8))
+        assertEquals(600_000L, starts.last().second)
+        // Picked in the player's Sources window, the same.
+        val (q, t) = play(start = StartAt.At(600_000), target = avatar)
+        t.ready(Fixtures.source(1))
+        q.firstFrame()
+        q.pick(short, beginning = false)
+        t.ready(short)
+        assertFalse(q.lengthKnown(makingOfMs))
+    }
+
+    @Test
+    fun anEndTheViewerJumpedToRightAfterAResumeIsTheFilmsEnd() {
+        // Resumed at 1:00:00, then held Right to the end within 10 s of the first frame (to clear it from Continue
+        // Watching): the film's end, as before, and the copy isn't kept as anything.
+        val (p, s) = play(start = StartAt.At(3_600_000), target = avatar)
+        s.ready(Fixtures.source(1))
+        assertFalse(p.lengthKnown(11_880_000))
+        p.firstFrame()
+        ticker.advance(4_000)
+        p.jumped()
+        ticker.advance(2_000)
+        assertTrue(p.reachedEnd(11_880_000))
+        p.record(11_880_000, 11_880_000, null)
+        assertEquals(listOf<Any?>(Fixtures.film.id, null, 11_880_000L, 11_880_000L, null), library.recorded.single())
+        assertTrue(s.failures.isEmpty())
+        assertFalse(log.contains("not whole"))
+    }
+
+    @Test
+    fun aShorterCutStartedPastItsEndGivesWayButIsntKeptAsNotWhole() {
+        // The extended cut (3:00:00) plays at 2:45:00 of a film whose runtime is 150 min; Next source picks the
+        // theatrical cut (2:30:00), which starts past its end and ends at once.
+        val (p, s) = play(start = StartAt.At(9_000_000), target = SourceTarget(Fixtures.film.copy(runtime = "150 min")))
+        s.ready(Fixtures.source(1))
+        assertFalse(p.lengthKnown(10_800_000))
+        p.firstFrame()
+        ticker.advance(900_000)
+        position = 9_900_000
+        p.nextSource()
+        s.ready(Fixtures.source(2))
+        assertFalse(p.lengthKnown(9_000_000))
+        p.firstFrame()
+        ticker.advance(1_000)
+        assertFalse(p.reachedEnd(9_000_000))
+        // Passed over for this play (the session skips it), but not kept as "Shorter than the film here": from its start
+        // it plays whole.
+        assertEquals(FailureKind.NOT_WHOLE, s.failures.single().kind)
+        assertFalse(log.contains("not whole"))
+        s.ready(Fixtures.source(3))
+        assertEquals(Triple("k3", 9_895_000L, true), starts.last())
+        assertEquals("notice " + SourcePlayback.NOT_WHOLE_NOTE, log.last())
+    }
+
+    @Test
+    fun aCopyThatGaveWayIsNeverStartedOrJudgedAgain() {
+        val (p, s) = play(start = StartAt.At(9_000_000))
+        s.ready(Fixtures.source(1))
+        p.firstFrame()
+        ticker.advance(1_284_000)
+        position = 10_284_000
+        p.nextSource()
+        s.ready(Fixtures.source(2))
+        // No frame: it ended at once (the Avatar case).
+        assertFalse(p.reachedEnd(makingOfMs))
+        assertEquals(1, s.failures.size)
+        val opens = s.opens.size
+        // Left/Right on it while the next link is checked: its picture starts nothing (it isn't the copy the title goes
+        // on from again), a READY holds it again without judging it again, and its end is still not the film's.
+        p.firstFrame()
+        assertEquals(listOf("k1"), s.started.map { it.key })
+        assertFalse(p.playing)
+        runtime = 198
+        assertTrue(p.lengthKnown(makingOfMs))
+        assertFalse(p.reachedEnd(makingOfMs))
+        // Nothing counted twice: one failure, one open for the next copy.
+        assertEquals(1, s.failures.size)
+        assertEquals(opens, s.opens.size)
+        // The next copy plays from where the film was, and is judged as usual.
+        s.ready(Fixtures.source(3))
+        assertEquals(Triple("k3", 10_279_000L, true), starts.last())
+        assertFalse(p.lengthKnown(11_880_000))
+        p.firstFrame()
+        assertEquals(listOf("k1", "k3"), s.started.map { it.key })
+    }
+
+    @Test
+    fun aWholeCopyPlayedToItsEndIsTheFilmsEnd() {
+        val (p, s) = play(start = StartAt.At(9_000_000), target = avatar)
+        s.ready(Fixtures.source(1))
+        assertFalse(p.lengthKnown(11_880_000))
+        p.firstFrame()
+        ticker.advance(2_880_000)
+        assertTrue(p.reachedEnd(11_880_000))
+        p.record(11_880_000, 11_880_000, null)
+        assertEquals(listOf<Any?>(Fixtures.film.id, null, 11_880_000L, 11_880_000L, null), library.recorded.single())
+        assertTrue(s.failures.isEmpty())
+        assertFalse(log.contains("not whole"))
+    }
+
+    @Test
+    fun aCopyThatIsntWholeWithNothingLeftStopsSaysSoAndKeepsTheResumePoint() {
+        val (p, s) = play(start = StartAt.At(600_000))
+        s.ready(Fixtures.source(1))
+        p.firstFrame()
+        ticker.advance(60_000)
+        p.record(660_000, 7_200_000, null)
+        position = 660_000
+        p.nextSource()
+        s.ready(Fixtures.source(2))
+        // No frame at all: it ended at once.
+        assertFalse(p.reachedEnd(2_000_000))
+        s.answer(Opened.NoneLeft("Switched source twice already. Use Next source in Picture & sound to try another."))
+        assertEquals("stop This copy isn't the whole film. Switched source twice already. Use Next source in Picture & sound to try another.", log.last())
+        // Back from the message keeps nothing of it: the resume point stays.
+        p.record(2_000_000, 2_000_000, null)
+        assertEquals(1, library.recorded.size)
+    }
+
+    @Test
+    fun anEpisodesCopyIsOnlyJudgedByWhetherItReallyPlayed() {
+        val (p, s) = play(start = StartAt.At(1_500_000), target = SourceTarget(Fixtures.show, EpisodeRef(1, 2)), next = EpisodeRef(1, 3))
+        s.ready(Fixtures.source(1))
+        // A 20 min file for the show's 45 min: never judged by its length.
+        assertFalse(p.lengthKnown(1_200_000))
+        p.firstFrame()
+        ticker.advance(800)
+        assertFalse(p.reachedEnd(1_200_000))
+        s.ready(Fixtures.source(2))
+        assertEquals(1_500_000L, starts.last().second)
+        assertEquals("notice This copy isn't the whole episode · playing the next one", log.last())
+        // One that played through is the episode's end.
+        p.firstFrame()
+        ticker.advance(30 * 60_000L)
+        assertTrue(p.reachedEnd(2_700_000))
     }
 }

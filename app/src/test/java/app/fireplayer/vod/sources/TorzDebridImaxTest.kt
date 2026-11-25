@@ -281,14 +281,14 @@ class TorzDebridImaxTest {
         }
     }
 
-    // ---- 3. 4K IMAX first ----
+    // ---- 3. 4K IMAX first (Settings › This TV › IMAX first: always; otherwise a tie-break, RankRulesTest) ----
 
     private val tu7000 = TvPlan(true, listOf(setOf(Hdr.HDR10, Hdr.HDR10_PLUS), setOf(Hdr.HLG)), 2160, emptySet())
     private val fullHdTv = tu7000.copy(topHeight = 1080)
     private val troubled = CopyHealth(watchedMs = 600_000, stalls = 12, stallMs = 120_000)
 
-    private fun input(plan: TvPlan = tu7000, measured: (String) -> Measured? = { null }) =
-        RankInput(plan, listOf("en"), measured, 120, episode = false)
+    private fun input(plan: TvPlan = tu7000, measured: (String) -> Measured? = { null }, always: Boolean = true) =
+        RankInput(plan, listOf("en"), measured, 120, episode = false, imaxAlways = always)
 
     private fun src(
         key: String,
@@ -333,14 +333,15 @@ class TorzDebridImaxTest {
     }
 
     @Test
-    fun imaxImxAndOpenMatteAsWordsInAnyCaseInTheNameOrFileName() {
+    fun imaxAndImxAsWordsInAnyCaseInTheNameOrFileName() {
         val other = src("other", 2160, "Film.Name.2021.2160p.BluRay.REMUX", mbps = 55.0, origin = "REMUX")
-        for (name in listOf("Film.2021.IMAX.2160p", "Film.2021.imx.2160p", "Film 2021 Open Matte 2160p", "Film.2021.OpenMatte.2160p",
-            "Film.2021.Open.Matte.2160p", "Film.2021.OPEN-MATTE.2160p", "Film (2021) [IMAX] 2160p")) {
+        for (name in listOf("Film.2021.IMAX.2160p", "Film.2021.imx.2160p", "Film (2021) [IMAX] 2160p")) {
             assertEquals(name, "wish", keys(listOf(other, src("wish", 2160, name, mbps = 12.0))).first())
         }
         assertEquals("wish", keys(listOf(other, src("wish", 2160, "Film.2021.2160p", mbps = 12.0, filename = "Film.2021.IMAX.2160p.mkv"))).first())
-        for (name in listOf("Film.2021.SIMAX.2160p", "Film.2021.IMAXX.2160p", "Maximum.2021.2160p", "Film.2021.Opener.Matter.2160p")) {
+        // Open matte is mostly a 16:9 picture: not IMAX (the user's stricter rule).
+        for (name in listOf("Film.2021.SIMAX.2160p", "Film.2021.IMAXX.2160p", "Maximum.2021.2160p", "Film.2021.Opener.Matter.2160p",
+            "Film 2021 Open Matte 2160p", "Film.2021.OpenMatte.2160p", "Film.2021.OPEN-MATTE.2160p")) {
             assertEquals(name, "other", keys(listOf(other, src("wish", 2160, name, mbps = 12.0))).first())
             assertFalse(name, SourceRank.isImax(name))
         }
@@ -350,7 +351,7 @@ class TorzDebridImaxTest {
     fun a1080pImaxDoesNotJump() {
         val list = listOf(
             src("uhd", 2160, "Film.Name.2021.2160p.WEB-DL", mbps = 25.0),
-            src("hd", 1080, "Film.Name.2021.1080p.BluRay", mbps = 18.0),
+            src("hd", 1080, "Film.Name.2021.1080p.BluRay", mbps = 18.0, origin = "BluRay"),
             src("hdImax", 1080, "Film.Name.2021.IMAX.1080p.WEB-DL", mbps = 9.0),
         )
         assertEquals(keys(plain(list)), keys(list))
@@ -360,10 +361,11 @@ class TorzDebridImaxTest {
     @Test
     fun a4kImaxThisTvCantPlayOrThatBufferedHereDoesNotJump() {
         val other = src("other", 2160, "Film.Name.2021.2160p.WEB-DL", mbps = 25.0)
-        // Dolby Vision 7: "may not play here".
+        // Dolby Vision 7 on a Stick that can't play it as HDR10: "may not play here".
+        val noRoute = input(tu7000.copy(dv7AsHdr10 = false))
         val p7 = src("p7", 2160, "Film.Name.2021.IMAX.2160p.DV", mbps = 30.0, hdr = setOf(Hdr.DOLBY_VISION, Hdr.HDR10), dvProfile = 7)
-        assertEquals(keys(plain(listOf(other, p7))), keys(listOf(other, p7)))
-        assertEquals(TvFit.LIKELY_NOT, SourceRank.rank(listOf(p7), input()).single().fit)
+        assertEquals(keys(plain(listOf(other, p7)), noRoute), keys(listOf(other, p7), noRoute))
+        assertEquals(TvFit.LIKELY_NOT, SourceRank.rank(listOf(p7), noRoute).single().fit)
         // A 1080p TV: no 4K source plays well, IMAX or not.
         val imax = src("imax", 2160, "Film.Name.2021.IMAX.2160p", mbps = 12.0, hash = H1)
         val hd = src("hd", 1080, "Film.Name.2021.1080p.BluRay", mbps = 12.0)
@@ -382,8 +384,8 @@ class TorzDebridImaxTest {
         val c = src("c", 2160, "Film.Name.2021.Open.Matte.2160p.WEB-DL", mbps = 30.0)
         val other = src("other", 2160, "Film.Name.2021.2160p.BluRay.REMUX", mbps = 60.0, origin = "REMUX")
         val ranked = keys(listOf(other, a, b, c))
-        assertEquals(keys(plain(listOf(a, b, c))), ranked.take(3))
-        assertEquals("other", ranked.last())
+        assertEquals(keys(plain(listOf(a, b))), ranked.take(2))
+        assertEquals(keys(plain(listOf(other, c))), ranked.drop(2))
         val notCached = src("nc", 2160, "Film.Name.2021.IMAX.2160p", mbps = 40.0, ready = Readiness.NOT_READY)
         assertEquals("other", SourceRank.best(SourceRank.rank(listOf(other, notCached), input()))?.key)
     }

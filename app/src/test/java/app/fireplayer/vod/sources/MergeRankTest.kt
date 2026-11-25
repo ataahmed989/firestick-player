@@ -117,18 +117,23 @@ class MergeRankTest {
     )
 
     @Test
-    fun tu7000PrefersHdr10OverDolbyVisionOnlyAndPutsProfile7Last() {
+    fun tu7000PrefersHdr10OverDolbyVisionOnlyAndPlaysProfile7AsHdr10() {
         val dvOnly = source("dvonly", 2160, setOf(Hdr.DOLBY_VISION), mbps = 30.0)
         val dvP7 = source("p7", 2160, setOf(Hdr.DOLBY_VISION, Hdr.HDR10), mbps = 60.0, dvProfile = 7, origin = "REMUX")
         val hdr10 = source("hdr10", 2160, setOf(Hdr.HDR10), mbps = 25.0)
         val dvBase = source("dvbase", 2160, setOf(Hdr.DOLBY_VISION, Hdr.HDR10), mbps = 26.0)
         val ranked = SourceRank.rank(listOf(dvOnly, dvP7, hdr10, dvBase), input())
+        // Profile 7 plays as its HDR10 base layer on this Stick: the remux, with the most picture, is the best.
+        assertEquals("p7", ranked.first().key)
+        assertNull(ranked.first().warning)
         // Dolby Vision with an HDR10 base plays as HDR10 here: the two are equals.
-        assertEquals(setOf("dvbase", "hdr10"), ranked.take(2).map { it.key }.toSet())
+        assertEquals(setOf("dvbase", "hdr10"), ranked.drop(1).take(2).map { it.key }.toSet())
         assertEquals(TvFit.LIKELY_NOT, ranked.first { it.key == "dvonly" }.fit)
         assertEquals("Needs a Dolby Vision TV", ranked.first { it.key == "dvonly" }.warning)
-        assertEquals("Dolby Vision 7: may not play here", ranked.first { it.key == "p7" }.warning)
-        assertTrue(SourceRank.best(ranked)?.key in setOf("dvbase", "hdr10"))
+        // A TV with no way to play profile 7 as HDR10: still "may not play here", and last.
+        val noRoute = SourceRank.rank(listOf(dvOnly, dvP7, hdr10, dvBase), input(tu7000.copy(dv7AsHdr10 = false)))
+        assertEquals("Dolby Vision 7: may not play here", noRoute.first { it.key == "p7" }.warning)
+        assertTrue(SourceRank.best(noRoute)?.key in setOf("dvbase", "hdr10"))
     }
 
     @Test
@@ -148,7 +153,7 @@ class MergeRankTest {
         val dvTv = TvPlan(true, listOf(setOf(Hdr.DOLBY_VISION), setOf(Hdr.HDR10, Hdr.HDR10_PLUS)), 2160, emptySet())
         assertEquals(SourceRank.hdrRank(hdr10.facts, dvTv), SourceRank.hdrRank(SourceRank.asPlayedHere(p7.facts, asBase), dvTv))
         // Never played here, or played as Dolby Vision: as the add-ons have it.
-        assertEquals("Dolby Vision 7: may not play here", SourceRank.rank(listOf(p7), input()).single().warning)
+        assertEquals("Dolby Vision 7: may not play here", SourceRank.rank(listOf(p7), input(tu7000.copy(dv7AsHdr10 = false))).single().warning)
         val asDv = Measured(MediaSpec(videoCodec = "HEVC", hdr = "Dolby Vision"), null, null)
         assertEquals(p7.facts, SourceRank.asPlayedHere(p7.facts, asDv))
         assertEquals(hdr10.facts, SourceRank.asPlayedHere(hdr10.facts, asBase))

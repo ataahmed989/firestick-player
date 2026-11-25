@@ -192,6 +192,7 @@ class SettingsPanels(
                 passthroughRow(this)
                 whenBufferingRow(this)
                 fasterDownloadsRow(this)
+                preferredBitrateRow(this)
                 // Live TV's own setting, here too (user): the same row and saved value as in the Live TV window.
                 liveBufferRow(this, activity)
                 skipIntroSection(this)
@@ -529,6 +530,20 @@ class SettingsPanels(
             (app.fireplayer.vod.Sources.get(activity) as? app.fireplayer.vod.sources.DefaultSourcesRepository)?.rerank()
         }
         cardNote(FASTER_DOWNLOADS_NOTE)
+    }
+
+    /**
+     * The data rate Best for this TV leans toward among copies of the same picture ([Prefs.preferredMbps]), in steps of
+     * [app.fireplayer.vod.sources.SourceRank.PREFERRED_STEP]; the lists in memory rank again at each step.
+     */
+    private fun preferredBitrateRow(panel: SidePanel): Unit = with(panel) {
+        stepper("Preferred bitrate", { "${prefs.preferredMbps} Mb/s" }) { dir ->
+            val before = prefs.preferredMbps
+            prefs.preferredMbps = before + dir * app.fireplayer.vod.sources.SourceRank.PREFERRED_STEP
+            if (prefs.preferredMbps != before) {
+                (app.fireplayer.vod.Sources.get(activity) as? app.fireplayer.vod.sources.DefaultSourcesRepository)?.rerank()
+            }
+        }
     }
 
     /**

@@ -52,6 +52,9 @@ interface LibraryStore {
 
     /** The release a film or episode last played from (step 3). */
     fun saveRelease(r: ReleaseRow)
+
+    /** Forgets these releases ([VodLibrary.forgetReleases]). */
+    fun dropReleases(rows: List<ReleaseRow>)
 }
 
 /** A title in My List ([inList] true) or taken out of it, at [at] (ms). */
@@ -107,6 +110,7 @@ class MemoryLibraryStore : LibraryStore {
     override fun saveProgress(p: Progress) { progress["${p.title.kind.type}|${p.title.id}"] = p }
     override fun saveEpisodePosition(p: EpisodePosition) { positions[p.id] = p }
     override fun saveRelease(r: ReleaseRow) { releases["${r.kind.type}|${r.id}"] = r }
+    override fun dropReleases(rows: List<ReleaseRow>) { rows.forEach { releases.remove("${it.kind.type}|${it.id}") } }
 }
 
 /**
@@ -203,6 +207,7 @@ class VodLibrary(
         val change = record?.let { LibraryStore.Change(watched = listOf(mark), progress = listOf(it)) }
         writer.execute { runCatching { if (change == null) store.saveWatched(mark) else store.saveAll(change) } }
         changed()
+        forgetIfOut(title.kind, title.id)
     }
 
     /**
@@ -320,6 +325,7 @@ class VodLibrary(
         }
         writer.execute { runCatching { store.saveAll(change) } }
         changed()
+        forgetIfOut(Kind.SERIES, episodes.first().showId)
     }
 
     /**
@@ -378,6 +384,7 @@ class VodLibrary(
         if (entries.isEmpty()) return
         writer.execute { entries.forEach { runCatching { store.saveProgress(it) } } }
         changed()
+        entries.forEach { forgetReleases(it.title.kind, it.title.id) }
     }
 
     /**
@@ -409,6 +416,8 @@ class VodLibrary(
         val change = LibraryStore.Change(watched = listOfNotNull(mark), positions = listOfNotNull(own), progress = listOf(entry))
         writer.execute { runCatching { store.saveAll(change) } }
         changed()
+        // Watched to the end or into the credits: a film leaves Continue Watching, a show at its last episode.
+        if (mark != null) forgetIfOut(title.kind, title.id)
     }
 
     /** The release [kind]/[id] (a film, or an episode's "tt…:S:E") last played from; null when never. */
@@ -421,6 +430,27 @@ class VodLibrary(
             row.copy(at = at).also { releases[key(row.kind, row.id)] = it }
         }
         writer.execute { runCatching { store.saveRelease(entry) } }
+    }
+
+    /**
+     * Forgets the releases [kind]/[id] last played from (a show's: every episode's), so its next resume plays the
+     * ranking's pick: it left Continue Watching, or a show's episode had no copy of the kind it followed.
+     */
+    fun forgetReleases(kind: Kind, id: String) {
+        val gone = state { releasesOf(kind, id).onEach { releases.remove(key(it.kind, it.id)) } }
+        if (gone.isNotEmpty()) writer.execute { runCatching { store.dropReleases(gone) } }
+    }
+
+    /** Forgets the release [kind]/[id] (a film, or an episode's "tt…:S:E") last played from, that one only. */
+    fun forgetRelease(kind: Kind, id: String) {
+        val gone = state { releases.remove(key(kind, id)) } ?: return
+        writer.execute { runCatching { store.dropReleases(listOf(gone)) } }
+    }
+
+    /** [kind]/[id] isn't in Continue Watching (any more): its releases are forgotten. Asked only when it has some. */
+    private fun forgetIfOut(kind: Kind, id: String) {
+        if (state { releasesOf(kind, id).isEmpty() }) return
+        if (continueEntry(kind, id) == null) forgetReleases(kind, id)
     }
 
     /**
@@ -589,6 +619,10 @@ class VodLibrary(
     /** Show record [p] is about one of [episodes]. */
     private fun isAbout(p: Progress, episodes: List<Episode>): Boolean =
         p.episode?.let { r -> episodes.any { it.season == r.season && it.episode == r.episode } } == true
+
+    /** The releases kept for [kind]/[id]: a film's own, a show's episodes'. */
+    private fun releasesOf(kind: Kind, id: String): List<ReleaseRow> =
+        releases.values.filter { it.kind == kind && (it.id == id || (kind == Kind.SERIES && it.id.startsWith("$id:"))) }
 
     /** Some episode of [showId] has its own watched mark set. */
     private fun anyEpisodeMarked(showId: String): Boolean {

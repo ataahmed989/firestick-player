@@ -180,8 +180,10 @@ enum class SourceGroup(val label: String, val startsOpen: Boolean) {
     UHD("4K", true),
     FHD("1080p", true),
     LOWER("720p and lower", false),
-    /** Resolution not stated, 3D. */
-    OTHER("Other", false),
+    /** 3D (side by side, over-under), whatever its resolution. */
+    THREE_D("3D", false),
+    /** Resolution not stated. */
+    OTHER("Resolution not stated", false),
     /** CAM, TeleSync, TeleCine, screener: never picked automatically. */
     CINEMA("Cinema recordings", false),
     /** Not cached by the debrid service yet (the name stays: it is only an id). */
@@ -190,6 +192,29 @@ enum class SourceGroup(val label: String, val startsOpen: Boolean) {
 
 /** How likely a source plays well on this TV under its [TvPlan] (ranked first). */
 enum class TvFit { MEASURED_OK, LIKELY, UNKNOWN, LIKELY_NOT }
+
+/**
+ * The steps of "Best for this TV" ([app.fireplayer.vod.sources.SourceRank]), in order: each only breaks ties of the
+ * ones before. [IMAX_ALWAYS] is first only with Settings › This TV › IMAX first: always.
+ */
+enum class RankStep {
+    IMAX_ALWAYS, PLAYS, CACHED, LANGUAGE_KNOWN, ROOM, HEIGHT, HDR, RATE, KIND, DYNAMIC_HDR, IMAX, LANGUAGE, SOUND,
+    SMOOTH, SIZE, SEEDERS,
+}
+
+/**
+ * Why the Best is first: the copy it beat ([beatenKey], a row of the same list) and the [step] that decided it, with
+ * what the beaten copy lacks in plain words ([lacks]: "no HDR10+", "not cached yet"), and the HDR this TV shows of the
+ * Best ([hdr]: a Dolby Vision file played as HDR10+ on a TV without Dolby Vision is HDR10+). No beaten copy when the
+ * others differ from it only in sound, size or seeders.
+ */
+data class BestWhy(
+    val bestKey: String,
+    val hdr: Set<Hdr>,
+    val beatenKey: String? = null,
+    val step: RankStep? = null,
+    val lacks: String? = null,
+)
 
 /**
  * What the add-ons say about a file, parsed from their text (r3_sources-organize §1.3). Missing facts are null or empty,
@@ -217,6 +242,8 @@ data class SourceFacts(
     val group: String? = null,
     /** Short language codes ("en", "ru"); empty when not stated. */
     val languages: List<String> = emptyList(),
+    /** Subtitle languages the name states ("ESub": "en"); empty when not stated. */
+    val subs: List<String> = emptyList(),
     val seeders: Int? = null,
     /** The file sits in a season pack or collection. */
     val pack: Boolean = false,
@@ -258,6 +285,11 @@ data class PlaybackSource(
     /** At most one amber warning ("Dolby Vision 7: may not play here"). */
     val warning: String? = null,
     val measured: Measured? = null,
+    /**
+     * A film's copy the viewer moved in its Details: true to 4K IMAX, false to 4K, whatever its name says; null when
+     * never moved ([app.fireplayer.vod.sources.SourceRank.isImaxCopy]).
+     */
+    val imaxMove: Boolean? = null,
 ) {
     val addons: List<Addon> get() = offers.map { it.addon }.distinct()
     val bothAddons: Boolean get() = addons.size > 1
@@ -310,8 +342,14 @@ data class SourceList(
     val sources: List<PlaybackSource>,
     /** The top automatic pick, or null (none ready). Shows as "Best so far" until [complete]. */
     val best: PlaybackSource?,
-    /** The release used last time for this film or episode, when offered and different from [best]. */
+    /** The release used last time for this film or episode, when offered (it may be [best] too). */
     val lastUsed: PlaybackSource? = null,
+    /** What put [best] first and what it beat ([app.fireplayer.vod.sources.SourceRank.why]); null when not worked out. */
+    val why: BestWhy? = null,
+    /** The plan it was ranked for: what this TV shows of each copy, in the Sources window's words; null when not ranked. */
+    val plan: TvPlan? = null,
+    /** The sound languages it was ranked for ([app.fireplayer.player.CopyLanguage.wanted]: the film's own first); empty when not known. */
+    val wanted: List<String> = emptyList(),
 ) {
     /** Every add-on is final: Play goes straight to checking the link. */
     val complete: Boolean get() = states.values.all { it.final }
@@ -367,6 +405,12 @@ interface SourcesRepository {
 
     /** Drops every kept list (the add-ons changed, a debrid account problem). */
     fun forget()
+
+    /**
+     * The viewer moved [source], a 4K copy of the film [target], to the 4K IMAX group ([imax]) or to 4K (its Details):
+     * kept for that film's file, and its list ranks again at once.
+     */
+    fun moveImax(target: SourceTarget, source: PlaybackSource, imax: Boolean) = Unit
 }
 
 // ---- Handing a play to the player ----------------------------------------------------------------------------------
@@ -396,7 +440,7 @@ data class PlayRequest(
     val list: SourceList? = null,
     /** A row chosen in Sources, or "OK again plays the best so far"; null: the session picks. */
     val chosen: PlaybackSource? = null,
-    /** The release to play again (Resume, a Continue card): the same file first, from its add-on. */
+    /** On a resume only (Resume, a Continue card): the release to play again, that very file first, from its add-on first. */
     val preferred: LastRelease? = null,
     /** The source the previous episode played from: the next episode prefers the same kind (§6.5). */
     val like: PlaybackSource? = null,
@@ -575,6 +619,17 @@ enum class FailureKind {
     NOT_READY,
     /** This device can't decode it: another format. */
     FORMAT,
+    /**
+     * This Stick showed no picture for it (its video decoder failed, none takes its picture, or no frame came while its
+     * sound played: [app.fireplayer.player.PictureWatch]): skip it, the next one; the player remembers it for the copy.
+     */
+    NO_PICTURE,
+    /**
+     * Not the whole film or episode: it ended without really playing (a switch started it at or past its end), or a
+     * film's copy is far shorter than the film ([app.fireplayer.vod.play.PlayRules.copyEnd]), most often another video
+     * from the same torrent. Skip it, the next one; the player remembers it for the copy.
+     */
+    NOT_WHOLE,
     /** The receiver/TV refused the sound: decode on the Stick, same source. */
     AUDIO,
     /** Link expired or bound to another connection: re-ask and re-check once. */
@@ -596,7 +651,12 @@ enum class FailureKind {
 }
 
 /** A failure, by add-on when known; [detail] is already redacted, for the attempted list's Details. */
-data class Failure(val kind: FailureKind, val addon: Addon? = null, val detail: String? = null)
+data class Failure(val kind: FailureKind, val addon: Addon? = null, val detail: String? = null) {
+    companion object {
+        /** [FailureKind.NO_PICTURE]'s [detail] when none of this TV's decoders takes the copy's format. */
+        const val NO_DECODER = "no decoder for its format"
+    }
+}
 
 /** What the player does after [SourceSession.failed]. */
 sealed class Step {
@@ -674,6 +734,12 @@ interface SourceSession {
     /** A failure of [source] (stage 2, 3 or a player error): adds it to the attempted list and says what to do. */
     fun failed(source: PlaybackSource, failure: Failure): Step
 
+    /**
+     * [source], chosen by hand, turned out not to be the whole film but plays on: it isn't the copy the title goes on
+     * from (its release isn't kept, or the one kept before it is put back), and the list ranks again with its mark.
+     */
+    fun notWhole(source: PlaybackSource) = Unit
+
     /** A player error as a failure (PlaybackException code, HTTP status when the load error had one). */
     fun failureOf(errorCode: Int, httpStatus: Int?): Failure
 
@@ -690,8 +756,23 @@ interface SourceSession {
      */
     fun lighter(maxMbps: Double): PlaybackSource? = null
 
+    /**
+     * The key [source]'s file has in [list] now: rows merge as plays learn a file's exact size (the same file from two
+     * add-ons), a merged row keeping the key of the add-on that answered first. [source]'s own key when unchanged.
+     */
+    fun rowKey(source: PlaybackSource): String = source.key
+
+    /** What Next source plays now ([open] with no source): the one Picture & sound and the Sources window name. */
+    fun nextPick(): PlaybackSource? = null
+
     /** The next episode's sources, once, in the last ~4 minutes ([LookupWhy.NEXT_EPISODE]); same-kind first. */
     fun lookUpNext(next: EpisodeRef, onList: (SourceList) -> Unit): Cancel
+
+    /**
+     * Every add-on is asked now, when only one was (a Continue card's resume asks the add-on of its copy first): the
+     * viewer opened the player's Sources window. Nothing is asked again that is already in [list].
+     */
+    fun widen() = Unit
 
     /** The play is over: stops its requests. */
     fun close()
@@ -717,12 +798,19 @@ data class TvCapabilities(
     /** Sound the TV or receiver takes as it is. */
     val passthrough: Set<SoundFormat>,
     val checkedAt: Long,
+    /**
+     * Whether this Stick plays Dolby Vision profile 7 as its HDR10 base layer (its Dolby Vision decoders are
+     * single-layer, or it has none: [app.fireplayer.player.DvBaseLayer.baseLayerInstead]); false when a decoder takes
+     * profile 7 itself; null for a reading from before it was read.
+     */
+    val dv7AsHdr10: Boolean? = null,
 )
 
 /**
  * How "Best for this TV" ranks: [automatic] from [TvCapabilities], or the user's own. [hdrOrder] is in tiers, best
- * first, each tier equal (the user's Samsung: [[HDR10, HDR10_PLUS], [HLG]]; Dolby Vision profile 8 counts as its HDR10
- * base on a TV without Dolby Vision, profiles 5 and 7 last; SDR first when the TV shows no HDR).
+ * first, each tier equal (the user's Samsung: [[HDR10, HDR10_PLUS], [HLG]]; on a TV without Dolby Vision a Dolby Vision
+ * file counts as the HDR10 or HDR10+ picture inside it: profile 8 always, profile 7 when [dv7AsHdr10]; profile 5 last;
+ * SDR first when the TV shows no HDR).
  */
 data class TvPlan(
     val automatic: Boolean,
@@ -732,6 +820,13 @@ data class TvPlan(
     val sound: Set<SoundFormat>,
     /** An optional data-rate cap (Mb/s), never a file size. */
     val maxMbps: Int? = null,
+    /** [TvCapabilities.dv7AsHdr10] of the TV's reading, whatever the plan: what this Stick does with profile 7. */
+    val dv7AsHdr10: Boolean? = null,
+    /**
+     * [ThisTv.hdr10PlusReaches], whatever the plan: only then is HDR10+ preferred, and said to be what this TV shows.
+     * Off by default: on the user's Sticks HDR10+ never reached the TV from FirePlayer (it gets the HDR10 inside).
+     */
+    val hdr10PlusReaches: Boolean = false,
 )
 
 /** Settings › This TV: the TV's capabilities, Check again, Automatic or a custom plan. Main thread. */
@@ -745,6 +840,16 @@ interface ThisTv {
     fun plan(): TvPlan
     fun setPlan(plan: TvPlan)
     fun useAutomatic()
+
+    /** Settings › This TV › IMAX first: always: a 4K IMAX copy this TV plays ranks first, as before (off: a tie-break). */
+    fun imaxAlways(): Boolean = false
+
+    fun setImaxAlways(on: Boolean) = Unit
+
+    /** Settings › This TV › HDR10+ reaches this TV: off unless the TV was seen to show HDR10+ from FirePlayer. */
+    fun hdr10PlusReaches(): Boolean = false
+
+    fun setHdr10PlusReaches(on: Boolean) = Unit
 }
 
 // ---- The library: what playback records (stored on this TV; no syncing) --------------------------------------------
@@ -761,6 +866,12 @@ interface PlaybackLibrary {
     fun lastRelease(title: Title, episode: EpisodeRef?): LastRelease?
 
     fun recordRelease(title: Title, episode: EpisodeRef?, release: LastRelease)
+
+    /** Forgets the releases [title] last played from (a show: every episode's), so its next resume is the ranking's pick. */
+    fun forgetReleases(title: Title) = Unit
+
+    /** Forgets the release [title] (and [episode]) last played from, that one only (a copy that wasn't the whole film). */
+    fun forgetRelease(title: Title, episode: EpisodeRef?) = Unit
 
     /**
      * Where playback stopped, as [VodRepository.recordProgress]; also marks the film or episode watched when

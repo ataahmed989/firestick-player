@@ -43,9 +43,9 @@ object VodLaunch {
 
     /**
      * OK on a Continue Watching card: the film, or the series' episode on the card, from where it stopped, the release
-     * it played from asked from its add-on first. A card naming no episode of a series (the banner's Watch now on any
-     * poster) plays the one its show goes on with ([VodRepository.upNext]: the next after one finished, across seasons).
-     * Null when there's none.
+     * it played from asked from its add-on first (from its beginning: the ranking's pick, as any fresh start). A card
+     * naming no episode of a series (the banner's Watch now on any poster) plays the one its show goes on with
+     * ([VodRepository.upNext]: the next after one finished, across seasons). Null when there's none.
      */
     fun fromContinueCard(card: Card, repo: VodRepository, library: PlaybackLibrary?): PlayRequest? {
         val title = card.title
@@ -67,7 +67,7 @@ object VodLaunch {
             target = target,
             start = start,
             origin = PlayOrigin.CONTINUE_CARD,
-            preferred = library?.lastRelease(title, ep),
+            preferred = if (start is StartAt.At) library?.lastRelease(title, ep) else null,
         )
     }
 

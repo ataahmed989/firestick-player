@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.C
 import androidx.media3.common.Format
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.ParserException
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.extractor.Extractor
@@ -79,6 +80,9 @@ private class SeekableMkvExtractor(
     /** From the video track's DefaultDuration; 0 when the file doesn't say. */
     private var videoFrameRate = 0f
 
+    /** The video track's Dolby Vision record's base signal ([MkvHeader.Video.dvSignal]); null without one. */
+    private var dvSignal: Int? = null
+
     /** The file's own index, when it has one: where a damaged stretch is got past. */
     private var index: SeekMap? = null
     private var recovery: Recovery? = null
@@ -98,7 +102,16 @@ private class SeekableMkvExtractor(
                     override fun format(format: Format) {
                         val fps = videoFrameRate
                         val missing = type == C.TRACK_TYPE_VIDEO && format.frameRate <= 0f && fps > 0f
-                        track.format(if (missing) format.buildUpon().setFrameRate(fps).build() else format)
+                        // A Dolby Vision track's record, which Media3's Matroska reader reads only for its codecs string:
+                        // what its base layer is (8.1, 8.4, 8.2), kept on the format ([DvBaseLayer.recordSignal]).
+                        val signal = dvSignal?.takeIf {
+                            type == C.TRACK_TYPE_VIDEO && format.sampleMimeType == MimeTypes.VIDEO_DOLBY_VISION && format.customData == null
+                        }
+                        if (!missing && signal == null) return track.format(format)
+                        val b = format.buildUpon()
+                        if (missing) b.setFrameRate(fps)
+                        if (signal != null) b.setCustomData(DvBaseLayer.Signal(signal))
+                        track.format(b.build())
                     }
 
                     // A Java default method, which `by` doesn't pass on by itself.
@@ -461,8 +474,8 @@ private class SeekableMkvExtractor(
     }
 
     /**
-     * Reads the TimecodeScale (units of cluster timestamps; most files use 1 ms) and the video frame
-     * rate from the start of the file.
+     * Reads the TimecodeScale (units of cluster timestamps; most files use 1 ms), the video frame rate and its Dolby
+     * Vision record ([MkvHeader]) from the start of the file.
      */
     private fun readHeader(input: ExtractorInput) {
         val size = if (length > 0) minOf(65_536L, length).toInt() else 65_536
@@ -475,7 +488,10 @@ private class SeekableMkvExtractor(
             input.resetPeekPosition()
         }
         if (!ok) return
-        runCatching { readFrameRate(header, size) }
+        runCatching { MkvHeader.video(header, size) }.getOrNull()?.let {
+            videoFrameRate = it.frameRate
+            dvSignal = it.dvSignal
+        }
         for (i in 0 until size - 5) {
             if (header[i] == 0x2A.toByte() && header[i + 1] == 0xD7.toByte() && header[i + 2] == 0xB1.toByte()) {
                 if (vintLength(header[i + 3]) != 1) continue
@@ -489,27 +505,91 @@ private class SeekableMkvExtractor(
         }
     }
 
-    private fun readFrameRate(h: ByteArray, size: Int) {
+    private fun vintLength(first: Byte): Int = MkvHeader.vintLength(first)
+
+    companion object {
+        private const val TAG = "FirePlayerMkv"
+        /** Damaged stretches got past in one file before it counts as damaged throughout. */
+        private const val MAX_RECOVERIES = 20
+        /** Places looked at after a damaged stretch: further on (each step twice as far, from 2 s), then halving back. */
+        private const val MAX_PROBES = 32
+        private const val FIRST_STEP_US = 2_000_000L
+        private val ID0 = 0x1F.toByte()
+        private val ID1 = 0x43.toByte()
+        private val ID2 = 0xB6.toByte()
+        private val ID3 = 0x75.toByte()
+        private const val CHUNK = 256 * 1024
+        private const val TAIL = 32
+        private const val AFTER_FIRST = 8L * 1024 * 1024
+        private const val MAX_SCAN = 32L * 1024 * 1024
+        private const val MIN_RANGE = 512L * 1024
+        private const val MAX_STEPS = 12
+        /** Landing up to this far before the target is fine: the player decodes forward to it. */
+        private const val TOLERANCE_US = 2_500_000L
+        private const val BACKOFF_US = 1_500_000L
+    }
+}
+
+/**
+ * What the MKV reader takes from the start of a file (Segment › Tracks › TrackEntry), without reading anything more:
+ * the video track's frame rate (DefaultDuration) and, for Dolby Vision, its configuration record's base signal
+ * (BlockAdditionMapping with a dvcC, dvvC or dvwC BlockAddIDType: [DvBaseLayer.signalOf]). Pure.
+ */
+internal object MkvHeader {
+
+    /** [frameRate] 0 when not stated; [dvSignal] null without a record. */
+    class Video(val frameRate: Float, val dvSignal: Int?)
+
+    /**
+     * The video track in the first [size] bytes of [h]: the frame rate of the first one stating it (as before), the
+     * record of the first one; null when the bytes hold no video track.
+     */
+    fun video(h: ByteArray, size: Int): Video? {
+        var fps = 0f
+        var signal: Int? = null
+        var seen = false
         forEachElement(h, 0, size) { id, start, end ->
             if (id == ID_SEGMENT) forEachElement(h, start, end) { id2, start2, end2 ->
                 if (id2 == ID_TRACKS) forEachElement(h, start2, end2) { id3, start3, end3 ->
-                    if (id3 == ID_TRACK_ENTRY && videoFrameRate == 0f) readTrackEntry(h, start3, end3)
+                    if (id3 == ID_TRACK_ENTRY && fps == 0f) trackEntry(h, start3, end3)?.let { v ->
+                        fps = v.frameRate
+                        if (!seen) signal = v.dvSignal
+                        seen = true
+                    }
                 }
             }
         }
+        return if (seen) Video(fps, signal) else null
     }
 
-    private fun readTrackEntry(h: ByteArray, start: Int, end: Int) {
+    private fun trackEntry(h: ByteArray, start: Int, end: Int): Video? {
         var video = false
         var frameNs = 0L
+        var signal: Int? = null
         forEachElement(h, start, end) { id, s, e ->
             when (id) {
                 ID_TRACK_TYPE -> video = uint(h, s, e) == 1L
                 ID_DEFAULT_DURATION -> frameNs = uint(h, s, e)
+                ID_BLOCK_ADDITION_MAPPING -> if (signal == null) signal = dvRecord(h, s, e)
             }
         }
+        if (!video) return null
         // 8 to 250 fps; anything else is a bad value.
-        if (video && frameNs in 4_000_000L..125_000_000L) videoFrameRate = 1e9f / frameNs
+        return Video(if (frameNs in 4_000_000L..125_000_000L) 1e9f / frameNs else 0f, signal)
+    }
+
+    /** A BlockAdditionMapping's Dolby Vision record's signal; null when it holds another kind, or none. */
+    private fun dvRecord(h: ByteArray, start: Int, end: Int): Int? {
+        var type = 0L
+        var extra: ByteArray? = null
+        forEachElement(h, start, end) { id, s, e ->
+            when (id) {
+                ID_BLOCK_ADD_ID_TYPE -> type = uint(h, s, e)
+                ID_BLOCK_ADD_ID_EXTRA_DATA -> extra = h.copyOfRange(s, e)
+            }
+        }
+        if (type != DVCC && type != DVVC && type != DVWC) return null
+        return extra?.let { DvBaseLayer.signalOf(it) }
     }
 
     private fun uint(b: ByteArray, start: Int, end: Int): Long {
@@ -540,37 +620,22 @@ private class SeekableMkvExtractor(
         }
     }
 
-    private fun vintLength(first: Byte): Int {
+    fun vintLength(first: Byte): Int {
         val v = first.toInt() and 0xFF
         return if (v == 0) 0 else Integer.numberOfLeadingZeros(v) - 23
     }
 
-    companion object {
-        private const val TAG = "FirePlayerMkv"
-        /** Damaged stretches got past in one file before it counts as damaged throughout. */
-        private const val MAX_RECOVERIES = 20
-        /** Places looked at after a damaged stretch: further on (each step twice as far, from 2 s), then halving back. */
-        private const val MAX_PROBES = 32
-        private const val FIRST_STEP_US = 2_000_000L
-        private val ID0 = 0x1F.toByte()
-        private val ID1 = 0x43.toByte()
-        private val ID2 = 0xB6.toByte()
-        private val ID3 = 0x75.toByte()
-        private const val CHUNK = 256 * 1024
-        private const val TAIL = 32
-        private const val AFTER_FIRST = 8L * 1024 * 1024
-        private const val MAX_SCAN = 32L * 1024 * 1024
-        private const val MIN_RANGE = 512L * 1024
-        private const val MAX_STEPS = 12
-        /** Landing up to this far before the target is fine: the player decodes forward to it. */
-        private const val TOLERANCE_US = 2_500_000L
-        private const val BACKOFF_US = 1_500_000L
-        private const val ID_SEGMENT = 0x18538067L
-        private const val ID_TRACKS = 0x1654AE6BL
-        private const val ID_TRACK_ENTRY = 0xAEL
-        private const val ID_TRACK_TYPE = 0x83L
-        private const val ID_DEFAULT_DURATION = 0x23E383L
-    }
+    private const val ID_SEGMENT = 0x18538067L
+    private const val ID_TRACKS = 0x1654AE6BL
+    private const val ID_TRACK_ENTRY = 0xAEL
+    private const val ID_TRACK_TYPE = 0x83L
+    private const val ID_DEFAULT_DURATION = 0x23E383L
+    private const val ID_BLOCK_ADDITION_MAPPING = 0x41E4L
+    private const val ID_BLOCK_ADD_ID_TYPE = 0x41E7L
+    private const val ID_BLOCK_ADD_ID_EXTRA_DATA = 0x41EDL
+    private const val DVCC = 0x64766343L
+    private const val DVVC = 0x64767643L
+    private const val DVWC = 0x64767743L
 }
 
 /**
