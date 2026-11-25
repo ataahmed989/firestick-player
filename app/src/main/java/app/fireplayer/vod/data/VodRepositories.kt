@@ -11,6 +11,7 @@ import app.fireplayer.data.Settings
 import app.fireplayer.subs.Tmdb
 import app.fireplayer.vod.Page
 import app.fireplayer.vod.VodRepository
+import app.fireplayer.vod.play.KeptTracks
 import java.io.File
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
@@ -47,6 +48,8 @@ object VodRepositories {
             net = Executors.newFixedThreadPool(3, threads("FirePlayerVodNet", Process.THREAD_PRIORITY_BACKGROUND)),
             lookups = Executors.newFixedThreadPool(3, threads("FirePlayerVodLookups", Process.THREAD_PRIORITY_BACKGROUND)),
             rowStore = PrefsRowStore(Settings.of(app)),
+            // The sound and subtitles last chosen for a film or episode go when its copy left does.
+            keptWithCopy = KeptTracks.of(app),
         ).also { repo ->
             // Glass Home's Continue Watching row shows the library's too (history/ContinueProvider): it's told of a change.
             repo.addLibraryListener {

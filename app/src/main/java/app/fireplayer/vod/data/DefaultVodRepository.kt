@@ -58,6 +58,8 @@ class DefaultVodRepository(
     private val lookups: Executor,
     private val clock: () -> Long = System::currentTimeMillis,
     rowStore: RowLayoutStore = RowLayoutStore.Memory(),
+    /** Kept for each film or episode beside the copy it was left on, and forgotten with it ([VodLibrary]). */
+    keptWithCopy: KeptWithCopy? = null,
 ) : VodRepository {
 
     private val listeners = CopyOnWriteArrayList<() -> Unit>()
@@ -72,7 +74,7 @@ class DefaultVodRepository(
      * The library; also for later steps (playback records where it stopped with [VodLibrary.recordProgress]). A show's
      * place in Continue Watching follows its stored episodes ([showEpisodes]).
      */
-    val library = VodLibrary(libraryStore, clock, io, { showEpisodes(it) }) { libraryChanged() }
+    val library = VodLibrary(libraryStore, clock, io, { showEpisodes(it) }, keptWithCopy) { libraryChanged() }
 
     /** Settings › Rows: each page's rows as the viewer set them (main thread). */
     val rowSettings = RowSettings(rowStore) { newYear(it) }
