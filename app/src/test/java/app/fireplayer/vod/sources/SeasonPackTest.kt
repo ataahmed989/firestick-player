@@ -93,12 +93,15 @@ class SeasonPackTest {
             })
         }
 
-    /** As StremThru Torz writes one: the file's own size (videoSize) and its index in the link. */
-    private fun torz(hash: String, idx: Int, file: String, videoSize: Long, origin: String = "WEBRip") = JSONObject().apply {
+    /**
+     * As StremThru Torz writes one: the file's own size (videoSize) and its index in the link; [group]: its binge group
+     * ("torz:<hash>" as StremThru writes it; most fixtures leave it out).
+     */
+    private fun torz(hash: String, idx: Int, file: String, videoSize: Long, origin: String = "WEBRip", group: String? = null) = JSONObject().apply {
         put("name", "⚡️ [RD] Torz\n2160p")
         put("description", "💿 $origin 🎞️ HEVC\n📺 DV HDR 🎧 DDP | 5.1\n💾 1.01 GB 📦 10.2 GB 👤 12\n📄 $file")
         put("url", "https://torz.invalid/stremio/torz/FAKECONFIG_TORZ/_/strem/tt0000077/rd/$hash/$idx/$file")
-        put("behaviorHints", JSONObject().put("videoSize", videoSize).put("filename", file))
+        put("behaviorHints", JSONObject().put("videoSize", videoSize).put("filename", file).apply { group?.let { put("bingeGroup", it) } })
     }
 
     private fun tioAnswer() = answer(
@@ -259,8 +262,13 @@ class SeasonPackTest {
         val mf = StreamParser.parse(Addon.MEDIAFUSION, answer(SourceFixtures.mediaFusion(ha, fileIdx = null, videoSize = 31_420_000_000L)), 120).streams
         val tio = StreamParser.parse(Addon.TORRENTIO, answer(torrentio(ha, idx = 2, size = "12.00 GB")), 120).streams
         assertEquals(2, SourceMerge.merge(listOf(mf, tio), 120).size)
-        // An episode's: one.
-        assertEquals(1, SourceMerge.merge(listOf(mf, tio), 120, episode = true).size)
+        // An episode's: one only when what the two say of the file agrees, never by the hash alone. Here their file names
+        // differ ("-MFGRP" against "-FLUX") and only MediaFusion's size is to the byte: two rows. The same name: one.
+        assertEquals(2, SourceMerge.merge(listOf(mf, tio), 120, episode = true).size)
+        val named = StreamParser.parse(Addon.TORRENTIO, answer(torrentio(ha, idx = 2, size = "12.00 GB",
+            name = "Film.Name.2021.2160p.WEB-DL.DDP5.1.Atmos.DV.HDR.H.265-MFGRP.$ha")), 120).streams
+        assertEquals(1, SourceMerge.merge(listOf(mf, named), 120, episode = true).size)
+        assertEquals(2, SourceMerge.merge(listOf(mf, named), 120).size)
     }
 
     @Test
@@ -488,9 +496,16 @@ class SeasonPackTest {
             facts = amen.facts.copy(sizeBytes = null, sizeExact = false))
         val torzOnly = amen.copy(key = "torz", offers = amen.offers.filter { it.addon == Addon.TORZ }, release = ReleaseKey(ha, 5),
             facts = amen.facts.copy(sizeBytes = 1L, sizeExact = true))
-        // The same pack, one side without the index: the same episode file.
+        // The same pack, one side without the index: the same episode file, as their file names say.
         assertTrue(FileSet.of(mfOnly, episode = true).holds(torzOnly))
         assertTrue(FileSet.of(torzOnly, episode = true).holds(mfOnly))
+        // The hash alone says nothing: MediaFusion's file named as the pack's E7 isn't Torz's E6, nor one it names none.
+        val misnamed = mfOnly.copy(offers = mfOnly.offers.map { it.copy(filename = amenFileE7) })
+        assertFalse(FileSet.of(misnamed, episode = true).holds(torzOnly))
+        assertFalse(FileSet.of(torzOnly, episode = true).holds(misnamed))
+        val unnamed = mfOnly.copy(offers = mfOnly.offers.map { it.copy(filename = null) })
+        assertFalse(FileSet.of(unnamed, episode = true).holds(torzOnly))
+        assertFalse(FileSet.of(torzOnly, episode = true).holds(unnamed))
         // Not for a film (a collection's hash holds several films).
         assertFalse(FileSet.of(mfOnly, episode = false).holds(torzOnly))
         // Its size to the byte, under another hash.
@@ -828,5 +843,406 @@ class SeasonPackTest {
         assertNull(s3.resumeMiss())
         // Never a link in it.
         assertFalse(s2.resumeMiss()!!.contains("invalid"))
+    }
+
+    // ---- One row only by what the add-ons say of the file, never by the info hash alone ----
+
+    private val amenFileE8 = amenFile.replace("S01E06", "S01E08")
+
+    /**
+     * MediaFusion's offer for [episode] in a pack it numbers differently: its link names the season and episode, and the
+     * file it opens for them is [file] (its filename says so), not the one Torz's index names.
+     */
+    private fun mfOther(file: String = amenFileE7, episode: EpisodeRef = e6) =
+        mfPack(ha, file, 10_200_000_000L, "10.2 GB", "WEBRip", episode)
+
+    /** [json] without the file's name (behaviorHints.filename). */
+    private fun noName(json: JSONObject) = JSONObject(json.toString()).apply { getJSONObject("behaviorHints").remove("filename") }
+
+    private fun PlaybackSource.onlyFrom(addon: Addon) = addons == listOf(addon)
+
+    @Test
+    fun aPackMediaFusionNumbersDifferentlyStaysTwoRowsEachPlayingItsOwnLink() {
+        val mf = parsed(Addon.MEDIAFUSION, answer(mfOther()))
+        val tz = parsed(Addon.TORZ, answer(torz(ha, 5, amenFile, amenBytes)))
+        for (order in listOf(listOf(mf, tz), listOf(tz, mf))) {
+            val rows = SourceMerge.merge(order, 28, episode = true)
+            assertEquals(2, rows.size)
+            val mfRow = rows.single { it.onlyFrom(Addon.MEDIAFUSION) }
+            val tzRow = rows.single { it.onlyFrom(Addon.TORZ) }
+            // Each offers its own add-on's file through that add-on's own link: MediaFusion's season and episode, Torz's index.
+            assertEquals(ReleaseKey(ha, null), mfRow.offers.single().release)
+            assertTrue(mfRow.offers.single().link.reveal().contains("/$ha/1/6/"))
+            assertEquals(ReleaseKey(ha, 5), tzRow.offers.single().release)
+            assertTrue(tzRow.offers.single().link.reveal().contains("/rd/$ha/5/"))
+            assertEquals(amenBytes, tzRow.offers.single().size)
+            assertNull(mfRow.offers.single().size)
+            // Neither is the other's file where a play looks (Next source, skips, what was tried).
+            assertFalse(FileSet.of(mfRow, episode = true).holds(tzRow))
+            assertFalse(FileSet.of(tzRow, episode = true).holds(mfRow))
+        }
+        // What this TV kept of MediaFusion's file (no picture, its own size) is its row's alone.
+        val noPicture = Measured(MediaSpec(sizeBytes = amenE7Bytes), CopyHealth(watchedMs = 1_000, noPicture = 1, at = now), now)
+        val kept = mapOf(ReleaseKey(ha, null).measuredKey(e6) to noPicture)
+        val rows = SourceRank.rank(SourceMerge.merge(listOf(mf, tz), 28, episode = true) { kept[it.measuredKey(e6)]?.spec?.sizeBytes },
+            input({ kept[it] }))
+        assertEquals(2, rows.size)
+        assertEquals(TvFit.LIKELY_NOT, rows.single { it.onlyFrom(Addon.MEDIAFUSION) }.fit)
+        val tzRow = rows.single { it.onlyFrom(Addon.TORZ) }
+        assertNull(tzRow.measured)
+        assertNotEquals(TvFit.LIKELY_NOT, tzRow.fit)
+        assertEquals(amenBytes, tzRow.facts.sizeBytes)
+    }
+
+    @Test
+    fun anAlignedPackIsOneRowByItsFileNamesEachOfferKeepingItsOwnLink() {
+        val mf = parsed(Addon.MEDIAFUSION, answer(mfPack(ha, amenFile, 10_200_000_000L, "10.2 GB", "WEBRip")))
+        val tz = parsed(Addon.TORZ, answer(torz(ha, 5, amenFile, amenBytes)))
+        for (order in listOf(listOf(mf, tz), listOf(tz, mf))) {
+            val row = SourceMerge.merge(order, 28, episode = true).single()
+            assertEquals(setOf(Addon.MEDIAFUSION, Addon.TORZ), row.addons.toSet())
+            val mfOffer = row.offers.single { it.addon == Addon.MEDIAFUSION }
+            val tzOffer = row.offers.single { it.addon == Addon.TORZ }
+            assertEquals(ReleaseKey(ha, null), mfOffer.release)
+            assertTrue(mfOffer.link.reveal().contains("/$ha/1/6/"))
+            assertEquals(ReleaseKey(ha, 5), tzOffer.release)
+            assertTrue(tzOffer.link.reveal().contains("/rd/$ha/5/"))
+            assertEquals(amenBytes, row.facts.sizeBytes)
+        }
+    }
+
+    @Test
+    fun anAlignedPackIsOneRowByItsSizeToTheByteAlone() {
+        val tz = parsed(Addon.TORZ, answer(torz(ha, 5, amenFile, amenBytes)))
+        // MediaFusion names no file, but gives the file's size to the byte ("1.01 GB / 10.2 GB" and its videoSize).
+        val sized = parsed(Addon.MEDIAFUSION, answer(noName(mfPack(ha, amenFile, amenBytes, "1.01 GB / 10.2 GB", "WEBRip"))))
+        assertNull(sized.single().offer.filename)
+        assertTrue(sized.single().exactSize)
+        assertEquals(1, SourceMerge.merge(listOf(sized, tz), 28, episode = true).size)
+        // Only its pack's size, and no name: nothing tells, two rows...
+        val bare = parsed(Addon.MEDIAFUSION, answer(noName(mfPack(ha, amenFile, 10_200_000_000L, "10.2 GB", "WEBRip"))))
+        assertEquals(2, SourceMerge.merge(listOf(bare, tz), 28, episode = true).size)
+        // ...until its file plays here and measures Torz's size to the byte: one.
+        val mfKey = ReleaseKey(ha, null).measuredKey(e6)
+        val same = mapOf(mfKey to amenBytes)
+        val one = SourceMerge.merge(listOf(bare, tz), 28, episode = true) { same[it.measuredKey(e6)] }.single()
+        assertEquals(setOf(Addon.MEDIAFUSION, Addon.TORZ), one.addons.toSet())
+        // Another size: another file.
+        val other = mapOf(mfKey to 1_300_000_000L)
+        assertEquals(2, SourceMerge.merge(listOf(bare, tz), 28, episode = true) { other[it.measuredKey(e6)] }.size)
+        // Sizes to the byte decide before names: the same name of another size is another file.
+        val named = parsed(Addon.MEDIAFUSION, answer(mfPack(ha, amenFile, 10_200_000_000L, "10.2 GB", "WEBRip")))
+        assertEquals(2, SourceMerge.merge(listOf(named, tz), 28, episode = true) { other[it.measuredKey(e6)] }.size)
+    }
+
+    @Test
+    fun twoIndexesOfOneTorrentAreNeverOneRow() {
+        // Torrentio's index 5 and Torz's index 6 of one pack, of one name and nearly one size: two files.
+        val tio = parsed(Addon.TORRENTIO, answer(torrentio(ha, idx = 5, quality = "4k DV | HDR",
+            name = amenFile.removeSuffix(".mkv"), size = "1.01 GB")))
+        val tz = parsed(Addon.TORZ, answer(torz(ha, 6, amenFile, amenBytes)))
+        assertEquals(tio.single().sameName, tz.single().sameName)
+        assertEquals(2, SourceMerge.merge(listOf(tio, tz), 28, episode = true).size)
+        assertEquals(2, SourceMerge.merge(listOf(tio, tz), 28, episode = false).size)
+        // Not by the size to the byte either (Torrentio's file measured here at Torz's size).
+        val rows = SourceMerge.merge(listOf(tio, tz), 28, episode = true) { if (it == ReleaseKey(ha, 5)) amenBytes else null }
+        assertEquals(2, rows.size)
+        val five = rows.single { it.release == ReleaseKey(ha, 5) }
+        val six = rows.single { it.release == ReleaseKey(ha, 6) }
+        assertEquals(FileSet.exactSize(five), FileSet.exactSize(six))
+        assertFalse(FileSet.of(five, episode = true).holds(six))
+        assertFalse(FileSet.of(six, episode = true).holds(five))
+    }
+
+    @Test
+    fun aMeasurementThatTellsTheTwoApartPartsTheRowAndTheyShareNothing() {
+        // One row by their names (MediaFusion's pack offer and Torz's index 5)...
+        assertEquals(1, ranked().count { it.holds(ha) })
+        // ...until MediaFusion's file played here measured another size than Torz's to the byte, and showed no picture.
+        val other = 1_300_000_000L
+        val played = Measured(MediaSpec(sizeBytes = other, overallBps = 6_190_000), CopyHealth(watchedMs = 1_000, noPicture = 1, at = now), now)
+        val rows = ranked(mapOf(ReleaseKey(ha, null).measuredKey(e6) to played)).filter { it.holds(ha) }
+        assertEquals(2, rows.size)
+        val mf = rows.single { it.onlyFrom(Addon.MEDIAFUSION) }
+        val tz = rows.single { Addon.TORZ in it.addons }
+        // Its size, rate and health are MediaFusion's file's alone.
+        assertEquals(played, mf.measured)
+        assertEquals(other, mf.facts.sizeBytes)
+        assertEquals(TvFit.LIKELY_NOT, mf.fit)
+        assertNull(tz.measured)
+        assertEquals(amenBytes, tz.facts.sizeBytes)
+        assertEquals(5.2, SourceRank.asPlayedHere(tz.facts, tz.measured).avgMbps!!, 0.1)
+        assertNotEquals(TvFit.LIKELY_NOT, tz.fit)
+        assertFalse(FileSet.of(mf, episode = true).holds(tz))
+        assertFalse(FileSet.of(tz, episode = true).holds(mf))
+    }
+
+    @Test
+    fun aRowToldApartWhileItPlaysLeavesTheOtherAddonsFileFree() {
+        answerOf[Addon.TORRENTIO] = { answer() }
+        answerOf[Addon.TORZ] = { answer(torz(ha, 5, amenFile, amenBytes)) }
+        list()
+        // MediaFusion asked again, so Torz answered first: the one row keeps Torz's key.
+        engine.dropAnswer(ep6, Addon.MEDIAFUSION)
+        answerOf[Addon.MEDIAFUSION] = { answer(mfPack(ha, amenFile, 10_200_000_000L, "10.2 GB", "WEBRip")) }
+        val l = list()
+        val row = l.sources.single()
+        assertEquals(setOf(Addon.MEDIAFUSION, Addon.TORZ), row.addons.toSet())
+        assertEquals(ReleaseKey(ha, 5).storeKey, row.key)
+        val session = engine.session(PlayRequest(ep6, StartAt.Beginning, PlayOrigin.SOURCES_PANEL, list = l, chosen = row))
+        val ready = open(session).last() as Opened.Ready
+        assertEquals(Addon.MEDIAFUSION, ready.offer.addon)
+        session.started(ready.source, ready.offer)
+        assertNull(session.nextPick())
+        // MediaFusion's file measured here at another size than Torz's: the row parts on the next rank.
+        kept[ReleaseKey(ha, null).measuredKey(e6)] = Measured(MediaSpec(sizeBytes = 1_300_000_000L, overallBps = 6_190_000),
+            CopyHealth(watchedMs = 60_000, at = now), now)
+        engine.rerank(ep6)
+        loop.advance()
+        val parted = session.list!!
+        assertEquals(2, parted.sources.size)
+        val mf = parted.sources.single { it.onlyFrom(Addon.MEDIAFUSION) }
+        val tz = parted.sources.single { it.onlyFrom(Addon.TORZ) }
+        // Torz's row (under the key the row played had) is another file: not the one playing, nor one tried.
+        assertEquals(ready.source.key, tz.key)
+        assertEquals(mf.key, session.rowKey(ready.source))
+        assertEquals(tz.key, session.nextPick()?.key)
+        val view = SourcesModel.view(parted, session.rowKey(ready.source), session.attempts, next = session::nextPick)
+        assertEquals(mf.key, view.playing?.key)
+        assertEquals(tz.key, view.next?.key)
+        // MediaFusion's file shows no picture: Torz's file is not skipped with it, and plays through its own link and index.
+        assertEquals(Step.TryNext, session.failed(ready.source, Failure(FailureKind.NO_PICTURE)))
+        val next = open(session, why = OpenWhy.FAILED).last() as Opened.Ready
+        assertEquals(tz.key, next.source.key)
+        assertEquals(Addon.TORZ, next.offer.addon)
+        assertEquals(ReleaseKey(ha, 5), next.offer.release)
+        assertTrue(next.offer.link.reveal().contains("/rd/$ha/5/"))
+    }
+
+    @Test
+    fun noPictureFromMediaFusionsFileNeverSkipsTorzsOtherFileOfThePack() {
+        answerOf[Addon.TORRENTIO] = { answer() }
+        answerOf[Addon.MEDIAFUSION] = { answer(mfOther()) }
+        answerOf[Addon.TORZ] = { answer(torz(ha, 5, amenFile, amenBytes)) }
+        val l = list()
+        assertEquals(2, l.sources.size)
+        val mf = l.sources.single { it.onlyFrom(Addon.MEDIAFUSION) }
+        val tz = l.sources.single { it.onlyFrom(Addon.TORZ) }
+        val session = engine.session(PlayRequest(ep6, StartAt.Beginning, PlayOrigin.SOURCES_PANEL, list = l, chosen = mf))
+        val ready = open(session).last() as Opened.Ready
+        assertEquals(Addon.MEDIAFUSION, ready.offer.addon)
+        assertTrue(ready.offer.link.reveal().contains("/$ha/1/6/"))
+        assertEquals(Step.TryNext, session.failed(ready.source, Failure(FailureKind.NO_PICTURE)))
+        val next = open(session, why = OpenWhy.FAILED).last() as Opened.Ready
+        assertEquals(tz.key, next.source.key)
+        assertEquals(ReleaseKey(ha, 5), next.offer.release)
+        assertTrue(next.offer.link.reveal().contains("/rd/$ha/5/"))
+        // Nor does what this TV keeps of it: MediaFusion's row is set aside, Torz's isn't.
+        kept[ReleaseKey(ha, null).measuredKey(e6)] = Measured(null, CopyHealth(watchedMs = 1_000, noPicture = 1, at = now), now)
+        engine.rerank(ep6)
+        loop.advance()
+        val after = engine.cached(ep6)!!.sources
+        assertTrue(after.single { it.onlyFrom(Addon.MEDIAFUSION) }.measured?.health?.setAside == true)
+        assertNull(after.single { it.onlyFrom(Addon.TORZ) }.measured)
+    }
+
+    @Test
+    fun theNextEpisodeFromAPackPlaysItsOwnFileThroughEachAddonsOwnLink() {
+        answerOf[Addon.TORRENTIO] = { t -> if (t.episode == e7) answer() else tioAnswer() }
+        // E6 played from the Amen row (MediaFusion's and Torz's offers: one file by its name); what this TV kept of E6's
+        // files never applies to E7's.
+        val (_, played) = amenPlaying()
+        // As the player hands it on: the copy playing with the offer it plays from ([SourcePlayback.nextRequest]).
+        val like = played.source.copy(offers = listOf(played.offer))
+        val sick = Measured(null, CopyHealth(watchedMs = 1_000, noPicture = 1, at = now), now)
+        kept[ReleaseKey(ha, null).measuredKey(e6)] = sick
+        kept[ReleaseKey(ha, 5).storeKey] = sick
+        // Play next episode: the same kind (MediaFusion's binge group), E7's own file.
+        val next = engine.session(PlayRequest(ep7, StartAt.Beginning, PlayOrigin.NEXT_EPISODE, like = like))
+        val ready = open(next).last() as Opened.Ready
+        assertEquals(setOf(Addon.MEDIAFUSION, Addon.TORZ), ready.source.addons.toSet())
+        assertTrue(ready.source.offers.none { it.release == ReleaseKey(ha, 5) })
+        assertNull(ready.source.measured)
+        assertEquals(Addon.MEDIAFUSION, ready.offer.addon)
+        assertTrue(ready.offer.link.reveal().contains("/$ha/1/7/"))
+        assertTrue(ready.source.offers.single { it.addon == Addon.TORZ }.link.reveal().contains("/rd/$ha/6/"))
+        // Resumed from the Episodes sheet on the file E7 played from (Torz's index 6): that one, from its own link.
+        val resumed = engine.session(PlayRequest(ep7, StartAt.At(91_000), PlayOrigin.NEXT_EPISODE,
+            preferred = LastRelease(Addon.TORZ, ReleaseKey(ha, 6), 1L), like = like))
+        val again = open(resumed).last() as Opened.Ready
+        assertEquals(ReleaseKey(ha, 6), again.offer.release)
+        assertTrue(again.offer.link.reveal().contains("/rd/$ha/6/"))
+        // MediaFusion's file for E7 is the pack's E8 (it numbers it differently): two rows, so the binge group pulls
+        // MediaFusion's own E7 link alone, never with Torz's E7 file in its row (nor Torz's link with MediaFusion's file).
+        answerOf[Addon.MEDIAFUSION] = { t -> if (t.episode == e7) answer(mfOther(amenFileE8, e7)) else mfAnswer() }
+        engine.forget()
+        loop.advance()
+        val other = engine.session(PlayRequest(ep7, StartAt.Beginning, PlayOrigin.NEXT_EPISODE, like = like))
+        val pick = open(other).last() as Opened.Ready
+        val rows = other.list!!.sources
+        assertEquals(2, rows.size)
+        assertEquals(listOf(ReleaseKey(ha, 6)), rows.single { it.onlyFrom(Addon.TORZ) }.offers.map { it.release })
+        assertEquals(listOf(ReleaseKey(ha, null)), rows.single { it.onlyFrom(Addon.MEDIAFUSION) }.offers.map { it.release })
+        assertEquals(1, pick.source.offers.size)
+        // E6 played from MediaFusion's offer: E7 from MediaFusion's too, as when its row was MediaFusion's alone.
+        assertEquals(Addon.MEDIAFUSION, pick.offer.addon)
+        assertTrue(pick.offer.link.reveal().contains("/$ha/1/7/"))
+    }
+
+    @Test
+    fun theNextEpisodeFollowsTheAddonItsCopyPlayedFromWhenThePacksRowsPart() {
+        // StremThru Torz gives each torrent its own binge group ("torz:<hash>"); MediaFusion numbers E7 as the pack's E8
+        // file, so E7's two rows of the pack part. E6 played from the Amen row of both add-ons, from MediaFusion's offer.
+        answerOf[Addon.TORRENTIO] = { t -> if (t.episode == e7) answer() else tioAnswer() }
+        answerOf[Addon.MEDIAFUSION] = { t -> if (t.episode == e7) answer(mfOther(amenFileE8, e7)) else mfAnswer() }
+        answerOf[Addon.TORZ] = { t ->
+            if (t.episode == e7) answer(torz(ha, 6, amenFileE7, amenE7Bytes, group = "torz:$ha"))
+            else answer(torz(ha, 5, amenFile, amenBytes, group = "torz:$ha"), torz(hg, 5, g66File, g66Bytes, "WEB-DL", "torz:$hg"))
+        }
+        val (_, played) = amenPlaying()
+        assertEquals(setOf(Addon.MEDIAFUSION, Addon.TORZ), played.source.addons.toSet())
+        // As the player hands it on: the copy playing with the offer it plays from. E7 from MediaFusion's own link.
+        val viaMf = engine.session(PlayRequest(ep7, StartAt.Beginning, PlayOrigin.NEXT_EPISODE,
+            like = played.source.copy(offers = listOf(played.offer))))
+        val mf = open(viaMf).last() as Opened.Ready
+        assertEquals(2, viaMf.list!!.sources.size)
+        assertEquals(Addon.MEDIAFUSION, mf.offer.addon)
+        assertEquals(ReleaseKey(ha, null), mf.offer.release)
+        assertTrue(mf.offer.link.reveal().contains("/$ha/1/7/"))
+        // Had E6 played from Torz's offer of the row: E7 from Torz's, its own index.
+        val tzOffer = played.source.offers.single { it.addon == Addon.TORZ }
+        val viaTorz = engine.session(PlayRequest(ep7, StartAt.Beginning, PlayOrigin.NEXT_EPISODE,
+            like = played.source.copy(offers = listOf(tzOffer))))
+        val tz = open(viaTorz).last() as Opened.Ready
+        assertEquals(Addon.TORZ, tz.offer.addon)
+        assertEquals(ReleaseKey(ha, 6), tz.offer.release)
+        assertTrue(tz.offer.link.reveal().contains("/rd/$ha/6/"))
+    }
+
+    // ---- An expired link: the same file again, by what it is ----
+
+    /**
+     * Torz answered first, so the Amen row of both add-ons is keyed by Torz's file, and plays from MediaFusion's offer;
+     * then MediaFusion's file measured here at another size than Torz's, and the row parted: Torz's row keeps the key.
+     * The session, the copy playing, and the two rows.
+     */
+    private fun partedWhilePlaying(): Pair<Pair<SourceSession, Opened.Ready>, Pair<PlaybackSource, PlaybackSource>> {
+        answerOf[Addon.TORRENTIO] = { answer() }
+        answerOf[Addon.TORZ] = { answer(torz(ha, 5, amenFile, amenBytes)) }
+        list()
+        engine.dropAnswer(ep6, Addon.MEDIAFUSION)
+        answerOf[Addon.MEDIAFUSION] = { answer(mfPack(ha, amenFile, 10_200_000_000L, "10.2 GB", "WEBRip")) }
+        val l = list()
+        val row = l.sources.single()
+        assertEquals(ReleaseKey(ha, 5).storeKey, row.key)
+        val session = engine.session(PlayRequest(ep6, StartAt.Beginning, PlayOrigin.SOURCES_PANEL, list = l, chosen = row))
+        val ready = open(session).last() as Opened.Ready
+        assertEquals(Addon.MEDIAFUSION, ready.offer.addon)
+        session.started(ready.source, ready.offer)
+        kept[ReleaseKey(ha, null).measuredKey(e6)] = Measured(MediaSpec(sizeBytes = 1_300_000_000L, overallBps = 6_190_000),
+            CopyHealth(watchedMs = 60_000, at = now), now)
+        engine.rerank(ep6)
+        loop.advance()
+        val parted = session.list!!
+        assertEquals(2, parted.sources.size)
+        val mf = parted.sources.single { it.onlyFrom(Addon.MEDIAFUSION) }
+        val tz = parted.sources.single { it.onlyFrom(Addon.TORZ) }
+        assertEquals(ready.source.key, tz.key)
+        return (session to ready) to (mf to tz)
+    }
+
+    /** [session]'s refresh of [source]'s link from [addon], as the player asks for it after [Step.Refresh]. */
+    private fun refresh(session: SourceSession, source: PlaybackSource, addon: Addon): List<Opened> {
+        val got = ArrayList<Opened>()
+        session.refresh(source, addon) { got += it }
+        loop.advance()
+        return got
+    }
+
+    @Test
+    fun anExpiredLinkOfAMergedPackRowIsRefreshedThoughItsRowWasKeyedAgain() {
+        // MediaFusion answered first: the Amen row of both add-ons is keyed by its file, and plays from its offer.
+        val (session, ready) = amenPlaying()
+        assertEquals(ReleaseKey(ha, null).storeKey, ready.source.key)
+        assertEquals(Step.Refresh, session.failed(ready.source, Failure(FailureKind.LINK_EXPIRED, Addon.MEDIAFUSION)))
+        // Its answer is asked for again and joins the list last: the row is keyed by Torz's file now.
+        val again = refresh(session, ready.source, Addon.MEDIAFUSION).last() as Opened.Ready
+        assertEquals(ReleaseKey(ha, 5).storeKey, again.source.key)
+        // The same file from MediaFusion's fresh link, not another copy, and not a switch.
+        assertEquals(Addon.MEDIAFUSION, again.offer.addon)
+        assertEquals(ReleaseKey(ha, null), again.offer.release)
+        assertTrue(again.offer.link.reveal().contains("/$ha/1/6/"))
+        assertTrue(session.maySwitch(loop.now))
+        // It expires again: refreshed once only (its file's, under whichever key), so the next copy.
+        session.started(again.source, again.offer)
+        assertEquals(Step.TryNext, session.failed(again.source, Failure(FailureKind.LINK_EXPIRED, Addon.MEDIAFUSION)))
+    }
+
+    @Test
+    fun anExpiredLinkAfterTheRowPartedRefreshesItsOwnFileNeverTheOtherAddons() {
+        val (sr, rows) = partedWhilePlaying()
+        val (session, ready) = sr
+        val (mf, tz) = rows
+        assertEquals(Step.Refresh, session.failed(ready.source, Failure(FailureKind.LINK_EXPIRED, Addon.MEDIAFUSION)))
+        val again = refresh(session, ready.source, Addon.MEDIAFUSION).last() as Opened.Ready
+        // MediaFusion's own row (its file), from its fresh link: never Torz's row under the key the copy had.
+        assertEquals(mf.key, again.source.key)
+        assertNotEquals(tz.key, again.source.key)
+        assertEquals(Addon.MEDIAFUSION, again.offer.addon)
+        assertTrue(again.offer.link.reveal().contains("/$ha/1/6/"))
+        assertTrue(session.maySwitch(loop.now))
+    }
+
+    @Test
+    fun aSwitchToTheOtherAddonsFileUnderTheOldKeyThatWontStartGoesBackToTheFilePlaying() {
+        val (sr, rows) = partedWhilePlaying()
+        val (session, ready) = sr
+        val (mf, tz) = rows
+        // Next source: Torz's file, under the key the copy playing had; it loads.
+        val torz = open(session, why = OpenWhy.USER).last() as Opened.Ready
+        assertEquals(tz.key, torz.source.key)
+        assertEquals(Addon.TORZ, torz.offer.addon)
+        // While it loads it is the copy Playing in Sources (its own row), and Next source isn't it.
+        assertEquals(tz.key, session.rowKey(torz.source))
+        assertNotEquals(tz.key, session.nextPick()?.key)
+        // It is slow to start: Torz's file is left, not MediaFusion's, which played fine...
+        assertEquals(Step.TryNext, session.failed(torz.source, Failure(FailureKind.SLOW)))
+        val back = open(session, why = OpenWhy.FAILED).last() as Opened.Ready
+        assertEquals(mf.key, back.source.key)
+        assertEquals(Addon.MEDIAFUSION, back.offer.addon)
+        assertEquals(ReleaseKey(ha, null), back.offer.release)
+        // ...and Torz's file isn't named again.
+        session.started(back.source, back.offer)
+        assertNull(session.nextPick())
+        assertEquals(mf.key, session.rowKey(ready.source))
+    }
+
+    @Test
+    fun torzsPackWhoseFilesItDoesntKnowYetNeverReadsAnotherEpisodesEarlierRecord() {
+        // StremThru Torz lists the Amen pack before it knows its files: "-1" for the index in its link, no file name and
+        // no size. MediaFusion lists the same pack (no index either).
+        val unknown = JSONObject().apply {
+            put("name", "⚡️ [RD] Torz\n2160p")
+            put("description", "💿 WEBRip 🎞️ HEVC\n📺 DV HDR 🎧 DDP | 5.1\n👤 12\n📁 Your.Friendly.Neighborhood.Spider-Man.S01.2160p.WEBRip-Amen")
+            put("url", "https://torz.invalid/stremio/torz/FAKECONFIG_TORZ/_/strem/tt0000077/rd/$ha/-1/")
+            put("behaviorHints", JSONObject().put("bingeGroup", "torz:$ha"))
+        }
+        assertEquals(ReleaseKey(ha, null), parsed(Addon.TORZ, answer(unknown)).single().release)
+        answerOf[Addon.TORRENTIO] = { answer() }
+        answerOf[Addon.TORZ] = { answer(unknown) }
+        // What 1.0.360 kept under the pack's key alone: whichever episode last played from it (here a short file, not
+        // the whole episode).
+        val other = Measured(MediaSpec(sizeBytes = 300_000_000L, overallBps = 1_430_000), CopyHealth(watchedMs = 1_000, notWhole = 1, at = now), now)
+        kept["rd|$ha|-1"] = other
+        val row = list().sources.holding(ha)
+        assertEquals(setOf(Addon.MEDIAFUSION, Addon.TORZ), row.addons.toSet())
+        // None of it is E6's: not set aside, not its size or rate.
+        assertNull(row.measured)
+        assertNotEquals(TvFit.LIKELY_NOT, row.fit)
+        assertNotEquals(300_000_000L, row.facts.sizeBytes)
+        assertNull(FileSet.exactSize(row))
+        assertFalse(ReleaseKey.indexesEveryFile(Addon.TORZ))
+        assertFalse(ReleaseKey.indexesEveryFile(Addon.MEDIAFUSION))
+        assertTrue(ReleaseKey.indexesEveryFile(Addon.TORRENTIO))
     }
 }

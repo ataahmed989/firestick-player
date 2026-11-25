@@ -6376,7 +6376,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             val uri = Uri.parse(ready.link.reveal())
             // What was measured of this file is kept by its release (the link changes daily); an episode's file whose
             // index the add-on didn't give, by the episode too (a season pack's episodes share one hash). A torrent of
-            // that one file (Torrentio or Torz gave it no index) goes on from what 1.0.360 kept of it.
+            // that one file (Torrentio gave it no index) goes on from what 1.0.360 kept of it.
             (ready.offer.release ?: ready.source.release)?.let { r ->
                 val episode = request.target.episode
                 copyKeys[uri.toString()] = r.measuredKey(episode)

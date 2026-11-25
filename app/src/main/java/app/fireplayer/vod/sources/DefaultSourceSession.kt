@@ -28,6 +28,7 @@ import app.fireplayer.vod.TvFit
 import app.fireplayer.vod.Step
 import java.util.EnumMap
 import java.util.EnumSet
+import java.util.IdentityHashMap
 
 /**
  * One play of a film or episode, stages 1-4 (design-brief §6.5). Picks the source (on a resume, the very file played
@@ -90,26 +91,41 @@ internal class DefaultSourceSession(
      */
     private var kindLost = false
 
-    private val skipped = HashSet<String>()
+    /**
+     * The rows not tried again in this play, by key, each with the file its try opened (null: none known). A row under
+     * that key that doesn't hold that file any more (a play measured it apart from its row's other add-on since) isn't
+     * this one ([skippedRow]).
+     */
+    private val skipped = HashMap<String, ReleaseKey?>()
     private val skippedHashes = HashSet<String>()
     private val badFormats = HashSet<String>()
     private val downAddons: EnumSet<Addon> = EnumSet.noneOf(Addon::class.java)
     private val retried = HashSet<String>()
     private val refreshed = HashSet<String>()
     private val decoded = HashSet<String>()
-    private val visited = LinkedHashSet<String>()
+    /** The rows handed to the player or played whose file isn't known ([triedFiles] knows the others). */
+    private val visitedBare = HashSet<String>()
     /**
-     * The files handed to the player or played in this session, by what they are ([FileSet]): their rows may have
-     * merged or changed keys since. A copy left while it loaded counts: Next source never names it again.
+     * The files handed to the player or played in this session, by what they are ([FileSet]: the offer's own file, not
+     * its row's others): their rows may have merged, parted or changed keys since. A copy left while it loaded counts:
+     * Next source never names it again.
      */
-    private val triedFiles = FileSet(episode)
+    private val triedFiles = FileSet(episode, ::sizeNow)
     /** The files left because they can't play here ([skip] with its file: no picture, not whole, slow, link dead). */
-    private val skippedFiles = FileSet(episode)
+    private val skippedFiles = FileSet(episode, ::sizeNow)
     /** Why the resume didn't take the copy it left ([resumeMiss]); null when it did, or there was none. */
     private var resumeMissed: String? = null
     private val fetchAgreed = HashSet<String>()
     /** The offer last tried for each source (by key): its own file is the one skipped when it fails. */
     private val triedOffer = HashMap<String, Offer>()
+    /**
+     * The offer each copy handed out was last tried or played with, by the very object ([Opened.Ready]: the player hands
+     * it back). A row's key can hold another file since (it parted from another add-on's file, or was keyed anew), so a
+     * key alone can't say which file a copy opened ([offerOf]). A few entries a play.
+     */
+    private val handedOffer = IdentityHashMap<PlaybackSource, Offer>()
+    /** Each copy that showed its first frame in this play, with the offer it played from ([playedLast]). */
+    private val starts = ArrayList<Pair<PlaybackSource, Offer>>()
     private val unknownBy = EnumMap<Addon, MutableSet<String>>(Addon::class.java)
     private val ops = ArrayList<Op>()
 
@@ -184,7 +200,7 @@ internal class DefaultSourceSession(
     override fun refresh(source: PlaybackSource, addon: Addon?, onOpened: (Opened) -> Unit): Cancel {
         val op = Op(onOpened)
         ops += op
-        val from = addon ?: triedOffer[source.key]?.addon ?: source.offers.firstOrNull()?.addon
+        val from = addon ?: offerOf(source)?.addon ?: source.offers.firstOrNull()?.addon
         when {
             closed -> op.final(Opened.NoneLeft(FailureWords.NONE_READY))
             from == null -> {
@@ -202,9 +218,10 @@ internal class DefaultSourceSession(
         playing = source
         playingOffer = offer
         opened = source
-        visited += source.key
-        triedFiles.add(source)
+        handedOffer[source] = offer
+        tried(source, offer)
         tries += Attempt(source, repo.wall(), currentWhy, null)
+        starts += source to offer
         if (kindLost) {
             kindLost = false
             runCatching { repo.library.forgetReleases(target.title) }
@@ -265,14 +282,17 @@ internal class DefaultSourceSession(
         return fits.firstOrNull { it.fit != TvFit.LIKELY_NOT } ?: fits.firstOrNull()
     }
 
-    override fun rowKey(source: PlaybackSource): String {
-        val offer = if (source.key == playing?.key) playingOffer else triedOffer[source.key]
+    override fun rowKey(source: PlaybackSource): String = rowKey(source, offerOf(source))
+
+    /** [rowKey] of [source] as [offer] opened it (null: its row's own file). */
+    private fun rowKey(source: PlaybackSource, offer: Offer?): String {
         val file = offer?.let { releaseOf(source, it) } ?: source.release
         file?.let { repo.rowKeyOf(target, it) }?.let { return it }
-        // Its release is in no row now (the answer that had it is gone): the row holding the same file, if one does.
+        // Its release is in no row now (the answer that had it is gone): the row holding the same file, if one does (by
+        // what the offer tried says of it: [FileSet]).
         val l = list ?: return source.key
         if (l.sources.any { it.key == source.key }) return source.key
-        val same = FileSet.of(source, episode)
+        val same = filesOf(source, offer)
         return l.sources.firstOrNull { same.holds(it) }?.key ?: source.key
     }
 
@@ -335,11 +355,11 @@ internal class DefaultSourceSession(
             repo.rerank(target)
             Step.TryNext
         }
-        FailureKind.AUDIO -> if (decoded.add(source.key)) Step.DecodeOnDevice else {
+        FailureKind.AUDIO -> if (decoded.add(fileKey(source))) Step.DecodeOnDevice else {
             skip(source, hash = false)
             Step.TryNext
         }
-        FailureKind.LINK_EXPIRED -> if (refreshed.add(source.key)) Step.Refresh else {
+        FailureKind.LINK_EXPIRED -> if (refreshed.add(fileKey(source))) Step.Refresh else {
             skip(source, hash = false, file = true)
             Step.TryNext
         }
@@ -348,7 +368,7 @@ internal class DefaultSourceSession(
             if (source.offers.none { openable(source, it) }) skip(source, hash = false)
             Step.TryNext
         }
-        FailureKind.JUST_ADDED -> if (retried.add("j|${source.key}")) Step.Retry(JUST_ADDED_WAIT_MS) else {
+        FailureKind.JUST_ADDED -> if (retried.add("j|${fileKey(source)}")) Step.Retry(JUST_ADDED_WAIT_MS) else {
             skip(source, hash = true)
             Step.TryNext
         }
@@ -363,7 +383,7 @@ internal class DefaultSourceSession(
             Step.Stop(FailureWords.stop(f.kind))
         }
         FailureKind.OUTAGE, FailureKind.NO_INTERNET -> Step.Stop(FailureWords.stop(f.kind))
-        FailureKind.UNKNOWN -> if (retried.add("u|${source.key}")) Step.Retry(UNKNOWN_WAIT_MS) else {
+        FailureKind.UNKNOWN -> if (retried.add("u|${fileKey(source)}")) Step.Retry(UNKNOWN_WAIT_MS) else {
             skip(source, hash = false)
             f.addon?.let { a ->
                 val seen = unknownBy.getOrPut(a) { HashSet() }
@@ -393,15 +413,72 @@ internal class DefaultSourceSession(
         }
     }
 
-    /** [source]'s row isn't tried again in this play; with [hash], nothing of its torrent; with [file], its file in no row. */
+    /**
+     * [source]'s row isn't tried again in this play; with [hash], nothing of its torrent; with [file], its file in no
+     * row (the file of the offer tried: another add-on's file in its row may be told apart from it since, [FileSet]).
+     */
     private fun skip(source: PlaybackSource, hash: Boolean, file: Boolean = false) {
-        skipped += source.key
-        if (hash) (triedOffer[source.key]?.let { releaseOf(source, it) } ?: source.release)?.let { skippedHashes += it.infoHash }
-        if (file) skippedFiles.add(source)
+        val offer = offerOf(source)
+        val tried = offer?.let { releaseOf(source, it) } ?: source.release
+        skipped[source.key] = tried
+        if (hash) tried?.let { skippedHashes += it.infoHash }
+        if (file) skippedFiles.add(source, offer)
+    }
+
+    /** [s]'s row was skipped in this play ([skip]): its key, while it still holds the file that try opened. */
+    private fun skippedRow(s: PlaybackSource): Boolean {
+        if (!skipped.containsKey(s.key)) return false
+        val file = skipped[s.key] ?: return true
+        return s.release == file || s.offers.any { releaseOf(s, it) == file }
+    }
+
+    /** [source] was handed to the player from [offer] ([visited]): its file, by what it is. */
+    private fun tried(source: PlaybackSource, offer: Offer) {
+        if (releaseOf(source, offer) == null) visitedBare += source.key
+        triedFiles.add(source, offer)
     }
 
     /** The file [o] opens: its own, else its row's. */
     private fun releaseOf(s: PlaybackSource, o: Offer) = o.release ?: s.release
+
+    /**
+     * The offer [s] was handed out with (tried last, or played: [handedOffer]); for another object of its row, the one
+     * the copy playing plays from, else the one tried last under its key, while [s] still offers it (a row under that key
+     * may hold another file since: it parted from another add-on's file, or was keyed anew). Null when none was.
+     */
+    private fun offerOf(s: PlaybackSource): Offer? {
+        handedOffer[s]?.let { return it }
+        if (s.key == playing?.key) playingOffer?.takeIf { offers(s, it) }?.let { return it }
+        return triedOffer[s.key]?.takeIf { offers(s, it) }
+    }
+
+    /** [s] offers [o]'s file from [o]'s add-on. */
+    private fun offers(s: PlaybackSource, o: Offer): Boolean = s.offers.any { it.addon == o.addon && it.release == o.release }
+
+    /**
+     * What the once-only steps of the failure table count by ([decoded], [refreshed], [retried]): the file [s] opened, not
+     * its row's key (another file may be under it since); its key when the file isn't known.
+     */
+    private fun fileKey(s: PlaybackSource): String = (offerOf(s)?.let { releaseOf(s, it) } ?: s.release)?.storeKey ?: s.key
+
+    /** [source] is the file playing (its row and the offer it plays from), not another under its key. */
+    private fun isPlaying(source: PlaybackSource): Boolean =
+        source.key == playing?.key && playingOffer?.let { offers(source, it) } != false
+
+    /** [s]'s file as [o] opens it ([FileSet.add]), sizes as the list has them now. */
+    private fun filesOf(s: PlaybackSource, o: Offer?): FileSet = FileSet(episode, ::sizeNow).add(s, o)
+
+    /**
+     * The size to the byte of the file [r] as the list has it now ([FileSet.sizeOf]: measured here since, perhaps); null
+     * when it isn't listed or isn't known. Only for rows of one torrent ([FileSet.holds]).
+     */
+    private fun sizeNow(r: ReleaseKey): Long? {
+        for (s in list?.sources ?: return null) {
+            val o = s.offers.firstOrNull { releaseOf(s, it) == r } ?: continue
+            return FileSet.sizeOf(s, o)
+        }
+        return null
+    }
 
     /** [o] may be opened: its add-on isn't down, and it's cached unless the user agreed to fetch [s] (§6.5). */
     private fun openable(s: PlaybackSource, o: Offer): Boolean =
@@ -513,7 +590,7 @@ internal class DefaultSourceSession(
      * [skippedFiles]), something in it may be opened, and its format didn't fail here.
      */
     private fun usable(s: PlaybackSource): Boolean =
-        s.key !in skipped && !hashSkipped(s) && !skippedFiles.holds(s) &&
+        !skippedRow(s) && !hashSkipped(s) && !skippedFiles.holds(s) &&
             s.offers.any { openable(s, it) } && formatKey(s) !in badFormats
 
     private fun hashSkipped(s: PlaybackSource): Boolean {
@@ -538,22 +615,24 @@ internal class DefaultSourceSession(
     private fun current(): PlaybackSource? = opened ?: playing ?: tries.lastOrNull()?.source
 
     /**
-     * The [current] copy's file, by what it is ([FileSet]): its row as it was opened, and the row holding it in [l] now
-     * (merged since, or measured: its size to the byte); null when there's none.
+     * The [current] copy's file, by what it is ([FileSet]): the file of the offer it opened, and the row holding it in
+     * [l] now (merged since, or measured: its size to the byte); null when there's none. Not its row's other offers as
+     * they were: a play may have told them apart since.
      */
     private fun currentFiles(l: SourceList?): FileSet? {
         val s = current() ?: return null
-        val files = FileSet.of(s, episode)
+        val files = filesOf(s, offerOf(s))
         val key = rowKey(s)
         l?.sources?.firstOrNull { it.key == key }?.let { files.add(it) }
         return files
     }
 
     /**
-     * Whether [s] was handed to the player or played in this session: its row then, or its file, in a row it has joined
-     * or been keyed under since.
+     * Whether [s] was handed to the player or played in this session: its file ([triedFiles]: the offer's own, in a row
+     * it has joined or been keyed under since, never another add-on's file a play has told apart from it); a row whose
+     * file isn't known, by its key.
      */
-    private fun visited(s: PlaybackSource): Boolean = s.key in visited || triedFiles.holds(s)
+    private fun visited(s: PlaybackSource): Boolean = triedFiles.holds(s) || s.key in visitedBare
 
     /**
      * Next source and switches: the rest of the copy playing's own group in the Sources window (down from it, then the
@@ -574,10 +653,9 @@ internal class DefaultSourceSession(
      * play and may still be tried (not skipped or set aside here); null when there's none.
      */
     private fun playedLast(order: List<PlaybackSource>): PlaybackSource? {
-        for (t in tries.asReversed()) {
-            if (t.failure != null) continue
-            val key = rowKey(t.source)
-            val files = FileSet.of(t.source, episode)
+        for ((s, offer) in starts.asReversed()) {
+            val key = rowKey(s, offer)
+            val files = filesOf(s, offer)
             order.firstOrNull { (it.key == key || files.holds(it)) && usable(it) }?.let { return it }
         }
         return null
@@ -678,7 +756,7 @@ internal class DefaultSourceSession(
     private fun askFetchOrNone(op: Op, l: SourceList) {
         if (!accountProblem && target.key !in repo.fetchAsked) {
             val candidates = l.sources.filter {
-                it.readiness == Readiness.NOT_READY && it.group != SourceGroup.CINEMA && it.key !in skipped &&
+                it.readiness == Readiness.NOT_READY && it.group != SourceGroup.CINEMA && !skippedRow(it) &&
                     it.offers.any { o -> o.addon !in downAddons }
             }
             val singles = if (target.episode != null) candidates.filter { !it.facts.pack } else candidates
@@ -708,7 +786,7 @@ internal class DefaultSourceSession(
         }
         if (countTry) {
             // A switch is another file; the same one again (a refreshed link) isn't.
-            if (startedOnce && (why == OpenWhy.STALLS || why == OpenWhy.FAILED) && source.key != playing?.key) {
+            if (startedOnce && (why == OpenWhy.STALLS || why == OpenWhy.FAILED) && !isPlaying(source)) {
                 switches++
                 lastSwitchAt = repo.elapsed()
             }
@@ -729,6 +807,7 @@ internal class DefaultSourceSession(
     private fun tryOffer(op: Op, source: PlaybackSource, offers: List<Offer>, i: Int, why: OpenWhy, near: Boolean) {
         val offer = offers[i]
         triedOffer[source.key] = offer
+        handedOffer[source] = offer
         val handle = CallHandle()
         op.handle = handle
         val confirmed = source.measured?.spec != null
@@ -750,8 +829,7 @@ internal class DefaultSourceSession(
                     is LinkCheck.Result.Ready -> {
                         // Handed to the player: Next source goes on from it now, and never names it again.
                         opened = source
-                        visited += source.key
-                        triedFiles.add(source)
+                        tried(source, offer)
                         op.final(Opened.Ready(source, offer, result.link, startMs(near), near))
                     }
                     is LinkCheck.Result.Failed -> {
@@ -795,8 +873,13 @@ internal class DefaultSourceSession(
         }
     }
 
-    /** An expired link: ask [addon] again for the title and check the same release once. */
+    /**
+     * An expired link: ask [addon] again for the title and check the same release once: the row offering that very file
+     * from [addon] now, by its file (its answer joins the list again last, so a merged row may be keyed by another add-on's
+     * file now, or that file's row may have parted from it), not by the key it had.
+     */
     private fun refresh(op: Op, source: PlaybackSource, addon: Addon, why: OpenWhy, near: Boolean) {
+        val file = source.offers.firstOrNull { it.addon == addon }?.let { releaseOf(source, it) } ?: source.release
         repo.dropAnswer(target, addon)
         var handled = false
         var sub: Cancel? = null
@@ -804,7 +887,13 @@ internal class DefaultSourceSession(
             if (handled || !op.live || l.states[addon]?.final != true) return@lookUp
             handled = true
             sub?.cancel()
-            val again = l.sources.firstOrNull { s -> s.key == source.key && s.offers.any { it.addon == addon } }
+            val again = if (file == null) {
+                l.sources.firstOrNull { s -> s.key == source.key && s.offers.any { it.addon == addon } }
+            } else {
+                l.sources.firstOrNull { s -> s.offers.any { it.addon == addon && releaseOf(s, it) == file } }
+                    // A ×N row keeps one offer per add-on: another upload of the same file from it.
+                    ?: repo.rowKeyOf(target, file)?.let { k -> l.sources.firstOrNull { s -> s.key == k && s.offers.any { it.addon == addon } } }
+            }
             if (again != null) {
                 check(op, preferAddon(again, addon), why, near, countTry = false)
             } else {

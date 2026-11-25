@@ -773,9 +773,21 @@ class SourcePlayback(
         start = StartAt.Beginning,
         origin = PlayOrigin.NEXT_EPISODE,
         list = nextList?.takeIf { it.complete && it.target.episode == n },
-        like = current,
+        like = like(),
         filmMode = request.filmMode,
     )
+
+    /**
+     * The kind the next episode follows ([PlayRequest.like]): the copy playing with the offer it plays from alone. A row
+     * of two add-ons is one file of this episode by what they say of it; the next episode's files of the same torrent may
+     * not be (an add-on that numbers its pack differently), and then that one's own (its binge group) comes next, as it
+     * did when the row was its alone.
+     */
+    private fun like(): PlaybackSource? {
+        val s = current ?: return null
+        val o = offer?.takeIf { s.offers.size > 1 && it in s.offers } ?: return s
+        return s.copy(offers = listOf(o))
+    }
 
     /**
      * Another episode of the show, chosen in the player's Episodes sheet: a new play in place of this one, from [start]
@@ -793,7 +805,7 @@ class SourcePlayback(
         start = start,
         origin = PlayOrigin.NEXT_EPISODE,
         preferred = if (start is StartAt.At) library.lastRelease(request.target.title, episode) else null,
-        like = current,
+        like = like(),
         filmMode = request.filmMode,
     )
 

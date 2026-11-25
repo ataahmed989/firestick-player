@@ -491,7 +491,7 @@ class DefaultSourcesRepository(
                 )
                 // The same file from two add-ons is one row: by the exact size a play here measured, too (an index-less
                 // file's under this episode's own key: a season pack's other episodes measured other files). A torrent of
-                // one episode file (Torrentio or Torz gave it no index) still reads what an earlier version kept of it.
+                // one episode file (Torrentio gave it no index) still reads what an earlier version kept of it.
                 val episode = target.episode
                 val singles = if (episode == null) emptySet() else answers.flatMapTo(HashSet()) { a ->
                     a.mapNotNull { p -> p.release?.takeIf { it.fileIdx == null && ReleaseKey.indexesEveryFile(p.offer.addon) } }

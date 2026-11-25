@@ -148,8 +148,9 @@ data class ReleaseKey(val infoHash: String, val fileIdx: Int?) {
     /**
      * Where 1.0.360 and earlier kept what they measured of [episode]'s file when it has no index ([storeKey]), read while
      * nothing is kept under [measuredKey] yet; what's measured from then on goes there. Only for a torrent of that one
-     * file, [single]: Torrentio or Torz gave it no index ([indexesEveryFile]). MediaFusion's season packs come without
-     * one as well, and that record is then any of their episodes'. Null where [measuredKey] is [storeKey] already.
+     * file, [single]: Torrentio gave it no index ([indexesEveryFile]). MediaFusion's season packs come without one as
+     * well, and so do StremThru Torz's whose files it doesn't know yet ("-1" in its link): that record is then any of
+     * their episodes'. Null where [measuredKey] is [storeKey] already.
      */
     fun earlierKey(episode: EpisodeRef?, single: Boolean): String? =
         if (fileIdx == null && episode != null && single) storeKey else null
@@ -158,10 +159,12 @@ data class ReleaseKey(val infoHash: String, val fileIdx: Int?) {
         private val HEX40 = Regex("[0-9a-f]{40}")
 
         /**
-         * Whether [addon] gives each file of a torrent of several its index (Torrentio, StremThru Torz), so a file it
-         * gives none is its torrent's only one ([earlierKey]). MediaFusion doesn't for an episode of a season pack.
+         * Whether [addon] gives each file of a torrent of several its index, so a file it gives none is its torrent's only
+         * one ([earlierKey]): Torrentio. MediaFusion doesn't for an episode of a season pack; StremThru Torz writes "-1"
+         * for any torrent whose files it doesn't know yet (an indexer's result, a pack not looked into), and its file is
+         * then picked by the episode as the link is opened.
          */
-        fun indexesEveryFile(addon: Addon): Boolean = addon != Addon.MEDIAFUSION
+        fun indexesEveryFile(addon: Addon): Boolean = addon == Addon.TORRENTIO
 
         /** A key from an info hash in any case; null unless it is 40 hex digits. A negative index counts as none. */
         fun of(infoHash: String?, fileIdx: Int?): ReleaseKey? {
@@ -297,6 +300,11 @@ data class Offer(
     val link: SecretUrl,
     /** The file this offer opens (a merged row's offers can be different re-uploads); null: the row's [PlaybackSource.release]. */
     val release: ReleaseKey? = null,
+    /**
+     * The size of the file this offer opens, to the byte: as a play here measured it, else the add-on's exact one; null
+     * when only rounded or not known. Its own, not its row's ([app.fireplayer.vod.sources.FileSet]). Memory only.
+     */
+    val size: Long? = null,
 )
 
 /**

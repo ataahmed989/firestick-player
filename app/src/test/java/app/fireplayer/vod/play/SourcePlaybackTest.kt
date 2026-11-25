@@ -588,6 +588,29 @@ class SourcePlaybackTest {
     }
 
     @Test
+    fun theNextEpisodeFollowsTheOfferThatPlayedNotEveryAddonOfItsRow() {
+        val ep = SourceTarget(Fixtures.show, EpisodeRef(1, 1))
+        val (p, s) = play(start = StartAt.Beginning, target = ep, next = EpisodeRef(1, 2))
+        // One file from two add-ons; it plays from the second add-on's offer.
+        val both = Fixtures.source(1, also = Addon.MEDIAFUSION)
+        val mf = both.offers.single { it.addon == Addon.MEDIAFUSION }
+        s.answer(Opened.Ready(both, mf, mf.link, null, false))
+        p.firstFrame()
+        assertTrue(p.ended(playNext = true))
+        val like = nextPlay!!.like!!
+        assertEquals("k1", like.key)
+        assertEquals(listOf(mf), like.offers)
+        assertEquals(both.facts, like.facts)
+        // The Episodes sheet's play hands on the same.
+        assertEquals(listOf(mf), p.episodeRequest(EpisodeRef(1, 3), StartAt.Beginning).like?.offers)
+        // A row of one offer goes on as it is.
+        val (p2, s2) = play(start = StartAt.Beginning, target = ep, next = EpisodeRef(1, 2))
+        s2.ready(Fixtures.source(2))
+        p2.firstFrame()
+        assertEquals(Fixtures.source(2), p2.nextRequest(EpisodeRef(1, 2)).like)
+    }
+
+    @Test
     fun aFilmHasNoNextAndClosingStopsEverything() {
         val (p, s) = play()
         assertFalse(p.ended(playNext = true))

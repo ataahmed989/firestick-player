@@ -155,7 +155,7 @@ object SourceRank {
         return if (!input.episode && r.fileIdx == null) ownSize(m, s.facts) else m
     }
 
-    /** Whether an add-on that gives each file of a torrent of several its index offers [r] in [s] without one ([ReleaseKey.earlierKey]). */
+    /** Whether an add-on that gives each file of a torrent of several its index offers [r] in [s] without one ([ReleaseKey.earlierKey]: Torrentio). */
     private fun single(s: PlaybackSource, r: ReleaseKey): Boolean =
         r.fileIdx == null && s.offers.any { o -> ReleaseKey.indexesEveryFile(o.addon) && (o.release ?: s.release) == r }
 
