@@ -163,6 +163,8 @@ class SourcePlayback(
     private var notWholeNow = false
     /** The copy playing's length was judged against the film's ([lengthKnown]). */
     private var lengthJudged = false
+    /** The viewer jumped in the copy playing since its first frame: an end they jumped to is theirs ([PlayRules.copyEnd]). */
+    private var copyJumped = false
     /** The copy the viewer chose in a Sources window: it may play though it's shorter than the film ([lengthKnown]). */
     private var chosenKey: String? = request.chosen?.key?.takeIf { request.origin == PlayOrigin.SOURCES_PANEL }
 
@@ -271,6 +273,7 @@ class SourcePlayback(
         copyFrameAt = null
         notWholeNow = false
         lengthJudged = false
+        copyJumped = false
         val why = switchNote
         switchNote = null
         if (why != null) host.notice(why)
@@ -364,7 +367,9 @@ class SourcePlayback(
     /** The current source's first frame: recorded as the last release used; the stall watch starts. */
     fun firstFrame() {
         val s = current ?: return
-        if (playing) return
+        // A copy that gave way stays loaded (held, or at its end) till the next one starts: a picture of it now starts
+        // nothing (it isn't the copy the title goes on from again).
+        if (playing || notWholeNow) return
         playing = true
         everPlayed = true
         stalled = false
@@ -419,6 +424,7 @@ class SourcePlayback(
     fun jumped() {
         session.stalls.jumped(ticker.now())
         aid.reset()
+        if (copyFrameAt != null) copyJumped = true
     }
 
     /**
@@ -584,16 +590,20 @@ class SourcePlayback(
      * The copy playing came to its end ([durationMs] long; the player's STATE_ENDED). True: the film's or episode's end
      * ([PlayRules.copyEnd]), which the player records and acts on as before. False: it isn't the whole film (it ended
      * without really playing, e.g. a switch started it past its end, or a film's copy is far shorter than the film):
-     * nothing of it is recorded, it's kept as such ([Host.notWhole]), and the next copy plays from where the film was
-     * when this one started, saying why ([NOT_WHOLE_NOTE]); nothing left, the play stops and the resume point stays.
+     * nothing of it is recorded, it's kept as such when it's plainly another video or stops short ([Host.notWhole],
+     * [PlayRules.marksNotWhole]), and the next copy plays from where the film was when this one started, saying why
+     * ([NOT_WHOLE_NOTE]); nothing left, the play stops and the resume point stays. Also asked by the player as a sleep
+     * timer set for the end of the video pauses there: false, and the sleep waits for the film's own end.
      */
     fun reachedEnd(durationMs: Long): Boolean {
         val s = current ?: return true
+        // Given way already (its end, and a sleep timer's pause at its end, both ask): still not the film's end.
+        if (notWholeNow) return false
         val end = copyEnd(durationMs)
         if (end == PlayRules.CopyEnd.END) return true
         val why = if (end == PlayRules.CopyEnd.SHORT) "its ${PlayRules.clock(durationMs)} is far shorter than the film's ${runtimeMin()} min"
         else "it ended ${copyPlayedMs() / 1000} s after its first frame"
-        giveWay(s, why)
+        giveWay(s, why, PlayRules.marksNotWhole(end, copyStartMs, durationMs))
         return false
     }
 
@@ -601,11 +611,13 @@ class SourcePlayback(
      * The copy playing's length is known ([durationMs]; the player's first READY). A film's copy far shorter than the
      * film ([PlayRules.shortCopy]) FirePlayer picked (a start, a resume, Next source, a switch) isn't played to its end:
      * it gives way at once, as at its end ([reachedEnd]), and true is returned (the player holds the picture meanwhile).
-     * One the viewer chose in a Sources window plays on (kept as such all the same): its end is never the film's.
-     * Judged once, when the film's runtime is known (the title's details can come after the first READY: a later one).
+     * One the viewer chose in a Sources window plays on (kept as such all the same, and not the copy the title goes on
+     * from): its end is never the film's. Judged once, when the film's runtime is known (the title's details can come
+     * after the first READY: a later one). A copy that gave way already is held again (true), never judged again.
      */
     fun lengthKnown(durationMs: Long): Boolean {
         val s = current ?: return false
+        if (notWholeNow) return !closed
         if (lengthJudged || durationMs <= 0 || closed || stopped) return false
         val runtime = runtimeMin()
         if (runtime == null && !isEpisode) return false
@@ -614,17 +626,22 @@ class SourcePlayback(
         if (s.key == chosenKey) {
             host.log("this copy is far shorter than the film (${PlayRules.clock(durationMs)}): chosen by hand, it plays on")
             host.notWhole()
+            session.notWhole(s)
             return false
         }
-        giveWay(s, "its ${PlayRules.clock(durationMs)} is far shorter than the film's ${runtimeMin()} min")
+        giveWay(s, "its ${PlayRules.clock(durationMs)} is far shorter than the film's ${runtimeMin()} min", mark = true)
         return true
     }
 
-    /** [s] isn't the whole film: kept as such, then the next copy, from where the film was when [s] started. */
-    private fun giveWay(s: PlaybackSource, why: String) {
+    /**
+     * [s] isn't the whole film: kept as such when [mark] ([PlayRules.marksNotWhole]; else passed over for this play only),
+     * then the next copy, from where the film was when [s] started. Once for a copy.
+     */
+    private fun giveWay(s: PlaybackSource, why: String, mark: Boolean) {
+        if (notWholeNow) return
         notWholeNow = true
         // Kept first: the session's list ranks again with it at once.
-        host.notWhole()
+        if (mark) host.notWhole()
         if (closed || stopped) return
         playing = false
         loadTimer?.cancel()
@@ -637,7 +654,7 @@ class SourcePlayback(
     }
 
     /** What the copy playing's end would be now ([PlayRules.copyEnd]), [durationMs] long. */
-    private fun copyEnd(durationMs: Long) = PlayRules.copyEnd(copyStartMs, copyPlayedMs(), durationMs, runtimeMin(), isEpisode)
+    private fun copyEnd(durationMs: Long) = PlayRules.copyEnd(copyStartMs, copyPlayedMs(), durationMs, runtimeMin(), isEpisode, copyJumped)
 
     /** How long the copy playing has played since its first frame; 0 before it showed one. */
     private fun copyPlayedMs(): Long = copyFrameAt?.let { (ticker.now() - it).coerceAtLeast(0L) } ?: 0L

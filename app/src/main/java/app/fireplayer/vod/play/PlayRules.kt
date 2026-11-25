@@ -421,13 +421,28 @@ object PlayRules {
      * Whether a copy that came to its end ([durationMs] long; started at [startMs], [playedMs] played since its first
      * frame) is the film's or episode's end. Not when it played under [MIN_PLAYED_MS] (a switch started it at or past its
      * end), unless it was started inside its own last [MIN_PLAYED_MS] (a switch in the film's last seconds: that's all
-     * it had left); nor when it's a film's copy far shorter than the film ([shortCopy]). Then it's a broken copy, which
-     * gives way to the next one and never marks the film watched. [runtimeMin]: the film's runtime when known.
+     * it had left) or the viewer jumped in it since its first frame ([jumped]: an end they jumped to is theirs, however
+     * soon); nor when it's a film's copy far shorter than the film ([shortCopy]). Then it's a broken copy, which gives
+     * way to the next one and never marks the film watched. [runtimeMin]: the film's runtime when known.
      */
-    fun copyEnd(startMs: Long, playedMs: Long, durationMs: Long, runtimeMin: Int?, episode: Boolean): CopyEnd = when {
+    fun copyEnd(startMs: Long, playedMs: Long, durationMs: Long, runtimeMin: Int?, episode: Boolean, jumped: Boolean = false): CopyEnd = when {
         shortCopy(durationMs, runtimeMin, episode) -> CopyEnd.SHORT
-        playedMs < MIN_PLAYED_MS && !(startMs in 1 until durationMs && durationMs - startMs <= MIN_PLAYED_MS) -> CopyEnd.BARELY_PLAYED
+        !jumped && playedMs < MIN_PLAYED_MS && !(startMs in 1 until durationMs && durationMs - startMs <= MIN_PLAYED_MS) -> CopyEnd.BARELY_PLAYED
         else -> CopyEnd.END
+    }
+
+    /**
+     * Whether a copy that wasn't the film's end ([end], [copyEnd]; started at [startMs], [durationMs] long) is kept as
+     * such on this Stick ([app.fireplayer.player.CopyHealth.notWhole]: never picked by itself again). A film's copy far
+     * shorter than the film is; so is one that ran out though it had more than [MIN_PLAYED_MS] left from where it started
+     * (its file stops short), and one far shorter than where it was started (under 60 %, [SHORT_TENTHS]: another video).
+     * Not a whole copy only a little shorter than where a switch started it (another cut, a 25 fps copy, a switch in the
+     * credits): that one is only passed over for the rest of this play.
+     */
+    fun marksNotWhole(end: CopyEnd, startMs: Long, durationMs: Long): Boolean = when (end) {
+        CopyEnd.END -> false
+        CopyEnd.SHORT -> true
+        CopyEnd.BARELY_PLAYED -> durationMs > 0 && (startMs < durationMs || durationMs * 10 < startMs * SHORT_TENTHS)
     }
 
     /**

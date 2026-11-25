@@ -354,6 +354,33 @@ class PlayRulesTest {
     }
 
     @Test
+    fun anEndTheViewerJumpedToIsTheirsHoweverSoon() {
+        // Resumed at 1:00:00, then held Right to the end within 10 s of the first frame: the film's end, as before.
+        assertEquals(CopyEnd.END, PlayRules.copyEnd(3_600_000, 6_000, avatarMs, avatarMin, episode = false, jumped = true))
+        assertEquals(CopyEnd.BARELY_PLAYED, PlayRules.copyEnd(3_600_000, 6_000, avatarMs, avatarMin, episode = false))
+        // A jump never makes a film's copy far shorter than the film whole.
+        assertEquals(CopyEnd.SHORT, PlayRules.copyEnd(0, 6_000, makingOfMs, avatarMin, episode = false, jumped = true))
+    }
+
+    @Test
+    fun onlyACopyPlainlyAnotherVideoOrStoppingShortIsKeptAsNotWhole() {
+        // The making-of: far shorter than the film, and far shorter than where Next source started it (runtime unknown).
+        assertTrue(PlayRules.marksNotWhole(CopyEnd.SHORT, 10_279_000, makingOfMs))
+        assertTrue(PlayRules.marksNotWhole(CopyEnd.BARELY_PLAYED, 10_279_000, makingOfMs))
+        // One that ran out at once though it had more than 10 s left from where it started: its file stops short.
+        assertTrue(PlayRules.marksNotWhole(CopyEnd.BARELY_PLAYED, 600_000, 7_200_000))
+        assertTrue(PlayRules.marksNotWhole(CopyEnd.BARELY_PLAYED, 0, 5_000))
+        // A theatrical cut (2:30) a switch started at 2:45 of the extended one: passed over for this play only.
+        assertFalse(PlayRules.marksNotWhole(CopyEnd.BARELY_PLAYED, 9_900_000, 9_000_000))
+        // A 25 fps copy of a 2:00:00 film (1:55:12), switched to in the credits; an episode's file without its last minute.
+        assertFalse(PlayRules.marksNotWhole(CopyEnd.BARELY_PLAYED, 7_080_000, 6_912_000))
+        assertFalse(PlayRules.marksNotWhole(CopyEnd.BARELY_PLAYED, 2_670_000, 2_640_000))
+        // The film's end, or a copy whose length isn't known: nothing kept.
+        assertFalse(PlayRules.marksNotWhole(CopyEnd.END, 0, avatarMs))
+        assertFalse(PlayRules.marksNotWhole(CopyEnd.BARELY_PLAYED, 10_279_000, 0))
+    }
+
+    @Test
     fun aCopyThatWasntTheWholeFilmHereSaysSoInsteadOfPlayed() {
         val short = Fixtures.source(3).copy(measured = Measured(null, CopyHealth(watchedMs = 1_300, notWhole = 1, at = 5L), 5L))
         assertTrue(PlayRules.notWhole(short))

@@ -350,7 +350,10 @@ class SourcesModelTest {
         // Not "✓ played" on its row (its warning says what happened), but in Details, with the date.
         val items = SourcesModel.items(Fixtures.list(target, ranked), 0, setOf(Section.UHD), day = { "Nov 24" })
         assertFalse(items.at("src:UHD:k2").value.orEmpty().contains("played"))
-        assertEquals("Shorter than the film here · played Nov 24", SourcesModel.details(short, plan) { "Nov 24" }.toMap()["Facts"])
+        val details = SourcesModel.details(short, plan) { "Nov 24" }.toMap()
+        assertEquals("Shorter than the film here · played Nov 24", details["Facts"])
+        // Said once: no Warning line repeating it.
+        assertFalse(details.containsKey("Warning"))
         // An episode's copy, in an episode's words.
         val episode = SourceRank.rank(listOf(Fixtures.source(2)),
             RankInput(plan, listOf("en"), { Measured(null, health, 5L) }, 45, episode = true)).single()

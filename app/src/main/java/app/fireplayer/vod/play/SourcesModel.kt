@@ -400,8 +400,10 @@ object SourcesModel {
             Readiness.UNKNOWN -> "Not said"
         }
         out += "Offered by" to PlayRules.addonsOf(s) + if (s.copies > 1) " · ×${s.copies} copies" else ""
-        out += "Facts" to PlayRules.factsFrom(s, film, day)
-        s.warning?.let { out += "Warning" to it }
+        val facts = PlayRules.factsFrom(s, film, day)
+        out += "Facts" to facts
+        // Not said twice: a copy that wasn't the whole film here says so in its facts already.
+        s.warning?.takeUnless { facts.startsWith(it) }?.let { out += "Warning" to it }
         for (o in s.offers) out += "${o.addon.label} says" to listOfNotNull(o.text, o.filename).distinct().joinToString("\n")
         return out
     }

@@ -734,6 +734,12 @@ interface SourceSession {
     /** A failure of [source] (stage 2, 3 or a player error): adds it to the attempted list and says what to do. */
     fun failed(source: PlaybackSource, failure: Failure): Step
 
+    /**
+     * [source], chosen by hand, turned out not to be the whole film but plays on: it isn't the copy the title goes on
+     * from (its release isn't kept, or the one kept before it is put back), and the list ranks again with its mark.
+     */
+    fun notWhole(source: PlaybackSource) = Unit
+
     /** A player error as a failure (PlaybackException code, HTTP status when the load error had one). */
     fun failureOf(errorCode: Int, httpStatus: Int?): Failure
 

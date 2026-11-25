@@ -506,8 +506,9 @@ class SourcePlaybackTest {
         s.ready(short)
         assertFalse(p.lengthKnown(makingOfMs))
         assertTrue(s.failures.isEmpty())
-        // Kept as such all the same: not picked by itself again.
+        // Kept as such all the same: not picked by itself again, nor the copy the title goes on from.
         assertTrue(log.contains("not whole"))
+        assertEquals(listOf(short.key), s.notWholes.map { it.key })
         p.firstFrame()
         ticker.advance(makingOfMs)
         // Nothing of where it stands is the film's: not mid-way, nor its credits.
@@ -526,6 +527,81 @@ class SourcePlaybackTest {
         q.pick(short, beginning = false)
         t.ready(short)
         assertFalse(q.lengthKnown(makingOfMs))
+    }
+
+    @Test
+    fun anEndTheViewerJumpedToRightAfterAResumeIsTheFilmsEnd() {
+        // Resumed at 1:00:00, then held Right to the end within 10 s of the first frame (to clear it from Continue
+        // Watching): the film's end, as before, and the copy isn't kept as anything.
+        val (p, s) = play(start = StartAt.At(3_600_000), target = avatar)
+        s.ready(Fixtures.source(1))
+        assertFalse(p.lengthKnown(11_880_000))
+        p.firstFrame()
+        ticker.advance(4_000)
+        p.jumped()
+        ticker.advance(2_000)
+        assertTrue(p.reachedEnd(11_880_000))
+        p.record(11_880_000, 11_880_000, null)
+        assertEquals(listOf<Any?>(Fixtures.film.id, null, 11_880_000L, 11_880_000L, null), library.recorded.single())
+        assertTrue(s.failures.isEmpty())
+        assertFalse(log.contains("not whole"))
+    }
+
+    @Test
+    fun aShorterCutStartedPastItsEndGivesWayButIsntKeptAsNotWhole() {
+        // The extended cut (3:00:00) plays at 2:45:00 of a film whose runtime is 150 min; Next source picks the
+        // theatrical cut (2:30:00), which starts past its end and ends at once.
+        val (p, s) = play(start = StartAt.At(9_000_000), target = SourceTarget(Fixtures.film.copy(runtime = "150 min")))
+        s.ready(Fixtures.source(1))
+        assertFalse(p.lengthKnown(10_800_000))
+        p.firstFrame()
+        ticker.advance(900_000)
+        position = 9_900_000
+        p.nextSource()
+        s.ready(Fixtures.source(2))
+        assertFalse(p.lengthKnown(9_000_000))
+        p.firstFrame()
+        ticker.advance(1_000)
+        assertFalse(p.reachedEnd(9_000_000))
+        // Passed over for this play (the session skips it), but not kept as "Shorter than the film here": from its start
+        // it plays whole.
+        assertEquals(FailureKind.NOT_WHOLE, s.failures.single().kind)
+        assertFalse(log.contains("not whole"))
+        s.ready(Fixtures.source(3))
+        assertEquals(Triple("k3", 9_895_000L, true), starts.last())
+        assertEquals("notice " + SourcePlayback.NOT_WHOLE_NOTE, log.last())
+    }
+
+    @Test
+    fun aCopyThatGaveWayIsNeverStartedOrJudgedAgain() {
+        val (p, s) = play(start = StartAt.At(9_000_000))
+        s.ready(Fixtures.source(1))
+        p.firstFrame()
+        ticker.advance(1_284_000)
+        position = 10_284_000
+        p.nextSource()
+        s.ready(Fixtures.source(2))
+        // No frame: it ended at once (the Avatar case).
+        assertFalse(p.reachedEnd(makingOfMs))
+        assertEquals(1, s.failures.size)
+        val opens = s.opens.size
+        // Left/Right on it while the next link is checked: its picture starts nothing (it isn't the copy the title goes
+        // on from again), a READY holds it again without judging it again, and its end is still not the film's.
+        p.firstFrame()
+        assertEquals(listOf("k1"), s.started.map { it.key })
+        assertFalse(p.playing)
+        runtime = 198
+        assertTrue(p.lengthKnown(makingOfMs))
+        assertFalse(p.reachedEnd(makingOfMs))
+        // Nothing counted twice: one failure, one open for the next copy.
+        assertEquals(1, s.failures.size)
+        assertEquals(opens, s.opens.size)
+        // The next copy plays from where the film was, and is judged as usual.
+        s.ready(Fixtures.source(3))
+        assertEquals(Triple("k3", 10_279_000L, true), starts.last())
+        assertFalse(p.lengthKnown(11_880_000))
+        p.firstFrame()
+        assertEquals(listOf("k1", "k3"), s.started.map { it.key })
     }
 
     @Test

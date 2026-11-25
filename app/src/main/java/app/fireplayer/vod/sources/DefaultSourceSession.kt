@@ -76,6 +76,8 @@ internal class DefaultSourceSession(
      */
     private var releaseFor: ReleaseKey? = null
     private var releaseBefore: LastRelease? = null
+    /** Copies chosen by hand that turned out not to be the whole film ([notWhole]): never kept as the title's last release. */
+    private val notWholeKeys = HashSet<String>()
     /**
      * Another episode with no copy of the kind the show followed ([PlayRequest.like]): at its first frame the show's
      * remembered copies are forgotten ([app.fireplayer.vod.PlaybackLibrary.forgetReleases]), so the ranking decides on.
@@ -194,7 +196,7 @@ internal class DefaultSourceSession(
             runCatching { repo.library.forgetReleases(target.title) }
         }
         // The file that played: a merged row's offer can be another re-upload than the row's first.
-        releaseOf(source, offer)?.let { release ->
+        releaseOf(source, offer)?.takeIf { source.key !in notWholeKeys }?.let { release ->
             // What was kept before this file (not this file itself), put back if it isn't the whole film ([putBack]).
             if (release != releaseFor) {
                 releaseFor = release
@@ -217,6 +219,13 @@ internal class DefaultSourceSession(
         val step = stepFor(source, failure)
         listener?.invoke()
         return step
+    }
+
+    override fun notWhole(source: PlaybackSource) {
+        notWholeKeys += source.key
+        // Its first frame came first: what was kept before it is the title's again.
+        if (keptAsLast(source)) putBack()
+        repo.rerank(target)
     }
 
     override fun failureOf(errorCode: Int, httpStatus: Int?): Failure =
@@ -295,7 +304,7 @@ internal class DefaultSourceSession(
         // the list in memory ranks again with the player's mark on it ("Shorter than the film here", "Last used").
         FailureKind.NOT_WHOLE -> {
             skip(source, hash = false)
-            if (source.key == playing?.key && playingOffer?.let { releaseOf(source, it) } == releaseFor) putBack()
+            if (keptAsLast(source)) putBack()
             repo.rerank(target)
             Step.TryNext
         }
@@ -337,6 +346,10 @@ internal class DefaultSourceSession(
             Step.TryNext
         }
     }
+
+    /** [source] is the copy playing, and its file is the one kept as the title's last release ([started]). */
+    private fun keptAsLast(source: PlaybackSource): Boolean =
+        releaseFor != null && source.key == playing?.key && playingOffer?.let { releaseOf(source, it) } == releaseFor
 
     /**
      * The copy that started last wasn't the whole film: the release kept before it is the title's again (none: it's

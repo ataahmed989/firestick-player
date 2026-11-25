@@ -819,6 +819,34 @@ class EngineTest {
     }
 
     @Test
+    fun aCopyChosenByHandThatIsntTheWholeFilmPlaysOnButIsntTheCopyLeft() {
+        answers[Addon.TORRENTIO] = {
+            answer(torrentio(H1), torrentio(H2, quality = "1080p", name = "Film.1080p.BluRay.x264-B", size = "16.8 GB"))
+        }
+        links.remove(Addon.MEDIAFUSION)
+        val session = engine.session(PlayRequest(filmTarget, StartAt.At(600_000), PlayOrigin.TITLE_PAGE))
+        val first = open(session).last() as Opened.Ready
+        session.started(first.source, first.offer)
+        last = recorded.last()
+        // Picked in the player's Sources window: its first frame keeps it as the copy left...
+        val row = session.list!!.sources.first { it.release == ReleaseKey(H2, 0) }
+        val got = ArrayList<Opened>()
+        session.open(row, OpenWhy.USER) { got += it }
+        loop.advance()
+        val second = got.last() as Opened.Ready
+        session.started(second.source, second.offer)
+        assertEquals(ReleaseKey(H2, 0), recorded.last().release)
+        // ...until its length shows it isn't the whole film: it plays on, and the 4K copy is the copy left again.
+        session.notWhole(second.source)
+        assertEquals(ReleaseKey(H1, 0), recorded.last().release)
+        assertTrue(forgottenOne.isEmpty())
+        // A picture of it again (the same copy retried) doesn't keep it either.
+        val records = recorded.size
+        session.started(second.source, second.offer)
+        assertEquals(records, recorded.size)
+    }
+
+    @Test
     fun aFirstCopyThatIsntTheWholeFilmIsForgottenAndOneThatNeverStartedChangesNothing() {
         answers[Addon.TORRENTIO] = { answer(torrentio(H1), torrentio(H2, quality = "1080p", name = "Film.1080p.WEB-DL.x264-B")) }
         links.remove(Addon.MEDIAFUSION)

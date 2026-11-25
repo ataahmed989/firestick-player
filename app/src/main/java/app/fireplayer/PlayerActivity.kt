@@ -1846,8 +1846,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (state == Player.STATE_READY) {
             launchMark(LaunchLog.LOADED)
             // A film's copy far shorter than the film, picked by FirePlayer, gives way to the next copy at once: the
-            // wrong video is held meanwhile (SourcePlayback.lengthKnown).
-            source?.let { s -> player?.duration?.takeIf { it > 0 }?.let { d -> if (s.lengthKnown(d)) player?.pause() } }
+            // wrong video is held meanwhile (SourcePlayback.lengthKnown), and the end of a refresh-rate switch for it
+            // doesn't start it again (the next copy's own rate is matched as it starts). With no copy left, its stop
+            // message stays up.
+            val held = source?.let { s -> player?.duration?.takeIf { it > 0 }?.let { d -> s.lengthKnown(d) } } == true
+            if (held) {
+                handler.removeCallbacks(resumeAfterSwitch)
+                pausedForSwitch = false
+                player?.pause()
+            }
             pictureText.go()
             noteEpisodeLength()
             // The film's picture is known by now: how often the black-bar watch looks.
@@ -1857,7 +1864,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 backdrop?.frameChanged()
             }
             findNextEpisode()
-            errorBox.visibility = View.GONE
+            if (!held) errorBox.visibility = View.GONE
             // The stopped player loaded again behind the freeze message (a subtitle added): it plays, so it's answered.
             if (frozeOut) {
                 frozeOut = false
@@ -1927,6 +1934,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         watchPause()
         // Only while still paused there: a jump back made at the very end has already set it playing again.
         if (sleepAtEnd && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM && player?.playWhenReady == false) {
+            // A copy from the add-ons that isn't the whole film didn't end it: the next copy plays (as at STATE_ENDED),
+            // and the sleep waits for the film's own end.
+            val s = source
+            if (s != null && !s.reachedEnd(player?.duration?.takeIf { it > 0 } ?: 0L)) return
             completed = true
             entries.getOrNull(player?.currentMediaItemIndex ?: -1)?.let { prefs.savePosition(it.key, 0L) }
             finishWithResult()
@@ -6391,6 +6402,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             hideBuffering()
             if (panel.isOpen) panel.close()
             player?.pause()
+            // Nor does the end of a refresh-rate switch start it again behind the message.
+            handler.removeCallbacks(resumeAfterSwitch)
+            pausedForSwitch = false
             updateTitle()
             errorText.text = message
             errorHint.text = "Press Back for Sources"
