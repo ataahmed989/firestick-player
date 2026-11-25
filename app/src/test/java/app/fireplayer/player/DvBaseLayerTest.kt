@@ -386,6 +386,95 @@ class DvBaseLayerTest {
         assertNull(DvBaseLayer.hevcColour(dv, "dvhe.08.06", hevc, ColorInfo.Builder().setColorSpace(C.COLOR_SPACE_BT709).build()))
     }
 
+    // --- Profile 8 on the HEVC decoder: the film's own brightness data from the SEI in its hvcC
+
+    private val pqStated = ColorInfo.Builder().setColorSpace(C.COLOR_SPACE_BT2020).setColorTransfer(C.COLOR_TRANSFER_ST2084)
+        .setColorRange(C.COLOR_RANGE_LIMITED).build()
+
+    /** A profile 8 track as Media3's MKV reader gives it: PQ stated without static metadata, [initData] its hvcC's units. */
+    private fun dv8(initData: List<ByteArray>, colour: ColorInfo? = pqStated) = Format.Builder()
+        .setSampleMimeType(MimeTypes.VIDEO_DOLBY_VISION).setCodecs("dvhe.08.06").setWidth(3840).setHeight(2160)
+        .setColorInfo(colour).setInitializationData(initData).build()
+
+    private val p8Line = "Dolby Vision profile 8 on the HEVC decoder: given HDR10 colour with"
+
+    @Test
+    fun profile8OnTheHevcDecoderTakesItsBrightnessDataFromTheSeiInItsHvcc() {
+        val hevc = MimeTypes.VIDEO_H265
+        val initData = androidx.media3.extractor.HevcConfig.parse(androidx.media3.common.util.ParsableByteArray(x265Hvcc))
+            .initializationData
+        val fromSei = cta(34000, 16000, 13250, 34500, 7500, 3000, 15635, 16450, 4000, 50, 1452, 400)
+        val given = DvBaseLayer.hevcHdr10(dv8(initData), hevc)!!
+        assertArrayEquals(fromSei, given.colour.hdrStaticInfo)
+        assertEquals(C.COLOR_SPACE_BT2020, given.colour.colorSpace)
+        assertEquals(C.COLOR_TRANSFER_ST2084, given.colour.colorTransfer)
+        assertEquals(C.COLOR_RANGE_LIMITED, given.colour.colorRange)
+        assertEquals("$p8Line brightness data from the file's SEI: 4000 nits, MaxCLL 1452, MaxFALL 400", given.line)
+        // A UHD Blu-ray style unit with both messages, and an MP4's record after the parameter sets (8.1, HDR10).
+        val vps = start4 + bytes(0x40, 0x01, 0x0c, 0x01)
+        val mp4 = dv8(listOf(vps + seiUnit(mastering(g2020, b2020, r2020, d65, 10_000_000, 1), light(1000, 300)),
+            record(DvBaseLayer.SIGNAL_HDR10)), colour = null)
+        val bluRay = DvBaseLayer.hevcHdr10(mp4, hevc)!!
+        assertArrayEquals(cta(35400, 14600, 8500, 39850, 6550, 2300, 15635, 16450, 1000, 1, 1000, 300), bluRay.colour.hdrStaticInfo)
+        assertEquals("$p8Line brightness data from the file's SEI: 1000 nits, MaxCLL 1000, MaxFALL 300", bluRay.line)
+        // The track's own static metadata still comes first: its SEI isn't used.
+        val own = ByteArray(25) { (it + 1).toByte() }
+        val stated = DvBaseLayer.hevcHdr10(dv8(initData, ColorInfo.Builder().setHdrStaticInfo(own).build()), hevc)!!
+        assertArrayEquals(own, stated.colour.hdrStaticInfo)
+        assertEquals("$p8Line the file's own brightness data", stated.line)
+        // HDR10 in full is left as it is, as before.
+        assertNull(DvBaseLayer.hevcHdr10(dv8(initData, pqStated.buildUpon().setHdrStaticInfo(own).build()), hevc))
+        // Saved as brightness data reaching the TV, as with the generic data.
+        assertEquals(true, MediaSpec.of(dv8(initData), null, decoderMime = hevc).hdrInfo)
+    }
+
+    @Test
+    fun profile8WithNoSeiOrSeiThatMakesNoSenseGetsTheGenericData() {
+        val hevc = MimeTypes.VIDEO_H265
+        val generic = DvBaseLayer.hdr10(null).hdrStaticInfo
+        val vps = start4 + bytes(0x40, 0x01, 0x0c, 0x01)
+        val whole = seiUnit(mastering(g2020, b2020, r2020, d65, 10_000_000, 1))
+        for (initData in listOf(
+            // None: no initialization data, or parameter sets only (as most hvcCs), or only a light level message.
+            emptyList(),
+            listOf(vps),
+            listOf(vps + seiUnit(light(1452, 400))),
+            // Malformed: cut short, a size past the unit's end, a peak of 20000 nits, messages in a suffix unit, a
+            // header with nothing after it.
+            listOf(vps + whole.copyOf(16)),
+            listOf(vps + start4 + bytes(39 shl 1, 1, 137, 40) + ByteArray(10) { 0x11 } + bytes(0x80)),
+            listOf(vps + seiUnit(mastering(g2020, b2020, r2020, d65, 200_000_000, 1), light(1452, 400))),
+            listOf(vps + seiUnit(mastering(g2020, b2020, r2020, d65, 10_000_000, 1), type = 40)),
+            listOf(vps + start4 + bytes(39 shl 1, 1, 0xFF, 0xFF, 0xFF)),
+        )) {
+            val given = DvBaseLayer.hevcHdr10(dv8(initData), hevc)!!
+            assertArrayEquals(generic, given.colour.hdrStaticInfo)
+            assertEquals(C.COLOR_TRANSFER_ST2084, given.colour.colorTransfer)
+            assertEquals("$p8Line generic brightness data (the file states none)", given.line)
+        }
+    }
+
+    @Test
+    fun onlyProfile8OnTheHevcDecoderIsGivenTheSeisBrightnessData() {
+        val dv = MimeTypes.VIDEO_DOLBY_VISION
+        val hevc = MimeTypes.VIDEO_H265
+        val initData = androidx.media3.extractor.HevcConfig.parse(androidx.media3.common.util.ParsableByteArray(x265Hvcc))
+            .initializationData
+        val format = dv8(initData)
+        // Played as Dolby Vision; profile 7 (played as its base layer, as before) or 5; an HLG or SDR base by its record;
+        // an HEVC film with the same parameter sets: nothing changes.
+        assertNull(DvBaseLayer.hevcHdr10(format, dv))
+        assertNull(DvBaseLayer.hevcHdr10(format, null))
+        assertNull(DvBaseLayer.hevcHdr10(format.buildUpon().setCodecs("dvhe.07.06").build(), hevc))
+        assertNull(DvBaseLayer.hevcHdr10(format.buildUpon().setCodecs("dvhe.05.06").build(), hevc))
+        assertNull(DvBaseLayer.hevcHdr10(format.buildUpon().setCustomData(DvBaseLayer.Signal(DvBaseLayer.SIGNAL_HLG)).build(), hevc))
+        assertNull(DvBaseLayer.hevcHdr10(format.buildUpon().setCustomData(DvBaseLayer.Signal(DvBaseLayer.SIGNAL_SDR)).build(), hevc))
+        assertNull(DvBaseLayer.hevcHdr10(format.buildUpon().setColorInfo(ColorInfo.SDR_BT709_LIMITED).build(), hevc))
+        assertNull(DvBaseLayer.hevcHdr10(format.buildUpon().setSampleMimeType(hevc).setCodecs("hvc1.2.4.L153.B0").build(), hevc))
+        // The SEI line without its levels, if ever given data cut short.
+        assertEquals("$p8Line brightness data from the file's SEI", DvBaseLayer.hevcColourLine(ByteArray(3), fromTrack = false, fromSei = true))
+    }
+
     // --- What a Dolby Vision file's base layer is: its configuration record (dvcC, dvvC, dvwC)
 
     /** A Dolby Vision decoder configuration record (24 bytes): version 1.0, [profile], level 6, RPU and BL, [signal]. */
