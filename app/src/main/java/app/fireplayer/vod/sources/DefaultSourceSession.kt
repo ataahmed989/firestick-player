@@ -343,8 +343,12 @@ internal class DefaultSourceSession(
         if (request.origin == PlayOrigin.TITLE_PAGE && request.list?.complete == false) {
             // The title page's wait ended before every add-on answered: OK was pressed again for the best so far (or
             // an answer was stuck past its limit). What it handed over is played from as it stands, as soon as something
-            // in it plays by itself; the add-on still looking joins the list as it answers (Sources, Next source).
-            waitFor(op, { l -> l.complete || l.sources.any { it.automatic && usable(it) } }) { pick(op, OpenWhy.START) }
+            // in it plays by itself; the add-on still looking joins the list as it answers (Sources, Next source). A resume
+            // first waits for the add-on of the copy left, as a Continue card does: that file plays once it's listed.
+            waitFor(op, { l ->
+                l.complete || findPreferred(l) != null ||
+                    ((preferred == null || l.states[preferred.addon]?.final == true) && l.sources.any { it.automatic && usable(it) })
+            }) { pick(op, OpenWhy.START) }
             return
         }
         waitFor(op, { it.complete }) { pick(op, OpenWhy.START) }
@@ -476,8 +480,8 @@ internal class DefaultSourceSession(
                     compareBy({ if (releaseOf(row, it) == p.release) 0 else 1 }, { if (it.addon == p.addon) 0 else 1 }),
                 )) to false
             }
-            // Its own file gone or no longer cached: the ranking's pick, a little before where it was.
-            val near = p != null && request.start is StartAt.At
+            // A resume whose own file is gone, no longer cached or forgotten: the ranking's pick, a little before where it was.
+            val near = request.start is StartAt.At
             request.like?.let { like ->
                 val same = SourceRank.mostLike(auto, like)
                 kindLost = same == null

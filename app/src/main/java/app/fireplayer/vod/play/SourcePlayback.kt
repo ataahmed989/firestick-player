@@ -244,11 +244,22 @@ class SourcePlayback(
         switchNote = null
         if (why != null) host.notice(why)
         // A resume whose own copy isn't in the full list: the ranking's pick plays instead.
-        else if (o.resumedNear && !everPlayed && request.preferred != null && session.list?.complete == true) {
-            host.notice(COPY_GONE_NOTE)
-        }
+        else if (o.resumedNear && !everPlayed && copyGone()) host.notice(COPY_GONE_NOTE)
         else if ((o.resumedNear || everPlayed) && start > 0) host.notice("Resumed near ${PlayRules.clock(start)}")
         armLoad(o.source)
+    }
+
+    /**
+     * The copy a resume left ([PlayRequest.preferred]) is in no row of the full list as a cached file this Stick showed a
+     * picture for. Listed late (after the pick), or the list not full yet: "Resumed near" instead. One pass, once.
+     */
+    private fun copyGone(): Boolean {
+        val left = request.preferred?.release ?: return false
+        val l = session.list?.takeIf { it.complete } ?: return false
+        return l.sources.none { s ->
+            (s.measured?.health?.noPicture ?: 0) == 0 &&
+                s.offers.any { (it.release ?: s.release) == left && it.readiness != Readiness.NOT_READY }
+        }
     }
 
     private fun askFetch(s: PlaybackSource) {

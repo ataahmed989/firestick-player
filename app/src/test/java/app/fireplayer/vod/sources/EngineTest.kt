@@ -359,6 +359,33 @@ class EngineTest {
         assertEquals(ReleaseKey(H2, 0), (after.last() as Opened.Ready).source.release)
     }
 
+    @Test
+    fun okAgainOnAResumeWaitsForTheAddonOfTheCopyLeftThenPlaysThatCopy() {
+        answers[Addon.TORRENTIO] = { answer(torrentio(H1)) }
+        answers[Addon.MEDIAFUSION] = { answer(mediaFusion(H2, resolution = "1080p")) }
+        val held = ArrayList<Runnable>()
+        var hold = true
+        val slowEngine = engineWith(Executor { r -> if (hold && asked.isNotEmpty()) { held += r; hold = false } else r.run() })
+        val got = ArrayList<SourceList>()
+        slowEngine.lookUp(filmTarget, LookupWhy.PLAY, null) { got += it }
+        loop.advance()
+        // The copy left is MediaFusion's, still looking: Torrentio's best so far doesn't play over it.
+        val preferred = LastRelease(Addon.MEDIAFUSION, ReleaseKey(H2, 0), 1L)
+        val session = slowEngine.session(
+            PlayRequest(filmTarget, StartAt.At(600_000), PlayOrigin.TITLE_PAGE, list = got.last(), preferred = preferred),
+        )
+        val opened = ArrayList<Opened>()
+        session.open(null, OpenWhy.START) { opened += it }
+        loop.advance()
+        assertTrue(opened.last() is Opened.Looking)
+        held.removeAt(0).run()
+        loop.advance()
+        val ready = opened.last() as Opened.Ready
+        assertEquals(ReleaseKey(H2, 0), ready.source.release)
+        assertEquals(600_000L, ready.startMs)
+        assertFalse(ready.resumedNear)
+    }
+
     // ---- Sessions ----
 
     private fun open(session: app.fireplayer.vod.SourceSession, why: OpenWhy = OpenWhy.START): MutableList<Opened> {
@@ -481,6 +508,15 @@ class EngineTest {
             assertTrue(ready.resumedNear)
             assertEquals(595_000L, ready.startMs)
         }
+    }
+
+    @Test
+    fun aResumeWhoseCopyWasForgottenStartsALittleEarlierResumedNear() {
+        answers[Addon.TORRENTIO] = { answer(torrentio(H1)) }
+        answers[Addon.MEDIAFUSION] = { answer(mediaFusion(H2)) }
+        val ready = open(engine.session(PlayRequest(filmTarget, StartAt.At(600_000), PlayOrigin.TITLE_PAGE))).last() as Opened.Ready
+        assertTrue(ready.resumedNear)
+        assertEquals(595_000L, ready.startMs)
     }
 
     @Test

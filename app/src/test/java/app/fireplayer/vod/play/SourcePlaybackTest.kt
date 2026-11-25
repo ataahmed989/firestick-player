@@ -83,6 +83,18 @@ class SourcePlaybackTest {
     }
 
     @Test
+    fun aResumeOnAnotherCopyWhileTheOneLeftIsListedIsOnlyResumedNear() {
+        // The copy left was listed after the pick (a late answer): it isn't said to be unavailable.
+        val request = PlayRequest(SourceTarget(Fixtures.film), StartAt.At(600_000), PlayOrigin.TITLE_PAGE,
+            preferred = LastRelease(Addon.MEDIAFUSION, ReleaseKey(Fixtures.hash(2), 0), 1L))
+        val session = FakeSession(request)
+        session.list = Fixtures.list(request.target, listOf(Fixtures.source(1), Fixtures.source(2, Addon.MEDIAFUSION)))
+        SourcePlayback(request, session, library, ticker, host).start()
+        session.ready(Fixtures.source(1), startMs = 595_000, resumedNear = true)
+        assertEquals("notice Resumed near ${PlayRules.clock(595_000)}", log.last())
+    }
+
+    @Test
     fun stageThreeAsksAtTheLimitForItsDataRate() {
         val (p, s) = play()
         s.ready(Fixtures.source(1, mbps = 10.0))
