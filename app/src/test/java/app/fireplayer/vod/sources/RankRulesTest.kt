@@ -406,7 +406,7 @@ class RankRulesTest {
     // ---- Next source ----
 
     @Test
-    fun nextSourceGoesDownItsOwnGroupThenTheGroupsBelowThenAbove() {
+    fun nextSourceTriesTheRestOfItsOwnGroupThenTheGroupsBelowThenAbove() {
         val a = src("a")
         val b = src("b")
         val c = src("c", 1080)
@@ -416,22 +416,57 @@ class RankRulesTest {
         val imax = src("imax", name = "Film.2021.IMAX.2160p")
         val list = listOf(imax, a, c, hd, b, e, d)
         fun next(from: String?, l: List<PlaybackSource> = list) = SourceRank.nextOrder(l, from, film = true).map { it.key }
-        // Down 4K from b, then 1080p and 720p as listed, then what's above it: 4K's a, then 4K IMAX.
-        assertEquals(listOf("d", "c", "e", "hd", "a", "imax"), next("b"))
+        // Down 4K from b, then 4K's a above it, then 1080p and 720p as listed, then the group above: 4K IMAX.
+        assertEquals(listOf("d", "a", "c", "e", "hd", "imax"), next("b"))
         // From the IMAX copy: no other IMAX copy, so 4K, then 1080p, then 720p.
         assertEquals(listOf("a", "b", "d", "c", "e", "hd"), next("imax"))
-        // From the bottom of 1080p: 720p, then 1080p's c above it, then the groups above, top first.
-        assertEquals(listOf("hd", "c", "imax", "a", "b", "d"), next("e"))
+        // From the bottom of 1080p: 1080p's c above it, then 720p, then the groups above, top first.
+        assertEquals(listOf("c", "hd", "imax", "a", "b", "d"), next("e"))
         // Never one that showed no picture here, nor one that isn't picked by itself.
         val dark = d.copy(measured = played(MediaSpec(), CopyHealth(noPicture = 1)))
         val uncached = c.copy(readiness = Readiness.NOT_READY)
-        assertEquals(listOf("e", "hd", "a", "imax"), next("b", listOf(imax, a, uncached, hd, b, e, dark)))
+        assertEquals(listOf("a", "e", "hd", "imax"), next("b", listOf(imax, a, uncached, hd, b, e, dark)))
+        // Nor one that wasn't the whole film here.
+        val notWhole = e.copy(measured = played(MediaSpec(), CopyHealth(watchedMs = 1_300, notWhole = 1)))
+        assertEquals(listOf("d", "a", "c", "hd", "imax"), next("b", listOf(imax, a, c, hd, b, notWhole, d)))
         // A copy moved into 4K IMAX is next from the IMAX copy, ahead of 4K.
         assertEquals(listOf("d", "a", "b"), next("imax", listOf(imax, a, b, d.copy(imaxMove = true))).take(3))
         // Nothing playing: the list's order.
         assertEquals(list.map { it.key }, next(null))
         assertEquals(SourceGroup.THREE_D, SourceMerge.groupOf(SourceFacts(height = 1080), Readiness.PROBABLY_READY, cinema = false, threeD = true))
         assertEquals(SourceGroup.OTHER, SourceMerge.groupOf(SourceFacts(), Readiness.PROBABLY_READY, cinema = false, threeD = false))
+    }
+
+    @Test
+    fun theLowestOfItsGroupPlayingTheHigherOnesInTheGroupComeBeforeTheGroupBelow() {
+        // The TV test: the 81.4 GB 4K remux played as the lowest of three 4K copies; Next source went to 1080p while the
+        // 86.3 GB and 84.9 GB remuxes were untried.
+        val big = src("86.3", size = 86_300_000_000L)
+        val mid = src("84.9", size = 84_900_000_000L)
+        val low = src("81.4", size = 81_400_000_000L)
+        val hd = src("1080p", 1080, hdr = setOf(Hdr.HDR10), mbps = 20.0, origin = "Encode", size = 16_800_000_000L)
+        val sd = src("720p", 720, mbps = 8.0)
+        val list = listOf(big, mid, low, hd, sd)
+        assertEquals(listOf("86.3", "84.9", "1080p", "720p"), SourceRank.nextOrder(list, "81.4", film = true).map { it.key })
+        // From the middle one: the one below it in 4K, then the one above, then 1080p.
+        assertEquals(listOf("81.4", "86.3", "1080p", "720p"), SourceRank.nextOrder(list, "84.9", film = true).map { it.key })
+        // Nothing else in 4K that may be picked by itself (one showed no picture here): the group below.
+        val dark = mid.copy(measured = played(MediaSpec(), CopyHealth(noPicture = 1)))
+        val uncached = big.copy(readiness = Readiness.NOT_READY)
+        assertEquals(listOf("1080p", "720p"), SourceRank.nextOrder(listOf(uncached, dark, low, hd, sd), "81.4", film = true).map { it.key })
+    }
+
+    @Test
+    fun aCopyThatWasntTheWholeFilmGoesDownSaysWhyAndIsNeverTheBest() {
+        val whole = src("whole", hash = SourceFixtures.H1)
+        val short = src("short", mbps = 80.0, hash = SourceFixtures.H2)
+        val mark = played(MediaSpec(), CopyHealth(watchedMs = 1_300, at = now, notWhole = 1))
+        val ranked = SourceRank.rank(listOf(short, whole), input(measured = { if (it.contains(SourceFixtures.H2)) mark else null }))
+        assertEquals(listOf("whole", "short"), ranked.map { it.key })
+        assertEquals("whole", SourceRank.best(ranked)?.key)
+        assertEquals(SourceRank.NOT_WHOLE, ranked.last().warning)
+        assertEquals(TvFit.LIKELY_NOT, ranked.last().fit)
+        assertEquals(SourceRank.NOT_WHOLE_EPISODE, SourceRank.fit(short.facts, q60r, mark, episode = true).second)
     }
 
     // ---- Preferred bitrate (Settings › Playback): a soft preference among copies of the same picture ----

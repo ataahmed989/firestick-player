@@ -138,7 +138,8 @@ object SourcesModel {
      * [list] as a [View]. [playingKey]: the copy playing; [attempts]: this play's tries (Next source skips those that
      * failed); [smooth]: the copy playing plays without stalling, so 1080p and the kinds under it start closed when it
      * is a 4K one. Next source is [next]'s, the play's own pick ([app.fireplayer.vod.SourceSession.nextPick]), in the
-     * player; else the next copy down the Best's own kind, then the kinds under it ([SourceRank.nextOrder]).
+     * player; else the next copy in the Best's own kind (down from it, then above it), then the kinds under it
+     * ([SourceRank.nextOrder]).
      */
     fun view(
         list: SourceList,
@@ -213,7 +214,8 @@ object SourcesModel {
         fun note(s: PlaybackSource) = PlayRules.noteLine(s, list.plan, list.wanted, noteChars).ifEmpty { null }
 
         // A row's small marks, two lines at most: what this play did with it, then Best and Last used, then whether
-        // FirePlayer has played it on this TV. The rows at the top say only what their heading doesn't.
+        // FirePlayer has played it on this TV (not for a copy that wasn't the whole film here: its warning says so).
+        // The rows at the top say only what their heading doesn't.
         fun marks(s: PlaybackSource, top: Boolean): String? {
             val a = tried[s.key]
             val state = when {
@@ -225,7 +227,7 @@ object SourcesModel {
             val lines = state + listOfNotNull(
                 if (!top && s.key == bestKey) BEST else null,
                 if (s.key == lastKey && s.key != playingKey) LAST_USED else null,
-                s.measured?.at?.let { "✓ played ${day(it)}" },
+                s.measured?.at?.takeIf { !PlayRules.notWhole(s) }?.let { "✓ played ${day(it)}" },
             )
             return lines.take(2).joinToString("\n").ifEmpty { null }
         }
@@ -340,11 +342,14 @@ object SourcesModel {
 
     /**
      * Details for a source (Right on its row; no links): what its row leaves out. Its picture as the file says and as
-     * this TV shows it ([plan]), its Dolby Vision profile, sound and what's heard of it, size and data rates (the
-     * picture's as measured here), the server's speed while it plays ([server], the player's), every sound and subtitle
-     * language, seeders, how ready it is, the add-ons and each one's own words. Lines, the first a heading-like summary.
+     * this TV shows it ([plan]), its Dolby Vision profile, sound (as a play here measured it when the add-ons don't say)
+     * and what's heard of it, size and data rates (the picture's as measured here), the server's speed while it plays
+     * ([server], the player's), every sound and subtitle language, seeders, how ready it is, the add-ons and each one's
+     * own words, and whether it played here (a [film]'s copy or an episode's). Lines, the first a heading-like summary.
      */
-    fun details(s: PlaybackSource, plan: TvPlan? = null, server: String? = null, day: (Long) -> String): List<Pair<String, String>> {
+    fun details(
+        s: PlaybackSource, plan: TvPlan? = null, server: String? = null, film: Boolean = true, day: (Long) -> String,
+    ): List<Pair<String, String>> {
         val f = s.facts
         val spec = s.measured?.spec
         val out = ArrayList<Pair<String, String>>()
@@ -368,9 +373,13 @@ object SourcesModel {
             }
             out += "Dolby Vision" to "Profile $p$how"
         }
-        val sound = listOfNotNull(f.audio, f.channels).joinToString(" ").ifEmpty { null }
+        val stated = listOfNotNull(f.audio, f.channels).joinToString(" ").ifEmpty { null }
+        // What the add-ons didn't state, a play here measured ("DD+ 5.1 · measured here"), as the row's sound word does.
+        val measuredSound = if (stated == null) spec?.soundLine() else null
         val heard = PlayRules.soundWord(s, plan)
-        val atmosLost = f.audio?.contains(PlayRules.ATMOS) == true && heard != PlayRules.ATMOS && plan != null
+        val atmos = if (stated != null) f.audio?.contains(PlayRules.ATMOS) == true else spec?.atmos == true && measuredSound != null
+        val atmosLost = atmos && heard != PlayRules.ATMOS && plan != null
+        val sound = stated ?: measuredSound?.let { "$it · measured here" }
         out += "Sound" to ((sound ?: "Not stated") + if (atmosLost) " · heard here as ${heard ?: "sound"}: Atmos not kept on this TV" else "")
         f.sizeBytes?.let { out += "Size" to PlayRules.size(it) }
         f.avgMbps?.let { out += "Data rate" to "≈${it.toInt()} Mb/s average (from size)" }
@@ -391,7 +400,7 @@ object SourcesModel {
             Readiness.UNKNOWN -> "Not said"
         }
         out += "Offered by" to PlayRules.addonsOf(s) + if (s.copies > 1) " · ×${s.copies} copies" else ""
-        out += "Facts" to PlayRules.factsFrom(s, day)
+        out += "Facts" to PlayRules.factsFrom(s, film, day)
         s.warning?.let { out += "Warning" to it }
         for (o in s.offers) out += "${o.addon.label} says" to listOfNotNull(o.text, o.filename).distinct().joinToString("\n")
         return out

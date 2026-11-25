@@ -34,6 +34,8 @@ class RecordedLibrary(private val library: VodLibrary) : PlaybackLibrary {
 
     override fun forgetReleases(title: Title) = library.forgetReleases(title.kind, title.id)
 
+    override fun forgetRelease(title: Title, episode: EpisodeRef?) = library.forgetRelease(title.kind, idOf(title, episode))
+
     override fun recordPlayback(title: Title, episode: EpisodeRef?, positionMs: Long, durationMs: Long, creditsAtMs: Long?) {
         library.recordProgress(title, episode, positionMs, durationMs, watched = countsAsWatched(positionMs, durationMs, creditsAtMs))
     }

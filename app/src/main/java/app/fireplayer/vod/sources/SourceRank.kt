@@ -102,8 +102,13 @@ object SourceRank {
     const val NEEDS_DV = "Needs a Dolby Vision TV"
     const val BUFFERED = "Buffered here before"
     const val NO_PICTURE = "Showed no picture here"
+    const val NOT_WHOLE = "Shorter than the film here"
+    const val NOT_WHOLE_EPISODE = "Shorter than the episode here"
     const val CLOSE_TO_LINE = "Close to your connection"
     const val HIGH_RATE = "High data rate"
+
+    /** A copy that wasn't the whole film here ([app.fireplayer.player.CopyHealth.notWhole]), in a [film]'s words or an episode's. */
+    fun notWholeWords(film: Boolean): String = if (film) NOT_WHOLE else NOT_WHOLE_EPISODE
 
     /** A film's or an episode's length when the add-ons' size is known but the runtime isn't (ranking only, never shown). */
     private const val FILM_MIN = 120
@@ -113,7 +118,7 @@ object SourceRank {
     fun rank(sources: List<PlaybackSource>, input: RankInput): List<PlaybackSource> {
         val scored = withoutSd(sources).mapIndexed { i, s ->
             val measured = measuredOf(s, input)
-            val (fit, warning) = fit(asPlayedHere(s.facts, measured), input.plan, measured, input.lineMbps, input.now)
+            val (fit, warning) = fit(asPlayedHere(s.facts, measured), input.plan, measured, input.lineMbps, input.now, input.episode)
             val moved = if (input.episode) null else movedOf(s, input)
             val ranked = s.copy(fit = fit, warning = warning, measured = measured, imaxMove = moved)
             Scored(ranked, i, keyOf(ranked, input))
@@ -338,15 +343,20 @@ object SourceRank {
 
     /**
      * Whether [facts] likely play well under [plan], and at most one warning for the row. [lineMbps] is this
-     * connection's steady figure ([LineRate.current]; null: nothing measured), [now] for how old a stall is.
+     * connection's steady figure ([LineRate.current]; null: nothing measured), [now] for how old a stall is; [episode]
+     * for the words of a copy that wasn't the whole episode here.
      */
-    fun fit(facts: SourceFacts, plan: TvPlan, measured: Measured?, lineMbps: Double? = null, now: Long = 0L): Pair<TvFit, String?> {
+    fun fit(
+        facts: SourceFacts, plan: TvPlan, measured: Measured?, lineMbps: Double? = null, now: Long = 0L, episode: Boolean = false,
+    ): Pair<TvFit, String?> {
         val avg = facts.avgMbps
         val cap = plan.maxMbps
         val dv = dvProblem(facts, plan)
         return when {
             // Its picture never showed on this Stick ([app.fireplayer.player.CopyHealth.noPicture]): never picked by itself.
             (measured?.health?.noPicture ?: 0) > 0 -> TvFit.LIKELY_NOT to NO_PICTURE
+            // It wasn't the whole film here (another video of its torrent, or it ended at once): never picked by itself.
+            (measured?.health?.notWhole ?: 0) > 0 -> TvFit.LIKELY_NOT to notWholeWords(!episode)
             // Frames lost aren't "buffered": a copy that only lost frames goes down a little instead ([stuttered]).
             measured?.health?.buffers == true && troubled(measured, avg, lineMbps, now) -> TvFit.LIKELY_NOT to BUFFERED
             dv != null -> TvFit.LIKELY_NOT to dv
@@ -662,10 +672,12 @@ object SourceRank {
     // ---- Next source ----
 
     /**
-     * Next source's order after [currentKey] (the copy playing, or the Best), by the Sources window's list: down its own
-     * group from it ([listPlace]), then the groups under that one, top to bottom, each in [ranked]'s order; only then the
-     * copies above it, its own group's first, then the groups above, top to bottom. Only those that may be picked by
-     * themselves, never one that showed no picture here. With no [currentKey] in the list, [ranked]'s order.
+     * Next source's order after [currentKey] (the copy playing, or the Best), by the Sources window's list: the rest of
+     * its own group first ([listPlace]), down from it and then the ones above it in the group, so a group isn't left
+     * while a copy of it is still there to try (the lowest of three 4K copies goes on to the other two 4K ones, not to
+     * 1080p); then the groups under that one, top to bottom, each in [ranked]'s order; only then the groups above, top
+     * to bottom. Only those that may be picked by themselves, never one that showed no picture here or wasn't the whole
+     * film. With no [currentKey] in the list, [ranked]'s order.
      */
     fun nextOrder(ranked: List<PlaybackSource>, currentKey: String?, film: Boolean): List<PlaybackSource> {
         val at = ranked.indexOfFirst { it.key == currentKey }
@@ -677,14 +689,17 @@ object SourceRank {
             for (i in from until until) if (places[i] == place && pickable(ranked[i])) out += ranked[i]
         }
         take(at + 1, ranked.size, own)
-        for (p in own + 1 until LIST_PLACES) take(0, ranked.size, p)
         take(0, at, own)
+        for (p in own + 1 until LIST_PLACES) take(0, ranked.size, p)
         for (p in 0 until own) take(0, ranked.size, p)
         return out
     }
 
-    /** Picked by itself: not a cinema recording or uncached ([PlaybackSource.automatic]), and not one that showed no picture here. */
-    private fun pickable(s: PlaybackSource): Boolean = s.automatic && (s.measured?.health?.noPicture ?: 0) == 0
+    /**
+     * Picked by itself: not a cinema recording or uncached ([PlaybackSource.automatic]), and not one that showed no
+     * picture here or wasn't the whole film ([app.fireplayer.player.CopyHealth.setAside]).
+     */
+    private fun pickable(s: PlaybackSource): Boolean = s.automatic && s.measured?.health?.setAside != true
 
     /** How many groups the Sources window lists ([listPlace]). */
     const val LIST_PLACES = 9

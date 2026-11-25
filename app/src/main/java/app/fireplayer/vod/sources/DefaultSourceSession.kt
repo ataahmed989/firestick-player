@@ -17,6 +17,7 @@ import app.fireplayer.vod.PlayOrigin
 import app.fireplayer.vod.PlayRequest
 import app.fireplayer.vod.PlaybackSource
 import app.fireplayer.vod.Readiness
+import app.fireplayer.vod.ReleaseKey
 import app.fireplayer.vod.SourceGroup
 import app.fireplayer.vod.SourceList
 import app.fireplayer.vod.SourceSession
@@ -55,6 +56,8 @@ internal class DefaultSourceSession(
     private var listener: (() -> Unit)? = null
     private var listSub: Cancel? = null
     private var listOnly: Addon? = null
+    /** Every add-on is asked a while after the copy started, when only one was ([widenLater]). */
+    private var widening: Runnable? = null
     private var closed = false
 
     private var startedOnce = false
@@ -67,6 +70,12 @@ internal class DefaultSourceSession(
     private var currentWhy = OpenWhy.START
     private var playing: PlaybackSource? = null
     private var playingOffer: Offer? = null
+    /**
+     * The file the copy playing started from, kept as the title's last release ([started]), and the release kept before
+     * it: put back when it turns out not to be the whole film ([FailureKind.NOT_WHOLE]).
+     */
+    private var releaseFor: ReleaseKey? = null
+    private var releaseBefore: LastRelease? = null
     /**
      * Another episode with no copy of the kind the show followed ([PlayRequest.like]): at its first frame the show's
      * remembered copies are forgotten ([app.fireplayer.vod.PlaybackLibrary.forgetReleases]), so the ranking decides on.
@@ -137,6 +146,8 @@ internal class DefaultSourceSession(
     override fun open(source: PlaybackSource?, why: OpenWhy, onOpened: (Opened) -> Unit): Cancel {
         val op = Op(onOpened)
         ops += op
+        // Next source or a row picked: every add-on's copies may be wanted now, not only the one asked first.
+        if (why == OpenWhy.USER && startedOnce) widen()
         when {
             closed -> op.final(Opened.NoneLeft(FailureWords.NONE_READY))
             source != null -> check(op, source, why, near = startedOnce, countTry = true)
@@ -184,6 +195,12 @@ internal class DefaultSourceSession(
         }
         // The file that played: a merged row's offer can be another re-upload than the row's first.
         releaseOf(source, offer)?.let { release ->
+            // What was kept before this file (not this file itself), put back if it isn't the whole film ([putBack]).
+            if (release != releaseFor) {
+                releaseFor = release
+                releaseBefore = runCatching { repo.library.lastRelease(target.title, target.episode) }.getOrNull()
+                    ?.takeIf { it.release != release }
+            }
             runCatching { repo.library.recordRelease(target.title, target.episode, LastRelease(offer.addon, release, repo.wall())) }
         }
         repo.usedNow(target, source.key)
@@ -191,6 +208,7 @@ internal class DefaultSourceSession(
         watch.reset()
         watch.playing(now)
         watch.jumped(now)
+        widenLater()
         listener?.invoke()
     }
 
@@ -215,7 +233,7 @@ internal class DefaultSourceSession(
         // when nothing else does.
         val fits = (list ?: return null).sources.filter { s ->
             val avg = s.facts.avgMbps
-            s.automatic && usable(s) && !noPictureHere(s) && s.key != current && avg != null && avg > 0.0 && avg <= maxMbps
+            s.automatic && usable(s) && !setAsideHere(s) && s.key != current && avg != null && avg > 0.0 && avg <= maxMbps
         }
         return fits.firstOrNull { it.fit != TvFit.LIKELY_NOT } ?: fits.firstOrNull()
     }
@@ -231,9 +249,18 @@ internal class DefaultSourceSession(
     override fun lookUpNext(next: EpisodeRef, onList: (SourceList) -> Unit): Cancel =
         repo.lookUp(SourceTarget(target.title, next), LookupWhy.NEXT_EPISODE, null, onList)
 
+    override fun widen() {
+        if (closed || listOnly == null) return
+        widening?.let { repo.main.remove(it) }
+        widening = null
+        watchList(null)
+    }
+
     override fun close() {
         if (closed) return
         closed = true
+        widening?.let { repo.main.remove(it) }
+        widening = null
         listSub?.cancel()
         listSub = null
         ops.toList().forEach { it.cancel() }
@@ -262,6 +289,14 @@ internal class DefaultSourceSession(
         FailureKind.NO_PICTURE -> {
             skip(source, hash = false)
             if (f.detail == Failure.NO_DECODER) badFormats += formatKey(source)
+            Step.TryNext
+        }
+        // This copy only: another file of its torrent may well be the film. Nor is it the copy the title goes on from;
+        // the list in memory ranks again with the player's mark on it ("Shorter than the film here", "Last used").
+        FailureKind.NOT_WHOLE -> {
+            skip(source, hash = false)
+            if (source.key == playing?.key && playingOffer?.let { releaseOf(source, it) } == releaseFor) putBack()
+            repo.rerank(target)
             Step.TryNext
         }
         FailureKind.AUDIO -> if (decoded.add(source.key)) Step.DecodeOnDevice else {
@@ -300,6 +335,20 @@ internal class DefaultSourceSession(
                 if (seen.size >= 2) downAddons += a
             }
             Step.TryNext
+        }
+    }
+
+    /**
+     * The copy that started last wasn't the whole film: the release kept before it is the title's again (none: it's
+     * forgotten), so a resume goes on from the copy that was playing before.
+     */
+    private fun putBack() {
+        val before = releaseBefore
+        releaseFor = null
+        releaseBefore = null
+        runCatching {
+            if (before != null) repo.library.recordRelease(target.title, target.episode, before)
+            else repo.library.forgetRelease(target.title, target.episode)
         }
     }
 
@@ -375,6 +424,21 @@ internal class DefaultSourceSession(
         }
     }
 
+    /**
+     * Only one add-on was asked (a Continue card's resume: a fast start): the others are asked [WIDEN_AFTER_MS] after the
+     * copy started, once, not while its first load fills, so Sources, Next source and the fallbacks have every copy.
+     * The answer already kept is used again, not asked for twice.
+     */
+    private fun widenLater() {
+        if (listOnly == null || widening != null || closed) return
+        val later = Runnable {
+            widening = null
+            if (!closed) watchList(null)
+        }
+        widening = later
+        repo.main.postDelayed(later, WIDEN_AFTER_MS)
+    }
+
     private fun waitFor(op: Op, ready: (SourceList) -> Boolean, then: () -> Unit) {
         val l = list
         if (l != null && ready(l)) {
@@ -389,12 +453,13 @@ internal class DefaultSourceSession(
 
     /**
      * The row holding the very file played last (same info hash and file index, any add-on), while that file plays
-     * without asking (cached, not skipped, not one this Stick showed no picture for); the ranking doesn't matter.
+     * without asking (cached, not skipped, not one this Stick showed no picture for or found not the whole film); the
+     * ranking doesn't matter.
      */
     private fun findPreferred(l: SourceList?): PlaybackSource? {
         val p = request.preferred ?: return null
         return l?.sources?.firstOrNull { s ->
-            usable(s) && !noPictureHere(s) && s.offers.any { releaseOf(s, it) == p.release && openable(s, it) }
+            usable(s) && !setAsideHere(s) && s.offers.any { releaseOf(s, it) == p.release && openable(s, it) }
         }
     }
 
@@ -405,10 +470,10 @@ internal class DefaultSourceSession(
             s.offers.any { openable(s, it) } && formatKey(s) !in badFormats
 
     /**
-     * This Stick showed no picture for [s] when it played here before ([app.fireplayer.player.CopyHealth.noPicture]):
-     * never picked by itself again (the viewer still may, in Sources).
+     * This Stick showed no picture for [s] when it played here before, or found it wasn't the whole film
+     * ([app.fireplayer.player.CopyHealth.setAside]): never picked by itself again (the viewer still may, in Sources).
      */
-    private fun noPictureHere(s: PlaybackSource): Boolean = (s.measured?.health?.noPicture ?: 0) > 0
+    private fun setAsideHere(s: PlaybackSource): Boolean = s.measured?.health?.setAside == true
 
     /**
      * The row Next source goes on from: the copy playing, else (none played yet) the one tried last, under the key its
@@ -421,9 +486,9 @@ internal class DefaultSourceSession(
         s.key in visited || s.offers.any { o -> releaseOf(s, o)?.let { it.storeKey in visitedFiles } == true }
 
     /**
-     * Next source and switches: down the copy playing's own group in the Sources window from it, then the groups under
-     * it, then what's above ([SourceRank.nextOrder], never a copy that showed no picture here), skipping what failed
-     * here; first what hasn't played in this session.
+     * Next source and switches: the rest of the copy playing's own group in the Sources window (down from it, then the
+     * ones above it), then the groups under it, then the groups above ([SourceRank.nextOrder], never a copy set aside
+     * here), skipping what failed here; first what hasn't played in this session.
      */
     private fun nextOf(l: SourceList): PlaybackSource? {
         val next = SourceRank.nextOrder(l.sources, currentKey(), target.episode == null).filter { usable(it) }
@@ -467,7 +532,7 @@ internal class DefaultSourceSession(
 
     private fun choose(l: SourceList, why: OpenWhy): Pair<PlaybackSource?, Boolean> {
         val current = currentKey()
-        val auto = l.sources.filter { it.automatic && usable(it) && !noPictureHere(it) && it.key != current }
+        val auto = l.sources.filter { it.automatic && usable(it) && !setAsideHere(it) && it.key != current }
         if (firstPick && !startedOnce) {
             request.chosen?.let { c ->
                 val fresh = l.sources.firstOrNull { it.key == c.key } ?: c
@@ -653,6 +718,8 @@ internal class DefaultSourceSession(
         const val UNKNOWN_WAIT_MS = 2_000L
         /** A switch, or a resume on another file, starts this much earlier ("Resumed near …"). */
         const val BACK_MS = 5_000L
+        /** A Continue card's resume asks the other add-ons this long after its copy started ([widenLater]). */
+        const val WIDEN_AFTER_MS = 15_000L
 
         private val OTHER_OFFER = setOf(
             FailureKind.ADDON_DOWN, FailureKind.CONFIG, FailureKind.LINK_EXPIRED, FailureKind.UNKNOWN, FailureKind.SLOW,

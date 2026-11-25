@@ -356,11 +356,22 @@ object PlayRules {
         else -> s.addons.joinToString(" + ") { it.label }
     }
 
-    /** Where a source's facts came from: "from Torrentio" until FirePlayer measured it ("✓ played Nov 12"). */
-    fun factsFrom(s: PlaybackSource, day: (Long) -> String): String {
+    /**
+     * Where a source's facts came from: "from Torrentio" until FirePlayer measured it ("✓ played Nov 12"); a copy that
+     * turned out not to be the whole [film] or episode here ([notWhole]) says so ("Shorter than the film here · played
+     * Nov 24").
+     */
+    fun factsFrom(s: PlaybackSource, film: Boolean = true, day: (Long) -> String): String {
         val at = s.measured?.at
-        return if (at != null) "✓ played ${day(at)}" else "from ${addonsOf(s)}"
+        return when {
+            notWhole(s) -> listOfNotNull(SourceRank.notWholeWords(film), at?.let { "played ${day(it)}" }).joinToString(" · ")
+            at != null -> "✓ played ${day(at)}"
+            else -> "from ${addonsOf(s)}"
+        }
     }
+
+    /** This Stick found [s] isn't the whole film or episode ([app.fireplayer.player.CopyHealth.notWhole]). */
+    fun notWhole(s: PlaybackSource): Boolean = (s.measured?.health?.notWhole ?: 0) > 0
 
     /** "29.3 GB", "870 MB". */
     fun size(bytes: Long): String {
@@ -384,6 +395,63 @@ object PlayRules {
 
     /** Where a switched-to source starts: 5 s before [positionMs], never below 0. */
     fun switchStart(positionMs: Long): Long = (positionMs - SWITCH_BACK_MS).coerceAtLeast(0L)
+
+    // ---- A copy's end: the film's, or a copy that isn't the whole film ------------------------------------------------
+
+    /** How a copy from the add-ons came to its end ([copyEnd]). */
+    enum class CopyEnd {
+        /** The film's or episode's end: a whole copy played to its end. */
+        END,
+        /** It played under [MIN_PLAYED_MS] since it was opened (a switch started it at or past its end): not the end. */
+        BARELY_PLAYED,
+        /** A film's copy far shorter than the film ([shortCopy]): another video, not the end. */
+        SHORT,
+    }
+
+    /** A copy that played less than this since it was opened, and ended, didn't really play: its end isn't the film's. */
+    const val MIN_PLAYED_MS = 10_000L
+
+    /** A film's copy under this share of its runtime (in tenths: 60 %) is another video ([shortCopy])... */
+    const val SHORT_TENTHS = 6
+
+    /** ...when the film's runtime is known and this long or more, in minutes. */
+    const val LONG_FILM_MIN = 60
+
+    /**
+     * Whether a copy that came to its end ([durationMs] long; started at [startMs], [playedMs] played since its first
+     * frame) is the film's or episode's end. Not when it played under [MIN_PLAYED_MS] (a switch started it at or past its
+     * end), unless it was started inside its own last [MIN_PLAYED_MS] (a switch in the film's last seconds: that's all
+     * it had left); nor when it's a film's copy far shorter than the film ([shortCopy]). Then it's a broken copy, which
+     * gives way to the next one and never marks the film watched. [runtimeMin]: the film's runtime when known.
+     */
+    fun copyEnd(startMs: Long, playedMs: Long, durationMs: Long, runtimeMin: Int?, episode: Boolean): CopyEnd = when {
+        shortCopy(durationMs, runtimeMin, episode) -> CopyEnd.SHORT
+        playedMs < MIN_PLAYED_MS && !(startMs in 1 until durationMs && durationMs - startMs <= MIN_PLAYED_MS) -> CopyEnd.BARELY_PLAYED
+        else -> CopyEnd.END
+    }
+
+    /**
+     * A film's copy far shorter than the film: [durationMs] under 60 % ([SHORT_TENTHS]) of a known runtime of
+     * [LONG_FILM_MIN] minutes or more (the "making of" from the same torrent). Never an [episode]'s: episode runtimes
+     * aren't reliable enough. False when either length isn't known.
+     */
+    fun shortCopy(durationMs: Long, runtimeMin: Int?, episode: Boolean): Boolean {
+        if (episode || durationMs <= 0 || runtimeMin == null || runtimeMin < LONG_FILM_MIN) return false
+        return durationMs * 10 < runtimeMin * 60_000L * SHORT_TENTHS
+    }
+
+    /**
+     * Whether where a copy stands ([positionMs] of [durationMs]; it was started at [startMs]) may be kept as the film's or
+     * episode's place (its resume point, and watched when [app.fireplayer.vod.countsAsWatched]), by what its end would be
+     * now ([end], [copyEnd]): never from a film's copy far shorter than the film, nor an end from one a switch started
+     * at or past its own end (its place is only its end, held there). A place mid-way is kept from the start, as before,
+     * and so is a jump to the credits right after the first frame.
+     */
+    fun keepsPlace(end: CopyEnd, startMs: Long, positionMs: Long, durationMs: Long, creditsAtMs: Long?): Boolean = when (end) {
+        CopyEnd.END -> true
+        CopyEnd.BARELY_PLAYED -> startMs < durationMs || !app.fireplayer.vod.countsAsWatched(positionMs, durationMs, creditsAtMs)
+        CopyEnd.SHORT -> false
+    }
 
     /** The next episode's sources are looked up in this last part of an episode (§6.5, "the last ~4 minutes"). */
     const val NEXT_LOOKUP_MS = 4 * 60_000L

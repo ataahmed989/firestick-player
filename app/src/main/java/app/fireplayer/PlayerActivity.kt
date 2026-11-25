@@ -1845,6 +1845,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         if (state == Player.STATE_READY) {
             launchMark(LaunchLog.LOADED)
+            // A film's copy far shorter than the film, picked by FirePlayer, gives way to the next copy at once: the
+            // wrong video is held meanwhile (SourcePlayback.lengthKnown).
+            source?.let { s -> player?.duration?.takeIf { it > 0 }?.let { d -> if (s.lengthKnown(d)) player?.pause() } }
             pictureText.go()
             noteEpisodeLength()
             // The film's picture is known by now: how often the black-bar watch looks.
@@ -1883,8 +1886,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             return
         }
         if (state == Player.STATE_ENDED) {
-            completed = true
             val s = source
+            // A copy that ended without really playing (a switch started it past its end), or a film's copy far shorter
+            // than the film, isn't the film's end: nothing is recorded or closed, and the next copy plays from where the
+            // film was (SourcePlayback.reachedEnd).
+            if (s != null && !s.reachedEnd(player?.duration?.takeIf { it > 0 } ?: 0L)) {
+                updateProgress()
+                return
+            }
+            completed = true
             if (s != null) {
                 // Watched to the end; the next episode then starts from its own sources, when there is one.
                 player?.duration?.takeIf { it > 0 }?.let { d -> s.record(d, d, segments?.creditsAt) }
@@ -6447,6 +6457,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             sourcePrefs.edit().putString(STALL_CHOICE + key, choice).apply()
         }
 
+        override fun notWhole() {
+            // Kept with how the copy played (CopyHealth.notWhole): not picked by itself again, and Sources says why.
+            healthFor(player?.currentMediaItem?.localConfiguration?.uri)
+            if (health.notWhole == 0) health = health.copy(notWhole = 1)
+            keepHealth()
+        }
+
+        override fun runtimeMinutes(): Int = source?.request?.let { PlayerMeta.runtimeMinutes(it, vodDetails) } ?: 0
+
         override fun lineShort(mbps: Double) {
             // Two connections' combined speed is kept apart from one connection's: each ranks the lists with its own.
             // Under the key the lists are ranked by, so a film the server kept on one request still teaches them.
@@ -6490,6 +6509,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
      * beginning). It knows whether the copy playing plays smoothly, and its server's speed for its Details.
      */
     private fun openSourcesPanel(s: SourcePlayback) {
+        // A Continue card's resume asked only its copy's add-on: the others are asked now, not 15 s after the start.
+        s.session.widen()
         val sp = sourcesPanel ?: SourcesPanel(this, panel).also { sourcesPanel = it }
         val ep = s.request.target.episode
         val title = if (ep == null) "Sources" else "Sources · S${ep.season} E${ep.episode}"

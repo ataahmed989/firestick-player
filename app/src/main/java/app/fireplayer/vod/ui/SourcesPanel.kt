@@ -202,7 +202,7 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
         val serverNow = if (s.key == playingKey) server() else null
         var copy = s
         panel.openSub(mainLine(s), wide = true) {
-            facts(SourcesModel.details(copy, list?.plan, serverNow, ::day).map { (k, v) -> k to fact(v) })
+            facts(SourcesModel.details(copy, list?.plan, serverNow, film = list?.target?.episode == null, day = ::day).map { (k, v) -> k to fact(v) })
             val l = list ?: return@openSub
             val keep = move ?: return@openSub
             val film = SourcesModel.film(l)

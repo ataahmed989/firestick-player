@@ -20,6 +20,10 @@ import java.util.Locale
  * [noPicture] counts the plays in which this Stick showed no picture for the copy ([PictureWatch]): unlike a failure
  * to start, that's the TV's and the copy's, so a copy with any is no longer picked for a play by itself. One play
  * after it with its picture, for [FAILURE_FORGIVEN_MS] or more, clears it ([plus]).
+ *
+ * [notWhole] counts the plays in which the copy turned out not to be the whole film or episode: it ended at once, or a
+ * film's copy is far shorter than the film ([app.fireplayer.vod.play.PlayRules.copyEnd]), most often another video
+ * from the same torrent. Nothing a later play does clears it: it is no longer picked by itself either ([setAside]).
  */
 data class CopyHealth(
     val watchedMs: Long = 0,
@@ -34,14 +38,19 @@ data class CopyHealth(
     val noPicture: Int = 0,
     /** Of [droppedFrames], the decoder's: dropped late by Media3 or never decoded ([FrameTally.DROPPED], [FrameTally.NEVER]). */
     val lateFrames: Long = 0,
+    /** The plays in which the copy turned out not to be the whole film or episode ([setAside]). */
+    val notWhole: Int = 0,
 ) {
     /** [o], a later play, on top of these: a copy that showed no picture and then played with it is forgiven. */
     operator fun plus(o: CopyHealth) = CopyHealth(
         watchedMs + o.watchedMs, stalls + o.stalls, stallMs + o.stallMs, failures + o.failures, skips + o.skips,
         droppedFrames + o.droppedFrames, renderedFrames + o.renderedFrames, maxOf(at, o.at),
         if (o.noPicture == 0 && o.renderedFrames > 0 && o.watchedMs >= FAILURE_FORGIVEN_MS) 0 else noPicture + o.noPicture,
-        lateFrames + o.lateFrames,
+        lateFrames + o.lateFrames, notWhole + o.notWhole,
     )
+
+    /** Never picked for a play by itself: this Stick showed no picture for it, or it isn't the whole film ([notWhole]). */
+    val setAside: Boolean get() = noPicture > 0 || notWhole > 0
 
     /**
      * It keeps stopping to load: at least [MIN_STALLS] waits, and one a minute of film or more, or a tenth of the time
@@ -61,13 +70,14 @@ data class CopyHealth(
         if (droppedFrames + renderedFrames <= 0) 0.0 else 100.0 * droppedFrames / (droppedFrames + renderedFrames)
 
     /**
-     * "showed no picture here", "failed to play", "buffered 7× in 20 min", "loses 4.2% of frames", "smooth over 40 min",
-     * or null when too little is known.
+     * "showed no picture here", "shorter than the film here", "failed to play", "buffered 7× in 20 min", "loses 4.2% of
+     * frames", "smooth over 40 min", or null when too little is known.
      */
     fun summary(): String? {
         val min = watchedMs / 60_000
         return when {
             noPicture > 0 -> "showed no picture here"
+            notWhole > 0 -> "shorter than the film here"
             buffers -> if (min > 0) "buffered ${stalls}× in $min min" else "buffered ${stalls}× in the first minute"
             choppy -> "loses ${percent(lostPercent)} of frames"
             failures > 0 && watchedMs < FAILURE_FORGIVEN_MS -> if (failures == 1) "failed to play" else "failed to play $failures times"
@@ -96,13 +106,15 @@ data class CopyHealth(
 
         /**
          * "watched|stalls|stallMs|failures|skips|droppedFrames|renderedFrames", then "|at" when the date is known,
-         * "|at|noPicture" when there is one, and "|at|noPicture|late" when frames were lost late ([lateFrames]). The
-         * frame counts, the date, [noPicture] and [lateFrames] came later: a string kept before them has five, seven or
-         * nine fields, and still reads (with none counted); a version that knows fewer reads the first of these.
+         * "|at|noPicture" when there is one, "|at|noPicture|late" when frames were lost late ([lateFrames]), and
+         * "|at|noPicture|late|notWhole" when it wasn't the whole film ([notWhole]). The frame counts, the date,
+         * [noPicture], [lateFrames] and [notWhole] came later: a string kept before them has five, seven, nine or ten
+         * fields, and still reads (with none counted); a version that knows fewer reads the first of these.
          */
         fun encode(h: CopyHealth): String =
             "${h.watchedMs}|${h.stalls}|${h.stallMs}|${h.failures}|${h.skips}|${h.droppedFrames}|${h.renderedFrames}" +
                 when {
+                    h.notWhole > 0 -> "|${h.at}|${h.noPicture}|${h.lateFrames}|${h.notWhole}"
                     h.lateFrames > 0 -> "|${h.at}|${h.noPicture}|${h.lateFrames}"
                     h.noPicture > 0 -> "|${h.at}|${h.noPicture}"
                     h.at > 0 -> "|${h.at}"
@@ -116,7 +128,7 @@ data class CopyHealth(
                 f[0].toLongOrNull() ?: 0, f[1].toIntOrNull() ?: 0, f[2].toLongOrNull() ?: 0,
                 f[3].toIntOrNull() ?: 0, f[4].toIntOrNull() ?: 0,
                 f.getOrNull(5)?.toLongOrNull() ?: 0, f.getOrNull(6)?.toLongOrNull() ?: 0, f.getOrNull(7)?.toLongOrNull() ?: 0,
-                f.getOrNull(8)?.toIntOrNull() ?: 0, f.getOrNull(9)?.toLongOrNull() ?: 0,
+                f.getOrNull(8)?.toIntOrNull() ?: 0, f.getOrNull(9)?.toLongOrNull() ?: 0, f.getOrNull(10)?.toIntOrNull() ?: 0,
             )
         }
     }

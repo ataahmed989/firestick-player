@@ -441,6 +441,12 @@ class VodLibrary(
         if (gone.isNotEmpty()) writer.execute { runCatching { store.dropReleases(gone) } }
     }
 
+    /** Forgets the release [kind]/[id] (a film, or an episode's "tt…:S:E") last played from, that one only. */
+    fun forgetRelease(kind: Kind, id: String) {
+        val gone = state { releases.remove(key(kind, id)) } ?: return
+        writer.execute { runCatching { store.dropReleases(listOf(gone)) } }
+    }
+
     /** [kind]/[id] isn't in Continue Watching (any more): its releases are forgotten. Asked only when it has some. */
     private fun forgetIfOut(kind: Kind, id: String) {
         if (state { releasesOf(kind, id).isEmpty() }) return

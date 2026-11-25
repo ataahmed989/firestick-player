@@ -101,6 +101,7 @@ class EngineTest {
     }
     private val recorded = ArrayList<LastRelease>()
     private val forgotten = ArrayList<Title>()
+    private val forgottenOne = ArrayList<Title>()
     private var last: LastRelease? = null
     /** What this TV measured of each file played before, by its store key. */
     private val kept = HashMap<String, Measured>()
@@ -112,6 +113,9 @@ class EngineTest {
         }
         override fun forgetReleases(title: Title) {
             forgotten += title
+        }
+        override fun forgetRelease(title: Title, episode: EpisodeRef?) {
+            forgottenOne += title
         }
         override fun recordPlayback(title: Title, episode: EpisodeRef?, positionMs: Long, durationMs: Long, creditsAtMs: Long?) = Unit
     }
@@ -772,5 +776,147 @@ class EngineTest {
         assertEquals(listOf(show), forgotten)
         // The copy that played is the one remembered from then on.
         assertEquals(ReleaseKey(H3, 0), recorded.last().release)
+    }
+
+    // ---- A copy that isn't the whole film ----
+
+    @Test
+    fun aCopyThatIsntTheWholeFilmPutsBackTheCopyPlayingBeforeAndIsSetAside() {
+        answers[Addon.TORRENTIO] = {
+            answer(torrentio(H1), torrentio(H2, quality = "1080p", name = "Film.1080p.BluRay.x264-B", size = "16.8 GB"),
+                torrentio(H3, quality = "1080p", name = "Film.1080p.WEB-DL.x264-C", size = "8 GB"))
+        }
+        links.remove(Addon.MEDIAFUSION)
+        val session = engine.session(PlayRequest(filmTarget, StartAt.At(600_000), PlayOrigin.TITLE_PAGE))
+        val first = open(session).last() as Opened.Ready
+        assertEquals(ReleaseKey(H1, 0), first.source.release)
+        session.started(first.source, first.offer)
+        last = recorded.last()
+        // Next source: the 1080p copy plays, and is kept as the copy left...
+        val second = open(session, OpenWhy.USER).last() as Opened.Ready
+        assertEquals(ReleaseKey(H2, 0), second.source.release)
+        session.started(second.source, second.offer)
+        assertEquals(ReleaseKey(H2, 0), recorded.last().release)
+        last = recorded.last()
+        // ...until it turns out not to be the whole film: the 4K copy is the copy left again.
+        kept[ReleaseKey(H2, 0).storeKey] = Measured(null, CopyHealth(watchedMs = 1_300, notWhole = 1), null)
+        assertEquals(Step.TryNext, session.failed(second.source, Failure(FailureKind.NOT_WHOLE, Addon.TORRENTIO)))
+        assertEquals(ReleaseKey(H1, 0), recorded.last().release)
+        assertTrue(forgottenOne.isEmpty())
+        loop.advance()
+        // The list in memory ranks again at once: the row says why, and it's never picked by itself.
+        val row = session.list!!.sources.first { it.release == ReleaseKey(H2, 0) }
+        assertEquals(SourceRank.NOT_WHOLE, row.warning)
+        last = recorded.last()
+        val again = engine.session(PlayRequest(filmTarget, StartAt.At(600_000), PlayOrigin.CONTINUE_CARD,
+            preferred = LastRelease(Addon.TORRENTIO, ReleaseKey(H2, 0), 1L)))
+        val resumed = open(again).last() as Opened.Ready
+        assertTrue(resumed.source.release != ReleaseKey(H2, 0))
+        assertTrue(resumed.resumedNear)
+        // Picked in Sources, it plays.
+        val byHand = engine.session(PlayRequest(filmTarget, StartAt.Beginning, PlayOrigin.SOURCES_PANEL, chosen = row))
+        assertEquals(ReleaseKey(H2, 0), (open(byHand).last() as Opened.Ready).source.release)
+    }
+
+    @Test
+    fun aFirstCopyThatIsntTheWholeFilmIsForgottenAndOneThatNeverStartedChangesNothing() {
+        answers[Addon.TORRENTIO] = { answer(torrentio(H1), torrentio(H2, quality = "1080p", name = "Film.1080p.WEB-DL.x264-B")) }
+        links.remove(Addon.MEDIAFUSION)
+        val session = engine.session(PlayRequest(filmTarget, StartAt.Beginning, PlayOrigin.TITLE_PAGE))
+        val first = open(session).last() as Opened.Ready
+        session.started(first.source, first.offer)
+        // Nothing was kept before it: forgotten, that film's only.
+        assertEquals(Step.TryNext, session.failed(first.source, Failure(FailureKind.NOT_WHOLE, Addon.TORRENTIO)))
+        assertEquals(listOf(film), forgottenOne)
+        assertTrue(forgotten.isEmpty())
+        // The next copy, never started (no first frame), ends at once: the copy left isn't touched.
+        val second = open(session, OpenWhy.FAILED).last() as Opened.Ready
+        assertEquals(ReleaseKey(H2, 0), second.source.release)
+        val records = recorded.size
+        session.failed(second.source, Failure(FailureKind.NOT_WHOLE, Addon.TORRENTIO))
+        assertEquals(records, recorded.size)
+        assertEquals(1, forgottenOne.size)
+    }
+
+    // ---- A Continue card's resume asks the other add-ons once its copy plays ----
+
+    private fun continueCard(): app.fireplayer.vod.SourceSession {
+        answers[Addon.TORRENTIO] = { answer(torrentio(H1)) }
+        answers[Addon.MEDIAFUSION] = { answer(mediaFusion(H2), mediaFusion(H3, resolution = "1080p")) }
+        val preferred = LastRelease(Addon.MEDIAFUSION, ReleaseKey(H3, 0), 1L)
+        return engine.session(PlayRequest(filmTarget, StartAt.At(600_000), PlayOrigin.CONTINUE_CARD, preferred = preferred))
+    }
+
+    @Test
+    fun aContinueCardAsksTheOtherAddonsFifteenSecondsAfterItsCopyStarted() {
+        val session = continueCard()
+        val ready = open(session).last() as Opened.Ready
+        assertEquals(ReleaseKey(H3, 0), ready.source.release)
+        assertEquals(listOf(Addon.MEDIAFUSION), asked.map { it.first })
+        session.started(ready.source, ready.offer)
+        // Not while the first load fills: Torrentio is "still looking" meanwhile.
+        loop.advance(14_000)
+        assertEquals(listOf(Addon.MEDIAFUSION), asked.map { it.first })
+        assertEquals(AddonState.NotAsked, session.list!!.states[Addon.TORRENTIO])
+        assertEquals(2, session.list!!.sources.size)
+        loop.advance(1_000)
+        // Then the others, once; MediaFusion's answer, still fresh, is used again, not asked for twice.
+        assertEquals(listOf(Addon.MEDIAFUSION, Addon.TORRENTIO), asked.map { it.first })
+        assertEquals(AddonState.Answered(1), session.list!!.states[Addon.TORRENTIO])
+        assertTrue(session.list!!.complete)
+        assertEquals(3, session.list!!.sources.size)
+        // Sources, Next source and the fallbacks now have every add-on's copies.
+        assertTrue(session.list!!.sources.any { Addon.TORRENTIO in it.addons })
+        // Another start (a switch) asks nothing more.
+        session.started(ready.source, ready.offer)
+        loop.advance(60_000)
+        assertEquals(2, asked.size)
+    }
+
+    @Test
+    fun aContinueCardClosedBeforeThenAsksNothingMore() {
+        val session = continueCard()
+        val ready = open(session).last() as Opened.Ready
+        session.started(ready.source, ready.offer)
+        loop.advance(5_000)
+        session.close()
+        loop.advance(60_000)
+        assertEquals(listOf(Addon.MEDIAFUSION), asked.map { it.first })
+    }
+
+    @Test
+    fun theSourcesWindowOrNextSourceAsksTheOtherAddonsAtOnce() {
+        val session = continueCard()
+        val ready = open(session).last() as Opened.Ready
+        session.started(ready.source, ready.offer)
+        loop.advance(2_000)
+        session.widen()
+        loop.advance()
+        assertEquals(listOf(Addon.MEDIAFUSION, Addon.TORRENTIO), asked.map { it.first })
+        // The later ask is gone with it.
+        loop.advance(60_000)
+        assertEquals(2, asked.size)
+        // Next source, the same.
+        session.close()
+        engine.forget()
+        asked.clear()
+        val other = continueCard()
+        val first = open(other).last() as Opened.Ready
+        other.started(first.source, first.offer)
+        asked.clear()
+        loop.advance(1_000)
+        open(other, OpenWhy.USER)
+        assertEquals(listOf(Addon.TORRENTIO), asked.map { it.first })
+    }
+
+    @Test
+    fun aPlayThatAskedEveryAddonAsksNothingMoreOnceItStarts() {
+        answers[Addon.TORRENTIO] = { answer(torrentio(H1)) }
+        answers[Addon.MEDIAFUSION] = { answer(mediaFusion(H2)) }
+        val session = engine.session(PlayRequest(filmTarget, StartAt.Beginning, PlayOrigin.TITLE_PAGE))
+        val ready = open(session).last() as Opened.Ready
+        session.started(ready.source, ready.offer)
+        loop.advance(60_000)
+        assertEquals(2, asked.size)
     }
 }

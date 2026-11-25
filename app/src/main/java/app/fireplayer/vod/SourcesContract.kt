@@ -624,6 +624,12 @@ enum class FailureKind {
      * sound played: [app.fireplayer.player.PictureWatch]): skip it, the next one; the player remembers it for the copy.
      */
     NO_PICTURE,
+    /**
+     * Not the whole film or episode: it ended without really playing (a switch started it at or past its end), or a
+     * film's copy is far shorter than the film ([app.fireplayer.vod.play.PlayRules.copyEnd]), most often another video
+     * from the same torrent. Skip it, the next one; the player remembers it for the copy.
+     */
+    NOT_WHOLE,
     /** The receiver/TV refused the sound: decode on the Stick, same source. */
     AUDIO,
     /** Link expired or bound to another connection: re-ask and re-check once. */
@@ -756,6 +762,12 @@ interface SourceSession {
     /** The next episode's sources, once, in the last ~4 minutes ([LookupWhy.NEXT_EPISODE]); same-kind first. */
     fun lookUpNext(next: EpisodeRef, onList: (SourceList) -> Unit): Cancel
 
+    /**
+     * Every add-on is asked now, when only one was (a Continue card's resume asks the add-on of its copy first): the
+     * viewer opened the player's Sources window. Nothing is asked again that is already in [list].
+     */
+    fun widen() = Unit
+
     /** The play is over: stops its requests. */
     fun close()
 }
@@ -851,6 +863,9 @@ interface PlaybackLibrary {
 
     /** Forgets the releases [title] last played from (a show: every episode's), so its next resume is the ranking's pick. */
     fun forgetReleases(title: Title) = Unit
+
+    /** Forgets the release [title] (and [episode]) last played from, that one only (a copy that wasn't the whole film). */
+    fun forgetRelease(title: Title, episode: EpisodeRef?) = Unit
 
     /**
      * Where playback stopped, as [VodRepository.recordProgress]; also marks the film or episode watched when

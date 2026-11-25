@@ -97,6 +97,15 @@ class SourcePlayback(
          * TV" stops picking files this connection can't keep up with ([app.fireplayer.vod.sources.LineRate]).
          */
         fun lineShort(mbps: Double) = Unit
+
+        /**
+         * The copy playing isn't the whole film or episode ([reachedEnd], [lengthKnown]): kept with how it played
+         * ([app.fireplayer.player.CopyHealth.notWhole]), so it isn't picked by itself again.
+         */
+        fun notWhole() = Unit
+
+        /** The film's runtime in minutes, as the title's details give it; 0 when not known (the title's own is used). */
+        fun runtimeMinutes(): Int = 0
     }
 
     /** The source playing (or being opened), and the add-on offer it came from. */
@@ -144,6 +153,18 @@ class SourcePlayback(
     private var netWait: Cancel? = null
     /** Said when the next source starts, in place of "Resumed near …": why the one before was left ([noPicture]). */
     private var switchNote: String? = null
+    /** Where the copy playing was started (ms): the film's place then, where the next copy starts if it isn't the whole film. */
+    private var copyStartMs = 0L
+    /** When the copy playing showed its first frame ([ticker] ms); null before it did. */
+    private var copyFrameAt: Long? = null
+    /** The next copy starts here: the one before wasn't the whole film ([giveWay]). */
+    private var resumeAt: Long? = null
+    /** The copy playing (or last opened) isn't the whole film: nothing of where it stands is recorded. */
+    private var notWholeNow = false
+    /** The copy playing's length was judged against the film's ([lengthKnown]). */
+    private var lengthJudged = false
+    /** The copy the viewer chose in a Sources window: it may play though it's shorter than the film ([lengthKnown]). */
+    private var chosenKey: String? = request.chosen?.key?.takeIf { request.origin == PlayOrigin.SOURCES_PANEL }
 
     /** The episode after this one (the page's, or found by the player), for the next episode's play; null for a film. */
     var next: EpisodeRef? = request.next
@@ -178,6 +199,7 @@ class SourcePlayback(
     /** A row picked in the player's Sources panel; [beginning] from its start (held OK › Play from beginning). */
     fun pick(source: PlaybackSource, beginning: Boolean) {
         pickedKey = source.key
+        chosenKey = source.key
         if (source.readiness == Readiness.NOT_READY) {
             fromBeginning = beginning
             opening?.cancel()
@@ -216,8 +238,11 @@ class SourcePlayback(
     private fun ready(o: Opened.Ready) {
         // A source was handed to the player before (it's built): this one takes its place.
         val switching = current != null
+        val back = resumeAt
         val start = when {
             fromBeginning -> 0L
+            // The copy before wasn't the whole film: where the film was when it started, not where it ended.
+            back != null -> back
             o.startMs != null -> o.startMs
             // Once a source played, a new one starts a little before where it was (§6.5).
             everPlayed -> PlayRules.switchStart(host.positionMs())
@@ -240,6 +265,12 @@ class SourcePlayback(
         netWait = null
         if (switching) host.log("another source starts at ${PlayRules.clock(start)}")
         host.startSource(o, start, switching)
+        // The new copy's own from here (the player kept where the one before stood as it changed over).
+        resumeAt = null
+        copyStartMs = start
+        copyFrameAt = null
+        notWholeNow = false
+        lengthJudged = false
         val why = switchNote
         switchNote = null
         if (why != null) host.notice(why)
@@ -257,7 +288,7 @@ class SourcePlayback(
         val left = request.preferred?.release ?: return false
         val l = session.list?.takeIf { it.complete } ?: return false
         return l.sources.none { s ->
-            (s.measured?.health?.noPicture ?: 0) == 0 &&
+            s.measured?.health?.setAside != true &&
                 s.offers.any { (it.release ?: s.release) == left && it.readiness != Readiness.NOT_READY }
         }
     }
@@ -277,7 +308,10 @@ class SourcePlayback(
         )
     }
 
-    /** Over: while a source plays, a note (it plays on); before any did, the play stops with [message]. */
+    /**
+     * Over: while a source plays, a note (it plays on); before any did, the play stops with [message] (after a copy that
+     * wasn't the whole film, saying so first).
+     */
     private fun end(message: String) {
         switchNote = null
         if (playing) {
@@ -286,8 +320,9 @@ class SourcePlayback(
         }
         loadTimer?.cancel()
         stopped = true
-        PlayOutcomes.put(request.target, message)
-        host.stopWith(message)
+        val said = if (notWholeNow) "${notWholeWords(NOT_WHOLE_STOP, !isEpisode)} $message" else message
+        PlayOutcomes.put(request.target, said)
+        host.stopWith(said)
     }
 
     // ---- Stage 3: the first load ------------------------------------------------------------------------------------
@@ -337,6 +372,8 @@ class SourcePlayback(
         loadTimer?.cancel()
         loadTimer = null
         PlayOutcomes.clear(request.target)
+        // The same copy again (a retry) goes on counting from its first frame.
+        if (copyFrameAt == null) copyFrameAt = ticker.now()
         offer?.let { session.started(s, it) }
         val now = ticker.now()
         session.stalls.jumped(now)
@@ -543,6 +580,72 @@ class SourcePlayback(
         act(step)
     }
 
+    /**
+     * The copy playing came to its end ([durationMs] long; the player's STATE_ENDED). True: the film's or episode's end
+     * ([PlayRules.copyEnd]), which the player records and acts on as before. False: it isn't the whole film (it ended
+     * without really playing, e.g. a switch started it past its end, or a film's copy is far shorter than the film):
+     * nothing of it is recorded, it's kept as such ([Host.notWhole]), and the next copy plays from where the film was
+     * when this one started, saying why ([NOT_WHOLE_NOTE]); nothing left, the play stops and the resume point stays.
+     */
+    fun reachedEnd(durationMs: Long): Boolean {
+        val s = current ?: return true
+        val end = copyEnd(durationMs)
+        if (end == PlayRules.CopyEnd.END) return true
+        val why = if (end == PlayRules.CopyEnd.SHORT) "its ${PlayRules.clock(durationMs)} is far shorter than the film's ${runtimeMin()} min"
+        else "it ended ${copyPlayedMs() / 1000} s after its first frame"
+        giveWay(s, why)
+        return false
+    }
+
+    /**
+     * The copy playing's length is known ([durationMs]; the player's first READY). A film's copy far shorter than the
+     * film ([PlayRules.shortCopy]) FirePlayer picked (a start, a resume, Next source, a switch) isn't played to its end:
+     * it gives way at once, as at its end ([reachedEnd]), and true is returned (the player holds the picture meanwhile).
+     * One the viewer chose in a Sources window plays on (kept as such all the same): its end is never the film's.
+     * Judged once, when the film's runtime is known (the title's details can come after the first READY: a later one).
+     */
+    fun lengthKnown(durationMs: Long): Boolean {
+        val s = current ?: return false
+        if (lengthJudged || durationMs <= 0 || closed || stopped) return false
+        val runtime = runtimeMin()
+        if (runtime == null && !isEpisode) return false
+        lengthJudged = true
+        if (!PlayRules.shortCopy(durationMs, runtime, isEpisode)) return false
+        if (s.key == chosenKey) {
+            host.log("this copy is far shorter than the film (${PlayRules.clock(durationMs)}): chosen by hand, it plays on")
+            host.notWhole()
+            return false
+        }
+        giveWay(s, "its ${PlayRules.clock(durationMs)} is far shorter than the film's ${runtimeMin()} min")
+        return true
+    }
+
+    /** [s] isn't the whole film: kept as such, then the next copy, from where the film was when [s] started. */
+    private fun giveWay(s: PlaybackSource, why: String) {
+        notWholeNow = true
+        // Kept first: the session's list ranks again with it at once.
+        host.notWhole()
+        if (closed || stopped) return
+        playing = false
+        loadTimer?.cancel()
+        loadTimer = null
+        val step = session.failed(s, Failure(FailureKind.NOT_WHOLE, offer?.addon, "not the whole film"))
+        host.log("this copy isn't the whole film ($why): " + stepWords(step))
+        switchNote = notWholeWords(NOT_WHOLE_NOTE, !isEpisode)
+        resumeAt = copyStartMs
+        act(step)
+    }
+
+    /** What the copy playing's end would be now ([PlayRules.copyEnd]), [durationMs] long. */
+    private fun copyEnd(durationMs: Long) = PlayRules.copyEnd(copyStartMs, copyPlayedMs(), durationMs, runtimeMin(), isEpisode)
+
+    /** How long the copy playing has played since its first frame; 0 before it showed one. */
+    private fun copyPlayedMs(): Long = copyFrameAt?.let { (ticker.now() - it).coerceAtLeast(0L) } ?: 0L
+
+    /** The film's runtime in minutes: the title's details', else the title's own; null when neither says. */
+    private fun runtimeMin(): Int? =
+        host.runtimeMinutes().takeIf { it > 0 } ?: app.fireplayer.vod.TitleDetails.runtimeMinutes(request.target.title.runtime)
+
     private fun awaitNetwork() {
         netWait?.cancel()
         host.log("no network: waiting for it with the same source at ${PlayRules.clock(host.positionMs())}")
@@ -590,9 +693,14 @@ class SourcePlayback(
 
     // ---- The library and the next episode --------------------------------------------------------------------------
 
-    /** Where playback is (on leaving, and now and then): the resume point, Continue Watching and the watched mark. */
+    /**
+     * Where playback is (on leaving, and now and then): the resume point, Continue Watching and the watched mark. Never
+     * from a copy that isn't the whole film, nor an end from one a switch started at or past its own end
+     * ([PlayRules.keepsPlace]): the film's own place, kept before, stays.
+     */
     fun record(positionMs: Long, durationMs: Long, creditsAtMs: Long?) {
-        if (!everPlayed || durationMs <= 0) return
+        if (!everPlayed || durationMs <= 0 || notWholeNow) return
+        if (!PlayRules.keepsPlace(copyEnd(durationMs), copyStartMs, positionMs, durationMs, creditsAtMs)) return
         library.recordPlayback(request.target.title, request.target.episode, positionMs, durationMs, creditsAtMs)
     }
 
@@ -668,6 +776,13 @@ class SourcePlayback(
         const val LIMIT_NOTE = "Playback keeps pausing · Next source in Picture & sound tries another"
         /** Said as the next source starts after one this Stick showed no picture for ([noPicture]). */
         const val NO_PICTURE_NOTE = "This copy showed no picture here · playing the next one"
+        /** Said as the next source starts after one that wasn't the whole film ([reachedEnd], [lengthKnown]). */
+        const val NOT_WHOLE_NOTE = "This copy isn't the whole film · playing the next one"
+        /** Said before why the play stopped, when the last copy wasn't the whole film and none was left. */
+        const val NOT_WHOLE_STOP = "This copy isn't the whole film."
+
+        /** [words] about a [film], or about an episode. */
+        fun notWholeWords(words: String, film: Boolean): String = if (film) words else words.replace("film", "episode")
         /** Said as a resume starts on another copy: the one left is no longer listed, or no longer cached. */
         const val COPY_GONE_NOTE = "The copy you were watching isn't available · playing the best one"
         const val NOT_FETCHED = "Nothing played · Sources lists every file"

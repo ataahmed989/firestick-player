@@ -1,5 +1,6 @@
 package app.fireplayer.vod.play
 
+import app.fireplayer.player.CopyHealth
 import app.fireplayer.player.MediaSpec
 import app.fireplayer.vod.Addon
 import app.fireplayer.vod.AddonState
@@ -17,6 +18,8 @@ import app.fireplayer.vod.SourceTarget
 import app.fireplayer.vod.StartAt
 import app.fireplayer.vod.TvFit
 import app.fireplayer.vod.TvPlan
+import app.fireplayer.vod.countsAsWatched
+import app.fireplayer.vod.play.PlayRules.CopyEnd
 import app.fireplayer.vod.sources.SourceRank
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -267,5 +270,98 @@ class PlayRulesTest {
         assertNull(PlayRules.nextEpisode(eps, EpisodeRef(2, 1), 5_000L))
         assertNull(PlayRules.nextEpisode(eps, EpisodeRef(2, 2), 50_000L))
         assertNull(PlayRules.nextEpisode(eps, EpisodeRef(0, 1), 5_000L))
+    }
+
+    // ---- A copy's end: a copy that ends without really playing is not the film's end ------------------------------
+
+    /** Avatar: Fire and Ash: about 198 min (11,880 s). */
+    private val avatarMin = 198
+    private val avatarMs = 11_880_000L
+    /** Its "1080p · HDR10 · Encode · 16.8 GB" copy: really a 5,708 s video (the making-of from the same torrent). */
+    private val makingOfMs = 5_708_000L
+
+    @Test
+    fun aCopyStartedPastItsEndIsntTheFilmsEnd() {
+        // Next source at 2:51:24 started it 5 s earlier, past its own end; it ended 1.3 s later. Runtime unknown: only
+        // "it barely played" tells.
+        assertEquals(CopyEnd.BARELY_PLAYED, PlayRules.copyEnd(10_279_000, 1_300, makingOfMs, null, episode = false))
+        // It never showed a frame.
+        assertEquals(CopyEnd.BARELY_PLAYED, PlayRules.copyEnd(10_279_000, 0, makingOfMs, null, episode = false))
+        // With the runtime known it's also far shorter than the film.
+        assertEquals(CopyEnd.SHORT, PlayRules.copyEnd(10_279_000, 1_300, makingOfMs, avatarMin, episode = false))
+        // An episode's copy that ends at once is no end either.
+        assertEquals(CopyEnd.BARELY_PLAYED, PlayRules.copyEnd(2_400_000, 900, 1_200_000, 45, episode = true))
+    }
+
+    @Test
+    fun aFilmsCopyFarShorterThanTheFilmIsntItsEndEvenWatchedThrough() {
+        assertTrue(PlayRules.shortCopy(makingOfMs, avatarMin, episode = false))
+        assertEquals(CopyEnd.SHORT, PlayRules.copyEnd(0, makingOfMs, makingOfMs, avatarMin, episode = false))
+        // Under 60 % of the runtime: 7,128 s of 11,880 s is the line.
+        assertTrue(PlayRules.shortCopy(7_127_999, avatarMin, episode = false))
+        assertFalse(PlayRules.shortCopy(7_128_000, avatarMin, episode = false))
+        // Its credits never mark the film watched (Exit after the credits, or leaving there).
+        assertFalse(PlayRules.keepsPlace(CopyEnd.SHORT, 0, 5_600_000, makingOfMs, 5_500_000))
+    }
+
+    @Test
+    fun aWholeCopyPlayedToItsEndIsTheFilmsEndAsBefore() {
+        assertEquals(CopyEnd.END, PlayRules.copyEnd(0, avatarMs, avatarMs, avatarMin, episode = false))
+        // Resumed, then watched to the end.
+        assertEquals(CopyEnd.END, PlayRules.copyEnd(9_000_000, 2_880_000, avatarMs, avatarMin, episode = false))
+        // A cut a little shorter than the runtime says is the film.
+        assertEquals(CopyEnd.END, PlayRules.copyEnd(0, 10_000_000, 10_000_000, avatarMin, episode = false))
+        // A switch in the film's last seconds: what it had left is all it could play.
+        assertEquals(CopyEnd.END, PlayRules.copyEnd(avatarMs - 8_000, 7_500, avatarMs, avatarMin, episode = false))
+        assertTrue(PlayRules.keepsPlace(CopyEnd.END, 9_000_000, avatarMs, avatarMs, null))
+        // An end the credits rule reached (Exit, or the next episode, once the credits began): watched, as before.
+        assertTrue(PlayRules.keepsPlace(CopyEnd.END, 9_000_000, 11_300_000, avatarMs, 11_200_000))
+        assertTrue(countsAsWatched(11_300_000, avatarMs, 11_200_000))
+    }
+
+    @Test
+    fun episodesAreNeverJudgedByTheirRuntime() {
+        // A 20 min file for a 45 (or 90) min episode, played through: its end. Episode runtimes aren't reliable.
+        assertFalse(PlayRules.shortCopy(1_200_000, 45, episode = true))
+        assertFalse(PlayRules.shortCopy(1_200_000, 90, episode = true))
+        assertEquals(CopyEnd.END, PlayRules.copyEnd(0, 1_200_000, 1_200_000, 90, episode = true))
+        assertTrue(PlayRules.keepsPlace(CopyEnd.END, 0, 1_200_000, 1_200_000, null))
+    }
+
+    @Test
+    fun anUnknownRuntimeOrOneUnderAnHourIsNeverJudged() {
+        assertFalse(PlayRules.shortCopy(600_000, null, episode = false))
+        assertEquals(CopyEnd.END, PlayRules.copyEnd(0, 600_000, 600_000, null, episode = false))
+        // A 59 min film's 20 min copy isn't judged by length; a 60 min one's is.
+        assertFalse(PlayRules.shortCopy(1_200_000, 59, episode = false))
+        assertEquals(CopyEnd.END, PlayRules.copyEnd(0, 1_200_000, 1_200_000, 59, episode = false))
+        assertTrue(PlayRules.shortCopy(1_200_000, PlayRules.LONG_FILM_MIN, episode = false))
+        // Nor a copy whose length isn't known.
+        assertFalse(PlayRules.shortCopy(0, avatarMin, episode = false))
+    }
+
+    @Test
+    fun whereACopyStandsIsKeptMidWayButNeverAnEndItDidntPlay() {
+        // A copy just switched to, mid-film: kept as before.
+        assertTrue(PlayRules.keepsPlace(CopyEnd.BARELY_PLAYED, 3_595_000, 3_600_000, 7_200_000, null))
+        // One started at or past its end: that "end" isn't kept (it would mark the film watched).
+        assertFalse(PlayRules.keepsPlace(CopyEnd.BARELY_PLAYED, 10_279_000, makingOfMs, makingOfMs, null))
+        assertFalse(PlayRules.keepsPlace(CopyEnd.BARELY_PLAYED, 10_279_000, 10_279_000, makingOfMs, null))
+        // A whole copy opened at 10:00 and jumped into its credits at once: watched, as before.
+        assertTrue(PlayRules.keepsPlace(CopyEnd.BARELY_PLAYED, 600_000, 6_600_000, 7_200_000, 6_500_000))
+        // Nothing from a film's copy far shorter than the film.
+        assertFalse(PlayRules.keepsPlace(CopyEnd.SHORT, 0, 600_000, makingOfMs, null))
+    }
+
+    @Test
+    fun aCopyThatWasntTheWholeFilmHereSaysSoInsteadOfPlayed() {
+        val short = Fixtures.source(3).copy(measured = Measured(null, CopyHealth(watchedMs = 1_300, notWhole = 1, at = 5L), 5L))
+        assertTrue(PlayRules.notWhole(short))
+        assertEquals("Shorter than the film here · played Nov 24", PlayRules.factsFrom(short) { "Nov 24" })
+        assertEquals("Shorter than the episode here · played Nov 24", PlayRules.factsFrom(short, film = false) { "Nov 24" })
+        // A copy that played whole, as before.
+        val whole = short.copy(measured = Measured(null, CopyHealth(watchedMs = 60_000, at = 5L), 5L))
+        assertFalse(PlayRules.notWhole(whole))
+        assertEquals("✓ played Nov 24", PlayRules.factsFrom(whole) { "Nov 24" })
     }
 }

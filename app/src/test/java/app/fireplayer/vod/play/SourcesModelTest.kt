@@ -319,4 +319,42 @@ class SourcesModelTest {
         assertEquals(SourceRank.HIGH_RATE, d["Warning"])
         assertEquals("English · 7.1 · Torrentio", PlayRules.noteLine(s, q60r, listOf("en")))
     }
+
+    @Test
+    fun detailsSayTheSoundMeasuredHereWhenTheAddonsDont() {
+        // The playing Avatar copy: the add-ons' words don't name its sound; the play here measured DD+ 5.1 at 48 kHz.
+        val spec = app.fireplayer.player.MediaSpec(audioCodec = "DD+", channels = 6, sampleRate = 48_000, audioLangs = "en")
+        val quiet = Fixtures.source(9).let { it.copy(facts = it.facts.copy(audio = null, channels = null), measured = Measured(spec, null, 1L)) }
+        assertEquals("DD+ 5.1 · measured here", SourcesModel.details(quiet, plan) { "Nov 24" }.toMap()["Sound"])
+        // The row's sound word is the same sound.
+        assertEquals("English · 5.1 · Torrentio", PlayRules.noteLine(quiet, plan, listOf("en")))
+        // Neither said nor measured: as before.
+        assertEquals("Not stated", SourcesModel.details(quiet.copy(measured = null), plan) { "" }.toMap()["Sound"])
+        // Said by the add-ons: their words, as before.
+        assertEquals("DD+ 5.1", SourcesModel.details(Fixtures.source(9).copy(measured = Measured(spec, null, 1L)), plan) { "" }.toMap()["Sound"])
+        // Measured Atmos this TV doesn't keep says so, as the add-ons' words do.
+        val atmos = quiet.copy(measured = Measured(spec.copy(atmos = true), null, 1L))
+        assertEquals("DD+ Atmos 5.1 · measured here · heard here as 5.1: Atmos not kept on this TV",
+            SourcesModel.details(atmos, plan) { "" }.toMap()["Sound"])
+    }
+
+    @Test
+    fun aCopyThatWasntTheWholeFilmSaysSoInsteadOfPlayed() {
+        val health = app.fireplayer.player.CopyHealth(watchedMs = 1_300, at = 5L, notWhole = 1)
+        val shortKey = Fixtures.source(2).release!!.storeKey
+        val ranked = SourceRank.rank((1..3).map { Fixtures.source(it) },
+            RankInput(plan, listOf("en"), { if (it == shortKey) Measured(null, health, 5L) else null }, 198, episode = false))
+        val short = ranked.first { it.key == "k2" }
+        assertEquals(SourceRank.NOT_WHOLE, short.warning)
+        assertTrue(PlayRules.noteLine(short, plan, listOf("en")).startsWith("⚠ Shorter than the film here"))
+        // Not "✓ played" on its row (its warning says what happened), but in Details, with the date.
+        val items = SourcesModel.items(Fixtures.list(target, ranked), 0, setOf(Section.UHD), day = { "Nov 24" })
+        assertFalse(items.at("src:UHD:k2").value.orEmpty().contains("played"))
+        assertEquals("Shorter than the film here · played Nov 24", SourcesModel.details(short, plan) { "Nov 24" }.toMap()["Facts"])
+        // An episode's copy, in an episode's words.
+        val episode = SourceRank.rank(listOf(Fixtures.source(2)),
+            RankInput(plan, listOf("en"), { Measured(null, health, 5L) }, 45, episode = true)).single()
+        assertEquals(SourceRank.NOT_WHOLE_EPISODE, episode.warning)
+        assertEquals("Shorter than the episode here · played Nov 24", SourcesModel.details(episode, plan, film = false) { "Nov 24" }.toMap()["Facts"])
+    }
 }
