@@ -22,7 +22,8 @@ import java.util.Date
  * order: [SourcesModel].
  *
  * OK on a row plays it ([onPick], from the resume point); a row not cached by the debrid service asks first. Right:
- * Details. Hold OK: Play from beginning or Details. "Show N" opens a kind in place. Back closes Details, then the window.
+ * Details, where a film's 4K copy can be moved to the IMAX group or back to 4K ([move]). Hold OK: Play from beginning or
+ * Details. "Show N" opens a kind in place. Back closes Details, then the window.
  */
 class SourcesPanel(private val activity: Activity, private val panel: SidePanel) {
 
@@ -31,6 +32,7 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
     private var playingKey: String? = null
     private var smooth = false
     private var next: (() -> PlaybackSource?)? = null
+    private var move: ((PlaybackSource, Boolean) -> Unit)? = null
     private var server: () -> String? = { null }
     private var opened = HashSet<SourcesModel.Section>()
     private var items: List<SourcesModel.Item> = emptyList()
@@ -45,6 +47,7 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
      * Opens the window titled [title] ("Sources", "Sources · S2 E5 "Peacekeepers"") over the screen, or over the
      * window showing ([sub]: Back returns to it). In the player, [smooth] says whether the copy playing plays without
      * stalling, [server] how fast its server is delivering (its Details' "Server"), and [next] what Next source plays.
+     * [move] keeps a film's copy moved to 4K IMAX (true) or to 4K in its Details ([SourcesModel.moveLabel]).
      */
     fun open(
         title: String,
@@ -56,6 +59,7 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
         smooth: Boolean = false,
         server: () -> String? = { null },
         next: (() -> PlaybackSource?)? = null,
+        move: ((source: PlaybackSource, imax: Boolean) -> Unit)? = null,
         onPick: (source: PlaybackSource, fromBeginning: Boolean) -> Unit,
     ) {
         this.list = list
@@ -63,6 +67,7 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
         this.playingKey = playingKey
         this.smooth = smooth
         this.next = next
+        this.move = move
         this.server = server
         this.onPick = onPick
         opened = HashSet()
@@ -115,8 +120,9 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
             override fun onKey(index: Int, keyCode: Int, event: KeyEvent): Boolean {
                 // Right on a copy: its Details (what its row leaves out).
                 if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
-                    val s = shown.getOrNull(index)?.source ?: return false
-                    if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && !held) details(s)
+                    val item = shown.getOrNull(index) ?: return false
+                    val s = item.source ?: return false
+                    if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && !held) details(s, item.section)
                     return true
                 }
                 val ok = keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER
@@ -125,7 +131,7 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
                 if (event.action == KeyEvent.ACTION_DOWN && (event.repeatCount > 0 || event.isLongPress)) {
                     if (!held) {
                         held = true
-                        shown.getOrNull(index)?.source?.let { holdMenu(it) }
+                        shown.getOrNull(index)?.let { item -> item.source?.let { holdMenu(it, item.section) } }
                     }
                     return true
                 }
@@ -157,14 +163,14 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
     }
 
     /** Hold OK on a row: Play from beginning, Details, in the hold window beside the row (it's selected). */
-    private fun holdMenu(s: PlaybackSource) {
+    private fun holdMenu(s: PlaybackSource, section: SourcesModel.Section?) {
         FireDialog.hold(
             activity,
             // The row's own main line, so the window names the copy as the list did.
             mainLine(s),
             listOf(
                 "Play from beginning" to { play(s, beginning = true) },
-                "Details" to { details(s) },
+                "Details" to { details(s, section) },
             ),
             fromPanel = true,
         )
@@ -178,12 +184,30 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
 
     /**
      * Details: what the row leaves out, and each add-on's own words (never a link), over the window titled as the row
-     * names the copy; Back returns to it.
+     * names the copy; Back returns to it. A film's 4K copy has one more row, Move to IMAX group (or to 4K group): kept at
+     * once ([move]), the list ranks again, and Back finds the row from a kind ([section]) under its new one, opened.
      */
-    private fun details(s: PlaybackSource) {
+    private fun details(s: PlaybackSource, section: SourcesModel.Section?) {
         val serverNow = if (s.key == playingKey) server() else null
+        var copy = s
         panel.openSub(mainLine(s), wide = true) {
-            facts(SourcesModel.details(s, list?.plan, serverNow, ::day).map { (k, v) -> k to fact(v) })
+            facts(SourcesModel.details(copy, list?.plan, serverNow, ::day).map { (k, v) -> k to fact(v) })
+            val l = list ?: return@openSub
+            val keep = move ?: return@openSub
+            val film = SourcesModel.film(l)
+            val label = SourcesModel.moveLabel(copy, film) ?: return@openSub
+            row(label) {
+                val imax = label == SourcesModel.TO_IMAX
+                copy = copy.copy(imaxMove = imax)
+                keep(copy, imax)
+                if (section != null) {
+                    val to = SourcesModel.sectionOf(copy, film)
+                    opened += to
+                    backTo(SourcesModel.rowKey(to, copy))
+                }
+                setTitle(mainLine(copy))
+                refresh()
+            }
         }
     }
 

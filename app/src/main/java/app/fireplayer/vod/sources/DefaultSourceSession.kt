@@ -406,12 +406,12 @@ internal class DefaultSourceSession(
         s.key in visited || s.offers.any { o -> releaseOf(s, o)?.let { it.storeKey in visitedFiles } == true }
 
     /**
-     * Next source and switches: down "Best for this TV" from the copy playing, its own group first
-     * ([SourceRank.nextOrder]), skipping what failed here and copies that showed no picture here before; first what
-     * hasn't played in this session.
+     * Next source and switches: down the copy playing's own group in the Sources window from it, then the groups under
+     * it, then what's above ([SourceRank.nextOrder], never a copy that showed no picture here), skipping what failed
+     * here; first what hasn't played in this session.
      */
     private fun nextOf(l: SourceList): PlaybackSource? {
-        val next = SourceRank.nextOrder(l.sources, currentKey(), target.episode == null).filter { usable(it) && !noPictureHere(it) }
+        val next = SourceRank.nextOrder(l.sources, currentKey(), target.episode == null).filter { usable(it) }
         return next.firstOrNull { !visited(it) } ?: next.firstOrNull()
     }
 

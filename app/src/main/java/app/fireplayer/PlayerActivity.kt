@@ -74,7 +74,6 @@ import androidx.media3.exoplayer.SeekParameters
 import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.source.LoadEventInfo
 import androidx.media3.exoplayer.source.MediaLoadData
-import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.SubtitleView
 import app.fireplayer.data.Dimmer
@@ -146,7 +145,6 @@ import app.fireplayer.subs.SubtitlePresets
 import app.fireplayer.subs.SubtitleStyler
 import app.fireplayer.subs.placedLikePicture
 import app.fireplayer.ui.BarWatch
-import app.fireplayer.ui.ShapeWatch
 import app.fireplayer.ui.CountdownPill
 import app.fireplayer.player.SkipTimes
 import app.fireplayer.player.MkvChapters
@@ -430,8 +428,6 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private val freezeWatch = FreezeWatch { SystemClock.elapsedRealtime() }
     // A film from the add-ons whose picture this Stick doesn't show gives way to the next copy (see PictureWatch).
     private val pictureWatch = PictureWatch()
-    // A film's picture shape, a few looks in its first minutes, kept with what was measured of the copy (ShapeWatch).
-    private var shapeWatch: ShapeWatch? = null
     /** Whether the current player's own thread still answers; one per player. */
     private var threadBeat: ThreadBeat? = null
     // The next quiet retry builds a new player instead of loading again (a film that froze).
@@ -702,7 +698,6 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // The frame is given its size outright (applyDisplayMode), never the film's shape to work out by itself.
         videoFrame.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FILL
         barWatch = BarWatch(surfaceView, { player?.isPlaying == true }) { applyDisplayMode() }
-        shapeWatch = ShapeWatch(surfaceView)
         root.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
             if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) applyDisplayMode()
         }
@@ -979,7 +974,6 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // Never left pointing at a screen that's gone (onStop's releasePlayer normally takes it away first).
         if (FilmRoom.film === filmRoom) FilmRoom.film = null
         barWatch?.release()
-        shapeWatch?.release()
         liveSettings?.release()
         if (diagMade.isInitialized()) diag.release()
         if (stale) return
@@ -2446,23 +2440,6 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         s.noPicture(formatWide, said = never)
     }
 
-    /**
-     * From [postPlayTick], for a film from the add-ons (not an episode): its picture's shape, a few looks in its first
-     * minutes ([ShapeWatch]), from the decoder's frame size, or a tiny copy of a 16:9 frame (none when tunnelled or
-     * protected).
-     */
-    private fun lookAtShape() {
-        val s = source ?: return
-        if (s.request.target.episode != null) return
-        val p = player ?: return
-        val watch = shapeWatch ?: return
-        if (!watch.due(SystemClock.elapsedRealtime(), p.isPlaying && !filmHeld())) return
-        val size = p.videoSize
-        val tunnelled = (p.trackSelectionParameters as? DefaultTrackSelector.Parameters)?.tunnelingEnabled == true
-        val copyable = !tunnelled && selectedFormat(C.TRACK_TYPE_VIDEO)?.drmInitData == null
-        watch.look(size.width, size.height, size.pixelWidthHeightRatio, p.currentPosition, copyable)
-    }
-
     private val resumeAfterFreeze = Runnable {
         if (pausedForFreeze) {
             pausedForFreeze = false
@@ -2929,7 +2906,6 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             }
             checkFreeze()
             checkPicture()
-            lookAtShape()
             tellDamageSkip()
             // What the film has loaded ahead running low while the skip preview loads beside it: previews stop for it.
             if (previewGuard.active) player?.let {
@@ -5835,10 +5811,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             keptAt = System.currentTimeMillis()
             keptSized = (before?.sizeBytes ?: 0L) > 0L
         }
-        // The play's date, the same all through it: "✓ played" in Sources, and when it last played here. A film's picture
-        // shape as looked at so far in this play (ShapeWatch: the copy playing's, see healthFor).
-        val shapes = shapeWatch?.samples.orEmpty()
-        val now = spec.copy(playedAt = keptAt, aspects = if (shapes.isEmpty()) spec.aspects else shapes.toList())
+        // The play's date, the same all through it: "✓ played" in Sources, and when it last played here.
+        val now = spec.copy(playedAt = keptAt)
         val text = MediaSpec.encode(MediaSpec.merged(before, now))
         if (qualitySeen.getString(key, null) == text) return
         val edit = qualitySeen.edit()
@@ -5902,8 +5876,6 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             readyOnce = false
             stallSince = 0
             if (watchingSince > 0) watchingSince = SystemClock.elapsedRealtime()
-            // Its picture's shape is looked at afresh.
-            shapeWatch?.reset()
         }
         return key
     }
@@ -6525,7 +6497,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             if (diag.meter.bytes > 0L) app.fireplayer.player.ArrivalWords.server(d.sustainedMbps, d.sustainedSeconds, need / 1_000_000.0) else null
         }
         sp.open(title, s.session.list, s.session.attempts, playingRow(s), sub = true, smooth = s.smooth, server = server,
-            next = s.session::nextPick) { picked, beginning ->
+            next = s.session::nextPick, move = { src, imax -> Sources.get(this).moveImax(s.request.target, src, imax) }) { picked, beginning ->
             panel.close()
             hideControls()
             // The copy playing (its row at the top): it plays on, unless asked to start from the beginning.

@@ -8,7 +8,6 @@ import app.fireplayer.vod.BestWhy
 import app.fireplayer.vod.Hdr
 import app.fireplayer.vod.PlaybackSource
 import app.fireplayer.vod.Readiness
-import app.fireplayer.vod.SourceGroup
 import app.fireplayer.vod.SourceList
 import app.fireplayer.vod.TvFit
 import app.fireplayer.vod.TvPlan
@@ -31,7 +30,10 @@ object SourcesModel {
 
     enum class Kind { NOTE, HEADING, SOURCE, SHOW_MORE }
 
-    /** The window's kinds of copy, in order; one [startsOpen] false stays closed until "Show N". */
+    /**
+     * The window's kinds of copy, in order ([SourceRank.listPlace] is a copy's place in it); one [startsOpen] false
+     * stays closed until "Show N".
+     */
     enum class Section(val label: String, val startsOpen: Boolean) {
         /** 2160p IMAX copies of a film ([PlayRules.imax]). */
         IMAX("4K IMAX", true),
@@ -63,6 +65,9 @@ object SourcesModel {
         val chosen: Boolean = false,
     )
 
+    /** The key of [s]'s row under [section]. */
+    fun rowKey(section: Section, s: PlaybackSource): String = "src:${section.name}:${s.key}"
+
     /** Rows an open kind shows before "Show N more". */
     const val FIRST_ROWS = 5
 
@@ -82,15 +87,23 @@ object SourcesModel {
     /** The words [SourceRank.fit] gives a copy this connection was measured too slow for ("Needs 69 Mb/s · this connection brought 72"). */
     private const val SLOW_LINE_WORDS = "this connection brought"
 
-    /** The section [s] is listed under; 4K IMAX for a [film]'s IMAX copies only ([SourceRank.isImaxCopy]). */
-    fun sectionOf(s: PlaybackSource, film: Boolean = true): Section = when (s.group) {
-        SourceGroup.NOT_ON_RD -> Section.NOT_CACHED
-        SourceGroup.CINEMA -> Section.CINEMA
-        SourceGroup.THREE_D -> Section.THREE_D
-        SourceGroup.OTHER -> Section.UNSTATED
-        SourceGroup.UHD -> if (PlayRules.imax(s, film)) Section.IMAX else Section.UHD
-        SourceGroup.FHD -> Section.FHD
-        SourceGroup.LOWER -> if (SourceRank.isSd(s)) Section.LOWER else Section.HD
+    /** The section [s] is listed under ([SourceRank.listPlace]); 4K IMAX for a [film]'s IMAX copies only ([SourceRank.isImaxCopy]). */
+    fun sectionOf(s: PlaybackSource, film: Boolean = true): Section = Section.entries[SourceRank.listPlace(s, film)]
+
+    const val TO_IMAX = "Move to IMAX group"
+    const val TO_UHD = "Move to 4K group"
+
+    /**
+     * Details' move for [s] ([TO_IMAX], [TO_UHD]): a [film]'s 4K copy in 4K or 4K IMAX whose file is known (the move is
+     * kept by it, [app.fireplayer.vod.sources.ImaxMoves]); null for any other.
+     */
+    fun moveLabel(s: PlaybackSource, film: Boolean): String? {
+        if (!film || (s.release == null && s.offers.none { it.release != null })) return null
+        return when (sectionOf(s, film)) {
+            Section.IMAX -> TO_UHD
+            Section.UHD -> TO_IMAX
+            else -> null
+        }
     }
 
     /** Whether [list] is a film's (IMAX is a film's only). */
@@ -125,7 +138,7 @@ object SourcesModel {
      * [list] as a [View]. [playingKey]: the copy playing; [attempts]: this play's tries (Next source skips those that
      * failed); [smooth]: the copy playing plays without stalling, so 1080p and the kinds under it start closed when it
      * is a 4K one. Next source is [next]'s, the play's own pick ([app.fireplayer.vod.SourceSession.nextPick]), in the
-     * player; else the next copy down the list from the Best, its own kind first ([SourceRank.nextOrder]).
+     * player; else the next copy down the Best's own kind, then the kinds under it ([SourceRank.nextOrder]).
      */
     fun view(
         list: SourceList,
@@ -244,7 +257,7 @@ object SourcesModel {
                 else -> 0
             }
             for (s in g.rows.take(shown)) {
-                out += Item("src:${section.name}:${s.key}", Kind.SOURCE, line(s), note(s), marks(s, top = false), s, section,
+                out += Item(rowKey(section, s), Kind.SOURCE, line(s), note(s), marks(s, top = false), s, section,
                     chosen = s.key == playingKey)
             }
             val left = g.rows.size - shown

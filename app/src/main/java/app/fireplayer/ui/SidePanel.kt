@@ -65,7 +65,7 @@ class SidePanel(private val activity: Activity) {
         val session: Int,
         val key: Pair<String, Int>?,
         val wide: Boolean,
-        val entry: String?,
+        var entry: String?,
         val entryIndex: Int,
     )
     private val parents = ArrayList<Parent>()
@@ -189,6 +189,11 @@ class SidePanel(private val activity: Activity) {
     fun togglePart(part: String) {
         val set = openParts.getOrPut(part) { HashSet() }
         if (!set.remove(session)) set += session
+    }
+
+    /** Back from this window lands on the long list's entry [key] underneath (the row it was opened from moved). */
+    fun backTo(key: String) {
+        parents.lastOrNull()?.entry = key
     }
 
     /** Whether Back returns to a window under this one rather than closing. */

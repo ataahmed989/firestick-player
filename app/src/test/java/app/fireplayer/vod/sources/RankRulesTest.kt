@@ -53,7 +53,8 @@ class RankRulesTest {
         subtitles: String? = null,
         /** Settings › This TV › HDR10+ reaches this TV: on here, as the order was decided; off by default. */
         plus: Boolean = true,
-    ) = RankInput(plan.copy(hdr10PlusReaches = plus), wanted, measured, 120, episode, line, imaxAlways, subtitles, now)
+        imaxMove: (String) -> Boolean? = { null },
+    ) = RankInput(plan.copy(hdr10PlusReaches = plus), wanted, measured, 120, episode, line, imaxAlways, subtitles, now, imaxMove)
 
     private fun src(
         key: String,
@@ -153,21 +154,54 @@ class RankRulesTest {
     }
 
     @Test
-    fun aPlayMeasuring190MovesThatCopyAloneIntoTheImaxGroup() {
-        val wide = src("wide", hash = SourceFixtures.H1)
+    fun theViewersMoveDecidesTheImaxGroupOverTheNameForFilmsOnly() {
+        val plain = src("plain", hash = SourceFixtures.H1)
         val sibling = src("sibling", hash = SourceFixtures.H2)
-        fun measured(aspect: Float) = { k: String ->
-            if (k == "rd|${SourceFixtures.H1}|0") played(MediaSpec(width = 3840, height = 2020, aspect = aspect)) else null
-        }
-        val ranked = SourceRank.rank(listOf(sibling, wide), input(measured = measured(1.90f)))
-        assertEquals(listOf("wide", "sibling"), ranked.map { it.key })
-        assertTrue(SourceRank.isImaxCopy(ranked[0], film = true))
-        assertFalse(SourceRank.isImaxCopy(ranked[1], film = true))
-        assertEquals(SourcesModel.Section.IMAX, SourcesModel.sectionOf(ranked[0]))
-        assertEquals(SourcesModel.Section.UHD, SourcesModel.sectionOf(ranked[1]))
-        // A 16:9 picture isn't IMAX; nor is an episode.
-        assertFalse(SourceRank.isImaxCopy(SourceRank.rank(listOf(wide), input(measured = measured(1.78f))).single(), film = true))
-        assertFalse(SourceRank.isImaxCopy(ranked[0], film = false))
+        val named = src("named", name = "Film.2021.IMAX.2160p.REMUX", hash = SourceFixtures.H3)
+        // Moved to IMAX: that copy alone goes into 4K IMAX, and breaks the tie as IMAX does; moved to 4K: an IMAX
+        // name counts for nothing, in the ranking too.
+        val moves = mapOf("rd|${SourceFixtures.H1}|0" to true, "rd|${SourceFixtures.H3}|0" to false)
+        val ranked = SourceRank.rank(listOf(sibling, named, plain), input(imaxMove = { moves[it] }))
+        assertEquals(listOf("plain", "sibling", "named"), ranked.map { it.key })
+        assertEquals(listOf(true, null, false), ranked.map { it.imaxMove })
+        assertEquals(listOf(SourcesModel.Section.IMAX, SourcesModel.Section.UHD, SourcesModel.Section.UHD), ranked.map { SourcesModel.sectionOf(it) })
+        assertEquals("4K IMAX", app.fireplayer.vod.play.PlayRules.quality(ranked[0]))
+        assertEquals("4K", app.fireplayer.vod.play.PlayRules.quality(ranked[2]))
+        // Not moved: the name decides, as before; IMAX first: always follows the move.
+        assertEquals(listOf("named", "sibling"), keys(listOf(sibling, named)))
+        assertEquals("plain", keys(listOf(named, plain), input(imaxAlways = true, imaxMove = { moves[it] })).first())
+        // An episode is never moved (nor IMAX).
+        val episode = SourceRank.rank(listOf(plain), input(episode = true, imaxMove = { moves[it] })).single()
+        assertNull(episode.imaxMove)
+        assertEquals(SourcesModel.Section.UHD, SourcesModel.sectionOf(episode, film = false))
+        // Details offers the move for a film's 4K copy whose file is known, either way; nothing else.
+        assertEquals(SourcesModel.TO_UHD, SourcesModel.moveLabel(ranked[0], film = true))
+        assertEquals(SourcesModel.TO_IMAX, SourcesModel.moveLabel(ranked[2], film = true))
+        assertEquals(SourcesModel.TO_UHD, SourcesModel.moveLabel(named, film = true))
+        assertNull(SourcesModel.moveLabel(plain, film = false))
+        assertNull(SourcesModel.moveLabel(src("hd", 1080, hash = SourceFixtures.H4), film = true))
+        assertNull(SourcesModel.moveLabel(src("nofile"), film = true))
+    }
+
+    @Test
+    fun aMoveIsKeptInTheRecordsByFilmAndFileNeverALink() {
+        val records = app.fireplayer.data.MemoryPrefs()
+        var flushed = 0
+        val moves = ImaxMoves(records) { flushed++ }
+        val copy = src("c", hash = SourceFixtures.H1)
+        moves.save("tt0000001", copy, imax = true)
+        assertEquals(mapOf("imax|tt0000001|rd|${SourceFixtures.H1}|0" to "1"), records.values)
+        assertEquals(1, flushed)
+        assertEquals(true, moves.of("tt0000001")("rd|${SourceFixtures.H1}|0"))
+        assertNull(moves.of("tt0000002")("rd|${SourceFixtures.H1}|0"))
+        moves.save("tt0000001", copy, imax = false)
+        assertEquals(false, moves.of("tt0000001")("rd|${SourceFixtures.H1}|0"))
+        assertTrue(records.values.values.none { (it as String).contains("http") })
+        // A row with no known file keeps nothing.
+        moves.save("tt0000001", src("nofile"), imax = true)
+        assertEquals(1, records.values.size)
+        assertNull(ImaxMoves.decode(null))
+        assertNull(ImaxMoves.decode("x"))
     }
 
     // ---- Dolby Vision as this TV shows it ----
@@ -361,20 +395,30 @@ class RankRulesTest {
     // ---- Next source ----
 
     @Test
-    fun nextSourceGoesDownTheListInItsOwnGroupFirst() {
+    fun nextSourceGoesDownItsOwnGroupThenTheGroupsBelowThenAbove() {
         val a = src("a")
         val b = src("b")
         val c = src("c", 1080)
         val d = src("d", mbps = 20.0)
         val e = src("e", 1080, mbps = 10.0)
+        val hd = src("hd", 720)
         val imax = src("imax", name = "Film.2021.IMAX.2160p")
-        val list = listOf(imax, a, b, c, d, e)
-        assertEquals(listOf("d", "c", "e", "a"), SourceRank.nextOrder(list, "b", film = true).map { it.key }.filter { it != "imax" })
-        assertEquals(listOf("d", "c", "e", "a", "imax"), SourceRank.nextOrder(list, "b", film = true).map { it.key })
-        // From the IMAX copy: no other IMAX copy, so down the list.
-        assertEquals(listOf("a", "b", "c", "d", "e"), SourceRank.nextOrder(list, "imax", film = true).map { it.key })
+        val list = listOf(imax, a, c, hd, b, e, d)
+        fun next(from: String?, l: List<PlaybackSource> = list) = SourceRank.nextOrder(l, from, film = true).map { it.key }
+        // Down 4K from b, then 1080p and 720p as listed, then what's above it: 4K's a, then 4K IMAX.
+        assertEquals(listOf("d", "c", "e", "hd", "a", "imax"), next("b"))
+        // From the IMAX copy: no other IMAX copy, so 4K, then 1080p, then 720p.
+        assertEquals(listOf("a", "b", "d", "c", "e", "hd"), next("imax"))
+        // From the bottom of 1080p: 720p, then 1080p's c above it, then the groups above, top first.
+        assertEquals(listOf("hd", "c", "imax", "a", "b", "d"), next("e"))
+        // Never one that showed no picture here, nor one that isn't picked by itself.
+        val dark = d.copy(measured = played(MediaSpec(), CopyHealth(noPicture = 1)))
+        val uncached = c.copy(readiness = Readiness.NOT_READY)
+        assertEquals(listOf("e", "hd", "a", "imax"), next("b", listOf(imax, a, uncached, hd, b, e, dark)))
+        // A copy moved into 4K IMAX is next from the IMAX copy, ahead of 4K.
+        assertEquals(listOf("d", "a", "b"), next("imax", listOf(imax, a, b, d.copy(imaxMove = true))).take(3))
         // Nothing playing: the list's order.
-        assertEquals(list.map { it.key }, SourceRank.nextOrder(list, null, film = true).map { it.key })
+        assertEquals(list.map { it.key }, next(null))
         assertEquals(SourceGroup.THREE_D, SourceMerge.groupOf(SourceFacts(height = 1080), Readiness.PROBABLY_READY, cinema = false, threeD = true))
         assertEquals(SourceGroup.OTHER, SourceMerge.groupOf(SourceFacts(), Readiness.PROBABLY_READY, cinema = false, threeD = false))
     }

@@ -285,6 +285,11 @@ data class PlaybackSource(
     /** At most one amber warning ("Dolby Vision 7: may not play here"). */
     val warning: String? = null,
     val measured: Measured? = null,
+    /**
+     * A film's copy the viewer moved in its Details: true to 4K IMAX, false to 4K, whatever its name says; null when
+     * never moved ([app.fireplayer.vod.sources.SourceRank.isImaxCopy]).
+     */
+    val imaxMove: Boolean? = null,
 ) {
     val addons: List<Addon> get() = offers.map { it.addon }.distinct()
     val bothAddons: Boolean get() = addons.size > 1
@@ -400,6 +405,12 @@ interface SourcesRepository {
 
     /** Drops every kept list (the add-ons changed, a debrid account problem). */
     fun forget()
+
+    /**
+     * The viewer moved [source], a 4K copy of the film [target], to the 4K IMAX group ([imax]) or to 4K (its Details):
+     * kept for that film's file, and its list ranks again at once.
+     */
+    fun moveImax(target: SourceTarget, source: PlaybackSource, imax: Boolean) = Unit
 }
 
 // ---- Handing a play to the player ----------------------------------------------------------------------------------

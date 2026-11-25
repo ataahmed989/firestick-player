@@ -61,15 +61,8 @@ data class MediaSpec(
      * when not known or not HDR. A picture without it is tone-mapped blind by the TV.
      */
     val hdrInfo: Boolean? = null,
-    /** The picture's steady aspect ratio, judged on [aspects] ([ImaxAspect.steady]: 1.90 for IMAX); 0 when not known. */
-    val aspect: Float = 0f,
     /** When it last played here (epoch ms; the "✓ played" date); 0 when not known. */
     val playedAt: Long = 0,
-    /**
-     * The picture's shape, looked at a few times as a film played here ([AspectSamples]), from every play of it; empty
-     * when never looked at (an episode, a playlist's copy, a play too short).
-     */
-    val aspects: List<AspectSample> = emptyList(),
 ) {
     /** The kind of video decoder that played it. */
     enum class Decoder {
@@ -144,14 +137,16 @@ data class MediaSpec(
     }
 
     companion object {
-        /** [spec] as one line of text, to keep between plays ([decode] reads it back). */
+        /**
+         * [spec] as one line of text, to keep between plays ([decode] reads it back). Field 25 stays empty: it held a
+         * measured picture shape once (records with it, and with the shape's looks after the date, still read).
+         */
         fun encode(spec: MediaSpec): String = listOf(
             spec.videoCodec.orEmpty(), spec.profile.orEmpty(), spec.width, spec.height, spec.fps, spec.bitDepth,
             spec.hdr.orEmpty(), spec.videoBps, spec.videoHow.name, spec.audioCodec.orEmpty(), if (spec.atmos) 1 else 0,
             spec.channels, spec.sampleRate, spec.audioBps, spec.audioHow.name, spec.overallBps, spec.sizeBytes,
             spec.measuredSecs, spec.audioLangs, spec.subLangs, spec.dvBaseLayer, spec.dvProfile, spec.decoder.name,
-            if (spec.hdr10Plus) 1 else 0, spec.hdrInfo?.let { if (it) 1 else 0 } ?: "", spec.aspect, spec.playedAt,
-            AspectSample.encode(spec.aspects),
+            if (spec.hdr10Plus) 1 else 0, spec.hdrInfo?.let { if (it) 1 else 0 } ?: "", "", spec.playedAt,
         ).joinToString(SEP) { it.toString().replace(SEP, " ") }
 
         fun decode(text: String): MediaSpec? {
@@ -177,24 +172,16 @@ data class MediaSpec(
                     "0" -> false
                     else -> null
                 },
-                aspect = f.getOrNull(25)?.toFloatOrNull()?.takeIf { it > 0f && it < 10f } ?: 0f,
                 playedAt = f.getOrNull(26)?.toLongOrNull() ?: 0L,
-                aspects = AspectSample.decode(f.getOrNull(27)),
             )
         }
 
         /**
          * What was measured of a copy before ([kept]) and in this play ([now]), as one: each rate weighted by how much
          * film it was counted over, so a copy's figure firms up every time it's played instead of following one scene.
-         * The picture's shape looked at in other parts of the film before stays ([AspectSample.merged]).
          */
         fun merged(kept: MediaSpec?, now: MediaSpec): MediaSpec {
-            val aspects = AspectSample.merged(kept?.aspects.orEmpty(), now.aspects)
-            // The picture's steady shape, judged on every look kept ([ImaxAspect.steady]): IMAX by measure.
-            val aspect = if (aspects.isEmpty()) now.aspect.takeIf { it > 0f } ?: kept?.aspect ?: 0f else ImaxAspect.steady(aspects)
-            if (kept == null || kept.measuredSecs <= 0 || now.measuredSecs <= 0) {
-                return if (aspects == now.aspects && aspect == now.aspect) now else now.copy(aspects = aspects, aspect = aspect)
-            }
+            if (kept == null || kept.measuredSecs <= 0 || now.measuredSecs <= 0) return now
             val a = kept.measuredSecs
             val b = now.measuredSecs
             fun mix(x: Long, y: Long) = if (x > 0 && y > 0) (x * a + y * b) / (a + b) else maxOf(x, y)
@@ -207,9 +194,7 @@ data class MediaSpec(
                 decoder = now.decoder.takeIf { it != Decoder.UNKNOWN } ?: kept.decoder,
                 hdr10Plus = now.hdr10Plus || kept.hdr10Plus,
                 hdrInfo = now.hdrInfo ?: kept.hdrInfo,
-                aspect = aspect,
                 playedAt = maxOf(now.playedAt, kept.playedAt),
-                aspects = aspects,
             )
         }
 

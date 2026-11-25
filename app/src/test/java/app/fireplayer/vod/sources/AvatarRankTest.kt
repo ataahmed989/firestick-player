@@ -250,10 +250,10 @@ class AvatarRankTest {
         assertNull(playing.best)
         assertTrue(playing.next!!.has(e))
         assertTrue(playing.reason!!.contains("ahead of the IMAX copy"))
-        // The IMAX group's copy, playing: Next source has no other IMAX copy, so it goes on down the list.
+        // The IMAX group's copy, playing: Next source has no other IMAX copy, so it goes on to the 4K group, its best first.
         val onImax = SourcesModel.view(list, playingKey = keyOf(list.sources, a))
         assertFalse(onImax.playingIsBest)
-        assertTrue(onImax.next!!.has(b))
+        assertTrue(onImax.next!!.has(d))
     }
 
     @Test

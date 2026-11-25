@@ -2,7 +2,6 @@ package app.fireplayer.vod.sources
 
 import app.fireplayer.player.CopyLanguage
 import app.fireplayer.player.CopyRank
-import app.fireplayer.player.ImaxAspect
 import app.fireplayer.player.MediaSpec
 import app.fireplayer.vod.BestWhy
 import app.fireplayer.vod.Hdr
@@ -35,6 +34,11 @@ class RankInput(
     val subtitles: String? = null,
     /** Now, epoch ms: "Buffered here before" stops counting [SourceRank.TROUBLE_KEEP_MS] after; 0 never. */
     val now: Long = 0L,
+    /**
+     * The viewer's move of a film's file, by [app.fireplayer.vod.ReleaseKey.storeKey] ([ImaxMoves]): true moved to 4K
+     * IMAX, false to 4K; null when never moved.
+     */
+    val imaxMove: (String) -> Boolean? = { null },
 )
 
 /**
@@ -53,7 +57,7 @@ class RankInput(
  * 8. Source kind (Remux, BluRay encode, WEB-DL, WEBRip, HDTV), then bit depth (10-bit taken for HDR and 4K HEVC).
  * 9. HDR10+ where it reaches the TV ([TvPlan.hdr10PlusReaches]; Dolby Vision on a Dolby Vision TV); a picture that
  *    played here without HDR10's brightness data last.
- * 10. IMAX (films only: the name says IMAX, or a play measured 1.90:1, [ImaxAspect]); first of all with
+ * 10. IMAX (films only: the name says IMAX or IMX, or the viewer moved it there, [isImaxCopy]); first of all with
  *    [RankInput.imaxAlways].
  * 11. The film's own language just above the viewer's dub ([language]), subtitles in the viewer's language a little
  *    more; of equal quality the best of each sit side by side ([pairLanguages]).
@@ -92,7 +96,8 @@ object SourceRank {
         val scored = withoutSd(sources).mapIndexed { i, s ->
             val measured = measuredOf(s, input)
             val (fit, warning) = fit(asPlayedHere(s.facts, measured), input.plan, measured, input.lineMbps, input.now)
-            val ranked = s.copy(fit = fit, warning = warning, measured = measured)
+            val moved = if (input.episode) null else movedOf(s, input)
+            val ranked = s.copy(fit = fit, warning = warning, measured = measured, imaxMove = moved)
             Scored(ranked, i, keyOf(ranked, input))
         }
         return pairLanguages(scored.sortedWith(ORDER), input).map { it.source }
@@ -102,6 +107,13 @@ object SourceRank {
     private fun measuredOf(s: PlaybackSource, input: RankInput): Measured? {
         s.release?.let { r -> input.measured(r.storeKey)?.let { return it } }
         for (o in s.offers) o.release?.let { r -> if (r != s.release) input.measured(r.storeKey)?.let { return it } }
+        return null
+    }
+
+    /** The viewer's move of a row's file ([RankInput.imaxMove]): its own release's, else a merged offer's. */
+    private fun movedOf(s: PlaybackSource, input: RankInput): Boolean? {
+        s.release?.let { r -> input.imaxMove(r.storeKey)?.let { return it } }
+        for (o in s.offers) o.release?.let { r -> if (r != s.release) input.imaxMove(r.storeKey)?.let { return it } }
         return null
     }
 
@@ -436,13 +448,13 @@ object SourceRank {
     fun isImax(text: String?): Boolean = text != null && IMAX.containsMatchIn(text)
 
     /**
-     * Whether [s] is an IMAX copy of a [film] (never a show's episode): its name says IMAX (trusted), or a play here
-     * measured its picture steadily at 1.90:1 ([ImaxAspect]). Other copies of the film aren't moved by that measure.
+     * Whether [s] is an IMAX copy of a [film] (never a show's episode): the viewer moved it to 4K IMAX, or its name says
+     * IMAX or IMX and the viewer didn't move it to 4K ([PlaybackSource.imaxMove]). Never by measuring the picture.
      */
     fun isImaxCopy(s: PlaybackSource, film: Boolean): Boolean {
         if (!film) return false
-        if (s.offers.any { isImax(it.text) || isImax(it.filename) }) return true
-        return ImaxAspect.isImax(s.measured?.spec?.aspect ?: 0f)
+        s.imaxMove?.let { return it }
+        return s.offers.any { isImax(it.text) || isImax(it.filename) }
     }
 
     /**
@@ -570,25 +582,47 @@ object SourceRank {
     // ---- Next source ----
 
     /**
-     * Next source's order after [currentKey] (the copy playing, or the Best): the copies below it in [ranked] in its own
-     * group first ([sameGroup]), then those below it in the others, then those above it the same way; only those that
-     * may be picked by themselves. With no [currentKey] in the list, [ranked]'s order.
+     * Next source's order after [currentKey] (the copy playing, or the Best), by the Sources window's list: down its own
+     * group from it ([listPlace]), then the groups under that one, top to bottom, each in [ranked]'s order; only then the
+     * copies above it, its own group's first, then the groups above, top to bottom. Only those that may be picked by
+     * themselves, never one that showed no picture here. With no [currentKey] in the list, [ranked]'s order.
      */
     fun nextOrder(ranked: List<PlaybackSource>, currentKey: String?, film: Boolean): List<PlaybackSource> {
         val at = ranked.indexOfFirst { it.key == currentKey }
-        if (at < 0) return ranked.filter { it.automatic }
-        val current = ranked[at]
-        val below = ranked.subList(at + 1, ranked.size).filter { it.automatic }
-        val above = ranked.subList(0, at).filter { it.automatic }
-        val (belowSame, belowOther) = below.partition { sameGroup(it, current, film) }
-        val (aboveSame, aboveOther) = above.partition { sameGroup(it, current, film) }
-        return belowSame + belowOther + aboveSame + aboveOther
+        if (at < 0) return ranked.filter { pickable(it) }
+        val places = IntArray(ranked.size) { listPlace(ranked[it], film) }
+        val own = places[at]
+        val out = ArrayList<PlaybackSource>(ranked.size)
+        fun take(from: Int, until: Int, place: Int) {
+            for (i in from until until) if (places[i] == place && pickable(ranked[i])) out += ranked[i]
+        }
+        take(at + 1, ranked.size, own)
+        for (p in own + 1 until LIST_PLACES) take(0, ranked.size, p)
+        take(0, at, own)
+        for (p in 0 until own) take(0, ranked.size, p)
+        return out
     }
 
-    /** Whether [a] and [b] are listed in the same group of the Sources window (4K IMAX apart from 4K, SD apart from HD). */
-    fun sameGroup(a: PlaybackSource, b: PlaybackSource, film: Boolean): Boolean = a.group == b.group &&
-        (a.group != SourceGroup.UHD || isImaxCopy(a, film) == isImaxCopy(b, film)) &&
-        (a.group != SourceGroup.LOWER || isSd(a) == isSd(b))
+    /** Picked by itself: not a cinema recording or uncached ([PlaybackSource.automatic]), and not one that showed no picture here. */
+    private fun pickable(s: PlaybackSource): Boolean = s.automatic && (s.measured?.health?.noPicture ?: 0) == 0
+
+    /** How many groups the Sources window lists ([listPlace]). */
+    const val LIST_PLACES = 9
+
+    /**
+     * Where [s]'s group is in the Sources window's list, from the top ([app.fireplayer.vod.play.SourcesModel.Section],
+     * in its order): 4K IMAX (a [film]'s IMAX copies, [isImaxCopy]), 4K, 1080p, 720p, 3D, Resolution not stated, Cinema
+     * recordings, Not cached yet, Lower quality (SD).
+     */
+    fun listPlace(s: PlaybackSource, film: Boolean): Int = when (s.group) {
+        SourceGroup.UHD -> if ((s.facts.height ?: 0) >= 2160 && isImaxCopy(s, film)) 0 else 1
+        SourceGroup.FHD -> 2
+        SourceGroup.LOWER -> if (isSd(s)) 8 else 3
+        SourceGroup.THREE_D -> 4
+        SourceGroup.OTHER -> 5
+        SourceGroup.CINEMA -> 6
+        SourceGroup.NOT_ON_RD -> 7
+    }
 
     // ---- The same kind of source (next episode, §6.5) and the closest match (a Continue card's file gone) ----
 

@@ -177,7 +177,7 @@ object PlayRules {
     // ---- A Sources row's two lines (and the title page's source line) ----------------------------------------------
 
     /**
-     * A 2160p IMAX copy of a [film] ([SourceRank.isImaxCopy]: its name says IMAX or IMX, or a play here measured 1.90:1):
+     * A 2160p IMAX copy of a [film] ([SourceRank.isImaxCopy]: its name says IMAX or IMX, or the viewer moved it there):
      * the "4K IMAX" ones.
      */
     fun imax(s: PlaybackSource, film: Boolean = true): Boolean = (s.facts.height ?: 0) >= 2160 && SourceRank.isImaxCopy(s, film)

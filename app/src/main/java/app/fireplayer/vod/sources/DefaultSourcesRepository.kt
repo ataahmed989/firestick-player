@@ -2,6 +2,7 @@ package app.fireplayer.vod.sources
 
 import app.fireplayer.data.Prefs
 import app.fireplayer.data.Settings
+import app.fireplayer.data.SettingsWriter
 import android.annotation.SuppressLint
 import android.content.Context
 import android.net.ConnectivityManager
@@ -84,6 +85,8 @@ class DefaultSourcesRepository(
     private val originalLanguage: (app.fireplayer.vod.Title) -> String? = { null },
     /** The viewer's subtitle language ("en"); null when subtitles are off. */
     private val subtitles: () -> String? = { null },
+    /** The viewer's moves of films' copies between 4K IMAX and 4K ([moveImax]). */
+    private val moves: ImaxMoves? = null,
 ) : SourcesRepository {
 
     private class Answer(val parsed: ParsedAnswer, val keepUntil: Long)
@@ -196,6 +199,12 @@ class DefaultSourcesRepository(
     /** This TV's plan changed: the lists in memory rank again from the answers they have (nothing is asked again). */
     fun rerank() {
         for (entry in entries.values.toList()) if (entry.answers.isNotEmpty()) rebuild(entry)
+    }
+
+    override fun moveImax(target: SourceTarget, source: PlaybackSource, imax: Boolean) {
+        if (target.episode != null) return
+        moves?.save(target.title.id, source, imax)
+        rerank(target)
     }
 
     /** Only [target]'s list ranks again (a file of it played here and its exact size is known: its rows merge anew). */
@@ -450,6 +459,7 @@ class DefaultSourcesRepository(
         val line = runCatching { lineMbps() }.getOrNull()
         val preferred = runCatching { language() }.getOrDefault("en")
         val subs = runCatching { subtitles() }.getOrNull()
+        val moved = moves?.takeIf { target.episode == null }?.of(target.title.id)
         val now = wall()
         work.execute {
             // Always posted, so an answer never stays "looking" (a rank that throws keeps the list it had).
@@ -466,6 +476,7 @@ class DefaultSourcesRepository(
                     imaxAlways = imaxAlways,
                     subtitles = subs,
                     now = now,
+                    imaxMove = moved ?: { null },
                 )
                 // The same file from two add-ons is one row: by the exact size a play here measured, too.
                 val merged = SourceMerge.mergeKeyed(answers, input.runtimeMin) { r -> measured(r.storeKey)?.spec?.sizeBytes?.takeIf { it > 0 } }
@@ -595,6 +606,7 @@ class DefaultSourcesRepository(
                 language = { viewer.audioLanguage.ifEmpty { Locale.getDefault().language.ifEmpty { "en" } } },
                 originalLanguage = { title -> vod.originalLanguage(title) },
                 subtitles = { viewer.subtitleLanguage.ifEmpty { null } },
+                moves = ImaxMoves(Settings.records(app)) { SettingsWriter.shared.flush(it) },
                 main = loop,
                 io = Executors.newFixedThreadPool(3, VodRepositories.threads("FirePlayerSources", Process.THREAD_PRIORITY_BACKGROUND)),
                 work = Executors.newSingleThreadExecutor(VodRepositories.threads("FirePlayerSourcesRank", Process.THREAD_PRIORITY_BACKGROUND)),
