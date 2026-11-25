@@ -448,16 +448,22 @@ class RankRulesTest {
         assertEquals(57_600_000_000L, r64.facts.sizeBytes)
         assertEquals(listOf("64", "56"), keys(listOf(r56, r64)))
         assertEquals(listOf("64", "56"), keys(listOf(r64, r56)))
-        // 59 against 64: both near 60, the higher; 54 against 67: both a band off, the higher.
-        assertEquals(listOf("64", "59"), keys(listOf(at("59", 59.0), r64)))
+        // 59 against 64: the nearer; 54 against 72: the nearer, though lower; 54 against 67: 67 (5.6 weighted) is nearer.
+        assertEquals(listOf("59", "64"), keys(listOf(r64, at("59", 59.0))))
+        assertEquals(listOf("54", "72"), keys(listOf(at("72", 72.0), at("54", 54.0))))
         assertEquals(listOf("67", "54"), keys(listOf(at("54", 54.0), at("67", 67.0))))
+        // 61 against 59: nearly as far, so they tie and the higher (bigger) one wins.
+        assertEquals(listOf("61", "59"), keys(listOf(at("59", 59.0), at("61", 61.0))))
+        // 64 against a 56 Mb/s remux of the same picture: the rate decides before the remux label.
+        assertEquals(listOf("web64", "56"), keys(listOf(r56, at("web64", 64.0, origin = "WEB-DL"))))
         // A 75 Mb/s evening keeps about 57.7 with room: 56 is nearer that.
         val slow = input(line = 75.0)
         val ranked = SourceRank.rank(listOf(r64, r56), slow)
         assertEquals(listOf("56", "64"), ranked.map { it.key })
+        // The rate stays the ranking's own: the Best line names no copy beaten on it.
         val why = SourceRank.why(ranked, slow)!!
-        assertEquals(RankStep.RATE, why.step)
-        assertEquals("needs more room on your connection", why.lacks)
+        assertNull(why.beatenKey)
+        assertNull(why.lacks)
     }
 
     @Test
@@ -466,13 +472,13 @@ class RankRulesTest {
         val remux = at("remux85", 85.0)
         val ranked = SourceRank.rank(listOf(remux, web), input())
         assertEquals(listOf("web58", "remux85"), ranked.map { it.key })
+        // The remux beaten on the rate isn't named: no rate wording in the Best line.
         val why = SourceRank.why(ranked, input())!!
-        assertEquals("remux85", why.beatenKey)
-        assertEquals(RankStep.RATE, why.step)
-        assertEquals("further from your 60 Mb/s", why.lacks)
+        assertNull(why.beatenKey)
+        assertNull(why.lacks)
         // The viewer's own target moves it.
         assertEquals(listOf("remux85", "web58"), keys(listOf(web, remux), input(preferred = 85.0)))
-        assertEquals("further from your 85 Mb/s", SourceRank.why(SourceRank.rank(listOf(web, remux), input(preferred = 85.0)), input(preferred = 85.0))!!.lacks)
+        assertNull(SourceRank.why(SourceRank.rank(listOf(web, remux), input(preferred = 85.0)), input(preferred = 85.0))!!.beatenKey)
         // The setting's ends and default.
         assertEquals(60, SourceRank.PREFERRED_MBPS)
         assertEquals(20, SourceRank.preferredMbps(5))
@@ -526,12 +532,28 @@ class RankRulesTest {
         assertEquals(listOf("unknown", "hd"), keys(listOf(at("hd", 60.0, height = 1080), unknown)))
         assertEquals(TvFit.LIKELY to null, SourceRank.fit(unknown.facts, q60r, null, lineMbps = 30.0))
         assertTrue(LineRate.room(null, 30.0, remux = true))
-        // An unknown one beaten on the rate: nothing is said of what it lacks.
+        // An unknown one sits after copies within about 6 Mb/s (55, 67) and before those further off (53, 68).
+        assertEquals(listOf("r67", "r55", "unknown", "r68", "r53"),
+            keys(listOf(at("r53", 53.0), at("r68", 68.0), unknown, at("r55", 55.0), at("r67", 67.0))))
+        // An unknown one beaten on the rate isn't named.
         val ranked = SourceRank.rank(listOf(unknown, near), input())
         assertEquals(listOf("near", "unknown"), ranked.map { it.key })
-        val why = SourceRank.why(ranked, input())!!
-        assertEquals(RankStep.RATE, why.step)
-        assertNull(why.lacks)
+        assertNull(SourceRank.why(ranked, input())!!.beatenKey)
+    }
+
+    @Test
+    fun withNoRuntimeTheSizeOverAnAssumedLengthGivesTheRate() {
+        // An episode whose meta has no runtime (45 minutes assumed): a 2 GB 4K (about 5.9 Mb/s) is starved, after a 3 GB 1080p.
+        val episode = RankInput(q60r, listOf("en"), { null }, null, episode = true, now = now)
+        val starved = src("starved4k", mbps = null, origin = "WEB-DL", size = 2_000_000_000L)
+        val hd = src("hd", 1080, mbps = null, origin = "WEB-DL", size = 3_000_000_000L)
+        assertEquals(listOf("hd", "starved4k"), keys(listOf(starved, hd), episode))
+        // A film (120 minutes assumed): 54 GB is 60 Mb/s, 72 GB 80; the preferred bitrate still decides, ranking only.
+        val film = RankInput(q60r, listOf("en"), { null }, null, episode = false, now = now)
+        val near = src("web60", mbps = null, origin = "WEB-DL", size = 54_000_000_000L)
+        val far = src("remux80", mbps = null, size = 72_000_000_000L)
+        assertEquals(listOf("web60", "remux80"), keys(listOf(far, near), film))
+        assertEquals(TvFit.LIKELY to null, SourceRank.fit(far.facts, q60r, null))
     }
 
     @Test
@@ -641,8 +663,16 @@ class RankRulesTest {
     fun framesLostWithoutBufferingArentCalledBuffered() {
         val copy = src("copy", mbps = 50.0, origin = "BluRay")
         val choppy = Measured(null, CopyHealth(watchedMs = 20 * 60_000L, droppedFrames = 2_000, renderedFrames = 10_000, at = now - day), null)
+        // A copy recorded as choppy (frames shown twice count too, and records kept before the decoder's share) still
+        // goes down, quietly.
         assertEquals(TvFit.LIKELY to null, SourceRank.fit(copy.facts, q60r, choppy, now = now))
-        assertFalse(SourceRank.stuttered(choppy, now))
+        assertTrue(SourceRank.stuttered(choppy, now))
+        assertFalse(SourceRank.stuttered(choppy, now + 7 * day))
+        val other = src("other", mbps = 50.0, origin = "BluRay", size = 40_000_000_000L)
+        val shaky = SourceRank.rank(listOf(copy.copy(release = ReleaseKey(SourceFixtures.H1, 0)), other),
+            input(measured = { if (it.contains(SourceFixtures.H1)) choppy else null }))
+        assertEquals(listOf("other", "copy"), shaky.map { it.key })
+        assertNull(shaky[1].warning)
         val buffered = Measured(null, CopyHealth(watchedMs = 600_000, stalls = 12, stallMs = 120_000, at = now - day), null)
         assertEquals(TvFit.LIKELY_NOT to SourceRank.BUFFERED, SourceRank.fit(copy.facts, q60r, buffered, now = now))
     }
@@ -656,16 +686,16 @@ class RankRulesTest {
         val off = input(plus = false)
         val ranked = SourceRank.rank(listOf(imax, remux), off)
         assertEquals(listOf("remux59", "imax51"), ranked.map { it.key })
+        // Beaten on the rate: the IMAX copy isn't named.
         val why = SourceRank.why(ranked, off)!!
-        assertEquals("imax51", why.beatenKey)
-        assertEquals("further from your 60 Mb/s", why.lacks)
+        assertNull(why.beatenKey)
         val list = SourceList(SourceTarget(Title("tt0000001", Kind.MOVIE, "Film")), mapOf(Addon.TORRENTIO to AddonState.Answered(2)),
             ranked, SourceRank.best(ranked), null, why)
         val view = SourcesModel.view(list)
         assertEquals(SourcesModel.Section.IMAX, view.groups.first().section)
         assertEquals("remux59", view.best?.key)
-        // Near 60 both: IMAX breaks the tie.
-        assertEquals(listOf("imax58", "remux59"), keys(listOf(remux, at("imax58", 58.0, name = "Film.2021.IMAX.2160p.REMUX")), off))
+        // As near 60 both (61 and 59): IMAX breaks the tie.
+        assertEquals(listOf("imax61", "remux59"), keys(listOf(remux, at("imax61", 61.0, name = "Film.2021.IMAX.2160p.REMUX")), off))
         // IMAX first: always, and the viewer's move to 4K.
         assertEquals("imax51", keys(listOf(remux, imax), input(imaxAlways = true)).first())
         val movedOut = at("moved", 51.0, name = "Film.2021.IMAX.2160p.REMUX", hash = SourceFixtures.H2)

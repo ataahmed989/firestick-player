@@ -55,8 +55,8 @@ class RankInput(
  * 4. Room on the connection ([LineRate.room], steady figure; only once one was measured).
  * 5. Height ([shownHeight]: a copy starved of data for its frame, [CopyRank.starved], counts just under the class
  *    below). 6. The HDR this TV shows ([shownHdr]: Dolby Vision by what this TV does with each profile).
- * 7. Rate: near the viewer's preferred bitrate ([rateKey]; what the connection keeps, when that is less), the higher
- *    side counting a little less; an unknown rate in the middle.
+ * 7. Rate: nearest the viewer's preferred bitrate first ([rateKey]; what the connection keeps, when that is less), the
+ *    higher side counting a little less, nearly equal distances tied; an unknown rate after those near it.
  * 8. Source kind (Remux, BluRay encode, WEB-DL, WEBRip, HDTV), then bit depth (10-bit taken for HDR and 4K HEVC).
  * 9. HDR10+ where it reaches the TV ([TvPlan.hdr10PlusReaches]; Dolby Vision on a Dolby Vision TV); a picture that
  *    played here without HDR10's brightness data last.
@@ -80,8 +80,8 @@ object SourceRank {
     const val PREFERRED_MAX = 120
     const val PREFERRED_STEP = 5
 
-    /** The preferred bitrate's band ([rateKey]): this share of the target either way is "near" (5 Mb/s at 60). */
-    const val NEAR_SHARE = 1.0 / 12
+    /** The preferred bitrate's band ([rateKey]): distances within this share of the target tie (2 Mb/s at 60). */
+    const val NEAR_SHARE = 1.0 / 30
 
     /** Above the target, a Mb/s counts this much of one below it: of two copies as far off, the higher one is nearer. */
     const val HIGH_SIDE = 0.8
@@ -104,6 +104,10 @@ object SourceRank {
     const val NO_PICTURE = "Showed no picture here"
     const val CLOSE_TO_LINE = "Close to your connection"
     const val HIGH_RATE = "High data rate"
+
+    /** A film's or an episode's length when the add-ons' size is known but the runtime isn't (ranking only, never shown). */
+    private const val FILM_MIN = 120
+    private const val EPISODE_MIN = 45
 
     /** Ranks [sources] best first, without SD copies when the title has better ([withoutSd]). */
     fun rank(sources: List<PlaybackSource>, input: RankInput): List<PlaybackSource> {
@@ -197,9 +201,9 @@ object SourceRank {
         }
         v[RankStep.LANGUAGE_KNOWN.ordinal] = if (level == 0) 0 else 1
         v[RankStep.ROOM.ordinal] = if (LineRate.room(f.avgMbps, input.lineMbps, f.origin == REMUX)) 1 else 0
-        v[RankStep.HEIGHT.ordinal] = shownHeight(f, spec).toLong()
+        v[RankStep.HEIGHT.ordinal] = shownHeight(f, spec, input).toLong()
         v[RankStep.HDR.ordinal] = hdr.toLong()
-        v[RankStep.RATE.ordinal] = rateKey(mbpsOf(f, spec), input)
+        v[RankStep.RATE.ordinal] = rateKey(mbpsOf(f, spec, input), input)
         v[RankStep.KIND.ordinal] = originRank(f.origin) * 100L + bitDepth(f)
         v[RankStep.DYNAMIC_HDR.ordinal] = dynamicHdr(shownHdr(f, plan), spec, plan).toLong()
         v[RankStep.IMAX.ordinal] = if (isImaxCopy(s, !input.episode)) 1 else 0
@@ -240,9 +244,10 @@ object SourceRank {
 
     /**
      * What put [ranked]'s Best first, and what it beat: a copy with a better picture that an earlier step put after it
-     * (not cached, no room on the connection…), else the first copy after it that lost on resolution, HDR, rate, source,
-     * IMAX or language. Copies that differ from it only in sound, size or seeders aren't named, nor one that lost frames
-     * here ([stuttered]). Null without a Best.
+     * (not cached, no room on the connection…), else the first copy after it that lost on resolution, HDR, source, IMAX
+     * or language. Copies that differ from it only in sound, size or seeders aren't named, nor one beaten on the
+     * preferred bitrate ([RankStep.RATE]) or that lost frames here ([stuttered]): those stay the ranking's own business.
+     * Null without a Best.
      */
     fun why(ranked: List<PlaybackSource>, input: RankInput): BestWhy? {
         val best = best(ranked) ?: return null
@@ -264,7 +269,7 @@ object SourceRank {
             for (i in at + 1 until ranked.size) {
                 if (ranked[i].group == SourceGroup.CINEMA) continue
                 val step = stepBetween(mine, keys[i]) ?: continue
-                if (step.ordinal in RankStep.HEIGHT.ordinal..RankStep.LANGUAGE.ordinal) {
+                if (step.ordinal in RankStep.HEIGHT.ordinal..RankStep.LANGUAGE.ordinal && step != RankStep.RATE) {
                     rival = i
                     break
                 }
@@ -272,6 +277,7 @@ object SourceRank {
         }
         if (rival < 0) return BestWhy(best.key, shown)
         val step = stepBetween(mine, keys[rival]) ?: return BestWhy(best.key, shown)
+        if (step == RankStep.RATE) return BestWhy(best.key, shown)
         return BestWhy(best.key, shown, ranked[rival].key, step, lacks(step, ranked[rival], keys[rival], input, best))
     }
 
@@ -297,14 +303,6 @@ object SourceRank {
             }
             // A starved copy ([shownHeight]) of the Best's own resolution or more.
             RankStep.HEIGHT -> if ((b.facts.height ?: 0) >= (best.facts.height ?: 0)) "less picture data" else "lower resolution"
-            RankStep.RATE -> {
-                val mbps = mbpsOf(f, b.measured?.spec)
-                when {
-                    mbps == null -> null
-                    target(input) < input.preferredMbps && mbps > target(input) -> "needs more room on your connection"
-                    else -> "further from your ${Math.round(input.preferredMbps)} Mb/s"
-                }
-            }
             RankStep.HDR -> {
                 val shown = shownHdr(f, input.plan)
                 when {
@@ -384,16 +382,18 @@ object SourceRank {
     }
 
     /**
-     * Whether a copy lost frames in its decoder here lately ([app.fireplayer.player.CopyHealth.lateFrames]: Media3's
-     * late drops and frames never decoded, not the pacer's timing against the TV): more than one in
-     * [app.fireplayer.player.CopyHealth.LOST_SHARE] over [STUTTER_AFTER_MS] or more of watching, last played less than
-     * [TROUBLE_KEEP_MS] ago. The connection never clears it; later smooth plays dilute it. Ranking only: no warning.
+     * Whether a copy lost frames here lately, last played less than [TROUBLE_KEEP_MS] ago: in its decoder
+     * ([app.fireplayer.player.CopyHealth.lateFrames]: Media3's late drops and frames never decoded) more than one in
+     * [app.fireplayer.player.CopyHealth.LOST_SHARE] over [STUTTER_AFTER_MS] or more of watching, or by its whole
+     * frame-loss record ([app.fireplayer.player.CopyHealth.choppy]: frames shown twice too, and records kept before
+     * [app.fireplayer.player.CopyHealth.lateFrames]). The connection never clears it; later smooth plays dilute it.
+     * Ranking only: no warning.
      */
     fun stuttered(measured: Measured?, now: Long): Boolean {
         val h = measured?.health ?: return false
-        if (h.watchedMs < STUTTER_AFTER_MS || h.lateFrames <= 0) return false
-        if (h.lateFrames * app.fireplayer.player.CopyHealth.LOST_SHARE <= h.lateFrames + h.renderedFrames) return false
-        return now <= 0 || h.at <= 0 || now - h.at < TROUBLE_KEEP_MS
+        val late = h.watchedMs >= STUTTER_AFTER_MS && h.lateFrames > 0 &&
+            h.lateFrames * app.fireplayer.player.CopyHealth.LOST_SHARE > h.lateFrames + h.renderedFrames
+        return (late || h.choppy) && (now <= 0 || h.at <= 0 || now - h.at < TROUBLE_KEEP_MS)
     }
 
     /** Why this TV can't show a Dolby Vision copy as it is ([DV7_WORDS], [NEEDS_DV]); null when it can, or it isn't one. */
@@ -534,12 +534,12 @@ object SourceRank {
     /**
      * The height a copy counts as: its stated one, or, starved of data for its frame ([CopyRank.starved]: the picture
      * measured here, else the file's rate; codec from the name, HEVC for 4K), just under the class below (a starved 4K
-     * after every well-fed 1080p). An unknown rate is never starved.
+     * after every well-fed 1080p). An unknown rate ([mbpsOf]) is never starved.
      */
-    private fun shownHeight(f: SourceFacts, spec: MediaSpec?): Int {
+    private fun shownHeight(f: SourceFacts, spec: MediaSpec?, input: RankInput): Int {
         val height = f.height ?: return 0
         val played = spec?.takeIf { it.videoHow == MediaSpec.How.MEASURED && it.videoBps > 0 }?.videoBps
-        val bps = played ?: mbpsOf(f, spec)?.let { (it * 1_000_000).toLong() } ?: return height
+        val bps = played ?: mbpsOf(f, spec, input)?.let { (it * 1_000_000).toLong() } ?: return height
         val codec = f.codec ?: if (height >= 2160) "HEVC" else null
         val frame = MediaSpec(videoCodec = codec, width = widthOf(height), height = height, bitDepth = f.bitDepth ?: 0, overallBps = bps)
         if (!CopyRank.starved(frame, bits = bps)) return height
@@ -551,9 +551,15 @@ object SourceRank {
         }
     }
 
-    /** The file's rate, Mb/s: measured here (its exact size over its length), else the add-ons' size over the runtime. */
-    private fun mbpsOf(f: SourceFacts, spec: MediaSpec?): Double? =
+    /**
+     * The file's rate, Mb/s: measured here (its exact size over its length), else the add-ons' size over the runtime,
+     * else over an assumed length ([FILM_MIN], [EPISODE_MIN]; ranking only). Null without a size.
+     */
+    private fun mbpsOf(f: SourceFacts, spec: MediaSpec?, input: RankInput): Double? =
         spec?.overallBps?.takeIf { it > 0 }?.let { it / 1_000_000.0 } ?: f.avgMbps
+            ?: f.sizeBytes?.takeIf { it > 0 }?.let {
+                it * 8.0 / ((input.runtimeMin ?: if (input.episode) EPISODE_MIN else FILM_MIN) * 60.0) / 1_000_000.0
+            }
 
     /** The rate aimed at: the viewer's preferred bitrate, or what the connection keeps with room ([LineRate.ROOM]) if less. */
     private fun target(input: RankInput): Double {
@@ -562,12 +568,13 @@ object SourceRank {
     }
 
     /**
-     * How near [mbps] is to the [target], higher first: bands of [NEAR_SHARE] of it (5 Mb/s at 60, so 55 to 65 is the
-     * first), a Mb/s above it counting [HIGH_SIDE] of one below. An unknown rate sits after the first band and before
-     * every copy known to be further off. Equal bands leave it to the steps after (size last: the higher rate).
+     * How near [mbps] is to the [target], higher first: bands of [NEAR_SHARE] of it (2 Mb/s at 60), a Mb/s above it
+     * counting [HIGH_SIDE] of one below, so the nearest wins and only nearly equal distances tie. An unknown rate sits
+     * after copies within three bands (about 54 to 67 at 60) and before every copy known to be further off. Equal bands
+     * leave it to the steps after (size last: the higher rate).
      */
     private fun rateKey(mbps: Double?, input: RankInput): Long {
-        val r = mbps ?: return -1L
+        val r = mbps ?: return -5L
         val t = target(input)
         if (t <= 0.0) return 0L
         val d = if (r >= t) (r - t) * HIGH_SIDE else t - r

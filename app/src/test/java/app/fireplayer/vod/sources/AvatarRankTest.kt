@@ -154,10 +154,10 @@ class AvatarRankTest {
         assertTrue(best.has(d) || best.has(c) || best.has(e))
         assertTrue(Hdr.HDR10_PLUS in best.facts.hdr)
         assertEquals("REMUX", best.facts.origin)
-        // The 4K order: near 60 Mb/s (55 to 59 here) the three HDR10+ remuxes (bigger first), the profile 7 remux, the
-        // HDR10 remux; then the IMAX copy (51), the BluRay (50).
+        // The 4K order, nearest 60 Mb/s first: at 58 to 59 the two HDR10+ remuxes (bigger first), then the profile 7 remux;
+        // at 55 to 56 the HDR10+ remux, then the HDR10 one; then the IMAX copy (51), the BluRay (50).
         val order = ranked.take(7).map { s -> listOf(a, b, c, d, e, hash(6), hash(7)).first { s.has(it) } }
-        assertEquals(listOf(d, c, e, b, hash(6), a, hash(7)), order)
+        assertEquals(listOf(d, c, b, e, hash(6), a, hash(7)), order)
         // The profile 7 remux plays here as HDR10: no "may not play here", and ranked as HDR10.
         val p7 = ranked.first { it.has(b) }
         assertEquals(TvFit.LIKELY, p7.fit)
@@ -183,9 +183,10 @@ class AvatarRankTest {
         assertTrue(Hdr.DOLBY_VISION in best.facts.hdr && Hdr.HDR10_PLUS in best.facts.hdr)
         assertEquals(setOf(Hdr.HDR10_PLUS, Hdr.HDR10), SourceRank.shownHdr(SourceRank.asPlayedHere(best.facts, best.measured), plan))
         assertEquals("4K · HDR10+ · Remux · 86.3 GB", PlayRules.mainLine(best))
-        // The IMAX copy gave no HDR brightness data here: it goes below the profile 7 and HDR10 remuxes, still above the encode.
+        // Nearest 60 first (the profile 7 remux at 58 before the HDR10+ one at 56); the IMAX copy (51, no HDR brightness
+        // data here) still above the encode.
         val order = ranked.take(6).map { s -> listOf(a, b, d, e, hash(6), hash(7)).first { s.has(it) } }
-        assertEquals(listOf(d, e, b, hash(6), a, hash(7)), order)
+        assertEquals(listOf(d, b, e, hash(6), a, hash(7)), order)
         // Played here: dated, and "played here" (no longer sorted above unplayed copies just for that).
         assertEquals(TvFit.MEASURED_OK, best.fit)
         assertNotNull(best.measured?.at)
@@ -196,14 +197,15 @@ class AvatarRankTest {
     @Test
     fun whereHdr10PlusDoesntReachTheTvTheRemuxNearestTheTargetIsBestAheadOfTheImaxCopy() {
         // Found since: from FirePlayer the Samsung shows HDR, not HDR10+ (This TV › HDR10+ reaches this TV: off). The
-        // remuxes tie on what the TV gets; the IMAX copy (51 Mb/s) is further from 60 than the 55 to 59 ones.
+        // remuxes tie on what the TV gets; the IMAX copy (51 Mb/s) is further from 60 than the 55 to 59 ones. The rate stays
+        // the ranking's own: the Best line names no copy beaten on it.
         val input = input(plus = false)
         val ranked = ranked(input)
         val list = sourceList(ranked, input)
         val best = list.best!!
         assertTrue(best.has(d))
-        assertEquals(RankStep.RATE, list.why?.step)
-        assertEquals("4K · HDR10+ · Remux · cached · ahead of the IMAX copy (further from your 60 Mb/s)", SourcesModel.reason(best, list))
+        assertNull(list.why?.beatenKey)
+        assertEquals("4K · HDR10+ · Remux · cached", SourcesModel.reason(best, list))
         val order = ranked.take(7).map { s -> listOf(a, b, c, d, e, hash(6), hash(7)).first { s.has(it) } }
         assertEquals(listOf(d, c, b, e, hash(6), a, hash(7)), order)
         // The IMAX group stays first in the window.
@@ -229,12 +231,12 @@ class AvatarRankTest {
     @Test
     fun aLowerPreferredBitrateMakesTheImaxCopyBest() {
         // At 50 Mb/s the IMAX remux (51) is nearest (with the BluRay encode, 50, which it beats as a remux); the HDR10+
-        // remuxes (59) are a band further, and the Best line says so.
+        // remuxes (59) are further off, and the Best line names none of them.
         val input = input(preferred = 50.0)
         val list = sourceList(ranked(input), input)
         assertTrue(list.best!!.has(a))
-        assertEquals(RankStep.RATE, list.why?.step)
-        assertEquals("further from your 50 Mb/s", list.why?.lacks)
+        assertNull(list.why?.beatenKey)
+        assertEquals("4K IMAX · HDR10 · Remux · cached", SourcesModel.reason(list.best!!, list))
     }
 
     @Test
@@ -260,12 +262,13 @@ class AvatarRankTest {
         // Next source after the Best: the next 4K copy down.
         assertTrue(view.next!!.has(c))
         assertEquals(Section.UHD, view.nextSection)
-        // Playing the Best: no separate Best; Next source goes on in its group, past a copy that failed here.
+        // Playing the Best: no separate Best; Next source goes on in its group, past a copy that failed here, to the
+        // profile 7 remux (58 Mb/s, nearer 60 than the HDR10+ one at 56).
         val playing = SourcesModel.view(list, playingKey = list.best!!.key,
             attempts = listOf(Attempt(list.sources.first { it.has(c) }, 0L, OpenWhy.USER, Failure(FailureKind.FILE))))
         assertTrue(playing.playingIsBest)
         assertNull(playing.best)
-        assertTrue(playing.next!!.has(e))
+        assertTrue(playing.next!!.has(b))
         assertTrue(playing.reason!!.contains("ahead of the 84.9 GB Remux"))
         // The IMAX group's copy, playing: Next source has no other IMAX copy, so it goes on to the 4K group, its best first.
         val onImax = SourcesModel.view(list, playingKey = keyOf(list.sources, a))
