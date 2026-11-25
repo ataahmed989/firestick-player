@@ -6365,8 +6365,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             launchMark(LaunchLog.LINK)
             android.util.Log.i(TAG, app.fireplayer.vod.sources.SourceLog.line(ready))
             val uri = Uri.parse(ready.link.reveal())
-            // What was measured of this file is kept by its release (the link changes daily).
-            (ready.offer.release ?: ready.source.release)?.let { copyKeys[uri.toString()] = it.storeKey }
+            // What was measured of this file is kept by its release (the link changes daily); an episode's file whose
+            // index the add-on didn't give, by the episode too (a season pack's episodes share one hash).
+            (ready.offer.release ?: ready.source.release)?.let { copyKeys[uri.toString()] = it.measuredKey(request.target.episode) }
             errorBox.visibility = View.GONE
             cannotOpen = false
             bufferingInfo.visibility = View.GONE

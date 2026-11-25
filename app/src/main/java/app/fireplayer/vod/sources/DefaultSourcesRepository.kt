@@ -247,11 +247,16 @@ class DefaultSourcesRepository(
     /** The key of [target]'s row holding [release], also when it was merged into another release's row (×N). */
     internal fun rowKeyOf(target: SourceTarget, release: ReleaseKey): String? = entries[target.key]?.rowOf?.get(release.storeKey)
 
-    /** [key]'s row of [target] started playing: it is Last used now, in the lists shown (not only once they rank again). */
-    internal fun usedNow(target: SourceTarget, key: String) {
+    /**
+     * [key]'s row of [target], its [file], started playing: it is Last used now, in the lists shown (not only once they
+     * rank again). The row holding that file when [key]'s isn't in the list any more (merged or keyed anew since).
+     */
+    internal fun usedNow(target: SourceTarget, key: String, file: ReleaseKey? = null) {
         val entry = entries[target.key] ?: return
-        val row = entry.ranked.firstOrNull { it.key == key } ?: return
-        if (entry.lastUsed?.key == key) return
+        val row = entry.ranked.firstOrNull { it.key == key }
+            ?: file?.let { f -> entry.rowOf[f.storeKey]?.let { k -> entry.ranked.firstOrNull { it.key == k } } }
+            ?: return
+        if (entry.lastUsed?.key == row.key) return
         entry.lastUsed = row
         notify(entry)
     }
@@ -340,12 +345,13 @@ class DefaultSourcesRepository(
         call.deadline = deadline
         main.postDelayed(deadline, addon.answerLimitMs)
         val runtime = TitleDetails.runtimeMinutes(entry.target.title.runtime)
+        val episode = entry.target.episode != null
         val timeout = (addon.answerLimitMs + LATE_MS).toInt()
         io.execute {
             val result: Result<ParsedAnswer> = try {
                 if (call.cancelled) throw IOException("cancelled")
                 val json = http.get(link, entry.target, timeout, call.handle)
-                Result.success(StreamParser.parse(addon, json, runtime))
+                Result.success(StreamParser.parse(addon, json, runtime, episode))
             } catch (t: Throwable) {
                 Result.failure(t)
             }
@@ -481,15 +487,18 @@ class DefaultSourcesRepository(
                     now = now,
                     imaxMove = moved ?: { null },
                     preferredMbps = aimMbps,
+                    episodeRef = target.episode,
                 )
-                // The same file from two add-ons is one row: by the exact size a play here measured, too.
-                val merged = SourceMerge.mergeKeyed(answers, input.runtimeMin) { r -> measured(r.storeKey)?.spec?.sizeBytes?.takeIf { it > 0 } }
+                // The same file from two add-ons is one row: by the exact size a play here measured, too (an index-less
+                // file's under this episode's own key: a season pack's other episodes measured other files).
+                val merged = SourceMerge.mergeKeyed(answers, input.runtimeMin, target.episode != null) { r ->
+                    measured(r.measuredKey(target.episode))?.spec?.sizeBytes?.takeIf { it > 0 }
+                }
                 val ranked = SourceRank.rank(merged.sources, input)
                 val best = SourceRank.best(ranked)
-                val last = runCatching { library.lastRelease(target.title, target.episode) }.getOrNull()
-                val lastKey = last?.let { merged.rowOf[it.release.storeKey] }
-                val lastUsed = lastKey?.let { k -> ranked.firstOrNull { it.key == k } }
-                Ranked(merged.rowOf, ranked, best, lastUsed, SourceRank.why(ranked, input), input.wanted, original != null)
+                // Read here first, so the library's store is loaded off the main thread (Last used is worked out there).
+                runCatching { library.lastRelease(target.title, target.episode) }
+                Ranked(merged.rowOf, ranked, best, SourceRank.why(ranked, input), input.wanted, original != null)
             }.getOrNull()
             main.post {
                 if (entry.version != v) return@post
@@ -498,7 +507,9 @@ class DefaultSourcesRepository(
                     entry.rowOf = made.rowOf
                     entry.ranked = made.sources
                     entry.best = made.best
-                    entry.lastUsed = made.lastUsed
+                    // On the main thread, as it is now: a copy that started while this ranked is the one kept, not the
+                    // release read before it ([usedNow] doesn't wait for a rank).
+                    entry.lastUsed = lastUsedOf(target, made.rowOf, made.sources)
                     entry.why = made.why
                     entry.plan = plan
                     entry.wanted = made.wanted
@@ -529,11 +540,17 @@ class DefaultSourcesRepository(
         val rowOf: Map<String, String>,
         val sources: List<PlaybackSource>,
         val best: PlaybackSource?,
-        val lastUsed: PlaybackSource?,
         val why: BestWhy?,
         val wanted: List<String>,
         val originalKnown: Boolean,
     )
+
+    /** The row of [ranked] holding the release [target] last played from ([PlaybackLibrary.lastRelease]); null when none. */
+    private fun lastUsedOf(target: SourceTarget, rowOf: Map<String, String>, ranked: List<PlaybackSource>): PlaybackSource? {
+        val last = runCatching { library.lastRelease(target.title, target.episode) }.getOrNull() ?: return null
+        val key = rowOf[last.release.storeKey] ?: return null
+        return ranked.firstOrNull { it.key == key }
+    }
 
     private fun notify(entry: Entry) {
         if (entry.subs.isEmpty()) return

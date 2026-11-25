@@ -135,6 +135,16 @@ data class ReleaseKey(val infoHash: String, val fileIdx: Int?) {
      */
     val storeKey: String get() = "rd|$infoHash|${fileIdx ?: -1}"
 
+    /**
+     * The key of what FirePlayer measured about this file as [episode]'s (a film's: null): [storeKey], but for an
+     * episode in a torrent whose file index the add-on didn't give (MediaFusion's season packs) "rd|<hash>|-1|<s>:<e>".
+     * Every episode of such a pack has the same [storeKey], so what one episode's file measured is never another's.
+     * Films and files with an index keep [storeKey], so what was measured before is still found; a record kept under
+     * an index-less [storeKey] by an earlier version is no episode's in particular, and is left unread for episodes.
+     */
+    fun measuredKey(episode: EpisodeRef?): String =
+        if (fileIdx == null && episode != null) "$storeKey|${episode.season}:${episode.episode}" else storeKey
+
     companion object {
         private val HEX40 = Regex("[0-9a-f]{40}")
 
@@ -247,9 +257,11 @@ data class SourceFacts(
     val seeders: Int? = null,
     /** The file sits in a season pack or collection. */
     val pack: Boolean = false,
+    /** [sizeBytes] is the file's to the byte (an add-on's videoSize, or what a play here measured), not a rounded "29.26 GB". */
+    val sizeExact: Boolean = false,
 )
 
-/** What FirePlayer measured itself when this file played here before, keyed by [ReleaseKey.storeKey]. */
+/** What FirePlayer measured itself when this file played here before, keyed by [ReleaseKey.measuredKey]. */
 data class Measured(val spec: MediaSpec?, val health: CopyHealth?, val at: Long?)
 
 /** One add-on's offer of a file: its own words (for Details, no links), its ready mark, and the link to check. */
@@ -758,12 +770,19 @@ interface SourceSession {
 
     /**
      * The key [source]'s file has in [list] now: rows merge as plays learn a file's exact size (the same file from two
-     * add-ons), a merged row keeping the key of the add-on that answered first. [source]'s own key when unchanged.
+     * add-ons), a merged row keeping the key of the add-on that answered first; when its release is in no row any more
+     * (that add-on's answer is gone), the row holding the same file. [source]'s own key when unchanged.
      */
     fun rowKey(source: PlaybackSource): String = source.key
 
     /** What Next source plays now ([open] with no source): the one Picture & sound and the Sources window name. */
     fun nextPick(): PlaybackSource? = null
+
+    /**
+     * Why a resume isn't playing the copy it left ([PlayRequest.preferred]), in plain words for the log ("not cached
+     * any more"; never a link); null when it is, or there was none to play.
+     */
+    fun resumeMiss(): String? = null
 
     /** The next episode's sources, once, in the last ~4 minutes ([LookupWhy.NEXT_EPISODE]); same-kind first. */
     fun lookUpNext(next: EpisodeRef, onList: (SourceList) -> Unit): Cancel
