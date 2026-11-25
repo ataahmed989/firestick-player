@@ -707,14 +707,13 @@ class EngineTest {
             answer(mediaFusion(H1, hdr = "DV|HDR10+", origin = "BluRay REMUX", videoSize = 86_261_275_745L,
                 filename = "Film.2021.2160p.BluRay.REMUX.DV.HDR10Plus.TrueHD-M.mkv"))
         }
-        val session = engine.session(PlayRequest(filmTarget, StartAt.Beginning, PlayOrigin.TITLE_PAGE))
-        open(session)
-        // MediaFusion's copy plays, picked in Sources.
-        val mf = session.list!!.sources.first { it.release == ReleaseKey(H1, 0) }
-        val got = ArrayList<Opened>()
-        session.open(mf, OpenWhy.USER) { got += it }
+        val lists = lists(why = LookupWhy.PLAY)
         loop.advance()
-        val ready = got.last() as Opened.Ready
+        // MediaFusion's copy plays, picked in Sources.
+        val mf = lists.last().sources.first { it.release == ReleaseKey(H1, 0) }
+        val session = engine.session(PlayRequest(filmTarget, StartAt.Beginning, PlayOrigin.SOURCES_PANEL, list = lists.last(), chosen = mf))
+        val ready = open(session).last() as Opened.Ready
+        assertEquals(mf.key, ready.source.key)
         session.started(ready.source, ready.offer)
         // Torrentio's copy had played before: its exact size is known now, and the two rows are one, under Torrentio's key.
         kept["rd|$H2|0"] = Measured(app.fireplayer.player.MediaSpec(sizeBytes = 86_261_275_745L), null, 1L)

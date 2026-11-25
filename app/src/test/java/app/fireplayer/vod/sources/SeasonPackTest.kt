@@ -220,6 +220,40 @@ class SeasonPackTest {
     }
 
     @Test
+    fun twoHeightsOfAnEpisodeInOnePackStayTwoRows() {
+        // MediaFusion's pack row (no index, 4K) answers first; Torrentio lists the pack's 2160p and 1080p files of E6.
+        val pack = "Show.S01.2160p.1080p.WEB-DL"
+        val mf = parsed(Addon.MEDIAFUSION, answer(mfPack(hn, amenFile, 30_000_000_000L, "30 GB", "WEBRip")))
+        val tio = parsed(Addon.TORRENTIO, answer(
+            torrentio(hn, idx = 5, quality = "4k DV | HDR", name = pack, file = "$pack/2160p/$amenFile", size = "2.77 GB"),
+            torrentio(hn, idx = 15, quality = "1080p", name = pack, file = "$pack/1080p/Show.S01E06.1080p.WEB-DL.mkv", size = "1.2 GB"),
+        ))
+        val rows = SourceMerge.merge(listOf(mf, tio), 28, episode = true)
+        assertEquals(2, rows.size)
+        val uhd = rows.single { it.facts.height == 2160 }
+        val fhd = rows.single { it.facts.height == 1080 }
+        assertEquals(setOf(ReleaseKey(hn, null), ReleaseKey(hn, 5)), uhd.offers.mapNotNull { it.release }.toSet())
+        assertEquals(listOf(ReleaseKey(hn, 15)), fhd.offers.mapNotNull { it.release })
+        // Torrentio first: the pack row joins its file of the same height.
+        val other = SourceMerge.merge(listOf(tio, mf), 28, episode = true)
+        assertEquals(2, other.size)
+        assertEquals(2, other.single { it.facts.height == 2160 }.offers.size)
+        // A file is known the same way: the 4K pack row holds the 2160p file, not the 1080p one.
+        assertTrue(FileSet.of(uhd, episode = true).holds(other.single { it.facts.height == 2160 }))
+        val mfOnly = uhd.copy(offers = uhd.offers.filter { it.addon == Addon.MEDIAFUSION }, release = ReleaseKey(hn, null))
+        assertFalse(FileSet.of(mfOnly, episode = true).holds(fhd))
+        assertTrue(FileSet.of(mfOnly, episode = true).holds(uhd.copy(key = "t", offers = uhd.offers.filter { it.addon == Addon.TORRENTIO })))
+    }
+
+    @Test
+    fun theMergeLooksUpWhatWasMeasuredOnceAStream() {
+        val all = answers()
+        var asked = 0
+        SourceMerge.merge(all, 28, episode = true) { asked++; null }
+        assertEquals(all.sumOf { a -> a.count { it.release != null } }, asked)
+    }
+
+    @Test
     fun aFilmsFilesKeepToHashAndIndex() {
         // A film's hash with and without an index (a collection holds several films): two rows, as before.
         val mf = StreamParser.parse(Addon.MEDIAFUSION, answer(SourceFixtures.mediaFusion(ha, fileIdx = null, videoSize = 31_420_000_000L)), 120).streams
@@ -277,11 +311,42 @@ class SeasonPackTest {
     }
 
     @Test
+    fun onAFreshTvThePackRowOfNoSizeRanksUnderTheG66Copy() {
+        // Nothing played here yet: MediaFusion's 28.8 GB pack row has no size of its own, so no rate to beat the G66
+        // copy's 14 Mb/s with; it was "Needs 137 Mb/s" before, never Best.
+        val fresh = ranked()
+        assertEquals(ReleaseKey(hg, 5), SourceRank.best(fresh)?.release)
+        assertTrue(fresh.indexOf(fresh.holding(hg)) < fresh.indexOf(fresh.holding(hp)))
+        assertTrue(fresh.holding(hp).facts.torrentTotal)
+        assertFalse(fresh.holding(ha).facts.torrentTotal)
+        // Only the Amen file measured (5.2 Mb/s starves its 4K picture, so it proves nothing): the same.
+        val amenOnly = ranked(mapOf(ReleaseKey(ha, null).measuredKey(e6) to amenPlayed))
+        assertEquals(ReleaseKey(hg, 5), SourceRank.best(amenOnly)?.release)
+        // E7, whose G66 file (index 6) never played here: the G66 copy, not MediaFusion's pack row.
+        val e7Answers = listOf(
+            parsed(Addon.MEDIAFUSION, answer(mfPack(hp, packFile.replace("S01E06", "S01E07"), 28_800_000_000L, "28.8 GB", "WEB-DL", e7))),
+            parsed(Addon.TORZ, answer(torz(hg, 6, g66File.replace("S01E06", "S01E07"), g66Bytes, origin = "WEB-DL"))),
+        )
+        val e7Ranked = SourceRank.rank(SourceMerge.merge(e7Answers, 28, episode = true), input(episode = e7))
+        assertEquals(ReleaseKey(hg, 6), SourceRank.best(e7Ranked)?.release)
+        assertEquals(ReleaseKey(hp, null), e7Ranked.last().release)
+        // Once the pack row's own file played here and was measured, its rate is known and ranks as any other.
+        val packPlayed = Measured(MediaSpec(sizeBytes = 6_000_000_000L, overallBps = 28_000_000, videoBps = 26_000_000,
+            videoHow = MediaSpec.How.MEASURED, measuredSecs = 600, playedAt = now - 3_600_000), CopyHealth(watchedMs = 600_000, at = now), now)
+        val measured = ranked(mapOf(ReleaseKey(hp, null).measuredKey(e6) to packPlayed))
+        assertEquals(ReleaseKey(hp, null), SourceRank.best(measured)?.release)
+    }
+
+    @Test
     fun anUnknownRateNeverBeatsACopyThatPlayedWellHereAtARateMeasuredHere() {
-        // MediaFusion's other pack alone beside the G66 copy: its rate isn't known (its only size was the pack's).
-        val answers = listOf(parsed(Addon.MEDIAFUSION, answer(mfPack(hp, packFile, 28_800_000_000L, "28.8 GB", "WEB-DL"))),
+        // A MediaFusion row that gave no size at all (not a pack's total) beside the G66 copy: its rate isn't known.
+        val noSize = JSONObject(mfPack(hp, packFile, 1L, "", "WEB-DL").toString()).apply {
+            getJSONObject("behaviorHints").remove("videoSize")
+        }
+        val answers = listOf(parsed(Addon.MEDIAFUSION, answer(noSize)),
             parsed(Addon.TORZ, answer(torz(hg, 5, g66File, g66Bytes, origin = "WEB-DL"))))
         val rows = SourceMerge.merge(answers, 28, episode = true)
+        assertFalse(rows.single { it.release == ReleaseKey(hp, null) }.facts.torrentTotal)
         // Never played here: the guess stays where it was, after copies near the preferred rate, before those far off.
         val unplayed = SourceRank.rank(rows, input())
         assertEquals(ReleaseKey(hp, null), unplayed.first().release)
@@ -322,9 +387,70 @@ class SeasonPackTest {
         assertNull(e6Row.warning)
         // A film's index-less file reads the record kept as before.
         val film = StreamParser.parse(Addon.MEDIAFUSION, answer(SourceFixtures.mediaFusion(ha, fileIdx = null)), 120).streams
+        val sameSize = oldShared.copy(spec = MediaSpec(sizeBytes = 31_420_000_000L, overallBps = 34_900_000))
         val filmRow = SourceRank.rank(SourceMerge.merge(listOf(film), 120),
-            RankInput(plan, listOf("en"), { if (it == "rd|$ha|-1") oldShared else null }, 120, episode = false)).single()
-        assertEquals(oldShared, filmRow.measured)
+            RankInput(plan, listOf("en"), { if (it == "rd|$ha|-1") sameSize else null }, 120, episode = false)).single()
+        assertEquals(sameSize, filmRow.measured)
+    }
+
+    @Test
+    fun aFilmsIndexlessRecordOfAnotherSizeWasAnotherFilmsOfItsCollection() {
+        // Iron Man played from a collection torrent MediaFusion gives no index: Iron Man 2's row has the same key.
+        val ironMan = Measured(MediaSpec(sizeBytes = 9_000_000_000L, overallBps = 9_800_000, hdr10Plus = true), CopyHealth(watchedMs = 60_000, at = now), now)
+        val film = StreamParser.parse(Addon.MEDIAFUSION, answer(SourceFixtures.mediaFusion(ha, fileIdx = null)), 120).streams
+        val rows = SourceMerge.merge(listOf(film), 120) { if (it == ReleaseKey(ha, null)) 9_000_000_000L else null }
+        // The add-on's size to the byte stays the row's, for merging too.
+        assertEquals(31_420_000_000L, rows.single().facts.sizeBytes)
+        val row = SourceRank.rank(rows, RankInput(plan, listOf("en"), { if (it == "rd|$ha|-1") ironMan else null }, 120, episode = false)).single()
+        assertEquals(31_420_000_000L, SourceRank.asPlayedHere(row.facts, row.measured).sizeBytes)
+        assertEquals(31_420_000_000L, FileSet.exactSize(row))
+        assertEquals(StreamParser.avgMbps(31_420_000_000L, 120)!!, SourceRank.asPlayedHere(row.facts, row.measured).avgMbps!!, 0.01)
+        // The rest of what was measured is read as before (shared, as in 1.0.360).
+        assertEquals(ironMan.health, row.measured?.health)
+        // With an index, the file measured is this one: its size and rate.
+        val indexed = StreamParser.parse(Addon.MEDIAFUSION, answer(SourceFixtures.mediaFusion(ha, fileIdx = 3)), 120).streams
+        val own = SourceRank.rank(SourceMerge.merge(listOf(indexed), 120) { 9_000_000_000L },
+            RankInput(plan, listOf("en"), { if (it == "rd|$ha|3") ironMan else null }, 120, episode = false)).single()
+        assertEquals(9_000_000_000L, own.facts.sizeBytes)
+        assertEquals(9.8, SourceRank.asPlayedHere(own.facts, own.measured).avgMbps!!, 0.01)
+    }
+
+    @Test
+    fun aTorrentOfOneEpisodeFileStillReadsWhatAnEarlierVersionKept() {
+        // Torrentio gives a single-file torrent no index: 1.0.360 kept its health under "rd|<hash>|-1", and it showed no
+        // picture here.
+        val single = "e".repeat(40)
+        val old = Measured(MediaSpec(sizeBytes = 1_300_000_000L), CopyHealth(watchedMs = 1_000, noPicture = 1, at = now), now)
+        val tio = parsed(Addon.TORRENTIO, answer(torrentio(single, idx = -1, quality = "4k DV | HDR",
+            name = "Your.Friendly.Neighborhood.Spider-Man.S01E06.2160p.WEB-DL.DV.HDR.H.265-SOLO", size = "1.21 GB")))
+        assertEquals(ReleaseKey(single, null), tio.single().release)
+        assertEquals("rd|$single|-1", ReleaseKey(single, null).earlierKey(e6, single = true))
+        assertNull(ReleaseKey(single, null).earlierKey(e6, single = false))
+        assertNull(ReleaseKey(single, 5).earlierKey(e6, single = true))
+        assertNull(ReleaseKey(single, null).earlierKey(null, single = true))
+        val stored = mapOf("rd|$single|-1" to old)
+        val merged = SourceMerge.merge(listOf(tio), 28, episode = true)
+        val row = SourceRank.rank(merged, input({ stored[it] })).single()
+        assertEquals(old, row.measured)
+        assertTrue(row.measured?.health?.setAside == true)
+        assertEquals(TvFit.LIKELY_NOT, row.fit)
+        // Something newer kept under its episode's key comes first.
+        val newer = old.copy(health = CopyHealth(watchedMs = 5_000, at = now))
+        val both = mapOf("rd|$single|-1" to old, ReleaseKey(single, null).measuredKey(e6) to newer)
+        assertEquals(newer, SourceRank.rank(merged, input({ both[it] })).single().measured)
+        // MediaFusion's index-less pack row never reads the old shared record ((e) above); nor through the engine.
+        answerOf[Addon.TORRENTIO] = { answer(torrentio(single, idx = -1, quality = "4k DV | HDR",
+            name = "Your.Friendly.Neighborhood.Spider-Man.S01E06.2160p.WEB-DL.DV.HDR.H.265-SOLO", size = "1.21 GB")) }
+        kept["rd|$single|-1"] = old
+        kept["rd|$ha|-1"] = old
+        val l = list()
+        assertEquals(old, l.sources.holding(single).measured)
+        assertNull(l.sources.holding(ha).measured)
+        // The engine merges by its size measured then, too: the same file from Torz, of that size to the byte.
+        answerOf[Addon.TORZ] = { answer(torz(hc, 0, "Another.Name.For.It.S01E06.2160p.WEB-DL.mkv", 1_300_000_000L, origin = "WEB-DL")) }
+        engine.forget()
+        loop.advance()
+        assertEquals(1, list().sources.count { it.holds(single) || it.holds(hc) })
     }
 
     // ---- Next source: never the file playing ----
@@ -338,10 +464,10 @@ class SeasonPackTest {
         // its group (4K) first, then 1080p, as from its own row.
         val order = SourceRank.nextOrder(list, "rd|gone|-1", film = false, current = amen) { same.holds(it) }
         assertTrue(order.none { s -> s.offers.any { it.release?.infoHash == ha } })
-        assertEquals(listOf(hp, hg, hn), order.map { it.release?.infoHash })
+        assertEquals(listOf(hg, hp, hn), order.map { it.release?.infoHash })
         // Its row in no form: its own group from the top, then the groups below.
         val without = list.filterNot { it.key == amen.key }
-        assertEquals(listOf(hp, hg, hn), SourceRank.nextOrder(without, "rd|gone|-1", film = false, current = amen) { same.holds(it) }
+        assertEquals(listOf(hg, hp, hn), SourceRank.nextOrder(without, "rd|gone|-1", film = false, current = amen) { same.holds(it) }
             .map { it.release?.infoHash })
         // The playing copy as another add-on's row of its own (Torz's, not merged): left out too.
         val torzOnly = amen.copy(key = "torz-row", offers = amen.offers.filter { it.addon == Addon.TORZ }, release = ReleaseKey(ha, 5))
@@ -509,6 +635,107 @@ class SeasonPackTest {
         // The Sources window says the same.
         val view = SourcesModel.view(after, session.rowKey(ready.source), session.attempts, next = session::nextPick)
         assertEquals(next.key, view.next?.key)
+    }
+
+    @Test
+    fun whileTheFirstCopyLoadsNextSourceIsAnotherCopy() {
+        // Play from the title page: the Best (the G66 copy) is handed to the player and loads; no first frame yet.
+        kept[ReleaseKey(hg, 5).storeKey] = g66Played
+        val l = list()
+        val session = engine.session(PlayRequest(ep6, StartAt.Beginning, PlayOrigin.TITLE_PAGE, list = l))
+        val ready = open(session).last() as Opened.Ready
+        assertEquals(l.best?.key, ready.source.key)
+        val next = session.nextPick()!!
+        assertFalse(next.holds(hg))
+        // The Sources window and Picture & sound say the same: Playing is the copy loading, Next source another.
+        val view = SourcesModel.view(session.list!!, session.rowKey(ready.source), session.attempts, next = session::nextPick)
+        assertEquals(ready.source.key, view.playing?.key)
+        assertNotEquals(view.playing?.key, view.next?.key)
+        // Next source pressed while it loads: another file, never the same one again.
+        val other = open(session, why = OpenWhy.USER).last() as Opened.Ready
+        assertFalse(other.source.holds(hg))
+        assertEquals(next.key, other.source.key)
+        // That one loads in turn, then plays: the copy left while it loaded isn't Next source again.
+        assertFalse(session.nextPick()!!.let { it.key == other.source.key || it.holds(hg) })
+        session.started(other.source, other.offer)
+        assertFalse(session.nextPick()!!.let { it.key == other.source.key || it.holds(hg) })
+    }
+
+    @Test
+    fun whileTheCopySwitchedToLoadsNextSourceIsNeitherItNorTheOneLeft() {
+        val (session, amen) = amenPlaying()
+        val g66 = open(session, why = OpenWhy.USER).last() as Opened.Ready
+        assertTrue(g66.source.holds(hg))
+        val next = session.nextPick()!!
+        assertFalse(next.holds(hg) || next.holds(ha) || next.holds(hc))
+        assertNotEquals(amen.source.key, next.key)
+        // Pressed again while the G66 copy loads: neither copy.
+        val third = open(session, why = OpenWhy.USER).last() as Opened.Ready
+        assertFalse(third.source.holds(hg) || third.source.holds(ha) || third.source.holds(hc))
+    }
+
+    /** The Torrentio answer alone: the G66 copy (4K) and the NTb one (1080p). */
+    private fun twoCopies(): Pair<SourceSession, Opened.Ready> {
+        answerOf[Addon.MEDIAFUSION] = { answer() }
+        answerOf[Addon.TORZ] = { answer() }
+        val l = list()
+        assertEquals(2, l.sources.size)
+        val session = engine.session(PlayRequest(ep6, StartAt.Beginning, PlayOrigin.TITLE_PAGE, list = l))
+        val a = open(session).last() as Opened.Ready
+        assertTrue(a.source.holds(hg))
+        session.started(a.source, a.offer)
+        return session to a
+    }
+
+    @Test
+    fun aSwitchWhoseCopyWontStartGoesBackToTheCopyThatPlayed() {
+        val (session, a) = twoCopies()
+        // Next source: the NTb copy loads, and is slow to start.
+        val b = open(session, why = OpenWhy.USER).last() as Opened.Ready
+        assertTrue(b.source.holds(hn))
+        assertEquals(Step.TryNext, session.failed(b.source, Failure(FailureKind.SLOW)))
+        // Nothing new is left for Next source to name...
+        assertNull(session.nextPick())
+        // ...but the play doesn't end: back to the G66 copy, which played fine.
+        val back = open(session, why = OpenWhy.FAILED).last() as Opened.Ready
+        assertEquals(a.source.key, back.source.key)
+    }
+
+    @Test
+    fun aStallSwitchWithNothingNewGoesBackToTheCopyBefore() {
+        val (session, a) = twoCopies()
+        val b = open(session, why = OpenWhy.USER).last() as Opened.Ready
+        session.started(b.source, b.offer)
+        // The NTb copy keeps stalling: nothing new, so the G66 copy again (never the one stalling).
+        val back = open(session, why = OpenWhy.STALLS).last() as Opened.Ready
+        assertEquals(a.source.key, back.source.key)
+        // Asked for by the viewer, Next source names nothing it played.
+        session.started(back.source, back.offer)
+        assertNull(session.nextPick())
+    }
+
+    @Test
+    fun nextSourceNeverGoesBackToACopyPlayedInThisPlay() {
+        answerOf[Addon.MEDIAFUSION] = { answer() }
+        answerOf[Addon.TORZ] = { answer(torz(ha, 5, amenFile, amenBytes)) }
+        val l = list()
+        assertEquals(3, l.sources.size)
+        val session = engine.session(PlayRequest(ep6, StartAt.Beginning, PlayOrigin.TITLE_PAGE, list = l))
+        val first = open(session).last() as Opened.Ready
+        session.started(first.source, first.offer)
+        val played = mutableListOf(first.source.key)
+        while (true) {
+            val next = session.nextPick() ?: break
+            assertFalse(next.key in played)
+            val ready = open(session, why = OpenWhy.USER).last() as Opened.Ready
+            assertEquals(next.key, ready.source.key)
+            session.started(ready.source, ready.offer)
+            played += ready.source.key
+        }
+        assertEquals(3, played.size)
+        // Every copy played: Next source says none is left (or offers to fetch one), never one already played.
+        val last = open(session, why = OpenWhy.USER).last()
+        assertTrue(last is Opened.NoneLeft || last is Opened.AskFetch)
     }
 
     @Test

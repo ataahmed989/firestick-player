@@ -72,6 +72,11 @@ internal class DefaultSourceSession(
     private var playing: PlaybackSource? = null
     private var playingOffer: Offer? = null
     /**
+     * The copy handed to the player last ([Opened.Ready]): the one loading, or playing once its first frame came. The
+     * Sources window marks it Playing from then on, so Next source goes on from it and never names it.
+     */
+    private var opened: PlaybackSource? = null
+    /**
      * The file the copy playing started from, kept as the title's last release ([started]), and the release kept before
      * it: put back when it turns out not to be the whole film ([FailureKind.NOT_WHOLE]).
      */
@@ -93,8 +98,11 @@ internal class DefaultSourceSession(
     private val refreshed = HashSet<String>()
     private val decoded = HashSet<String>()
     private val visited = LinkedHashSet<String>()
-    /** The files played in this session, by what they are ([FileSet]): their rows may have merged or changed keys since. */
-    private val playedFiles = FileSet(episode)
+    /**
+     * The files handed to the player or played in this session, by what they are ([FileSet]): their rows may have
+     * merged or changed keys since. A copy left while it loaded counts: Next source never names it again.
+     */
+    private val triedFiles = FileSet(episode)
     /** The files left because they can't play here ([skip] with its file: no picture, not whole, slow, link dead). */
     private val skippedFiles = FileSet(episode)
     /** Why the resume didn't take the copy it left ([resumeMiss]); null when it did, or there was none. */
@@ -193,8 +201,9 @@ internal class DefaultSourceSession(
         firstPick = false
         playing = source
         playingOffer = offer
+        opened = source
         visited += source.key
-        playedFiles.add(source)
+        triedFiles.add(source)
         tries += Attempt(source, repo.wall(), currentWhy, null)
         if (kindLost) {
             kindLost = false
@@ -520,13 +529,13 @@ internal class DefaultSourceSession(
     private fun setAsideHere(s: PlaybackSource): Boolean = s.measured?.health?.setAside == true
 
     /**
-     * The row Next source goes on from: the copy playing, else (none played yet) the one tried last, under the key its
-     * file has in the list now ([rowKey]).
+     * The row Next source goes on from: the copy handed to the player last (loading or playing), else the one tried
+     * last, under the key its file has in the list now ([rowKey]).
      */
     private fun currentKey(): String? = current()?.let { rowKey(it) }
 
-    /** The copy playing, else (none played yet) the one tried last. */
-    private fun current(): PlaybackSource? = playing ?: tries.lastOrNull()?.source
+    /** The copy handed to the player last ([opened]: loading or playing), else the one playing, else the one tried last. */
+    private fun current(): PlaybackSource? = opened ?: playing ?: tries.lastOrNull()?.source
 
     /**
      * The [current] copy's file, by what it is ([FileSet]): its row as it was opened, and the row holding it in [l] now
@@ -540,19 +549,38 @@ internal class DefaultSourceSession(
         return files
     }
 
-    /** Whether [s] played in this session: its row then, or its file, in a row it has joined or been keyed under since. */
-    private fun visited(s: PlaybackSource): Boolean = s.key in visited || playedFiles.holds(s)
+    /**
+     * Whether [s] was handed to the player or played in this session: its row then, or its file, in a row it has joined
+     * or been keyed under since.
+     */
+    private fun visited(s: PlaybackSource): Boolean = s.key in visited || triedFiles.holds(s)
 
     /**
      * Next source and switches: the rest of the copy playing's own group in the Sources window (down from it, then the
      * ones above it), then the groups under it, then the groups above ([SourceRank.nextOrder], never a copy set aside
-     * here), skipping what failed here. Never the file playing, in any row, nor one played or tried in this play.
+     * here), skipping what failed here. Never the file loading or playing, in any row, nor one played or tried in this
+     * play. Only when a copy failed or kept stalling ([why]) and nothing new is left: back to the copy that played last
+     * ([playedLast]), so a switch whose copy won't start doesn't end the play.
      */
-    private fun nextOf(l: SourceList): PlaybackSource? {
-        val current = current()
+    private fun nextOf(l: SourceList, why: OpenWhy = OpenWhy.USER): PlaybackSource? {
         val same = currentFiles(l)
-        return SourceRank.nextOrder(l.sources, currentKey(), !episode, current) { same?.holds(it) == true }
-            .firstOrNull { usable(it) && !visited(it) }
+        val order = SourceRank.nextOrder(l.sources, currentKey(), !episode, current()) { same?.holds(it) == true }
+        order.firstOrNull { usable(it) && !visited(it) }?.let { return it }
+        return if (why == OpenWhy.FAILED || why == OpenWhy.STALLS) playedLast(order) else null
+    }
+
+    /**
+     * Of [order] (never the file just left: [nextOf]), the row holding the copy that showed its first frame last in this
+     * play and may still be tried (not skipped or set aside here); null when there's none.
+     */
+    private fun playedLast(order: List<PlaybackSource>): PlaybackSource? {
+        for (t in tries.asReversed()) {
+            if (t.failure != null) continue
+            val key = rowKey(t.source)
+            val files = FileSet.of(t.source, episode)
+            order.firstOrNull { (it.key == key || files.holds(it)) && usable(it) }?.let { return it }
+        }
+        return null
     }
 
     private fun pick(op: Op, why: OpenWhy) {
@@ -617,7 +645,7 @@ internal class DefaultSourceSession(
             }
             return auto.firstOrNull() to near
         }
-        return nextOf(l) to startedOnce
+        return nextOf(l, why) to startedOnce
     }
 
     /**
@@ -719,8 +747,13 @@ internal class DefaultSourceSession(
                 op.handle = null
                 repo.lastAddAt = repo.elapsed()
                 when (result) {
-                    is LinkCheck.Result.Ready ->
+                    is LinkCheck.Result.Ready -> {
+                        // Handed to the player: Next source goes on from it now, and never names it again.
+                        opened = source
+                        visited += source.key
+                        triedFiles.add(source)
                         op.final(Opened.Ready(source, offer, result.link, startMs(near), near))
+                    }
                     is LinkCheck.Result.Failed -> {
                         var f = result.failure
                         if (f.kind == FailureKind.FILE && Notices.isCopyright(f.detail) && justAdded) {

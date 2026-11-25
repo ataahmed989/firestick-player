@@ -5786,6 +5786,16 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     // Copies from elsewhere than a playlist (see Copies.Source), by link: what each is remembered by.
     private val copyKeys = java.util.concurrent.ConcurrentHashMap<String, String>()
+    // An episode's file with no index, by link: where 1.0.360 kept what it measured of it (ReleaseKey.earlierKey), read
+    // while nothing is kept under its own key yet.
+    private val copyEarlier = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    /** What's kept of the copy at [uri] ([prefix] "h|": how it played), under its key, else where 1.0.360 kept it. */
+    private fun keptOf(uri: Uri, prefix: String = ""): String? {
+        val key = qualityKey(uri) ?: return null
+        return qualitySeen.getString(prefix + key, null)
+            ?: copyEarlier[uri.toString()]?.let { qualitySeen.getString(prefix + it, null) }
+    }
 
     private fun qualityKey(uri: Uri): String? {
         copyKeys[uri.toString()]?.let { return it }
@@ -5828,7 +5838,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val key = qualityKey(uri) ?: return
         // Added to what earlier plays measured, once per play: this play's figure replaces its own last one.
         val playKey = "$key@${p.currentMediaItemIndex}"
-        val before = if (keptPlay == playKey) keptBefore else qualitySeen.getString(key, null)?.let { MediaSpec.decode(it) }
+        val before = if (keptPlay == playKey) keptBefore else keptOf(uri)?.let { MediaSpec.decode(it) }
         if (keptPlay != playKey) {
             keptPlay = playKey
             keptBefore = before
@@ -5894,7 +5904,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (key != healthKey) {
             keepHealth()
             healthKey = key
-            healthBefore = key?.let { CopyHealth.decode(qualitySeen.getString("h|$it", null)) }
+            healthBefore = uri?.takeIf { key != null }?.let { CopyHealth.decode(keptOf(it, "h|")) }
             healthAt = System.currentTimeMillis()
             health = CopyHealth()
             readyOnce = false
@@ -5945,7 +5955,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     /** How the copy at [uri] has played, this play included if it's the one playing. */
     private fun healthOf(uri: Uri): CopyHealth? {
         val key = qualityKey(uri) ?: return null
-        val kept = CopyHealth.decode(qualitySeen.getString("h|$key", null))
+        val kept = CopyHealth.decode(keptOf(uri, "h|"))
         if (key != healthKey) return kept
         val now = SystemClock.elapsedRealtime()
         val sofar = if (watchingSince > 0) health.copy(watchedMs = health.watchedMs + now - watchingSince) else health
@@ -5960,8 +5970,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private var keptSized = false
 
     /** What was measured of the copy at [uri] when it was played; null if it never was. Any thread. */
-    private fun measuredQuality(uri: Uri): MediaSpec? =
-        qualityKey(uri)?.let { qualitySeen.getString(it, null) }?.let { MediaSpec.decode(it) }
+    private fun measuredQuality(uri: Uri): MediaSpec? = keptOf(uri)?.let { MediaSpec.decode(it) }
 
     // Other copies of the title playing, as the provider describes them: for this entry, while it's the one shown; and
     // the language the title was made in (TMDB's), for which sound to look for.
@@ -6366,8 +6375,16 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             android.util.Log.i(TAG, app.fireplayer.vod.sources.SourceLog.line(ready))
             val uri = Uri.parse(ready.link.reveal())
             // What was measured of this file is kept by its release (the link changes daily); an episode's file whose
-            // index the add-on didn't give, by the episode too (a season pack's episodes share one hash).
-            (ready.offer.release ?: ready.source.release)?.let { copyKeys[uri.toString()] = it.measuredKey(request.target.episode) }
+            // index the add-on didn't give, by the episode too (a season pack's episodes share one hash). A torrent of
+            // that one file (Torrentio or Torz gave it no index) goes on from what 1.0.360 kept of it.
+            (ready.offer.release ?: ready.source.release)?.let { r ->
+                val episode = request.target.episode
+                copyKeys[uri.toString()] = r.measuredKey(episode)
+                val single = r.fileIdx == null && ready.source.offers.any { o ->
+                    app.fireplayer.vod.ReleaseKey.indexesEveryFile(o.addon) && (o.release ?: ready.source.release) == r
+                }
+                r.earlierKey(episode, single)?.let { copyEarlier[uri.toString()] = it }
+            }
             errorBox.visibility = View.GONE
             cannotOpen = false
             bufferingInfo.visibility = View.GONE

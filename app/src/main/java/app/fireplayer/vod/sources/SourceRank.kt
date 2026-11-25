@@ -11,6 +11,7 @@ import app.fireplayer.vod.Measured
 import app.fireplayer.vod.PlaybackSource
 import app.fireplayer.vod.RankStep
 import app.fireplayer.vod.Readiness
+import app.fireplayer.vod.ReleaseKey
 import app.fireplayer.vod.SoundFormat
 import app.fireplayer.vod.SourceFacts
 import app.fireplayer.vod.SourceGroup
@@ -63,7 +64,8 @@ class RankInput(
  *    below). 6. The HDR this TV shows ([shownHdr]: Dolby Vision by what this TV does with each profile).
  * 7. Rate: nearest the viewer's preferred bitrate first ([rateKey]; what the connection keeps, when that is less), the
  *    higher side counting a little less, nearly equal distances tied; an unknown rate after those near it, and after
- *    every copy that played well here at a rate measured here ([keysOf]).
+ *    every copy that played well here at a rate measured here; an episode's copy whose only size was its season pack's
+ *    after every copy of a known rate ([keysOf]).
  * 8. Source kind (Remux, BluRay encode, WEB-DL, WEBRip, HDTV), then bit depth (10-bit taken for HDR and 4K HEVC).
  * 9. HDR10+ where it reaches the TV ([TvPlan.hdr10PlusReaches]; Dolby Vision on a Dolby Vision TV); a picture that
  *    played here without HDR10's brightness data last.
@@ -136,13 +138,37 @@ object SourceRank {
 
     /**
      * What was measured of a row's file: its own release's, else a merged offer's (the same file from another add-on),
-     * each under its key for the episode ranked for ([app.fireplayer.vod.ReleaseKey.measuredKey]).
+     * each under its key for the episode ranked for ([ReleaseKey.measuredKey]; what an earlier version kept of a torrent
+     * of one episode file, [ReleaseKey.earlierKey], while there's nothing newer).
      */
     private fun measuredOf(s: PlaybackSource, input: RankInput): Measured? {
-        val episode = input.episodeRef
-        s.release?.let { r -> input.measured(r.measuredKey(episode))?.let { return it } }
-        for (o in s.offers) o.release?.let { r -> if (r != s.release) input.measured(r.measuredKey(episode))?.let { return it } }
+        s.release?.let { r -> measuredOf(s, r, input)?.let { return it } }
+        for (o in s.offers) o.release?.let { r -> if (r != s.release) measuredOf(s, r, input)?.let { return it } }
         return null
+    }
+
+    private fun measuredOf(s: PlaybackSource, r: ReleaseKey, input: RankInput): Measured? {
+        val episode = input.episodeRef
+        val m = input.measured(r.measuredKey(episode))
+            ?: r.earlierKey(episode, single(s, r))?.let { input.measured(it) }
+            ?: return null
+        return if (!input.episode && r.fileIdx == null) ownSize(m, s.facts) else m
+    }
+
+    /** Whether an add-on that gives each file of a torrent of several its index offers [r] in [s] without one ([ReleaseKey.earlierKey]). */
+    private fun single(s: PlaybackSource, r: ReleaseKey): Boolean =
+        r.fileIdx == null && s.offers.any { o -> ReleaseKey.indexesEveryFile(o.addon) && (o.release ?: s.release) == r }
+
+    /**
+     * [m], measured of a film's file without an index: a collection's films share that key, so a size (and the rate from
+     * it) other than the one an add-on gave to the byte ([SourceFacts.sizeExact]) was another film's, and isn't this
+     * row's ([asPlayedHere] keeps the add-on's).
+     */
+    private fun ownSize(m: Measured, facts: SourceFacts): Measured {
+        val spec = m.spec ?: return m
+        val stated = facts.sizeBytes?.takeIf { facts.sizeExact } ?: return m
+        if (spec.sizeBytes <= 0 || SourceMerge.sizeClose(spec.sizeBytes, stated)) return m
+        return m.copy(spec = spec.copy(sizeBytes = 0, overallBps = 0))
     }
 
     /** The viewer's move of a row's file ([RankInput.imaxMove]): its own release's, else a merged offer's. */
@@ -173,9 +199,12 @@ object SourceRank {
 
     /**
      * One value per [RankStep], higher first; [dub]: the viewer's language without the film's own; [rateKnown]: its rate
-     * is known ([mbpsOf]); [proven]: it played well here at a rate measured here that feeds its picture ([keysOf]).
+     * is known ([mbpsOf]); [proven]: it played well here at a rate measured here that feeds its picture; [torrentTotal]:
+     * its rate isn't known because its only size was its torrent's ([SourceFacts.torrentTotal]) ([keysOf]).
      */
-    private class Key(val v: LongArray, val dub: Boolean, val rateKnown: Boolean = true, val proven: Boolean = false)
+    private class Key(
+        val v: LongArray, val dub: Boolean, val rateKnown: Boolean = true, val proven: Boolean = false, val torrentTotal: Boolean = false,
+    )
 
     private class Scored(val source: PlaybackSource, val index: Int, val key: Key)
 
@@ -238,23 +267,26 @@ object SourceRank {
         // Its rate measured here (the file's size or average), and not starved for its picture ([shownHeight]).
         val measuredRate = spec != null && (spec.overallBps > 0 || spec.sizeBytes > 0)
         val proven = playedWell && measuredRate && mbps != null && f.height != null && shown == f.height
-        return Key(v, dub, rateKnown = mbps != null, proven = proven)
+        return Key(v, dub, rateKnown = mbps != null, proven = proven, torrentTotal = mbps == null && f.torrentTotal)
     }
 
     /**
      * [rows]' keys ([keyOf]). A rate not known ([rateKey]'s guess, near the top) is never put above a copy that played
      * well here at a rate measured here ([Key.proven]) when nothing before [RankStep.RATE] tells them apart: it goes just
-     * under the lowest such copy. A rate measured on this TV beats a guess; a copy with no size of its own (a season
-     * pack's total isn't one) stays under it until it plays here and is measured.
+     * under the lowest such copy. A rate measured on this TV beats a guess. An episode's copy whose only size was its
+     * season pack's ([Key.torrentTotal]: the file could be any size) goes under every copy of a known rate it ties with
+     * there, played here or not, until it plays here and is measured.
      */
     private fun keysOf(rows: List<PlaybackSource>, input: RankInput): List<Key> {
         val keys = rows.map { keyOf(it, input) }
+        if (keys.all { it.rateKnown }) return keys
         val proven = keys.filter { it.proven }
-        if (proven.isEmpty() || keys.all { it.rateKnown }) return keys
+        val known = keys.filter { it.rateKnown }
         val rate = RankStep.RATE.ordinal
         for (k in keys) {
             if (k.rateKnown) continue
-            val lowest = proven.filter { stepBetween(it, k, until = rate) == null }.minOfOrNull { it.v[rate] } ?: continue
+            val above = if (k.torrentTotal) known else proven
+            val lowest = above.filter { stepBetween(it, k, until = rate) == null }.minOfOrNull { it.v[rate] } ?: continue
             k.v[rate] = minOf(k.v[rate], lowest - 1)
         }
         return keys

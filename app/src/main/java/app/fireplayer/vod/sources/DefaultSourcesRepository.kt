@@ -490,9 +490,15 @@ class DefaultSourcesRepository(
                     episodeRef = target.episode,
                 )
                 // The same file from two add-ons is one row: by the exact size a play here measured, too (an index-less
-                // file's under this episode's own key: a season pack's other episodes measured other files).
-                val merged = SourceMerge.mergeKeyed(answers, input.runtimeMin, target.episode != null) { r ->
-                    measured(r.measuredKey(target.episode))?.spec?.sizeBytes?.takeIf { it > 0 }
+                // file's under this episode's own key: a season pack's other episodes measured other files). A torrent of
+                // one episode file (Torrentio or Torz gave it no index) still reads what an earlier version kept of it.
+                val episode = target.episode
+                val singles = if (episode == null) emptySet() else answers.flatMapTo(HashSet()) { a ->
+                    a.mapNotNull { p -> p.release?.takeIf { it.fileIdx == null && ReleaseKey.indexesEveryFile(p.offer.addon) } }
+                }
+                val merged = SourceMerge.mergeKeyed(answers, input.runtimeMin, episode != null) { r ->
+                    (measured(r.measuredKey(episode)) ?: r.earlierKey(episode, r in singles)?.let { measured(it) })
+                        ?.spec?.sizeBytes?.takeIf { it > 0 }
                 }
                 val ranked = SourceRank.rank(merged.sources, input)
                 val best = SourceRank.best(ranked)
