@@ -188,7 +188,8 @@ object PlayerFactory {
      * shows the nearest keyframe, and never plays sound or subtitles. It loads only while [allowLoading] says so.
      */
     fun buildPreview(context: Context, headers: Map<String, String>, allowLoading: () -> Boolean): ExoPlayer {
-        val extractors = SeekableMkvExtractorsFactory(DefaultExtractorsFactory().setConstantBitrateSeekingEnabled(true))
+        // The film's own player tells the log how its file is laid out; the preview, opening the same file, doesn't.
+        val extractors = SeekableMkvExtractorsFactory(DefaultExtractorsFactory().setConstantBitrateSeekingEnabled(true), logs = false)
         // Where the provider sent the film is the film's to change: the preview being turned away says nothing about it.
         val upstream = dataSourceFactory(context, headers, readOnlyMemory = true)
         // Its connection closes as soon as a picture is loaded, so the film can have the server to itself. While it's
