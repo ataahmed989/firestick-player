@@ -223,9 +223,15 @@ class SeekableMkvTest {
         var servedInClusters = 0L
         /** A connection drops once, at the first read from here on (-1: none does). */
         var dropAt = -1L
+        /** A connection can't be opened here, once (-1: every one opens). */
+        var failOpenAt = -1L
         private var cursor = 0L
 
         private fun open(position: Long): DefaultExtractorInput {
+            if (position == failOpenAt) {
+                failOpenAt = -1
+                throw IOException("refused")
+            }
             opens += position
             cursor = position
             val reader = DataReader { buffer, offset, length ->
@@ -250,15 +256,25 @@ class SeekableMkvTest {
 
         /**
          * Reads from [position] (after telling [extractor] so, as every load starts), following the places it asks to go
-         * on from, until it ends or [stop]: a dropped connection is opened again where reading had got to.
+         * on from, until it ends or [stop]: a dropped connection is opened again where reading had got to. And as Media3's
+         * own loader does (1.8.0, ProgressiveMediaPeriod.ExtractingLoadable.load), one that couldn't be opened is tried
+         * again where the last connection had got to, not where it was asked to go.
          */
         fun load(extractor: Extractor, position: Long = 0, timeUs: Long = 0, stop: () -> Boolean = { false }): Int {
             extractor.seek(position, timeUs)
             var at = position
             var retries = 0
             val holder = PositionHolder()
+            var last: DefaultExtractorInput? = null
             while (true) {
-                val input = open(at)
+                val input = try {
+                    open(at)
+                } catch (e: IOException) {
+                    if (++retries > 3) throw e
+                    last?.let { at = it.position }
+                    continue
+                }
+                last = input
                 var result = Extractor.RESULT_CONTINUE
                 try {
                     while (result == Extractor.RESULT_CONTINUE) {
@@ -332,9 +348,10 @@ class SeekableMkvTest {
 
     private class Read(val loader: Loader, val out: Out, val extractor: Extractor, val result: Int)
 
-    private fun read(film: Film, extractor: Extractor, dropAt: Long = -1): Read {
+    private fun read(film: Film, extractor: Extractor, dropAt: Long = -1, failOpenAt: Long = -1): Read {
         val loader = Loader(film.bytes, film.clusters.first() until film.cuesAt)
         loader.dropAt = dropAt
+        loader.failOpenAt = failOpenAt
         val out = Out(loader)
         extractor.init(out)
         return Read(loader, out, extractor, loader.load(extractor))
@@ -448,6 +465,40 @@ class SeekableMkvTest {
         assertEquals(listOf(0L, film.tracksAt, film.tracksAt, film.segmentStart, film.cuesAt, film.clusterContents[0]), r.loader.opens)
         assertEquals(film.videoTimesUs, r.video().times)
         assertEquals(0L, r.out.clusterBytesAtEndTracks)
+    }
+
+    @Test
+    fun aReconnectThatFailsOnTheWayBackFromTheTrackListIsAskedForAgain() {
+        // Media3 tries it again where the last connection had got to: the end of the track list, the end of the file
+        // here. Read on from there, no cluster would come, nor the index: the film would never start.
+        val film = film(pad = 70_000)
+        val r = read(film, wrapped(), failOpenAt = film.segmentStart)
+        assertEquals(Extractor.RESULT_END_OF_INPUT, r.result)
+        assertEquals(listOf(0L, film.tracksAt, film.length, film.segmentStart, film.cuesAt, film.clusterContents[0]), r.loader.opens)
+        assertTrue(r.out.seekMap!!.isSeekable)
+        assertEquals(film.videoTimesUs, r.video().times)
+        assertEquals(film.audioTimesUs, r.audio().times)
+        assertEquals(0L, r.out.clusterBytesAtEndTracks)
+        // On the way there it already was: asked for again from where the first bytes ended.
+        val there = read(film, wrapped(), failOpenAt = film.tracksAt)
+        assertEquals(listOf(0L, film.segmentStart, film.tracksAt, film.segmentStart, film.cuesAt, film.clusterContents[0]),
+            there.loader.opens)
+        assertEquals(film.videoTimesUs, there.video().times)
+    }
+
+    @Test
+    fun aReconnectThatFailsOnTheWayBackFromSomethingElseIsAskedForAgain() {
+        // The SeekHead pointed at the last cluster: tried again there, the reader would take it for what follows the
+        // first bytes, and Media3 would find no index. Asked for again, it's read as Media3 reads it.
+        val film = film(pad = 70_000, tracksListedAt = { it.clusters.last() })
+        val theirs = read(film, media3())
+        val mine = read(film, wrapped(), failOpenAt = film.segmentStart)
+        assertEquals(listOf(0L, film.clusters.last(), film.clusters.last(), film.segmentStart) + theirs.loader.opens.drop(1),
+            mine.loader.opens)
+        assertEquals(theirs.out.events, mine.out.events)
+        assertTrue(mine.out.seekMap!!.isSeekable)
+        assertEquals(theirs.video().times, mine.video().times)
+        assertEquals(theirs.audio().times, mine.audio().times)
     }
 
     @Test

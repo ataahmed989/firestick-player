@@ -82,7 +82,8 @@ private class SeekableMkvExtractor(
     private var dataStart = 0L
     private var first: Cluster? = null
     private var search: Search? = null
-    // Where a finished search sent the player, until reading starts there; -1 when none is pending.
+    // Where a finished search, a damaged stretch got past or the track list read first sent the reader, until reading
+    // starts there; -1 when none is pending.
     private var landingPos = -1L
     private val buffer = ByteArray(CHUNK + TAIL)
 
@@ -416,10 +417,8 @@ private class SeekableMkvExtractor(
                 val end = check(input)
                 if (end < 0) {
                     // Not there after all: back to where the reader stopped, which reads on as before.
-                    detour = null
                     if (logs) Log.i(TAG, "mkv Tracks not found whole at $tracksAt: read as before")
-                    holder.position = segmentStart
-                    return Extractor.RESULT_SEEK
+                    return back(holder)
                 }
                 tracksEnd = end
             }
@@ -434,11 +433,9 @@ private class SeekableMkvExtractor(
                 Extractor.RESULT_END_OF_INPUT -> {
                     // The connection ended early, not the track list: tried again from here, as any read.
                     if (input.position != tracksEnd) throw EOFException()
-                    detour = null
                     if (logs) Log.i(TAG, "mkv Tracks read first: $tracksAt-$tracksEnd, fps=${MkvHeader.fpsText(videoFrameRate)} " +
                         "dvRecord=${dvSignal ?: "none"}, back to $segmentStart")
-                    holder.position = segmentStart
-                    return Extractor.RESULT_SEEK
+                    return back(holder)
                 }
                 Extractor.RESULT_SEEK -> detour = null
             }
@@ -471,6 +468,19 @@ private class SeekableMkvExtractor(
             } finally {
                 input.resetPeekPosition()
             }
+        }
+
+        /**
+         * Back to where the reader stopped in the first bytes, to read on from there; asked for again until reading
+         * starts there, as a finished search's jump is ([landingPos]). Media3 tries a reconnect that failed again where
+         * the last connection had got to, which here is past the track list (or in the middle of whatever the SeekHead
+         * pointed at): reading on from there would miss the clusters, or start part-way into one.
+         */
+        private fun back(holder: PositionHolder): Int {
+            detour = null
+            landingPos = segmentStart
+            holder.position = segmentStart
+            return Extractor.RESULT_SEEK
         }
 
         private fun giveUp(why: String): Int? {
