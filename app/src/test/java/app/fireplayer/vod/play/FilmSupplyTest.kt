@@ -306,7 +306,7 @@ class FilmSupplyTest {
         p2.buffering(true)
         answer(FilmSupply.TRY_NEXT)
         assertEquals(null to OpenWhy.USER, s2.opens.last())
-        // With the setting on "Switch to a lighter source", the viewer has allowed it: no question.
+        // With the setting on "Switch to the next copy", the viewer has allowed it: no question.
         mode = WhenBuffering.LIGHTER
         questions.clear()
         val (p3, s3) = playing(first = mine, chosen = mine)
@@ -314,6 +314,54 @@ class FilmSupplyTest {
         p3.buffering(true)
         assertEquals(null to OpenWhy.STALLS, s3.opens.last())
         assertTrue(questions.isEmpty())
+    }
+
+    @Test fun eitherQuestionIsTheCopysOneQuestion() {
+        // The line read plenty when it first stalled: the plain question, answered Keep.
+        reading = FilmSupply.Reading(300.0, 3f)
+        val (p, s) = playing()
+        s.switchNow = true
+        p.buffering(true)
+        assertEquals(FilmSupply.PLAIN_QUESTION, questions.single().first)
+        answer(FilmSupply.KEEP)
+        // Then it reads short: not asked again, the other way. The line's speed is still kept for the lists.
+        reading = FilmSupply.Reading(72.0, 0.98f)
+        p.buffering(false)
+        p.buffering(true)
+        p.tick()
+        assertEquals(1, questions.size)
+        assertEquals(1, s.opens.size)
+        assertEquals(listOf(72.0), lineShorts)
+
+        // The other way round: Back on the short-supply question, then a reading of plenty.
+        questions.clear()
+        val (p2, s2) = playing()
+        s2.switchNow = true
+        p2.buffering(true)
+        assertTrue(questions.single().first.startsWith("This source needs about 69 Mb/s"))
+        val back: () -> Unit = dismisses[dismisses.size - 1]
+        back()
+        reading = FilmSupply.Reading(300.0, 3f)
+        p2.buffering(false)
+        p2.buffering(true)
+        p2.tick()
+        assertEquals(1, questions.size)
+        assertEquals(1, s2.opens.size)
+    }
+
+    @Test fun switchToItAboutACopyLeftSinceLeavesTheOnePlayingNow() {
+        val (p, s) = playing()
+        s.switchNow = true
+        p.buffering(true)
+        // While the question is up, the copy fails and the next one plays.
+        p.failed(2004, 404)
+        assertEquals(null to OpenWhy.FAILED, s.opens.last())
+        s.ready(Fixtures.source(3, mbps = 25.0))
+        answer(FilmSupply.SWITCH)
+        // Kept for the film, but the copy playing now isn't left for a question about another.
+        assertEquals("LIGHTER", kept)
+        assertEquals(2, s.opens.size)
+        assertEquals("k3", p.current?.key)
     }
 
     @Test fun aRowPickedInThePlayersSourcesPanelCountsAsPickedByHand() {

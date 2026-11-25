@@ -144,8 +144,11 @@ class SourcePlayback(
     private var asking = false
     /** The source playing was found too heavy for the connection, and that was dealt with (asked, switched or noted). */
     private var supplyDone = false
-    /** The copies (by key) asked about in this play whether to try the next source: each is asked once ([askToLeave]). */
-    private val plainAsked = HashSet<String>()
+    /**
+     * The copies (by key) asked about their stalls in this play, by either question ([shortSupply], [askToLeave]): each
+     * is asked once.
+     */
+    private val askedAbout = HashSet<String>()
     private var keepLogged = false
     /** The network is waited for (it dropped while the film played): the same link again once it's back ([Recovery]). */
     private var netWait: Cancel? = null
@@ -489,6 +492,8 @@ class SourcePlayback(
             open(lighter, OpenWhy.STALLS)
             return
         }
+        // Asked about already (the plain question, answered): not asked again.
+        if (!askedAbout.add(s.key)) return
         asking = true
         host.ask(
             FilmSupply.question(s.facts.avgMbps, reading, lighter),
@@ -496,8 +501,11 @@ class SourcePlayback(
                 FilmSupply.SWITCH to {
                     asking = false
                     host.rememberStallChoice(StallChoice.encode(StallChoice.LIGHTER, s.key))
-                    host.log("asked: switching to the lighter source")
-                    open(lighter, OpenWhy.USER)
+                    // Not if s was left while the question was up (it failed): the copy playing now stays.
+                    if (current?.key == s.key) {
+                        host.log("asked: switching to the lighter source")
+                        open(lighter, OpenWhy.USER)
+                    }
                 },
                 FilmSupply.KEEP to {
                     asking = false
@@ -511,11 +519,12 @@ class SourcePlayback(
     }
 
     /**
-     * [s] keeps pausing, though the connection is fast enough for it (Ask first): asked once for it in this play. Keep,
-     * or Back: it plays on and isn't asked about again.
+     * [s] keeps pausing, though the connection is fast enough for it (Ask first): asked once for it in this play (by
+     * either question). Keep, or Back: it plays on and isn't asked about again. Try next source does nothing once [s]
+     * was left while the question was up (it failed): the copy playing now isn't the one asked about.
      */
     private fun askToLeave(s: PlaybackSource) {
-        if (!plainAsked.add(s.key)) return
+        if (!askedAbout.add(s.key)) return
         asking = true
         host.log("stalls past the limit: asking before any switch")
         host.ask(
@@ -523,7 +532,7 @@ class SourcePlayback(
             listOf(
                 FilmSupply.TRY_NEXT to {
                     asking = false
-                    nextSource()
+                    if (current?.key == s.key) nextSource()
                 },
                 FilmSupply.KEEP to { asking = false },
             ),

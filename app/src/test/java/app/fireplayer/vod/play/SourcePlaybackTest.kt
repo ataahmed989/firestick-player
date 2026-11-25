@@ -291,6 +291,24 @@ class SourcePlaybackTest {
     }
 
     @Test
+    fun tryNextSourceAboutACopyLeftSinceLeavesTheOnePlayingNow() {
+        val (p, s) = stalledOn()
+        // While the question is up, the copy fails and the next one plays.
+        p.failed(2004, 404)
+        assertEquals(null to OpenWhy.FAILED, s.opens.last())
+        s.ready(Fixtures.source(2))
+        answer(FilmSupply.TRY_NEXT)
+        // The question was about k1: k2 isn't left for it.
+        assertEquals(2, s.opens.size)
+        assertEquals("k2", p.current?.key)
+        // Answered: k2's own stalls are asked about in their turn.
+        p.firstFrame()
+        p.buffering(true)
+        assertEquals(2, questions.size)
+        assertEquals(2, s.opens.size)
+    }
+
+    @Test
     fun switchToTheNextCopySwitchesWithoutAskingWhoeverPickedIt() {
         mode = WhenBuffering.LIGHTER
         val (_, s) = stalledOn()
