@@ -198,6 +198,11 @@ class DefaultSourcesRepository(
         for (entry in entries.values.toList()) if (entry.answers.isNotEmpty()) rebuild(entry)
     }
 
+    /** Only [target]'s list ranks again (a file of it played here and its exact size is known: its rows merge anew). */
+    fun rerank(target: SourceTarget) {
+        entries[target.key]?.takeIf { it.answers.isNotEmpty() }?.let(::rebuild)
+    }
+
     /**
      * A title's own language was stored (TMDB's details came after the add-ons' answers, or for a title never opened):
      * the lists ranked without it rank again, so copies in it aren't left below the viewer's dub.

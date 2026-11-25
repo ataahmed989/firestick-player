@@ -5845,10 +5845,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (qualitySeen.all.size >= MAX_QUALITY_SEEN && !qualitySeen.contains(key)) edit.clear()
         edit.putString(key, text).apply()
         // The file's exact size, first known: the same file from the other add-on joins its row now (SourceMerge), so
-        // Next source and Sources don't offer it again as another copy.
-        if (!keptSized && spec.sizeBytes > 0L && source != null) {
+        // Next source and Sources don't offer it again as another copy. Only this title's list: the size is of its file.
+        val s = source
+        if (!keptSized && spec.sizeBytes > 0L && s != null) {
             keptSized = true
-            (Sources.get(this) as? app.fireplayer.vod.sources.DefaultSourcesRepository)?.rerank()
+            (Sources.get(this) as? app.fireplayer.vod.sources.DefaultSourcesRepository)?.rerank(s.request.target)
         }
     }
 
@@ -5882,6 +5883,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private var health = CopyHealth()
     private var healthKey: String? = null
     private var healthBefore: CopyHealth? = null
+    // When this play of it began (epoch ms): the date kept with its counters.
+    private var healthAt = 0L
     private var watchingSince = 0L
     private var stallSince = 0L
     private var jumpedAt = 0L
@@ -5894,6 +5897,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             keepHealth()
             healthKey = key
             healthBefore = key?.let { CopyHealth.decode(qualitySeen.getString("h|$it", null)) }
+            healthAt = System.currentTimeMillis()
             health = CopyHealth()
             readyOnce = false
             stallSince = 0
@@ -5937,7 +5941,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val now = SystemClock.elapsedRealtime()
         val sofar = if (watchingSince > 0) health.copy(watchedMs = health.watchedMs + now - watchingSince) else health
         if (sofar == CopyHealth()) return
-        val text = CopyHealth.encode((healthBefore ?: CopyHealth()) + sofar.copy(at = System.currentTimeMillis()))
+        // Dated once per play (as the picture's playedAt): a play with nothing new to keep writes nothing.
+        val text = CopyHealth.encode((healthBefore ?: CopyHealth()) + sofar.copy(at = healthAt))
         if (qualitySeen.getString("h|$key", null) != text) qualitySeen.edit().putString("h|$key", text).apply()
     }
 

@@ -15,8 +15,9 @@ import app.fireplayer.player.BlackBars
 /**
  * Looks at a film's picture shape a few times in its first minutes ([AspectSamples]): from the decoded frame's size,
  * or, for a 16:9 frame, from a tiny copy of the picture (PixelCopy of the film's SurfaceView, [AspectSamples.COPY_WIDTH]
- * x [AspectSamples.COPY_HEIGHT], on a thread of its own, which goes once the looks are done). Eight looks at most per
- * copy, never one a frame. Android 7 and later; none where the picture can't be copied (tunnelled or protected video).
+ * x [AspectSamples.COPY_HEIGHT], on a thread of its own, which goes once the looks are done or the copy changes). Eight
+ * looks at most per copy, never one a frame. Android 7 and later; none where the picture can't be copied (tunnelled or
+ * protected video).
  */
 class ShapeWatch(private val surfaceView: SurfaceView) {
     private val main = Handler(Looper.getMainLooper())
@@ -26,9 +27,6 @@ class ShapeWatch(private val surfaceView: SurfaceView) {
     private var generation = 0
     // A copy is being taken (main thread).
     private var busy = false
-    // On the worker only.
-    private var bitmap: Bitmap? = null
-    private var pixels: IntArray? = null
 
     /** What the looks at the copy playing found so far. */
     val samples: List<AspectSample> get() = plan.samples
@@ -66,6 +64,8 @@ class ShapeWatch(private val surfaceView: SurfaceView) {
         generation++
         busy = false
         plan.reset()
+        // Its thread goes too, until the new copy's first look needs one.
+        stopWorker()
     }
 
     fun release() {
@@ -85,11 +85,12 @@ class ShapeWatch(private val surfaceView: SurfaceView) {
         try {
             val w = AspectSamples.COPY_WIDTH
             val h = AspectSamples.COPY_HEIGHT
-            val dest = bitmap ?: Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888).also { bitmap = it }
+            // Made for each look and let go after it: looks are minutes apart, nothing is kept between them.
+            val dest = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
             PixelCopy.request(surfaceView, dest, { result ->
                 var seen: BlackBars.Look? = null
                 if (result == PixelCopy.SUCCESS) {
-                    val into = pixels ?: IntArray(w * h).also { pixels = it }
+                    val into = IntArray(w * h)
                     dest.getPixels(into, 0, w, 0, 0, w, h)
                     seen = BlackBars.measure(into, w, h)
                 }
@@ -111,12 +112,6 @@ class ShapeWatch(private val surfaceView: SurfaceView) {
     }
 
     private fun stopWorker() {
-        val w = worker ?: return
-        // What the copies needed goes with the thread.
-        w.post {
-            bitmap = null
-            pixels = null
-        }
         thread?.quitSafely()
         thread = null
         worker = null
