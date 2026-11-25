@@ -134,7 +134,7 @@ class AvatarRankTest {
             now = 1_764_100_000_000L, preferredMbps = preferred)
 
     private fun ranked(input: RankInput, measuredSize: (app.fireplayer.vod.ReleaseKey) -> Long? = { null }) =
-        SourceRank.rank(SourceMerge.merge(answers, runtime, measuredSize), input)
+        SourceRank.rank(SourceMerge.merge(answers, runtime, measuredSize = measuredSize), input)
 
     private fun sourceList(ranked: List<PlaybackSource>, input: RankInput) = SourceList(film,
         mapOf(Addon.TORRENTIO to AddonState.Answered(11), Addon.MEDIAFUSION to AddonState.Answered(10)), ranked,

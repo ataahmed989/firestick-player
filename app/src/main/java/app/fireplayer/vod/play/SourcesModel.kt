@@ -11,6 +11,7 @@ import app.fireplayer.vod.Readiness
 import app.fireplayer.vod.SourceList
 import app.fireplayer.vod.TvFit
 import app.fireplayer.vod.TvPlan
+import app.fireplayer.vod.sources.FileSet
 import app.fireplayer.vod.sources.SourceRank
 
 /**
@@ -153,8 +154,11 @@ object SourcesModel {
         val best = list.best
         val playingIsBest = playing != null && playing.key == best?.key
         val failed = attempts.filter { it.failure != null }.mapTo(HashSet()) { it.source.key }
+        // Never the copy it goes on from (playing, or the Best), nor its file in another row ([FileSet]).
+        val from = playing ?: best
+        val same = from?.let { FileSet.of(it, !film) }
         val nextOne = if (next != null) next() else
-            SourceRank.nextOrder(list.sources, (playing ?: best)?.key, film).firstOrNull { it.key !in failed }
+            SourceRank.nextOrder(list.sources, from?.key, film, from) { same?.holds(it) == true }.firstOrNull { it.key !in failed }
         val fine = smooth && playing != null && sectionOf(playing, film).let { it == Section.IMAX || it == Section.UHD }
         val bySection = list.sources.groupBy { sectionOf(it, film) }
         val groups = Section.entries.mapNotNull { section ->
@@ -215,7 +219,8 @@ object SourcesModel {
 
         // A row's small marks, two lines at most: what this play did with it, then Best and Last used, then whether
         // FirePlayer has played it on this TV (not for a copy that wasn't the whole film here: its warning says so).
-        // The rows at the top say only what their heading doesn't.
+        // The rows at the top say only what their heading doesn't. In the player, Playing takes Last used's place: the
+        // copy loading or playing is the one the title goes on from, whichever row it was before.
         fun marks(s: PlaybackSource, top: Boolean): String? {
             val a = tried[s.key]
             val state = when {
@@ -226,7 +231,7 @@ object SourcesModel {
             }
             val lines = state + listOfNotNull(
                 if (!top && s.key == bestKey) BEST else null,
-                if (s.key == lastKey && s.key != playingKey) LAST_USED else null,
+                if (s.key == lastKey && playingKey == null) LAST_USED else null,
                 s.measured?.at?.takeIf { !PlayRules.notWhole(s) }?.let { "✓ played ${day(it)}" },
             )
             return lines.take(2).joinToString("\n").ifEmpty { null }
@@ -381,8 +386,11 @@ object SourcesModel {
         val atmosLost = atmos && heard != PlayRules.ATMOS && plan != null
         val sound = stated ?: measuredSound?.let { "$it · measured here" }
         out += "Sound" to ((sound ?: "Not stated") + if (atmosLost) " · heard here as ${heard ?: "sound"}: Atmos not kept on this TV" else "")
-        f.sizeBytes?.let { out += "Size" to PlayRules.size(it) }
-        f.avgMbps?.let { out += "Data rate" to "≈${it.toInt()} Mb/s average (from size)" }
+        // The file's size and average rate as a play here measured them, else the add-ons' (a season pack's total never).
+        (spec?.sizeBytes?.takeIf { it > 0 } ?: f.sizeBytes)?.let { out += "Size" to PlayRules.size(it) }
+        val measuredMbps = spec?.overallBps?.takeIf { it > 0 }?.let { it / 1_000_000.0 }
+        if (measuredMbps != null) out += "Data rate" to "≈${measuredMbps.toInt()} Mb/s average · measured here"
+        else f.avgMbps?.let { out += "Data rate" to "≈${it.toInt()} Mb/s average (from size)" }
         spec?.takeIf { it.videoHow == MediaSpec.How.MEASURED && it.videoBps > 0 }?.let { out += "Picture data" to "${MediaSpec.mbps(it.videoBps)} · measured here" }
         server?.let { out += "Server" to it }
         f.origin?.let { out += "Source" to it }

@@ -135,8 +135,33 @@ data class ReleaseKey(val infoHash: String, val fileIdx: Int?) {
      */
     val storeKey: String get() = "rd|$infoHash|${fileIdx ?: -1}"
 
+    /**
+     * The key of what FirePlayer measured about this file as [episode]'s (a film's: null): [storeKey], but for an
+     * episode in a torrent whose file index the add-on didn't give (MediaFusion's season packs) "rd|<hash>|-1|<s>:<e>".
+     * Every episode of such a pack has the same [storeKey], so what one episode's file measured is never another's.
+     * Films and files with an index keep [storeKey], so what was measured before is still found. A record an earlier
+     * version kept under an index-less [storeKey] is read only through [earlierKey].
+     */
+    fun measuredKey(episode: EpisodeRef?): String =
+        if (fileIdx == null && episode != null) "$storeKey|${episode.season}:${episode.episode}" else storeKey
+
+    /**
+     * Where 1.0.360 and earlier kept what they measured of [episode]'s file when it has no index ([storeKey]), read while
+     * nothing is kept under [measuredKey] yet; what's measured from then on goes there. Only for a torrent of that one
+     * file, [single]: Torrentio or Torz gave it no index ([indexesEveryFile]). MediaFusion's season packs come without
+     * one as well, and that record is then any of their episodes'. Null where [measuredKey] is [storeKey] already.
+     */
+    fun earlierKey(episode: EpisodeRef?, single: Boolean): String? =
+        if (fileIdx == null && episode != null && single) storeKey else null
+
     companion object {
         private val HEX40 = Regex("[0-9a-f]{40}")
+
+        /**
+         * Whether [addon] gives each file of a torrent of several its index (Torrentio, StremThru Torz), so a file it
+         * gives none is its torrent's only one ([earlierKey]). MediaFusion doesn't for an episode of a season pack.
+         */
+        fun indexesEveryFile(addon: Addon): Boolean = addon != Addon.MEDIAFUSION
 
         /** A key from an info hash in any case; null unless it is 40 hex digits. A negative index counts as none. */
         fun of(infoHash: String?, fileIdx: Int?): ReleaseKey? {
@@ -247,9 +272,16 @@ data class SourceFacts(
     val seeders: Int? = null,
     /** The file sits in a season pack or collection. */
     val pack: Boolean = false,
+    /** [sizeBytes] is the file's to the byte (an add-on's videoSize, or what a play here measured), not a rounded "29.26 GB". */
+    val sizeExact: Boolean = false,
+    /**
+     * The only size the add-ons gave is the torrent's (an episode's season pack in all), so [sizeBytes] and [avgMbps]
+     * are null: the episode's own file could be any size. Memory only.
+     */
+    val torrentTotal: Boolean = false,
 )
 
-/** What FirePlayer measured itself when this file played here before, keyed by [ReleaseKey.storeKey]. */
+/** What FirePlayer measured itself when this file played here before, keyed by [ReleaseKey.measuredKey]. */
 data class Measured(val spec: MediaSpec?, val health: CopyHealth?, val at: Long?)
 
 /** One add-on's offer of a file: its own words (for Details, no links), its ready mark, and the link to check. */
@@ -758,12 +790,19 @@ interface SourceSession {
 
     /**
      * The key [source]'s file has in [list] now: rows merge as plays learn a file's exact size (the same file from two
-     * add-ons), a merged row keeping the key of the add-on that answered first. [source]'s own key when unchanged.
+     * add-ons), a merged row keeping the key of the add-on that answered first; when its release is in no row any more
+     * (that add-on's answer is gone), the row holding the same file. [source]'s own key when unchanged.
      */
     fun rowKey(source: PlaybackSource): String = source.key
 
     /** What Next source plays now ([open] with no source): the one Picture & sound and the Sources window name. */
     fun nextPick(): PlaybackSource? = null
+
+    /**
+     * Why a resume isn't playing the copy it left ([PlayRequest.preferred]), in plain words for the log ("not cached
+     * any more"; never a link); null when it is, or there was none to play.
+     */
+    fun resumeMiss(): String? = null
 
     /** The next episode's sources, once, in the last ~4 minutes ([LookupWhy.NEXT_EPISODE]); same-kind first. */
     fun lookUpNext(next: EpisodeRef, onList: (SourceList) -> Unit): Cancel

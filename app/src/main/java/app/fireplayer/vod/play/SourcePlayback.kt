@@ -18,6 +18,7 @@ import app.fireplayer.vod.SourceSession
 import app.fireplayer.vod.SourceTarget
 import app.fireplayer.vod.StartAt
 import app.fireplayer.vod.Step
+import app.fireplayer.vod.sources.SourceRank
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -150,6 +151,8 @@ class SourcePlayback(
      */
     private val askedAbout = HashSet<String>()
     private var keepLogged = false
+    /** Why a resume didn't take the copy it left was logged ([SourceSession.resumeMiss]). */
+    private var resumeLogged = false
     /** The network is waited for (it dropped while the film played): the same link again once it's back ([Recovery]). */
     private var netWait: Cancel? = null
     /** Said when the next source starts, in place of "Resumed near …": why the one before was left ([noPicture]). */
@@ -280,6 +283,11 @@ class SourcePlayback(
         // A resume whose own copy isn't in the full list: the ranking's pick plays instead.
         else if (o.resumedNear && !everPlayed && copyGone()) host.notice(COPY_GONE_NOTE)
         else if ((o.resumedNear || everPlayed) && start > 0) host.notice("Resumed near ${PlayRules.clock(start)}")
+        // A resume that didn't take the copy it left: why, once, in the log (plain words, never a link).
+        if (!everPlayed && !resumeLogged) session.resumeMiss()?.let {
+            resumeLogged = true
+            host.log("resume: not the copy left ($it)")
+        }
         armLoad(o.source)
     }
 
@@ -452,15 +460,16 @@ class SourcePlayback(
                     (if (mode == WhenBuffering.KEEP) "the setting says keep trying" else "kept when asked for this film") + ")")
                 // Not a question (it was answered, or the setting says so): what's happening, once.
                 val kept = host.supply()
-                if (FilmSupply.short(s.facts.avgMbps, kept)) {
+                val need = rateOf(s)
+                if (FilmSupply.short(need, kept)) {
                     val fits = FilmSupply.ceilingMbps(kept)?.let { session.lighter(it) }
-                    host.notice(FilmSupply.keptNote(s.facts.avgMbps, kept, fits))
+                    host.notice(FilmSupply.keptNote(need, kept, fits))
                 }
             }
             return
         }
         val reading = host.supply()
-        if (FilmSupply.short(s.facts.avgMbps, reading)) {
+        if (FilmSupply.short(rateOf(s), reading)) {
             shortSupply(s, reading, mode == WhenBuffering.LIGHTER || choice == StallChoice.LIGHTER)
             return
         }
@@ -477,10 +486,11 @@ class SourcePlayback(
         supplyDone = true
         reading?.lineMbps?.let { host.lineShort(it) }
         val lighter = FilmSupply.ceilingMbps(reading)?.let { session.lighter(it) }
-        host.log("stalls past the limit and the connection is short: the source needs " + mbps(s.facts.avgMbps) +
+        val need = rateOf(s)
+        host.log("stalls past the limit and the connection is short: the source needs " + mbps(need) +
             ", the download sustains " + mbps(reading?.lineMbps) + ", arriving at " +
             (reading?.fillRate?.let { String.format(java.util.Locale.US, "%.2f", it) } ?: "?") + "x; " +
-            (lighter?.let { "a lighter source is ready at " + mbps(it.facts.avgMbps) } ?: "no lighter source is ready"))
+            (lighter?.let { "a lighter source is ready at " + mbps(rateOf(it)) } ?: "no lighter source is ready"))
         if (lighter == null) {
             host.notice(FilmSupply.noneNote(reading))
             return
@@ -496,7 +506,7 @@ class SourcePlayback(
         if (!askedAbout.add(s.key)) return
         asking = true
         host.ask(
-            FilmSupply.question(s.facts.avgMbps, reading, lighter),
+            FilmSupply.question(need, reading, lighter),
             listOf(
                 FilmSupply.SWITCH to {
                     asking = false
@@ -541,6 +551,16 @@ class SourcePlayback(
     }
 
     private fun mbps(v: Double?): String = v?.let { "" + Math.round(it) + " Mb/s" } ?: "an unknown rate"
+
+    /**
+     * [s]'s average rate, Mb/s: as a play here measured it when it did ([SourceRank.asPlayedHere]; its row in the list
+     * now, which the play playing measures as it goes), else the add-ons'; null when neither knows.
+     */
+    private fun rateOf(s: PlaybackSource): Double? {
+        val key = session.rowKey(s)
+        val row = session.list?.sources?.firstOrNull { it.key == key } ?: s
+        return SourceRank.asPlayedHere(row.facts, row.measured).avgMbps
+    }
 
     private fun switchForStalls(now: Long) {
         if (session.maySwitch(now)) {
