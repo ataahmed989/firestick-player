@@ -238,9 +238,9 @@ class PacedVideoRenderer(
 
     /**
      * The decoder's set-up: a Dolby Vision profile 8 track that Media3 gives to an HEVC decoder (its own way back on a
-     * TV without Dolby Vision) gets HDR10 colour and static metadata where the track states none and its picture isn't
-     * HLG or SDR ([DvBaseLayer.hevcColour]), so the TV isn't left to guess the brightness. Once per decoder, never per
-     * frame.
+     * TV without Dolby Vision) gets HDR10 colour and static metadata where the track states none and its picture or
+     * record doesn't say HLG or SDR ([DvBaseLayer.hevcColour]), so the TV isn't left to guess the brightness. Once per
+     * decoder, never per frame.
      */
     override fun getMediaFormat(
         format: Format,
@@ -253,7 +253,7 @@ class PacedVideoRenderer(
         val made = super.getMediaFormat(format, codecMimeType, codecMaxValues, codecOperatingRate,
             deviceNeedsNoPostProcessWorkaround, tunnelingAudioSessionId)
         val colour = DvBaseLayer.hevcColour(format.sampleMimeType, format.codecs, codecMimeType, format.colorInfo,
-            format.initializationData) ?: return made
+            format.initializationData, DvBaseLayer.recordSignal(format)) ?: return made
         MediaFormatUtil.maybeSetColorInfo(made, colour)
         Log.i(TAG, DvBaseLayer.hevcColourLine(ownStaticInfo = format.colorInfo?.hdrStaticInfo != null))
         return made

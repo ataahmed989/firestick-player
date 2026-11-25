@@ -79,6 +79,8 @@ class DefaultSourcesRepository(
     internal val online: () -> Boolean,
     /** What this connection was measured to sustain when a film kept stalling for want of it ([LineRate.current]). */
     private val lineMbps: () -> Double? = { null },
+    /** Settings › Playback › Preferred bitrate, Mb/s ([RankInput.preferredMbps]). */
+    private val preferredMbps: () -> Double = { SourceRank.PREFERRED_MBPS.toDouble() },
     /** The add-ons' statuses: real use notes in them what it finds ([noted]). */
     override val checks: AddonChecks? = null,
     /** The language a title was made in, from what's stored of it ([app.fireplayer.vod.VodRepository.originalLanguage]); any thread. */
@@ -457,6 +459,7 @@ class DefaultSourcesRepository(
         val plan = thisTv.plan()
         val imaxAlways = runCatching { thisTv.imaxAlways() }.getOrDefault(false)
         val line = runCatching { lineMbps() }.getOrNull()
+        val aimMbps = runCatching { preferredMbps() }.getOrDefault(SourceRank.PREFERRED_MBPS.toDouble())
         val preferred = runCatching { language() }.getOrDefault("en")
         val subs = runCatching { subtitles() }.getOrNull()
         val moved = moves?.takeIf { target.episode == null }?.of(target.title.id)
@@ -477,6 +480,7 @@ class DefaultSourcesRepository(
                     subtitles = subs,
                     now = now,
                     imaxMove = moved ?: { null },
+                    preferredMbps = aimMbps,
                 )
                 // The same file from two add-ons is one row: by the exact size a play here measured, too.
                 val merged = SourceMerge.mergeKeyed(answers, input.runtimeMin) { r -> measured(r.storeKey)?.spec?.sizeBytes?.takeIf { it > 0 } }
@@ -615,6 +619,7 @@ class DefaultSourcesRepository(
                 online = online,
                 // With Faster downloads on, what two connections were measured to bring; one connection's otherwise.
                 lineMbps = { LineRate.of(budgetPrefs, two = viewer.fasterDownloads).current() },
+                preferredMbps = { viewer.preferredMbps.toDouble() },
                 checks = checks,
             )
             engine = made

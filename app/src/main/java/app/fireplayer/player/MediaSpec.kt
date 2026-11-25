@@ -63,6 +63,11 @@ data class MediaSpec(
     val hdrInfo: Boolean? = null,
     /** When it last played here (epoch ms; the "✓ played" date); 0 when not known. */
     val playedAt: Long = 0,
+    /**
+     * A Dolby Vision file's base layer as read when it played ([DvBaseLayer.baseSignal]): [DvBaseLayer.SIGNAL_HDR10],
+     * [DvBaseLayer.SIGNAL_SDR], [DvBaseLayer.SIGNAL_HLG], [DvBaseLayer.SIGNAL_BLU_RAY]; 0 when not known.
+     */
+    val dvSignal: Int = 0,
 ) {
     /** The kind of video decoder that played it. */
     enum class Decoder {
@@ -103,18 +108,27 @@ data class MediaSpec(
      * Picture & sound's "Range": "HDR10", "SDR", or, on a TV that reports no HDR ([hdrScreen] false), "HDR10 · shown as
      * SDR (TV reports no HDR)": the Fire TV turns the picture into SDR for it, so its HDR isn't what's seen. Dolby Vision
      * played as its base layer says so: "HDR10 (Dolby Vision profile 7 base layer)"; a Dolby Vision file the HEVC
-     * decoder played ([Decoder.PLAIN], not profile 5) is the HDR10 picture inside it: "HDR10 (Dolby Vision profile 8
-     * file)", the Sources window's words. HDR10+ seen in the picture ([hdr10Plus]) is said as what the TV gets of it:
-     * "HDR10+ in the file · TV gets HDR10" ("… · TV gets HDR10 (Dolby Vision profile 7 base layer)"), as on the user's
-     * Sticks, where it never reached the TV from FirePlayer; "HDR10+" only where Settings › This TV says it reaches the
-     * TV ([plusReaches]).
+     * decoder played ([Decoder.PLAIN], not profile 5) is the picture inside it, as its record or picture says
+     * ([dvSignal]): "HDR10 (Dolby Vision profile 8 file)", "HLG (…)", "SDR (…)", the Sources window's words; "Dolby
+     * Vision profile 8 file" while that isn't known. HDR10+ seen in the picture ([hdr10Plus]) is said as what the TV
+     * gets of it: "HDR10+ in the file · TV gets HDR10" ("… · TV gets HDR10 (Dolby Vision profile 7 base layer)"), as
+     * on the user's Sticks, where it never reached the TV from FirePlayer; "HDR10+" only where Settings › This TV says it
+     * reaches the TV ([plusReaches]).
      */
     fun rangeLine(hdrScreen: Boolean, plusReaches: Boolean = false): String {
         val plainDv = hdr == "Dolby Vision" && decoder == Decoder.PLAIN && dvProfile != 5
         // What the TV is sent of the picture.
         val tv = when {
             dvBaseLayer > 0 -> DvBaseLayer.words(dvBaseLayer)
-            plainDv -> "HDR10 (Dolby Vision " + (if (dvProfile > 0) "profile $dvProfile " else "") + "file)"
+            plainDv -> {
+                val file = "Dolby Vision " + (if (dvProfile > 0) "profile $dvProfile " else "") + "file"
+                when (dvSignal) {
+                    DvBaseLayer.SIGNAL_HDR10, DvBaseLayer.SIGNAL_BLU_RAY -> "HDR10 ($file)"
+                    DvBaseLayer.SIGNAL_HLG -> "HLG ($file)"
+                    DvBaseLayer.SIGNAL_SDR -> "SDR ($file)"
+                    else -> file
+                }
+            }
             else -> hdr
         }
         val shown = when {
@@ -139,14 +153,16 @@ data class MediaSpec(
     companion object {
         /**
          * [spec] as one line of text, to keep between plays ([decode] reads it back). Field 25 stays empty: it held a
-         * measured picture shape once (records with it, and with the shape's looks after the date, still read).
+         * measured picture shape once (records with it, and with the shape's looks after the date, still read). Field 27,
+         * the Dolby Vision base signal, came later: a record without it (or with those looks there) reads 0, and an older
+         * version ignores it.
          */
         fun encode(spec: MediaSpec): String = listOf(
             spec.videoCodec.orEmpty(), spec.profile.orEmpty(), spec.width, spec.height, spec.fps, spec.bitDepth,
             spec.hdr.orEmpty(), spec.videoBps, spec.videoHow.name, spec.audioCodec.orEmpty(), if (spec.atmos) 1 else 0,
             spec.channels, spec.sampleRate, spec.audioBps, spec.audioHow.name, spec.overallBps, spec.sizeBytes,
             spec.measuredSecs, spec.audioLangs, spec.subLangs, spec.dvBaseLayer, spec.dvProfile, spec.decoder.name,
-            if (spec.hdr10Plus) 1 else 0, spec.hdrInfo?.let { if (it) 1 else 0 } ?: "", "", spec.playedAt,
+            if (spec.hdr10Plus) 1 else 0, spec.hdrInfo?.let { if (it) 1 else 0 } ?: "", "", spec.playedAt, spec.dvSignal,
         ).joinToString(SEP) { it.toString().replace(SEP, " ") }
 
         fun decode(text: String): MediaSpec? {
@@ -173,6 +189,7 @@ data class MediaSpec(
                     else -> null
                 },
                 playedAt = f.getOrNull(26)?.toLongOrNull() ?: 0L,
+                dvSignal = f.getOrNull(27)?.toIntOrNull() ?: 0,
             )
         }
 
@@ -195,6 +212,7 @@ data class MediaSpec(
                 hdr10Plus = now.hdr10Plus || kept.hdr10Plus,
                 hdrInfo = now.hdrInfo ?: kept.hdrInfo,
                 playedAt = maxOf(now.playedAt, kept.playedAt),
+                dvSignal = now.dvSignal.takeIf { it > 0 } ?: kept.dvSignal,
             )
         }
 
@@ -248,6 +266,9 @@ data class MediaSpec(
             val depth = color?.lumaBitdepth?.takeIf { it in 8..16 } ?: bitDepthIn(codecs)
             val dv = mime == MimeTypes.VIDEO_DOLBY_VISION || codecs?.let { DV_CODECS.containsMatchIn(it) } == true
             val dvBase = if (baseLayer && dv) DvBaseLayer.profileOf(codecs) ?: 0 else 0
+            // What its base layer is (8.1 HDR10, 8.4 HLG, 8.2 SDR): read once per format, from its record or picture.
+            val signal = if (dv && v != null) DvBaseLayer.baseSignal(v) else 0
+            val hlgOrSdr = signal == DvBaseLayer.SIGNAL_HLG || signal == DvBaseLayer.SIGNAL_SDR
             val decoder = when {
                 dvBase > 0 -> Decoder.PLAIN
                 decoderMime == null || v == null -> Decoder.UNKNOWN
@@ -291,10 +312,13 @@ data class MediaSpec(
                 // file's own otherwise.
                 hdrInfo = when {
                     dvBase > 0 -> true
-                    dv && DvBaseLayer.hevcColour(mime, codecs, decoderMime, color, v?.initializationData) != null -> true
+                    // An HLG or SDR base has no HDR10 brightness data to send.
+                    dv && hlgOrSdr -> null
+                    dv && DvBaseLayer.hevcColour(mime, codecs, decoderMime, color, v?.initializationData, signal) != null -> true
                     pq || (dv && color != null) -> color?.hdrStaticInfo != null
                     else -> null
                 },
+                dvSignal = signal,
             )
         }
 

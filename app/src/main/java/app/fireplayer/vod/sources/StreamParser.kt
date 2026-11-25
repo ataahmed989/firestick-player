@@ -352,7 +352,8 @@ internal object Words {
     private val HEIGHT = rx("""(?<![0-9])(2160|1440|1080|720|576|480|360)[pi](?![a-z0-9])""")
     private val UHD = rx("""(?<![a-z0-9])(4k|uhd)(?![a-z0-9])""")
     private val DV = rx("""(?<![a-z0-9])(dv|dovi|dolby[ ._-]?vision)(?![a-z0-9])""")
-    private val DV_PROFILE = rx("""(?<![a-z0-9])(?:dv|dovi)[ ._-]?(?:p|profile[ ._-]?)([578])(?![0-9])""")
+    /** "DV.P8", "DoVi Profile 7", and profile 8's base after it: "DV.P8.4" (HLG), "P8.1" (HDR10), "P8.6" (HDR10). */
+    private val DV_PROFILE = rx("""(?<![a-z0-9])(?:dv|dovi)[ ._-]?(?:p|profile[ ._-]?)([578])(?:[._]([1246]))?(?![0-9])""")
     private val DV_FEL = rx("""(?<![a-z0-9])(fel|mel)(?![a-z0-9])""")
     private val HDR10P = rx("""hdr10(\+|plus|p(?![a-z]))""")
     private val HDR = rx("""(?<![a-z0-9])hdr(10)?(?![+a-z0-9])""")
@@ -398,8 +399,14 @@ internal object Words {
         if (HDR10P.containsMatchIn(t)) hdr += Hdr.HDR10_PLUS
         if (HDR.containsMatchIn(t)) hdr += Hdr.HDR10
         if (HLG.containsMatchIn(t)) hdr += Hdr.HLG
-        val dvProfile = DV_PROFILE.find(t)?.groupValues?.get(1)?.toIntOrNull()
+        val dvMatch = DV_PROFILE.find(t)
+        val dvProfile = dvMatch?.groupValues?.get(1)?.toIntOrNull()
             ?: if (Hdr.DOLBY_VISION in hdr && DV_FEL.containsMatchIn(t)) 7 else null
+        // Profile 8's base layer, where the name says it: 8.4 is HLG, 8.1 and 8.6 HDR10.
+        if (dvProfile == 8) when (dvMatch?.groupValues?.get(2)) {
+            "4" -> hdr += Hdr.HLG
+            "1", "6" -> hdr += Hdr.HDR10
+        }
         val codec = when {
             HEVC.containsMatchIn(t) -> "HEVC"
             AV1.containsMatchIn(t) -> "AV1"

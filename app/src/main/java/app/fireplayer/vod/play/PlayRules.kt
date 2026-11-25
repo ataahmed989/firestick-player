@@ -208,12 +208,14 @@ object PlayRules {
 
     /**
      * What this TV shows of a copy's HDR ([SourceRank.shownHdr] of the copy as played here), one word: "HDR10+",
-     * "HDR10", "HLG"; "DV" only on a Dolby Vision TV, or for a Dolby Vision file this TV can't show (its row warns);
+     * "HDR10", "HLG"; "DV" only on a Dolby Vision TV, for a Dolby Vision file this TV can't show (its row warns), or
+     * for a profile 8 file whose base layer isn't known until it plays ([SourceRank.dv8Unmeasured]: the add-on's word);
      * null for SDR. Without a [plan] (a list not ranked), the add-ons' words ([hdrKind]).
      */
     fun tvHdr(s: PlaybackSource, plan: TvPlan?): String? {
         val f = SourceRank.asPlayedHere(s.facts, s.measured)
         if (plan == null) return hdrKind(f)
+        if (SourceRank.dv8Unmeasured(f, plan)) return "DV"
         val shown = SourceRank.shownHdr(f, plan)
         return when {
             Hdr.DOLBY_VISION in shown -> "DV"

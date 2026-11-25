@@ -283,6 +283,8 @@ class LineRateTest {
         wall = { 1_000_000_000L },
         online = { true },
         lineMbps = { measuredLine },
+        // A viewer whose preferred bitrate is 100 Mb/s (Settings › Playback): the 94 Mb/s remux is the nearest.
+        preferredMbps = { 100.0 },
     )
 
     private val starts = ArrayList<ReleaseKey?>()

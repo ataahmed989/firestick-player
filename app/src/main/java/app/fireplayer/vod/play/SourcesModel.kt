@@ -351,13 +351,18 @@ object SourcesModel {
         out += "Picture" to (listOfNotNull(PlayRules.resolution(f.height), Hdr.entries.filter { it in f.hdr }.joinToString(" ") { it.label }.ifEmpty { null },
             f.codec, f.bitDepth?.let { "$it-bit" }).joinToString(" · ").ifEmpty { "Not stated" })
         // HDR10+ only where it reaches the TV: elsewhere the TV gets the HDR10 inside.
-        if (plan != null) PlayRules.tvHdr(s, plan)?.let {
+        // Not for a profile 8 file not played yet: what its base layer is shows once it plays.
+        if (plan != null && !SourceRank.dv8Unmeasured(SourceRank.asPlayedHere(f, s.measured), plan)) PlayRules.tvHdr(s, plan)?.let {
             out += "This TV shows" to if (it == "HDR10+" && !plan.hdr10PlusReaches) "HDR10 (HDR10+ in the file)" else it
         }
         (SourceRank.asPlayedHere(f, s.measured).dvProfile ?: f.dvProfile ?: spec?.dvProfile?.takeIf { it > 0 })?.let { p ->
             val how = when {
                 spec?.dvBaseLayer?.let { it > 0 } == true -> " · played here as its HDR10 base layer"
-                spec?.decoder == MediaSpec.Decoder.PLAIN -> " · played here as HDR10"
+                spec?.decoder == MediaSpec.Decoder.PLAIN -> " · played here as " + when (spec.dvSignal) {
+                    app.fireplayer.player.DvBaseLayer.SIGNAL_HLG -> "HLG"
+                    app.fireplayer.player.DvBaseLayer.SIGNAL_SDR -> "SDR"
+                    else -> "HDR10"
+                }
                 spec?.decoder == MediaSpec.Decoder.DOLBY_VISION -> " · played here as Dolby Vision"
                 else -> ""
             }

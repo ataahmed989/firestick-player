@@ -5742,7 +5742,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // Frames dropped while the film catches up after a jump are the jump's, and while the skip preview loads beside
         // it (or just did) the preview's: not the copy's (as with its waits).
         val jumped = now - jumpedAt < JUMP_WAIT_MS
-        val lost = if (jumped || previewGuard.covers(now)) 0L else diag.tally.addedLost
+        val guarded = jumped || previewGuard.covers(now)
+        val lost = if (guarded) 0L else diag.tally.addedLost
         // The film's decoder losing frames while the preview decodes beside it (not catching up after a jump): previews
         // stop for it.
         val late = if (jumped) 0L else diag.tally.added(FrameTally.DROPPED) + diag.tally.added(FrameTally.NEVER)
@@ -5750,7 +5751,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val shown = diag.tally.addedRendered
         if (lost > 0 || shown > 0) {
             healthFor(p.currentMediaItem?.localConfiguration?.uri)
-            health = health.copy(droppedFrames = health.droppedFrames + lost, renderedFrames = health.renderedFrames + shown)
+            // The decoder's share of the frames lost, kept apart for Best for this TV ([CopyHealth.lateFrames]).
+            health = health.copy(droppedFrames = health.droppedFrames + lost, renderedFrames = health.renderedFrames + shown,
+                lateFrames = health.lateFrames + if (guarded) 0L else late)
         }
         val v = droppedFact ?: return
         if (!v.isAttachedToWindow) droppedFact = null

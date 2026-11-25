@@ -114,9 +114,11 @@ class CopyFramesTest {
         assertEquals("HDR10+ (Dolby Vision profile 7 base layer)",
             MediaSpec(hdr = "HDR10", dvBaseLayer = 7, hdr10Plus = true).rangeLine(hdrScreen = true, plusReaches = true))
         assertEquals("HDR10 (Dolby Vision profile 7 base layer)", MediaSpec(hdr = "HDR10", dvBaseLayer = 7).rangeLine(hdrScreen = true))
-        // Profile 8 on the HEVC decoder (a TV without Dolby Vision): the HDR10 picture inside it, not "Dolby Vision".
-        val p8 = MediaSpec(hdr = "Dolby Vision", dvProfile = 8, decoder = MediaSpec.Decoder.PLAIN)
+        // Profile 8 on the HEVC decoder (a TV without Dolby Vision): the HDR10 picture inside it, not "Dolby Vision", once
+        // its record or picture said HDR10 (8.1); not called HDR10 before that was read.
+        val p8 = MediaSpec(hdr = "Dolby Vision", dvProfile = 8, decoder = MediaSpec.Decoder.PLAIN, dvSignal = DvBaseLayer.SIGNAL_HDR10)
         assertEquals("HDR10 (Dolby Vision profile 8 file)", p8.rangeLine(hdrScreen = true))
+        assertEquals("Dolby Vision profile 8 file", p8.copy(dvSignal = 0).rangeLine(hdrScreen = true))
         assertEquals("HDR10+ in the file · TV gets HDR10 (Dolby Vision profile 8 file)", p8.copy(hdr10Plus = true).rangeLine(hdrScreen = true))
         // Shown as Dolby Vision, or profile 5 (no HDR10 inside): as the file has it.
         assertEquals("Dolby Vision", p8.copy(decoder = MediaSpec.Decoder.DOLBY_VISION).rangeLine(hdrScreen = true))

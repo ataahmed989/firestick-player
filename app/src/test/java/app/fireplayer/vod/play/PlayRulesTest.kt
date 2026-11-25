@@ -154,7 +154,9 @@ class PlayRulesTest {
         val hybrid = of(setOf(Hdr.DOLBY_VISION, Hdr.HDR10_PLUS, Hdr.HDR10), "REMUX")
         assertEquals("4K · HDR10+ · Remux · 58.3 GB", PlayRules.mainLine(hybrid, plan = q60r))
         assertEquals("4K · HDR10 · Remux · 58.3 GB", PlayRules.mainLine(of(setOf(Hdr.DOLBY_VISION), "REMUX", dv = 7), plan = q60r))
-        assertEquals("4K · HDR10 · WEB · 58.3 GB", PlayRules.mainLine(of(setOf(Hdr.DOLBY_VISION), "WEB-DL", dv = 8), plan = q60r))
+        // Profile 8 naming its HDR10 base is HDR10; a bare one keeps the add-on's DV until a play reads its base layer.
+        assertEquals("4K · HDR10 · WEB · 58.3 GB", PlayRules.mainLine(of(setOf(Hdr.DOLBY_VISION, Hdr.HDR10), "WEB-DL", dv = 8), plan = q60r))
+        assertEquals("4K · DV · WEB · 58.3 GB", PlayRules.mainLine(of(setOf(Hdr.DOLBY_VISION), "WEB-DL", dv = 8), plan = q60r))
         assertEquals("4K · DV · WEB · 58.3 GB", PlayRules.mainLine(of(setOf(Hdr.DOLBY_VISION), "WEB-DL", dv = 5), plan = q60r))
         val dvTv = q60r.copy(hdrOrder = listOf(setOf(Hdr.DOLBY_VISION), setOf(Hdr.HDR10, Hdr.HDR10_PLUS)))
         assertEquals("4K · DV · Remux · 58.3 GB", PlayRules.mainLine(hybrid, plan = dvTv))

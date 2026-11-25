@@ -13,7 +13,9 @@ import java.util.Locale
  * most failures are the moment's (the provider's screen limit, the network), not the copy's.
  *
  * [droppedFrames] counts every frame lost (dropped by Media3, shown twice, put on the refresh of the frame before, never
- * decoded: see [FrameTally]); [renderedFrames] the frames sent to the screen.
+ * decoded: see [FrameTally]); [renderedFrames] the frames sent to the screen; [lateFrames] only the decoder's share of
+ * the lost ones (dropped by Media3, never decoded), the same on any TV, which is what "Best for this TV" weighs
+ * ([app.fireplayer.vod.sources.SourceRank.stuttered]).
  *
  * [noPicture] counts the plays in which this Stick showed no picture for the copy ([PictureWatch]): unlike a failure
  * to start, that's the TV's and the copy's, so a copy with any is no longer picked for a play by itself. One play
@@ -30,19 +32,22 @@ data class CopyHealth(
     /** When it last played here (epoch ms), so "Buffered here before" can stop counting; 0 when not known. */
     val at: Long = 0,
     val noPicture: Int = 0,
+    /** Of [droppedFrames], the decoder's: dropped late by Media3 or never decoded ([FrameTally.DROPPED], [FrameTally.NEVER]). */
+    val lateFrames: Long = 0,
 ) {
     /** [o], a later play, on top of these: a copy that showed no picture and then played with it is forgiven. */
     operator fun plus(o: CopyHealth) = CopyHealth(
         watchedMs + o.watchedMs, stalls + o.stalls, stallMs + o.stallMs, failures + o.failures, skips + o.skips,
         droppedFrames + o.droppedFrames, renderedFrames + o.renderedFrames, maxOf(at, o.at),
         if (o.noPicture == 0 && o.renderedFrames > 0 && o.watchedMs >= FAILURE_FORGIVEN_MS) 0 else noPicture + o.noPicture,
+        lateFrames + o.lateFrames,
     )
 
     /**
      * It keeps stopping to load: at least [MIN_STALLS] waits, and one a minute of film or more, or a tenth of the time
      * spent waiting. A wait now and then over a long film doesn't count, nor does failing to play.
      */
-    private val buffers: Boolean get() = stalls >= MIN_STALLS &&
+    val buffers: Boolean get() = stalls >= MIN_STALLS &&
         (stalls * STALL_EVERY_MS >= watchedMs || stallMs * WAITING_SHARE >= watchedMs)
 
     /** It loses more than one frame in [LOST_SHARE], over [SMOOTH_AFTER_MS] or more of watching. */
@@ -90,14 +95,15 @@ data class CopyHealth(
             if (p < 10) String.format(Locale.US, "%.1f%%", p) else String.format(Locale.US, "%.0f%%", p)
 
         /**
-         * "watched|stalls|stallMs|failures|skips|droppedFrames|renderedFrames", then "|at" when the date is known, and
-         * "|at|noPicture" when there is one. The frame counts, the date and [noPicture] came later: a string kept before
-         * them has five or seven fields, and still reads (with none counted); a version that knows fewer reads the first
-         * of these.
+         * "watched|stalls|stallMs|failures|skips|droppedFrames|renderedFrames", then "|at" when the date is known,
+         * "|at|noPicture" when there is one, and "|at|noPicture|late" when frames were lost late ([lateFrames]). The
+         * frame counts, the date, [noPicture] and [lateFrames] came later: a string kept before them has five, seven or
+         * nine fields, and still reads (with none counted); a version that knows fewer reads the first of these.
          */
         fun encode(h: CopyHealth): String =
             "${h.watchedMs}|${h.stalls}|${h.stallMs}|${h.failures}|${h.skips}|${h.droppedFrames}|${h.renderedFrames}" +
                 when {
+                    h.lateFrames > 0 -> "|${h.at}|${h.noPicture}|${h.lateFrames}"
                     h.noPicture > 0 -> "|${h.at}|${h.noPicture}"
                     h.at > 0 -> "|${h.at}"
                     else -> ""
@@ -110,7 +116,7 @@ data class CopyHealth(
                 f[0].toLongOrNull() ?: 0, f[1].toIntOrNull() ?: 0, f[2].toLongOrNull() ?: 0,
                 f[3].toIntOrNull() ?: 0, f[4].toIntOrNull() ?: 0,
                 f.getOrNull(5)?.toLongOrNull() ?: 0, f.getOrNull(6)?.toLongOrNull() ?: 0, f.getOrNull(7)?.toLongOrNull() ?: 0,
-                f.getOrNull(8)?.toIntOrNull() ?: 0,
+                f.getOrNull(8)?.toIntOrNull() ?: 0, f.getOrNull(9)?.toLongOrNull() ?: 0,
             )
         }
     }
