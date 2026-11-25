@@ -169,6 +169,9 @@ import java.io.IOException
 import java.lang.ref.WeakReference
 import java.util.Locale
 import java.util.concurrent.Executors
+import java.util.concurrent.FutureTask
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import kotlin.concurrent.thread
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -426,6 +429,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     // A resume from the add-ons: the sound and subtitles last chosen for its film or episode (see ResumeTracks), read
     // off the main thread as it starts and put back once its tracks are in (applyResumeTracks); null once done or none.
     private var resumeKept: ResumeTracks.Kept? = null
+    // That read, until what it found is taken into resumeKept (takeResumeRead).
+    private var resumeRead: FutureTask<ResumeTracks.Kept?>? = null
+    // The kinds of track just put back by it, left alone by reapplyChoices until they're on.
+    private val resumePutBack = ResumeTracks.PutBack()
     // The sound or subtitles chosen by hand in this play: what was kept from before isn't put back over them.
     private var chosenAudio = false
     private var chosenSubs = false
@@ -1989,6 +1996,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             refusedForIndex = -1
             rematches = 0
             reapplyWishes = trackWishes.isNotEmpty()
+            // Nothing a resume put back holds over another video's tracks.
+            resumePutBack.clear()
         }
         playingIndex = now
         deviceRetries = 0
@@ -2029,6 +2038,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         recallAudio()
         if (reapplyWishes) reapplyChoices()
+        // What a resume put back is left alone only in this pass (or until its downloaded file is on, after the reload).
+        resumePutBack.settled(waiting = pendingExternalSubId != null)
         // The sound track playing is the one auto sync hears ahead, as it loads.
         embeddedCues.playingAudioId = selectedFormat(C.TRACK_TYPE_AUDIO)?.id
         followSubtitle()
@@ -4883,12 +4894,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private fun reapplyChoices() {
         if (player?.currentTracks?.groups.isNullOrEmpty()) return
         reapplyWishes = false
-        // A subtitle file carried over to another copy of the film stays the one on
+        // A subtitle file carried over to another copy of the film stays the one on (unless a resume just put others back)
         val keep = keepTextId?.let { id -> trackOptions(C.TRACK_TYPE_TEXT).firstOrNull { it.external && sameId(it, id) } }
+            ?.takeUnless { resumePutBack.holds(C.TRACK_TYPE_TEXT) }
         keepTextId = null
         if (keep != null && !keep.selected) selectTrack(keep)
         for ((type, wish) in trackWishes) {
             if (type == C.TRACK_TYPE_TEXT && keep != null) continue
+            // Put back by a resume just now: the very track chosen last, or its closest (see ResumeTracks.PutBack).
+            if (resumePutBack.holds(type)) continue
             val same = trackOptions(type).filter { it.group.getTrackFormat(it.trackIndex).language == wish.language }
             fun format(o: TrackOption) = o.group.getTrackFormat(o.trackIndex)
             // The same kind (forced or full subtitles, commentary or main sound) matters more than the name, which
@@ -4969,27 +4983,51 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     /**
      * A resume of a film or episode from the add-ons (as its copy left is played again): what was chosen last for it is
-     * read now, off the main thread, to be put back once its tracks are in ([applyResumeTracks]).
+     * read now, off the main thread, to be put back once its tracks are in ([applyResumeTracks]). On a thread of its own,
+     * not behind the sitting's start-up work on [io]: a link checked while the screen came up is handed over at once,
+     * and the first copy then waits for this read ([resumeFileFor]).
      */
     private fun readResumeTracks(s: SourcePlayback) {
         resumeKept = null
+        resumeRead = null
+        resumePutBack.clear()
         chosenAudio = false
         chosenSubs = false
         if (!ResumeTracks.applies(s.request)) return
         val target = s.request.target
         val store = KeptTracks.of(this)
+        val read = FutureTask { runCatching { store.read(target.title.kind, target.streamId) }.getOrNull() }
+        resumeRead = read
         runCatching {
-            io.execute {
-                val kept = runCatching { store.read(target.title.kind, target.streamId) }.getOrNull() ?: return@execute
+            thread(name = "FirePlayerResume", isDaemon = true) {
+                read.run()
                 handler.post {
-                    if (isFinishing || source !== s) return@post
-                    resumeKept = kept
-                    // Chosen by hand in the meantime: that stays.
-                    dropChosen()
+                    if (isFinishing || source !== s || resumeRead !== read) return@post
+                    takeResumeRead(0L)
                     applyResumeTracks()
                 }
             }
+        }.onFailure { resumeRead = null }
+    }
+
+    /**
+     * What the resume's read found ([readResumeTracks]) taken into [resumeKept], once it's in: waited for [waitMs] at
+     * most (a small settings file), else left for when it comes.
+     */
+    private fun takeResumeRead(waitMs: Long) {
+        val read = resumeRead ?: return
+        if (waitMs <= 0L && !read.isDone) return
+        val kept = try {
+            read.get(waitMs, TimeUnit.MILLISECONDS)
+        } catch (e: TimeoutException) {
+            return
+        } catch (e: Exception) {
+            null
         }
+        resumeRead = null
+        resumeKept = kept
+        // Chosen by hand in the meantime: that stays.
+        dropChosen()
     }
 
     /**
@@ -5040,16 +5078,23 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
      * so it's on from the start ([applyResumeTracks] picks it). Nothing when it's gone.
      */
     private fun resumeFileFor(entry: Entry) {
+        // The first copy handed over before the read was in (its link checked while the screen came up, see
+        // EarlyOpen.attach): waited for, a moment at most, so the file is in the list as the player is built rather than
+        // the video loaded again for it once its tracks are in.
+        takeResumeRead(RESUME_READ_WAIT_MS)
         (resumeKept?.subs as? ResumeTracks.Subs.Downloaded)?.let { fileFor(entry, it) }
     }
 
     /** Downloaded subtitles [subs] in [entry]'s list (added, see [resumeFileFor]); their id there, null once they're gone. */
     private fun fileFor(entry: Entry, subs: ResumeTracks.Subs.Downloaded): String? {
+        // Kept for this copy too, with the timing found for them on the copy they were chosen on. Also when already in
+        // the list: carried over from a copy that gave way before its tracks were in (playInstead), never kept for this.
+        if (SavedSubtitles.alsoFor(this, entry.key, subs.file)) {
+            subs.video?.takeIf { it != entry.key }?.let { prefs.copySubtitleTiming(subs.file, it, entry.key) }
+        }
         entry.subtitles.firstOrNull { c -> c.id?.let { savedFiles[it] } == subs.file }?.let { return it.id }
         val saved = SavedSubtitles.find(this, subs.file) ?: return null
         val file = File(SavedSubtitles.dir(this), saved.file)
-        SavedSubtitles.add(this, entry.key, file, saved.language, saved.release, saved.fileId)
-        subs.video?.takeIf { it != entry.key }?.let { prefs.copySubtitleTiming(saved.file, it, entry.key) }
         val config = subtitleConfig(Uri.fromFile(file), null, saved.language ?: subs.language)
         val id = config.id ?: return null
         entry.subtitles += config
@@ -5081,8 +5126,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             f.language?.let { lang ->
                 p.trackSelectionParameters = p.trackSelectionParameters.buildUpon().setPreferredAudioLanguage(lang).build()
             }
-            // Not put over by the sound remembered for the film or show (recallAudio).
+            // Not put over by the sound remembered for the film or show (recallAudio), nor matched again (reapplyChoices).
             audioRecalledFor = audioKey(entry)
+            resumePutBack.put(C.TRACK_TYPE_AUDIO)
             audioPicked = f
         }
         var subsPut = false
@@ -5122,6 +5168,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                             pendingExternalSubId = id
                             pendingAudioId = audioPicked?.id ?: selectedFormat(C.TRACK_TYPE_AUDIO)?.id
                             if (audioPicked != null) reapplyWishes = false
+                            // Nor is the file matched over once it's on (held until then, see onTracksChanged).
+                            resumePutBack.put(C.TRACK_TYPE_TEXT)
                             captureState()
                             p.setMediaItems(entries.map { mediaItem(it) }, p.currentMediaItemIndex, startPositionMs)
                             p.prepare()
@@ -5132,8 +5180,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                 ResumeTracks.SubsPick.Default -> Unit
             }
         }
-        // The downloaded subtitles last on for this copy aren't put over what was put back.
-        if (subsPut) pendingExternalSubId = null
+        if (subsPut) {
+            // The downloaded subtitles last on for this copy aren't put over what was put back, nor is the kind picked
+            // before matched again over it (when the sound remembered for the show sets reapplyChoices off just after).
+            pendingExternalSubId = null
+            resumePutBack.put(C.TRACK_TYPE_TEXT)
+        }
         // Matched already: the kind picked by hand before isn't matched again over it.
         if (audioPicked != null || subsPut) reapplyWishes = false
     }
@@ -7624,6 +7676,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // Looked up again for auto sync's new offsets at most this often.
         const val SEGMENTS_AGAIN_MS = 15_000L
         private const val AUDIO_KEPT = 300
+        // How long a resume's first copy waits at most for what was chosen last to be read (it takes a few ms).
+        private const val RESUME_READ_WAIT_MS = 250L
         private val FOCUS_EASE = DecelerateInterpolator(1.4f)
         private const val LOADING = "Loading from TMDB…"
         private val YEAR_IN_NAME = Regex("""\((\d{4})\)""")

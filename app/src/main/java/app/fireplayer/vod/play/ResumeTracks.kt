@@ -71,6 +71,30 @@ object ResumeTracks {
     const val KIND_FLAGS = C.ROLE_FLAG_COMMENTARY or C.ROLE_FLAG_DESCRIBES_VIDEO or C.ROLE_FLAG_DESCRIBES_MUSIC_AND_SOUND
 
     /**
+     * The kinds of track a resume has just put back ([put]), which the player's matching of the kinds picked before
+     * (its reapplyChoices, which the sound remembered for the show can set off in the same moment) leaves as they are.
+     * Matched again by its looser rules, the very subtitles put back could give way to another track of their language:
+     * the film's own over a downloaded file, or the first of two alike. Held until what was put back is on ([settled]),
+     * and never past another video ([clear]), whose tracks are matched as ever.
+     */
+    class PutBack {
+        private val types = HashSet<Int>()
+
+        fun put(type: Int) {
+            types += type
+        }
+
+        fun holds(type: Int): Boolean = type in types
+
+        /** The tracks' change has been seen to: let go, unless what was put back is still to come on ([waiting]). */
+        fun settled(waiting: Boolean) {
+            if (!waiting) types.clear()
+        }
+
+        fun clear() = types.clear()
+    }
+
+    /**
      * Whether [request] puts back the sound and subtitles last chosen: only a play from where it stopped (Resume on the
      * title page or an episode card there, a Sources row played from there, a Continue card on Home or Glass Home, the
      * Episodes sheet's resume). Not from the beginning, nor Next episode (always from its beginning); Live TV and
@@ -89,8 +113,8 @@ object ResumeTracks {
      * Which of [tracks] (one kind, in the file's order) to pick for [wish]; -1 when none fits, so today's default stays.
      * On the copy it was chosen on ([copy] the same), the very track by its id, while it's still what it was. Else
      * (another copy, or that track not found) the best of the same language: forced or not first, then the same kind
-     * (main or commentary sound, SDH or not), then the same name, then (sound only, [audio]) the same channels; on a
-     * tie, the first. A language written another way ("en" and "en-US") counts when none is written the same way.
+     * (main, commentary or described sound, as flagged or named; SDH or not), then the same name, then (sound only,
+     * [audio]) the same channels; on a tie, the first. A language written another way ("en" and "en-US") counts when none is written the same way.
      */
     fun match(wish: Track, tracks: List<Track>, copy: String?, audio: Boolean): Int {
         val id = wish.id
@@ -192,17 +216,40 @@ object ResumeTracks {
     /** The same track as far as can be told: language, name, kind and (sound) channels. */
     private fun alike(t: Track, wish: Track, audio: Boolean) = language(t.language) == language(wish.language) &&
         t.label.orEmpty().equals(wish.label.orEmpty(), ignoreCase = true) && t.forced == wish.forced &&
-        (t.roleFlags and KIND_FLAGS) == (wish.roleFlags and KIND_FLAGS) && (!audio || t.channels == wish.channels)
+        kind(t, audio) == kind(wish, audio) && (!audio || t.channels == wish.channels)
 
     private fun score(t: Track, wish: Track, audio: Boolean): Int {
         var s = 0
         // Forced subtitles show almost nothing: for full ones, full ones first, then SDH (full, with sound notes).
         if (t.forced == wish.forced) s += 8
-        if ((t.roleFlags and KIND_FLAGS) == (wish.roleFlags and KIND_FLAGS)) s += 4
+        if (kind(t, audio) == kind(wish, audio)) s += 4
         if (wish.label != null && t.label.equals(wish.label, ignoreCase = true)) s += 2
         if (audio && t.channels == wish.channels) s += 1
         return s
     }
+
+    /**
+     * [t]'s kind as compared ([KIND_FLAGS]): its role flags and, for a sound, commentary or described video when only
+     * its name says so ("Director's Commentary", "Audio Description"). Media3 flags them only when the file does, and
+     * many releases just name them: on another copy such a track could otherwise win over the main sound on its
+     * channels. (A subtitle named SDH is kept as SDH already, as the player reads it.)
+     */
+    private fun kind(t: Track, audio: Boolean): Int {
+        var roles = t.roleFlags
+        val label = t.label
+        if (audio && label != null) {
+            if (COMMENTARY.containsMatchIn(label)) roles = roles or C.ROLE_FLAG_COMMENTARY
+            if (DESCRIBED.containsMatchIn(label) || DESCRIBED_SHORT.containsMatchIn(label)) {
+                roles = roles or C.ROLE_FLAG_DESCRIBES_VIDEO
+            }
+        }
+        return roles and KIND_FLAGS
+    }
+
+    private val COMMENTARY = Regex("""(?i)\bcomment(ary|aries|aire|aires|o)\b|\bcomentarios?\b|\bkommentar\b""")
+    private val DESCRIBED = Regex("""(?i)audio\s*-?\s*descri|audiodeskription|\bdescriptive\b|\bdescribed video\b|visually impaired""")
+    // "AD" only in capitals: "ad" in a name is too often something else.
+    private val DESCRIBED_SHORT = Regex("""\bAD\b""")
 
     /** Track ids gain a "0:" style prefix when subtitles are added to the video: only that prefix is ignored. */
     private fun sameId(a: String, b: String) = a == b || a.endsWith(":$b") || b.endsWith(":$a")

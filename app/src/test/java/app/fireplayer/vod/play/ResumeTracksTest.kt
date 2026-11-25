@@ -112,9 +112,9 @@ class ResumeTracksTest {
         assertEquals(-1, ResumeTracks.match(track("fr", channels = 6), english, null, audio = true))
         assertEquals(1, ResumeTracks.match(track("fr"), listOf(track("en"), track("fr")), null, audio = true))
         // Main sound over commentary, whatever the channels or the name.
-        val sound = listOf(track("en", "Commentary", commentary, channels = 6), track("en", "Stereo", channels = 2))
-        assertEquals(1, ResumeTracks.match(track("en", "Commentary", channels = 6), sound, null, audio = true))
-        assertEquals(0, ResumeTracks.match(track("en", "Director", commentary, channels = 2), sound, null, audio = true))
+        val sound = listOf(track("en", "Director", commentary, channels = 6), track("en", "Stereo", channels = 2))
+        assertEquals(1, ResumeTracks.match(track("en", "Director", channels = 6), sound, null, audio = true))
+        assertEquals(0, ResumeTracks.match(track("en", "Stereo", commentary, channels = 2), sound, null, audio = true))
         // Then the name, then the channels.
         val named = listOf(track("en", "DD", channels = 6), track("en", "Atmos", channels = 8))
         assertEquals(1, ResumeTracks.match(track("en", "atmos", channels = 6), named, null, audio = true))
@@ -127,6 +127,68 @@ class ResumeTracksTest {
         assertEquals(0, ResumeTracks.match(track("en"), listOf(track("en-US"), track("fr")), null, audio = true))
         // Undetermined matches undetermined only.
         assertEquals(1, ResumeTracks.match(track("und"), listOf(track("en"), track(null)), null, audio = true))
+    }
+
+    @Test
+    fun commentaryAndDescribedVideoNamedOnlySoAreToldApartFromTheMainSound() {
+        // English stereo picked on a WEB-DL that's gone; the remux the resume plays has English 7.1 and the director's
+        // commentary in 2.0, named so but not flagged: the main sound, not the commentary on its channels.
+        val kept = track("en", channels = 2, copy = "web", id = "1")
+        val remux = listOf(
+            track("en", channels = 8, copy = "remux", id = "1"),
+            track("en", "Director's Commentary", channels = 2, copy = "remux", id = "2"),
+        )
+        assertEquals(0, ResumeTracks.match(kept, remux, "remux", audio = true))
+        // That commentary picked on its own copy: the very track; on another, a commentary whether flagged or named.
+        assertEquals(1, ResumeTracks.match(remux[1], remux, "remux", audio = true))
+        val flagged = listOf(track("en", channels = 6), track("en", roles = commentary, channels = 6))
+        assertEquals(1, ResumeTracks.match(remux[1], flagged, "other", audio = true))
+        assertEquals(1, ResumeTracks.match(track("en", roles = commentary, channels = 6), remux, null, audio = true))
+        // Named in other languages too.
+        for ((lang, name) in listOf("fr" to "Commentaire", "es" to "Comentarios del director", "de" to "Kommentar", "it" to "Commento")) {
+            val tracks = listOf(track(lang, name, channels = 2), track(lang, channels = 6))
+            assertEquals(name, 1, ResumeTracks.match(track(lang, channels = 2), tracks, null, audio = true))
+        }
+        // Described video likewise ("Audio Description", "AD"), and only "AD" in capitals counts.
+        for (name in listOf("English AD", "Audio Description", "audio-description", "Descriptive Video", "Audiodeskription")) {
+            val tracks = listOf(track("en", name, channels = 2), track("en", channels = 2))
+            assertEquals(name, 1, ResumeTracks.match(track("en", channels = 2), tracks, null, audio = true))
+            assertEquals(name, 0, ResumeTracks.match(track("en", roles = C.ROLE_FLAG_DESCRIBES_VIDEO, channels = 6), tracks, null, audio = true))
+        }
+        val plain = listOf(track("en", "Ad hoc mix", channels = 2), track("en", "Stereo", channels = 2))
+        assertEquals(0, ResumeTracks.match(track("en", channels = 2), plain, null, audio = true))
+        // A subtitle's name isn't read so: subtitles have their own kinds (forced, SDH).
+        val subs = listOf(track("en", "Commentary"), track("en", "English"))
+        assertEquals(0, ResumeTracks.match(track("en"), subs, null, audio = false))
+    }
+
+    @Test
+    fun whatAResumePutBackIsNotMatchedOverInTheSameMoment() {
+        // Only the subtitles were kept (a downloaded file), and the show remembers a sound picked in another episode:
+        // the pass that puts that sound back (the player's reapplyChoices, which skips what's held) matches the sound,
+        // and leaves the subtitles as put back, not the film's own English track listed before the file.
+        val held = ResumeTracks.PutBack()
+        held.put(C.TRACK_TYPE_TEXT)
+        val wished = listOf(C.TRACK_TYPE_AUDIO, C.TRACK_TYPE_TEXT)
+        assertEquals(listOf(C.TRACK_TYPE_AUDIO), wished.filterNot { held.holds(it) })
+        // Once the tracks' change is seen to, let go: Next episode matches both kinds as ever.
+        held.settled(waiting = false)
+        assertEquals(wished, wished.filterNot { held.holds(it) })
+        // Both put back (the sound kept too): neither matched again.
+        held.put(C.TRACK_TYPE_AUDIO)
+        held.put(C.TRACK_TYPE_TEXT)
+        assertEquals(emptyList<Int>(), wished.filterNot { held.holds(it) })
+        held.settled(waiting = false)
+        // A downloaded file added for this copy, the video loading again: held until it's on.
+        held.put(C.TRACK_TYPE_TEXT)
+        held.settled(waiting = true)
+        assertTrue(held.holds(C.TRACK_TYPE_TEXT))
+        held.settled(waiting = false)
+        assertFalse(held.holds(C.TRACK_TYPE_TEXT))
+        // Another video (an episode, or another copy) is never held for.
+        held.put(C.TRACK_TYPE_TEXT)
+        held.clear()
+        assertFalse(held.holds(C.TRACK_TYPE_TEXT))
     }
 
     @Test

@@ -95,6 +95,32 @@ class SavedSubtitlesTest {
     }
 
     @Test
+    fun aFileKeptForOneCopyIsKeptForAnotherOnceAndOnlyWhileItIsKept() {
+        val dir = folder()
+        val a = subtitle(dir, "11-a.srt")
+        val third = "http://provider.example/movie/3.mkv"
+        SavedSubtitles.add(dir, film, a, "en", "Film.2019.1080p", 11, now)
+        // A resume on another copy: kept for it too, with what's known of it, and the one on there.
+        assertTrue(SavedSubtitles.alsoFor(dir, other, "11-a.srt", now + 5))
+        val there = SavedSubtitles.forVideo(dir, other).single()
+        assertEquals("11-a.srt", there.file)
+        assertEquals("en", there.language)
+        assertEquals("Film.2019.1080p", there.release)
+        assertEquals(11L, there.fileId)
+        assertTrue(there.on)
+        // Already kept for it (its own copy, or added just before): nothing to do, so its timing isn't copied over again.
+        assertFalse(SavedSubtitles.alsoFor(dir, other, "11-a.srt", now + 6))
+        assertFalse(SavedSubtitles.alsoFor(dir, film, "11-a.srt", now + 6))
+        // A copy switched to before the first showed it: in its list (carried over) but not kept for it, so kept now.
+        assertTrue(SavedSubtitles.alsoFor(dir, third, "11-a.srt", now + 7))
+        assertEquals(listOf("11-a.srt"), SavedSubtitles.forVideo(dir, third).map { it.file })
+        // Gone (or never downloaded): nothing.
+        assertFalse(SavedSubtitles.alsoFor(dir, "http://provider.example/movie/4.mkv", "99-x.srt", now + 8))
+        a.delete()
+        assertFalse(SavedSubtitles.alsoFor(dir, "http://provider.example/movie/5.mkv", "11-a.srt", now + 9))
+    }
+
+    @Test
     fun theListIsReadOnce() {
         val dir = folder()
         val a = subtitle(dir, "11-a.srt")

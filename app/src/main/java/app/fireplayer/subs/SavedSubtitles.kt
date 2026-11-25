@@ -47,6 +47,14 @@ object SavedSubtitles {
      */
     fun find(context: Context, file: String): Saved? = find(dir(context), file)
 
+    /**
+     * Kept subtitles [file] kept for [video] too, with what's known of them (language, release), and the one on for it:
+     * a film resumed on another copy than the one they were chosen on. Whether that was needed: false when they already
+     * are kept for it, or are gone.
+     */
+    fun alsoFor(context: Context, video: String, file: String): Boolean =
+        alsoFor(dir(context), video, file, System.currentTimeMillis())
+
     /** A file just downloaded for [video]: kept, and the one on. */
     fun add(context: Context, video: String, file: File, language: String?, release: String, fileId: Long) =
         add(dir(context), video, file, language, release, fileId, System.currentTimeMillis())
@@ -72,6 +80,14 @@ object SavedSubtitles {
     @Synchronized
     internal fun find(dir: File, file: String): Saved? =
         read(dir).orEmpty().filter { it.file == file && File(dir, it.file).isFile }.maxByOrNull { it.lastUsed }
+
+    @Synchronized
+    internal fun alsoFor(dir: File, video: String, file: String, now: Long): Boolean {
+        if (forVideo(dir, video).any { it.file == file }) return false
+        val s = find(dir, file) ?: return false
+        add(dir, video, File(dir, s.file), s.language, s.release, s.fileId, now)
+        return true
+    }
 
     @Synchronized
     internal fun add(dir: File, video: String, file: File, language: String?, release: String, fileId: Long, now: Long) {
