@@ -36,6 +36,15 @@ class SettingsWordsTest {
         assertEquals(emptyList<String>(), headings.filter { SidePanel.headingIcon(it) == null })
     }
 
+    @Test fun whenAFilmKeepsStallingReadsWholeInItsRow() {
+        // The row's value is the choice's short word: with the arrow beside it, the long name and a word fit (measured
+        // in the row's font, Figtree 13 sp: the name 154 dp, "Switch" 41, of 200 dp), the choices' own names don't.
+        val words = app.fireplayer.vod.play.WhenBuffering.entries.map { it.short }
+        assertEquals(listOf("Ask", "Switch", "Keep"), words)
+        assertTrue(words.all { it.length <= 6 })
+        assertEquals("Broken copies still switch on their own.", SettingsPanels.WHEN_STALLING_NOTE)
+    }
+
     @Test fun everyCategoryHasItsOwnIcon() {
         assertEquals(emptyList<SettingsCategory>(), SettingsCategory.entries.filter { it.icon == 0 })
         assertEquals(SettingsCategory.entries.size, SettingsCategory.entries.map { it.icon }.toSet().size)
@@ -49,9 +58,10 @@ class SettingsWordsTest {
         val notes = listOf(SettingsPanels.SHADES_NOTE, DimmerWindow.DEFAULT_NOTE, SettingsPanels.customOnNote("Late night"))
         for (note in notes) assertTrue(note, note.length <= SettingsPanels.NOTE_LINES * perLine)
         assertEquals(2, SettingsPanels.NOTE_LINES)
-        // Faster downloads': one line, in its card (12 dp in from each side).
+        // Faster downloads': one line, in its card (12 dp in from each side). When a film keeps stalling's too.
         val inCard = ((inside - 2 * 12) / (12 * 0.5f)).toInt()
         assertTrue(SettingsPanels.FASTER_DOWNLOADS_NOTE.length <= inCard)
+        assertTrue(SettingsPanels.WHEN_STALLING_NOTE.length <= inCard)
         // Under the last row, a note shows in full once that row is selected: the list keeps the selected row in its
         // middle as far as it can scroll, so what's under the row's middle must fit in half the list. The list: 540 dp
         // less the window's 18 dp margins and 16 dp sides, and its title (17 sp, about 1.3 lines, and 8 dp under it).

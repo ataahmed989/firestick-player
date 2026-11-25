@@ -67,8 +67,8 @@ class SettingsCategoryTest {
             "Match the focused Continue Watching title",
             // ...and how long every tab's banner shows each title while idle.
             "Time on each title",
-            // Playback: what a film from the add-ons does when it keeps stopping to load.
-            "When a film keeps buffering",
+            // Playback: what a film from the add-ons does when it keeps stopping to load (once "...keeps buffering").
+            "When a film keeps stalling",
             // Playback: a film read with two requests at a time, Off by default.
             "Faster downloads",
             // Playback: the data rate Best for this TV leans toward, 60 Mb/s unless changed.
@@ -93,7 +93,8 @@ class SettingsCategoryTest {
         fun where(setting: String) = SettingsCategory.entries.single { setting in it.settings }
         assertEquals(SettingsCategory.PLAYBACK, where("Resume where I left off"))
         assertEquals(SettingsCategory.PLAYBACK, where("Skip buttons"))
-        assertEquals(SettingsCategory.PLAYBACK, where(SettingsCategory.WHEN_BUFFERING))
+        assertEquals(SettingsCategory.PLAYBACK, where(SettingsCategory.WHEN_STALLING))
+        assertEquals("When a film keeps stalling", SettingsCategory.WHEN_STALLING)
         assertEquals(SettingsCategory.SUBTITLES_AUDIO, where("Auto sync subtitles"))
         assertEquals(SettingsCategory.SUBTITLES_AUDIO, where("Subtitle style"))
         assertEquals(SettingsCategory.REMOTE, where("Hold to speed up"))

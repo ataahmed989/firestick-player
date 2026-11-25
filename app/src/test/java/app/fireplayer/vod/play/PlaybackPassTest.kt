@@ -221,7 +221,11 @@ class PlaybackPassTest {
             return canReopen
         }
         override fun log(text: String) { log += text }
+        override fun whenBuffering() = mode
     }
+
+    /** Settings › Playback › When a film keeps stalling, as the test sets it (Ask first unless changed). */
+    private var mode = WhenBuffering.ASK
 
     private fun playing(req: PlayRequest = request(1, 1)): Pair<SourcePlayback, FakeSession> {
         val session = FakeSession(req)
@@ -322,6 +326,8 @@ class PlaybackPassTest {
 
     @Test
     fun thePlayerReopensFirstAndSwitchesOnlyWhenTheRuleSays() {
+        // Switch to the next copy: the rule's call is a switch (with Ask first it's a question: SourcePlaybackTest).
+        mode = WhenBuffering.LIGHTER
         val (p, s) = playing()
         position = 3_723_000
         p.buffering(true)
