@@ -3,14 +3,22 @@ package app.fireplayer.vod.play
 import app.fireplayer.vod.PlaybackSource
 import app.fireplayer.vod.sources.LineRate
 
-/** Settings › Playback › When a film keeps buffering. */
-enum class WhenBuffering(val label: String) {
-    /** Asked once: switch to a lighter source, or keep this one. The answer is remembered for the film. */
-    ASK("Ask"),
+/**
+ * Settings › Playback › When a film keeps stalling, saved by name ([app.fireplayer.data.Prefs.whenBuffering]). Only
+ * for stalls: a copy that can't play at all (no picture, not the whole film, a failure) is left whatever it says.
+ * [label] is the choice as its list says it; [short], as its row says it, beside the setting's long name.
+ */
+enum class WhenBuffering(val label: String, val short: String) {
+    /**
+     * Asked once for each copy that keeps stalling, whoever picked it (the viewer or FirePlayer): never switched
+     * without asking. Too heavy for the connection: a lighter source, or keep this one (remembered for the film);
+     * else the next source, or keep this one.
+     */
+    ASK("Ask first", "Ask"),
     /** Switched without asking, to the best source this connection keeps up with (or the next one), with a note. */
-    LIGHTER("Switch to a lighter source"),
+    LIGHTER("Switch to the next copy", "Switch"),
     /** Nothing is switched and nothing asked: the source chosen plays on, waits and all. */
-    KEEP("Keep trying"),
+    KEEP("Keep trying", "Keep"),
     ;
 
     companion object {
@@ -103,7 +111,7 @@ object FilmSupply {
     const val SWITCH = "Switch to it"
     const val KEEP = "Keep this source"
 
-    /** Asked when a source the viewer picked keeps pausing though the connection is fast enough for it. */
+    /** Asked (Ask first) when the source playing keeps pausing though the connection is fast enough for it. */
     const val PLAIN_QUESTION = "This source keeps pausing. Try the next source? It carries on from here."
     const val TRY_NEXT = "Try next source"
 

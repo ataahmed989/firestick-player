@@ -69,9 +69,10 @@ class SettingsPanels(
     private var detailsShown = false
     private var playlistNoteShown = false
     private var arrowTurned = false
-    // The same for the playlists' note and for the skip buttons' details.
+    // The same for the playlists' note, the skip buttons' details and When a film keeps stalling's choices.
     private var playlistArrowTurned = false
     private var skipArrowTurned = false
+    private var stallingArrowTurned = false
     private var checkValue: String? = null
     private var checkNote: String? = null
 
@@ -190,7 +191,7 @@ class SettingsPanels(
                 resumeRow(this)
                 matchFrameRateRow(this)
                 passthroughRow(this)
-                whenBufferingRow(this)
+                whenStallingRow(this)
                 fasterDownloadsRow(this)
                 preferredBitrateRow(this)
                 // Live TV's own setting, here too (user): the same row and saved value as in the Live TV window.
@@ -547,16 +548,27 @@ class SettingsPanels(
     }
 
     /**
-     * What a film from the add-ons does when it keeps stopping to load ([app.fireplayer.vod.play.WhenBuffering]):
-     * asks once (the answer is kept for that film), switches to the best source this connection keeps up with, or
-     * stays on the source chosen. Read by the player each time the stall rules call for a switch.
+     * What a film from the add-ons does when it keeps stopping to load ([app.fireplayer.vod.play.WhenBuffering]), a
+     * dropdown as Skip buttons is: the row says the choice made (its short word, to leave the label whole), and it or
+     * its arrow shows the three choices under it, the one made ticked, and one line on what none of them changes. Ask
+     * first unless changed. Read by the player each time the stall rules call for a switch. App settings' Playback
+     * only: the player's own window leaves it out ([playbackSection]).
      */
-    private fun whenBufferingRow(panel: SidePanel): Unit = with(panel) {
-        val modes = app.fireplayer.vod.play.WhenBuffering.entries
+    private fun whenStallingRow(panel: SidePanel): Unit = with(panel) {
         val now = app.fireplayer.vod.play.WhenBuffering.named(prefs.whenBuffering)
-        choice(SettingsCategory.WHEN_BUFFERING, modes.map { it.label }, modes.indexOf(now)) {
-            prefs.whenBuffering = modes[it].name
+        val open = isPartOpen(STALLING_PART)
+        val turned = stallingArrowTurned
+        stallingArrowTurned = false
+        val toggle = { togglePart(STALLING_PART); stallingArrowTurned = true; refresh() }
+        rowWithArrow(SettingsCategory.WHEN_STALLING, now.short, expanded = open, turned = turned, onClick = toggle, onArrow = toggle)
+        if (!open) return@with
+        for (mode in app.fireplayer.vod.play.WhenBuffering.entries) {
+            row(mode.label, checked = mode == now) {
+                prefs.whenBuffering = mode.name
+                refresh()
+            }.asSubRow()
         }
+        cardNote(WHEN_STALLING_NOTE)
     }
 
     fun fontSection(panel: SidePanel): Unit = with(panel) {
@@ -1115,6 +1127,12 @@ class SettingsPanels(
 
         /** In Faster downloads' card, under it: what it does, in a line. */
         internal const val FASTER_DOWNLOADS_NOTE = "Two connections, if the server allows."
+
+        /** In When a film keeps stalling's card, under its choices: what none of them changes, in a line. */
+        internal const val WHEN_STALLING_NOTE = "Broken copies still switch on their own."
+
+        /** When a film keeps stalling's choices are shown ([SidePanel.isPartOpen]). */
+        private const val STALLING_PART = "stalling"
 
         private const val ACTIVE = "Active"
         private const val INACTIVE = "Inactive"

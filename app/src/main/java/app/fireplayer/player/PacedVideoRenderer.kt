@@ -50,7 +50,9 @@ import androidx.media3.exoplayer.video.MediaCodecVideoRenderer.CodecMaxValues
  * the next as for any HEVC film; their format checks pass, rather than warning that the format exceeds the decoder;
  * and the decoder is configured as video/hevc with the colour the track states (for profile 7, BT.2020 and PQ), without
  * the Dolby Vision profile Media3 sets for a Dolby Vision format, and HDR10 colour where the file states none
- * ([DvBaseLayer.hdr10]). Its samples go to it with their Dolby Vision units hidden ([DvBaseLayer.hideDolbyVision]).
+ * ([DvBaseLayer.hdr10]: brightness data from the SEI in its parameter sets where the track has none,
+ * [DvBaseLayer.seiStaticInfo], read once). Its samples go to it with their Dolby Vision units hidden
+ * ([DvBaseLayer.hideDolbyVision]).
  * A profile 8 track Media3 itself gives to an HEVC decoder gets HDR10 colour the same way ([getMediaFormat]).
  */
 @OptIn(UnstableApi::class)
@@ -259,7 +261,10 @@ class PacedVideoRenderer(
         return made
     }
 
-    /** A new format for the decoder: a profile 7 track played as its base layer goes on as HEVC, said once in the log. */
+    /**
+     * A new format for the decoder: a profile 7 track played as its base layer goes on as HEVC, said once in the log,
+     * with where its brightness data came from.
+     */
     override fun onInputFormatChanged(formatHolder: FormatHolder): DecoderReuseEvaluation? {
         val format = formatHolder.format
         val base = format?.let { baseLayer(it) }
@@ -269,6 +274,7 @@ class PacedVideoRenderer(
             if (format !== told) {
                 told = format
                 Log.i(TAG, DvBaseLayer.logLine(dvDecoders))
+                seen?.takeIf { it.dv === format }?.brightness?.let { Log.i(TAG, it) }
             }
         }
         return super.onInputFormatChanged(formatHolder)
@@ -297,15 +303,21 @@ class PacedVideoRenderer(
             return null
         }
         DvBaseLayer.tvPlaysBase = instead
+        var brightness: String? = null
         val base = if (instead) {
-            format.buildUpon().setSampleMimeType(MimeTypes.VIDEO_H265).setCodecs(null)
-                .setColorInfo(DvBaseLayer.hdr10(format.colorInfo)).build()
+            // The film's own brightness data from its parameter sets' SEI, where the track states none.
+            val own = format.colorInfo?.hdrStaticInfo
+            val sei = if (own == null) DvBaseLayer.seiStaticInfo(format.initializationData) else null
+            val colour = DvBaseLayer.hdr10(format.colorInfo, sei)
+            brightness = DvBaseLayer.brightnessLine(colour.hdrStaticInfo, fromTrack = own != null, fromSei = sei != null)
+            format.buildUpon().setSampleMimeType(MimeTypes.VIDEO_H265).setCodecs(null).setColorInfo(colour).build()
         } else null
-        seen = BaseLayer(format, base)
+        seen = BaseLayer(format, base, brightness)
         return base
     }
 
-    private class BaseLayer(val dv: Format, val base: Format?)
+    /** [brightness]: the log's line on where the base layer's brightness data came from ([DvBaseLayer.brightnessLine]). */
+    private class BaseLayer(val dv: Format, val base: Format?, val brightness: String?)
 
     private companion object {
         const val TAG = "FirePlayer"

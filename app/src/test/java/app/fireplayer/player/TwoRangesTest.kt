@@ -153,7 +153,14 @@ class TwoRangesTest {
         val total = total
         val log: MutableList<String> = Collections.synchronizedList(ArrayList<String>())
         val lines: MutableList<String> = Collections.synchronizedList(ArrayList<String>())
-        val film = TwoRanges(config) { lines.add(it) }.also { if (long) it.longSpans() }
+        // Told of every line logged, from whichever thread.
+        private val heard = Object()
+        val film = TwoRanges(config) { line ->
+            synchronized(heard) {
+                lines.add(line)
+                heard.notifyAll()
+            }
+        }.also { if (long) it.longSpans() }
         val first = Fake(total, log, "first")
         val helpers: MutableList<Fake> = Collections.synchronizedList(ArrayList<Fake>())
         var onHelper: (Fake) -> Unit = {}
@@ -174,6 +181,25 @@ class TwoRangesTest {
         fun secondOpens(): List<String> = synchronized(log) { log.filter { it.startsWith("second") } }
 
         fun firstOpens(): List<String> = synchronized(log) { log.filter { it.startsWith("first") } }
+
+        /** The lines logged so far, copied while no thread adds one. */
+        fun linesNow(): List<String> = synchronized(lines) { ArrayList(lines) }
+
+        /**
+         * Waits for [line] to be logged. A line the second request's thread logs can come after the reading is done:
+         * its fallback is seen here as soon as it's made, and the line written just after.
+         */
+        fun awaitLine(line: String) = synchronized(heard) {
+            val until = System.nanoTime() + 5_000_000_000L
+            while (!lines.contains(line)) {
+                val left = until - System.nanoTime()
+                if (left <= 0L) fail("never logged: $line, only ${linesNow()}")
+                heard.wait(left / 1_000_000L + 1)
+            }
+        }
+
+        /** Every request made for a second request or sent ahead is closed or cut off. */
+        fun helpersDone(): Boolean = synchronized(helpers) { helpers.all { it.closes > 0 || it.cancelled } }
     }
 
     @Test
@@ -328,7 +354,7 @@ class TwoRangesTest {
             assertEquals("http $status on the second request", rig.film.fallback)
             assertEquals("1(fallback: http $status on the second request)", rig.film.mode())
             assertEquals(listOf("second 1000+1000", "second 3000+1000"), rig.secondOpens())
-            assertTrue(rig.lines.contains("fallback to one request: http $status on the second request"))
+            rig.awaitLine("fallback to one request: http $status on the second request")
             // The next connection asks once, plainly, and no second request is ever made again.
             rig.log.clear()
             rig.stream.open(5_000, "k")
@@ -486,7 +512,7 @@ class TwoRangesTest {
         rig.film.release()
         rig.film.rest()
         assertEquals(0L, rig.film.heldBytes)
-        assertTrue(rig.lines.none { it.contains("rested") })
+        assertTrue(rig.linesNow().none { it.contains("rested") })
     }
 
     @Test
@@ -497,27 +523,32 @@ class TwoRangesTest {
         assertArrayEquals(expected(0, 10_500), rig.readAll(0))
         rig.stream.close()
         assertEquals("second request failed", rig.film.fallback)
-        assertTrue(rig.lines.none { it.contains("secret") })
+        // Its line in first, so what's checked is everything said of the crash.
+        rig.awaitLine("fallback to one request: second request failed")
+        assertTrue(rig.linesNow().none { it.contains("secret") })
         waitFor { rig.film.heldBytes == 0L }
     }
 
     @Test
     fun theWaitThatEndsInAFailureIsCounted() {
-        val film = TwoRanges(SMALL) {}
+        // The second request goes quiet with nothing brought: the read waits for it until it's given up, so the read
+        // that fails has always waited first, however this thread is held up. (A failure that comes from the second
+        // request itself can be there before the read starts: no wait at all, rightly counted as none.)
+        val film = TwoRanges(TwoRanges.Config(1_000, 2, 100, 5_000, stallMs = 50, paceWindowNs = Long.MAX_VALUE))
         val request = Fake(10_500, Collections.synchronizedList(ArrayList<String>()), "second")
-        request.endEarlyAt = 1_500
-        request.readDelayMs = 30
+        request.hold = true
         val run = HelperRun(film, request, SegmentPlan(0, 10_500, 1_000))
         run.start()
-        val buffer = ByteArray(1_000)
-        var position = 1_000L
         try {
-            while (true) position += run.read(1, position, buffer, 0, 1_000)
+            run.read(1, 1_000, ByteArray(1_000), 0, 1_000)
+            fail("should have thrown")
         } catch (e: HelperGone) {
-            assertEquals("second request ended early", e.reason)
+            assertEquals("second request stalled", e.reason)
         }
-        assertTrue(run.lastWaitNs > 0L)
+        // At least the time it took to give the second request up.
+        assertTrue(run.lastWaitNs.toString(), run.lastWaitNs >= 50_000_000L)
         run.cancel()
+        run.join(5_000)
     }
 
     @Test
@@ -631,7 +662,9 @@ class TwoRangesTest {
 
     @Test
     fun aSecondRequestGoneQuietMeansOneRequest() {
-        val rig = Rig(config = TwoRanges.Config(1_000, 2, 100, 5_000, stallMs = 150, paceWindowNs = Long.MAX_VALUE))
+        val rig = Rig(
+            config = TwoRanges.Config(1_000, 2, 100, 5_000, stallMs = 150, paceWindowNs = Long.MAX_VALUE, aheadMinNs = Long.MAX_VALUE),
+        )
         rig.onHelper = { it.hold = true }
         rig.stream.open(0, "k")
         assertArrayEquals(expected(0, 10_500), rig.readAll(0))
@@ -643,8 +676,13 @@ class TwoRangesTest {
 
     @Test
     fun aSecondRequestSlowerThanHalfTheFirstMeansOneRequest() {
-        // The first request brings its segments at once; the second takes its time over every read.
-        val rig = Rig(config = TwoRanges.Config(1_000, 2, 100, 5_000, stallMs = 5_000, paceWindowNs = 30_000_000L))
+        // The first request brings its segments at once; the second takes its time over every read. Only the second
+        // request's pace is weighed: nothing is asked ahead, and the time spent on answers is never too much.
+        val rig = Rig(
+            config = TwoRanges.Config(
+                1_000, 2, 100, 5_000, stallMs = 5_000, paceWindowNs = 30_000_000L, aheadMinNs = Long.MAX_VALUE, answerShare = 1.0,
+            ),
+        )
         rig.onHelper = { it.readDelayMs = 8 }
         rig.stream.open(0, "k")
         assertArrayEquals(expected(0, 10_500), rig.readAll(0))
@@ -661,7 +699,8 @@ class TwoRangesTest {
         rig.stream.open(0, "https://host.invalid/dl/SECRETKEY/film.mkv?token=abc")
         rig.readAll(0)
         rig.stream.close()
-        val all = rig.lines.joinToString("\n") + rig.film.mode() + rig.film.rates()
+        rig.awaitLine("fallback to one request: http 429 on the second request")
+        val all = rig.linesNow().joinToString("\n") + rig.film.mode() + rig.film.rates()
         assertFalse(all, all.contains("http:") || all.contains("https") || all.contains("SECRET") || all.contains("token") || all.contains("host"))
     }
 
@@ -721,7 +760,7 @@ class TwoRangesTest {
         assertTrue(rig.film.rates(), rig.film.rates().contains(" answer="))
         assertTrue(rig.film.rates(), rig.film.rates().endsWith(" new=0"))
         // Every request sent is closed or cut off by the end.
-        waitFor { rig.helpers.all { it.closes > 0 || it.cancelled } }
+        waitFor { rig.helpersDone() }
     }
 
     @Test
@@ -744,12 +783,12 @@ class TwoRangesTest {
         // Two requests kept: the span turned away was asked for again in place, and nothing more is asked ahead.
         assertNull(rig.film.fallback)
         assertEquals("2", rig.film.mode())
-        assertTrue(rig.lines.toString(), rig.lines.contains("asking ahead stopped: http 429"))
+        rig.awaitLine("asking ahead stopped: http 429")
         assertEquals(1, synchronized(rig.lines) { rig.lines.count { it.startsWith("asking ahead stopped") } })
         assertFalse(rig.film.sendAhead(40_000L))
         // Another film in the same player starts afresh.
         assertTrue(rig.film.sendAhead(80_000L))
-        waitFor { rig.helpers.all { it.closes > 0 || it.cancelled } }
+        waitFor { rig.helpersDone() }
     }
 
     @Test
@@ -770,8 +809,8 @@ class TwoRangesTest {
         // Not a limit: two requests kept, and asking ahead goes on.
         assertNull(rig.film.fallback)
         assertTrue(rig.film.sendAhead(40_000L))
-        assertFalse(rig.lines.toString(), rig.lines.any { it.startsWith("asking ahead stopped") })
-        waitFor { rig.helpers.all { it.closes > 0 || it.cancelled } }
+        assertFalse(rig.lines.toString(), rig.linesNow().any { it.startsWith("asking ahead stopped") })
+        waitFor { rig.helpersDone() }
     }
 
     @Test
@@ -784,11 +823,13 @@ class TwoRangesTest {
         while (got < 200) got += rig.stream.read(buffer, 0, 100)
         // The second request's first answer tells how slow answers are.
         waitFor { rig.film.answerNs > 0L }
-        while (got < 3_500) got += rig.stream.read(buffer, 0, 100)
+        // To the span's last 100 bytes: when its next request goes ahead depends on the speed measured, so on how long
+        // this thread took to get here, and with that little left it is due unless that was many seconds.
+        while (got < 3_900) got += rig.stream.read(buffer, 0, 100)
         waitFor { rig.secondOpens().any { it.startsWith("second 8000+") } }
         rig.stream.close()
         // Cut off: the request sent ahead too, not only the second request.
-        waitFor { rig.helpers.all { it.cancelled || it.closes > 0 } }
+        waitFor { rig.helpersDone() }
         assertNull(rig.film.fallback)
         // The next connection starts with the bytes wanted, as ever.
         rig.log.clear()
@@ -808,11 +849,12 @@ class TwoRangesTest {
         var got = 0
         while (got < 200) got += rig.stream.read(buffer, 0, 100)
         waitFor { rig.film.answerNs > 0L }
-        while (got < 3_500) got += rig.stream.read(buffer, 0, 100)
+        // To the span's last 100 bytes, as above.
+        while (got < 3_900) got += rig.stream.read(buffer, 0, 100)
         waitFor { rig.secondOpens().any { it.startsWith("second 8000+") } }
         rig.film.rest()
         // Nothing sent ahead is left waiting, the second request included.
-        waitFor { rig.helpers.all { it.cancelled || it.closes > 0 } }
+        waitFor { rig.helpersDone() }
         // Reading goes on: every byte in order, the span asked for again, two requests kept.
         val out = java.io.ByteArrayOutputStream()
         while (true) {
@@ -859,6 +901,22 @@ class TwoRangesTest {
     }
 
     @Test
+    fun asThePlayerMakesItOnlyAnswersOf150MsOrMoreSendRequestsAhead() {
+        // The player's own settings (the tests above set theirs): fast answers never open a connection more at each
+        // span's end. Told the answer times here, with no clock.
+        val film = TwoRanges(log = {})
+        assertFalse(film.sendAhead(40_000L))
+        film.answered(1_000_000L)
+        assertFalse(film.sendAhead(40_000L))
+        // Slow answers lately: the next span goes ahead.
+        film.answered(1_000_000_000L)
+        assertTrue(film.sendAhead(40_000L))
+        // Where it starts.
+        assertFalse(TwoRanges(log = {}).apply { answered(149_999_999L) }.sendAhead(40_000L))
+        assertTrue(TwoRanges(log = {}).apply { answered(150_000_000L) }.sendAhead(40_000L))
+    }
+
+    @Test
     fun cancelledReadsAreToldFromFailures() {
         assertTrue(TwoRanges.cancelled(InterruptedIOException()))
         assertTrue(TwoRanges.cancelled(IOException(InterruptedIOException())))
@@ -867,14 +925,17 @@ class TwoRangesTest {
     }
 
     companion object {
+        // Nothing is asked ahead with these, however long an answer seems to take: answers here come at once, but one
+        // measured on a busy machine (a thread held up as it asked) would otherwise send requests ahead, which the tests
+        // using these don't count on.
         private val SMALL = TwoRanges.Config(
             segmentBytes = 1_000, buffers = 2, startAfterBytes = 100, minFileBytes = 5_000, stallMs = 3_000,
-            paceWindowNs = Long.MAX_VALUE,
+            paceWindowNs = Long.MAX_VALUE, aheadMinNs = Long.MAX_VALUE,
         )
 
         private val LONG = TwoRanges.Config(
             segmentBytes = 1_000, buffers = 2, startAfterBytes = 100, minFileBytes = 5_000, stallMs = 3_000,
-            paceWindowNs = Long.MAX_VALUE, longSegmentBytes = 3_000, longBuffers = 1,
+            paceWindowNs = Long.MAX_VALUE, longSegmentBytes = 3_000, longBuffers = 1, aheadMinNs = Long.MAX_VALUE,
         )
 
         // Spans of 4,000 bytes, and answers of 1 ms or more count as slow.
