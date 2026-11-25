@@ -31,7 +31,7 @@ import kotlin.random.Random
  * MKV files whose track list (Tracks) comes after the clusters, run through Media3's own MKV reader (1.8.0) as the
  * player wraps it, read the way Media3's loader reads a film: the list must be read before the clusters, the film's
  * bytes once, and every block come out as a sample. Files laid out as usual must be read exactly as before, and files
- * whose SeekHead is wrong or missing as before too.
+ * whose SeekHead is wrong or missing as before too. A file with no SeekHead has its last bytes looked at for the list.
  */
 class SeekableMkvTest {
 
@@ -104,25 +104,33 @@ class SeekableMkvTest {
     private val ebmlHeader = el(0x1A45DFA3, el(0x4286, uint(1)), el(0x42F7, uint(1)), el(0x42F2, uint(4)), el(0x42F3, uint(8)),
         el(0x4282, "matroska".toByteArray()), el(0x4287, uint(4)), el(0x4285, uint(2)))
 
-    private fun trackList(dv: Boolean, audioCodec: Boolean = true): ByteArray {
+    /** [soundPrivate]: a CodecPrivate this big in the sound track, for a track list far bigger than usual. */
+    private fun trackList(dv: Boolean, audioCodec: Boolean = true, soundPrivate: Int = 0): ByteArray {
         val mapping = if (dv) el(0x41E4, el(0x41E7, uint(0x64766343)), el(0x41ED, record(DvBaseLayer.SIGNAL_HLG))) else ByteArray(0)
         val video = el(0xAE, el(0xD7, uint(1)), el(0x73C5, uint(11)), el(0x83, uint(1)), el(0x86, "V_VP9".toByteArray()),
             el(0x23E383, uint(41_708_333)), el(0xE0, el(0xB0, uint(1920)), el(0xBA, uint(1080))), mapping)
-        return el(0x1654AE6B, video, soundEntry(audioCodec))
+        return el(0x1654AE6B, video, soundEntry(audioCodec, soundPrivate))
     }
 
-    private fun soundEntry(codec: Boolean = true): ByteArray = el(0xAE, el(0xD7, uint(2)), el(0x73C5, uint(22)), el(0x83, uint(2)),
-        if (codec) el(0x86, "A_AC3".toByteArray()) else ByteArray(0), el(0xE1, el(0xB5, float64(48_000.0)), el(0x9F, uint(6))))
+    private fun soundEntry(codec: Boolean = true, privateSize: Int = 0): ByteArray = el(0xAE, el(0xD7, uint(2)), el(0x73C5, uint(22)),
+        el(0x83, uint(2)), if (codec) el(0x86, "A_AC3".toByteArray()) else ByteArray(0),
+        el(0xE1, el(0xB5, float64(48_000.0)), el(0x9F, uint(6))),
+        if (privateSize > 0) el(0x63A2, ByteArray(privateSize) { (it % 251).toByte() }) else ByteArray(0))
 
     /**
      * One second a cluster: 24 pictures of 3000 bytes (the first a key frame) and 32 sound blocks of 500, in time order.
-     * [broken]: its Timestamp element nine bytes long, which Media3 refuses as malformed.
+     * [broken]: its Timestamp element nine bytes long, which Media3 refuses as malformed. [inject]: written into the last
+     * picture's data, near its end.
      */
-    private fun cluster(i: Int, random: Random, broken: Boolean = false, video: MutableList<Long>, audio: MutableList<Long>): ByteArray {
+    private fun cluster(
+        i: Int, random: Random, broken: Boolean = false, video: MutableList<Long>, audio: MutableList<Long>, inject: ByteArray? = null,
+    ): ByteArray {
         val blocks = ArrayList<Pair<Int, ByteArray>>()
         for (k in 0 until 24) {
             val rel = k * 1000 / 24
-            blocks += rel * 2 to block(1, rel, if (k == 0) 0x80 else 0, random.nextBytes(3000))
+            val data = random.nextBytes(3000)
+            if (k == 23 && inject != null) inject.copyInto(data, data.size - inject.size - 10)
+            blocks += rel * 2 to block(1, rel, if (k == 0) 0x80 else 0, data)
             if (!broken) video += (i * 1000L + rel) * 1000
         }
         for (k in 0 until 32) {
@@ -144,7 +152,9 @@ class SeekableMkvTest {
      * A film of [count] one-second clusters. [tracksLast]: its track list after the index, as FFmpeg and mkvpropedit can
      * write it; else after Info, as usual. [pad]: a Void this big before the first cluster (Tags and the like in real
      * files), so the clusters start beyond the first 64 KiB. [seekHead]: whether it has one, which lists Info, the track
-     * list ([tracksListedAt] when given: a wrong place) and the index ([cues]: whether it has one).
+     * list ([tracksListedAt] when given: a wrong place) and the index ([cues]: whether it has one). [padBeforeTracks]: a
+     * Void this big right before the track list. [segmentSizeKnown]: the Segment's size stated, or "unknown". [garbage]:
+     * written into the last cluster's last picture.
      */
     private fun film(
         tracksLast: Boolean = true,
@@ -156,14 +166,21 @@ class SeekableMkvTest {
         count: Int = 12,
         brokenCluster: Int = -1,
         tracksListedAt: ((Film) -> Long)? = null,
+        soundPrivate: Int = 0,
+        padBeforeTracks: Int = 0,
+        segmentSizeKnown: Boolean = true,
+        garbage: ByteArray? = null,
     ): Film {
         val random = Random(42)
         val video = ArrayList<Long>()
         val audio = ArrayList<Long>()
-        val clusterBytes = (0 until count).map { cluster(it, random, it == brokenCluster, video, audio) }
+        val clusterBytes = (0 until count).map {
+            cluster(it, random, it == brokenCluster, video, audio, inject = if (it == count - 1) garbage else null)
+        }
         val info = el(0x1549A966, el(0x2AD7B1, uint(1_000_000)), el(0x4489, float64(count * 1000.0)))
-        val tracks = trackList(dv, audioCodec)
+        val tracks = trackList(dv, audioCodec, soundPrivate)
         val void = if (pad > 0) el(0xEC, ByteArray(pad)) else ByteArray(0)
+        val trackPad = if (padBeforeTracks > 0) el(0xEC, ByteArray(padBeforeTracks)) else ByteArray(0)
         fun cuesOf(positions: List<Long>) = el(0x1C53BB6B, *positions.mapIndexed { i, p ->
             el(0xBB, el(0xB3, uint(i * 1000L, 8)), el(0xB7, el(0xF7, uint(1)), el(0xF1, uint(p, 8))))
         }.toTypedArray())
@@ -177,6 +194,7 @@ class SeekableMkvTest {
         rel += info.size
         var tracksRel = -1L
         if (!tracksLast) {
+            rel += trackPad.size
             tracksRel = rel
             rel += tracks.size
         }
@@ -186,6 +204,7 @@ class SeekableMkvTest {
         val cuesBytes = if (cues) cuesOf(clusterRels) else ByteArray(0)
         rel += cuesBytes.size
         if (tracksLast) {
+            rel += trackPad.size
             tracksRel = rel
             rel += tracks.size
         }
@@ -194,13 +213,14 @@ class SeekableMkvTest {
             val children = ArrayList<ByteArray>()
             children += seekHeadOf(infoRel, listedTracksRel, cuesRel)
             children += info
-            if (!tracksLast) children += tracks
+            if (!tracksLast) children += listOf(trackPad, tracks)
             children += void
             children += clusterBytes
             children += cuesBytes
-            if (tracksLast) children += tracks
+            if (tracksLast) children += listOf(trackPad, tracks)
             val body = cat(children)
-            return cat(listOf(ebmlHeader, idBytes(0x18538067), sizeBytes(body.size.toLong(), 8), body))
+            val size = if (segmentSizeKnown) sizeBytes(body.size.toLong(), 8) else byteArrayOf(1) + ByteArray(7) { -1 }
+            return cat(listOf(ebmlHeader, idBytes(0x18538067), size, body))
         }
         val clusters = clusterRels.map { segmentStart + it }
         // A cluster's contents start after its 4-byte ID and its size.
@@ -518,8 +538,8 @@ class SeekableMkvTest {
 
     // --- Files laid out as usual, and SeekHeads that are wrong: read exactly as before
 
-    private fun assertReadAsMedia3Does(film: Film, wrappedOpens: List<Long>? = null) {
-        val mine = read(film, wrapped())
+    private fun assertReadAsMedia3Does(film: Film, wrappedOpens: List<Long>? = null, dropAt: Long = -1, failOpenAt: Long = -1) {
+        val mine = read(film, wrapped(), dropAt, failOpenAt)
         val theirs = read(film, media3())
         assertEquals(wrappedOpens ?: theirs.loader.opens, mine.loader.opens)
         assertEquals(theirs.result, mine.result)
@@ -556,8 +576,51 @@ class SeekableMkvTest {
     }
 
     @Test
-    fun aFileWithoutASeekHeadIsReadAsBefore() {
-        assertReadAsMedia3Does(film(pad = 70_000, seekHead = false))
+    fun aFileWithoutASeekHeadWithItsTrackListInTheFirstBytesIsReadAsBefore() {
+        assertReadAsMedia3Does(film(tracksLast = false, pad = 70_000, seekHead = false))
+        assertReadAsMedia3Does(film(tracksLast = false, seekHead = false, cues = false))
+    }
+
+    /** The requests a read of [film] makes and the bytes they fetch, then a jump's, when it can jump: one line. */
+    private fun trace(film: Film): String {
+        val r = read(film, wrapped())
+        var line = "opens=${r.loader.opens} served=${r.loader.served} len=${film.length}"
+        val map = r.out.seekMap!!
+        if (map.isSeekable) {
+            val point = map.getSeekPoints(7_500_000L).first
+            r.out.clearSamples()
+            val served = r.loader.served
+            val opens = r.loader.opens.size
+            r.loader.load(r.extractor, point.position, point.timeUs, stop = { r.video().times.size >= 3 })
+            line += " jump=${point.position} opens2=${r.loader.opens.drop(opens)} served2=${r.loader.served - served} " +
+                "times=${r.video().times}"
+        }
+        return line
+    }
+
+    @Test
+    fun filesWithTheirTrackListInTheFirstBytesOrListedAreReadByteForByteAsBefore() {
+        // Measured on the wrapper before a file's last bytes were ever looked at (70406db): the same requests, from the
+        // same places, fetching the same bytes, at the start and after a jump. Neither these nor the SeekHead's late
+        // track lists look at the last bytes.
+        val times = "times=[7000000, 7041000, 7083000]"
+        val expected = listOf(
+            film(tracksLast = false, pad = 70_000) to
+                "opens=[0, 1131058, 70230] served=1135807 len=1131388 jump=689043 opens2=[689043] served2=12288 $times",
+            film(tracksLast = false, pad = 0) to
+                "opens=[0, 1061054, 226] served=1127024 len=1061384 jump=619039 opens2=[619039] served2=12288 $times",
+            film(tracksLast = false, pad = 70_000, cues = false) to "opens=[0] served=1131037 len=1131037 jump=733226 " +
+                "opens2=[733226, 70193, 600619, 689022] served2=536576 $times",
+            film(tracksLast = false, pad = 70_000, seekHead = false) to "opens=[0] served=1131320 len=1131320 jump=733385 " +
+                "opens2=[733385, 70146, 600738, 688975] served2=536576 $times",
+            film(tracksLast = false, pad = 0, seekHead = false, cues = false) to "opens=[0] served=1060986 len=1060986 " +
+                "jump=663175 opens2=[663175, 142, 530568, 618971] served2=536576 $times",
+            film(pad = 70_000) to "opens=[0, 1131312, 52, 1130982, 70154] served=1201443 len=1131388 jump=688967 " +
+                "opens2=[688967] served2=12288 $times",
+            film(pad = 70_000, cues = false) to "opens=[0, 1130961, 52] served=1196597 len=1131037 jump=733198 " +
+                "opens2=[733198, 70117, 600582, 688946] served2=536576 $times",
+        )
+        for ((film, line) in expected) assertEquals(line, trace(film))
     }
 
     @Test
@@ -598,6 +661,182 @@ class SeekableMkvTest {
                 assertTrue(e.contentIsMalformed)
             }
         }
+    }
+
+    // --- No SeekHead: the track list looked for in the file's last bytes
+
+    /** Where the last bytes looked at for a track list begin. */
+    private val Film.tailFrom get() = length - 65_536
+
+    @Test
+    fun withoutASeekHeadATrackListAtTheEndIsFoundInTheLastBytesAndReadFirst() {
+        // As the 1 GB episode is laid out: Info, the clusters (the first within the first bytes), the track list last; no
+        // SeekHead, no index. And with the Segment's size "unknown"; and with the clusters past the first bytes and an
+        // index Media3 doesn't know of without a SeekHead.
+        val films = listOf(film(seekHead = false, cues = false), film(seekHead = false, cues = false, segmentSizeKnown = false),
+            film(pad = 70_000, seekHead = false))
+        for (film in films) {
+            val head = film.bytes.copyOf(65_536)
+            assertTrue(MkvHeader.layout(head, head.size)!!.tailLook(head.size, film.length))
+            val r = read(film, wrapped())
+            assertEquals(Extractor.RESULT_END_OF_INPUT, r.result)
+            // The last 64 KiB looked at, the track list read from what they brought, and back to where the Segment's
+            // contents begin.
+            assertEquals(listOf(0L, film.tailFrom, film.segmentStart), r.loader.opens)
+            // The tracks were known before the reader started on the first cluster (where Media3 tells its seek map), so
+            // every block came out, at its time.
+            assertTrue(r.out.events.indexOf("endTracks") < r.out.events.indexOf("seekMap"))
+            assertTrue(r.out.events.indexOf("endTracks") < r.out.events.indexOf("first sample"))
+            assertEquals(film.videoTimesUs, r.video().times)
+            assertEquals(film.audioTimesUs, r.audio().times)
+            assertEquals(MimeTypes.VIDEO_VP9, r.video().formats.first().sampleMimeType)
+            assertEquals(23.976f, r.video().formats.first().frameRate, 0.001f)
+            assertEquals(MimeTypes.AUDIO_AC3, r.audio().formats.first().sampleMimeType)
+            // The film once, and its last 64 KiB; and, as with any track list read first, the first bytes looked at on
+            // the first request are read again from the Segment's start (64 KiB at most).
+            val extra = r.loader.served - film.length
+            assertTrue("extra $extra", extra in 65_536L..2 * 65_536L)
+            // Jumps are found by the clusters' times, as in any file without an index Media3 knows of.
+            val map = r.out.seekMap!!
+            assertTrue(map.isSeekable)
+            val point = map.getSeekPoints(7_500_000L).first
+            r.out.clearSamples()
+            r.loader.load(r.extractor, point.position, point.timeUs, stop = { r.video().times.isNotEmpty() })
+            val landed = r.video().times.first()
+            assertTrue("landed at $landed", landed in 5_000_000L..7_500_000L)
+        }
+    }
+
+    @Test
+    fun aDolbyVisionRecordInATrackListFoundAtTheEndIsKeptOnTheFormat() {
+        val r = read(film(seekHead = false, cues = false, dv = true), wrapped())
+        val format = r.video().formats.first()
+        assertEquals(MimeTypes.VIDEO_DOLBY_VISION, format.sampleMimeType)
+        assertEquals(DvBaseLayer.SIGNAL_HLG, DvBaseLayer.recordSignal(format))
+        assertEquals(23.976f, format.frameRate, 0.001f)
+    }
+
+    @Test
+    fun aTrackListBiggerThanTheLastBytesIsLeftToMedia3() {
+        // It starts (its ID too) before the last 64 KiB: not found in them, back, and the file is read as it always was.
+        val film = film(seekHead = false, cues = false, soundPrivate = 70_000)
+        assertTrue(film.tracksAt < film.tailFrom)
+        val window = film.bytes.copyOfRange(film.tailFrom.toInt(), film.bytes.size)
+        assertNull(MkvHeader.tailTracks(window, window.size))
+        val theirs = read(film, media3())
+        assertReadAsMedia3Does(film, listOf(0L, film.tailFrom, film.segmentStart) + theirs.loader.opens.drop(1))
+    }
+
+    @Test
+    fun theTrackListsIdInsideABlockIsNotTakenForIt() {
+        // No SeekHead, the track list past the first bytes but before the clusters; the last bytes hold only look-alikes,
+        // in the last picture's data.
+        val fakes = cat(listOf(
+            // A list running on past the end of the file.
+            idBytes(0x1654AE6B) + sizeBytes(1L shl 20, 4) + ByteArray(6),
+            // Its size "unknown".
+            idBytes(0x1654AE6B) + byteArrayOf(0xFF.toByte()) + ByteArray(6),
+            // A track without a codec.
+            el(0x1654AE6B, el(0xAE, el(0xD7, uint(1)), el(0x83, uint(1)))),
+            // A track that reads, beside something that isn't a track.
+            el(0x1654AE6B, el(0xAE, el(0xD7, uint(1)), el(0x86, "V_VP9".toByteArray())), el(0x9C, uint(0))),
+            // Bytes that don't read as elements at all.
+            idBytes(0x1654AE6B) + byteArrayOf(0x85.toByte(), 0, 0, 0, 0, 0),
+        ))
+        val film = film(tracksLast = false, padBeforeTracks = 70_000, seekHead = false, cues = false, garbage = fakes)
+        val head = film.bytes.copyOf(65_536)
+        assertTrue(MkvHeader.layout(head, head.size)!!.tailLook(head.size, film.length))
+        val window = film.bytes.copyOfRange(film.tailFrom.toInt(), film.bytes.size)
+        val found = MkvHeader.tailTracks(window, window.size)!!
+        assertFalse(found.whole)
+        // The last of them is the one told of.
+        val last = (film.bytes.size - 4 downTo 0).first { at -> idBytes(0x1654AE6B).indices.all { film.bytes[at + it] == idBytes(0x1654AE6B)[it] } }
+        assertEquals("tracks@$last size=10 invalid", MkvHeader.tailText(found, film.tailFrom))
+        val theirs = read(film, media3())
+        assertEquals(film.videoTimesUs, theirs.video().times)
+        assertReadAsMedia3Does(film, listOf(0L, film.tailFrom, film.segmentStart) + theirs.loader.opens.drop(1))
+    }
+
+    @Test
+    fun aFailedLookAtTheLastBytesReadsTheFileAsBefore() {
+        val film = film(seekHead = false, cues = false)
+        val theirs = read(film, media3())
+        // The connection dropped while looking: back to where the first bytes ended, and read as before.
+        assertReadAsMedia3Does(film, listOf(0L, film.tailFrom, film.segmentStart) + theirs.loader.opens.drop(1), dropAt = film.tailFrom)
+        // The request couldn't be opened: Media3 tries again where the first bytes ended, and the file is read on from
+        // there, as before, without asking for the last bytes again.
+        assertReadAsMedia3Does(film, listOf(0L, film.segmentStart) + theirs.loader.opens.drop(1), failOpenAt = film.tailFrom)
+    }
+
+    @Test
+    fun aLoadStartedAgainFromTheStartLooksAtTheLastBytesAgain() {
+        val film = film(seekHead = false, cues = false)
+        val loader = Loader(film.bytes, film.clusters.first() until film.cuesAt)
+        val out = Out(loader)
+        val extractor = wrapped()
+        extractor.init(out)
+        // Stopped as it was about to look at the last bytes; then loaded afresh from the start.
+        loader.load(extractor, stop = { loader.opens.size == 2 })
+        assertEquals(Extractor.RESULT_END_OF_INPUT, loader.load(extractor))
+        assertEquals(listOf(0L, film.tailFrom, 0L, film.tailFrom, film.segmentStart), loader.opens)
+        assertEquals(film.videoTimesUs, out.tracks[1]!!.times)
+        assertEquals(film.audioTimesUs, out.tracks[2]!!.times)
+    }
+
+    @Test
+    fun theLastBytesGiveTheLastTrackListThatReadsAsOne() {
+        val list = trackList(dv = true)
+        val before = ByteArray(300) { (it % 7).toByte() }
+        // Found, with what follows it (Tags here; 91 bytes followed it in the 1 GB episode).
+        val tags = el(0x1254C367, el(0x7373, el(0x67C8, el(0x45A3, "TITLE".toByteArray()), el(0x4487, "x".toByteArray()))))
+        val window = before + list + tags
+        val found = MkvHeader.tailTracks(window, window.size)!!
+        assertTrue(found.whole)
+        assertEquals(before.size, found.offset)
+        assertEquals(list.size.toLong(), found.size)
+        assertEquals("tracks@${1000 + before.size} size=${list.size} ok", MkvHeader.tailText(found, 1000))
+        // A look-alike after it (in a tag's value) doesn't hide it.
+        val fake = el(0x1654AE6B, el(0xAE, el(0xD7, uint(1))))
+        val withFake = before + list + el(0x1254C367, el(0x7373, el(0x67C8, el(0x4487, fake))))
+        val behind = MkvHeader.tailTracks(withFake, withFake.size)!!
+        assertTrue(behind.whole)
+        assertEquals(before.size, behind.offset)
+        // Cut off by the end: told of, not taken.
+        val cut = before + list.copyOf(list.size - 1)
+        val short = MkvHeader.tailTracks(cut, cut.size)!!
+        assertFalse(short.whole)
+        assertEquals("tracks@${before.size} size=${list.size} invalid", MkvHeader.tailText(short, 0))
+        // A Void in it is fine; anything else beside its tracks isn't, though a list a SeekHead points at may have it.
+        val entry = el(0xAE, el(0xD7, uint(2)), el(0x83, uint(2)), el(0x86, "A_AC3".toByteArray()))
+        val voided = el(0x1654AE6B, el(0xEC, ByteArray(4)), entry)
+        assertTrue(MkvHeader.tailTracks(voided, voided.size)!!.whole)
+        val stray = el(0x1654AE6B, entry, el(0x9C, uint(0)))
+        assertFalse(MkvHeader.tailTracks(stray, stray.size)!!.whole)
+        assertTrue(MkvHeader.lateTracks(stray, stray.size) != null)
+        // Its size "unknown": told of without one.
+        val unknown = idBytes(0x1654AE6B) + byteArrayOf(0xFF.toByte()) + entry
+        assertEquals("tracks@0 size=none invalid", MkvHeader.tailText(MkvHeader.tailTracks(unknown, unknown.size), 0))
+        // Nothing like it.
+        assertNull(MkvHeader.tailTracks(before, before.size))
+        assertEquals("tracks@none size=none not found", MkvHeader.tailText(null, 0))
+    }
+
+    @Test
+    fun onlyAFileWhoseFirstBytesNeitherHoldNorListItsTrackListIsLookedAtTheEnd() {
+        fun look(film: Film, length: Long = film.length): Boolean {
+            val head = film.bytes.copyOf(65_536)
+            return MkvHeader.layout(head, head.size)!!.tailLook(head.size, length)
+        }
+        val none = film(seekHead = false, cues = false)
+        assertTrue(look(none))
+        // Its length unknown, or no longer than the bytes already looked at: not.
+        assertFalse(look(none, -1))
+        assertFalse(look(none, 65_536))
+        // In the first bytes, or listed by the SeekHead (wherever that says): not.
+        assertFalse(look(film(tracksLast = false)))
+        assertFalse(look(film(tracksLast = false, seekHead = false)))
+        assertFalse(look(film(pad = 70_000)))
+        assertFalse(look(film(pad = 70_000, tracksListedAt = { it.length + 1000 })))
     }
 
     // --- What the first bytes say
@@ -673,6 +912,11 @@ class SeekableMkvTest {
             MkvHeader.layout(withSegment, withSegment.size)?.lateTracks(withSegment.size, 1L shl 30)
             MkvHeader.lateTracks(b, b.size)
             MkvHeader.elementSize(b, b.size, MkvHeader.ID_TRACKS)
+            MkvHeader.tailTracks(b, b.size)
+            // The list's ID somewhere in them, followed by anything.
+            val withId = b.copyOf(random.nextInt(0, b.size + 1)) + idBytes(0x1654AE6B) + random.nextBytes(random.nextInt(0, 40))
+            MkvHeader.tailTracks(withId, withId.size)?.let { MkvHeader.tailText(it, 0) }
+            MkvHeader.elementSize(withId, withId.size, MkvHeader.ID_TRACKS, random.nextInt(0, withId.size + 1))
         }
     }
 
