@@ -1,12 +1,15 @@
 package app.fireplayer.vod.play
 
+import app.fireplayer.vod.Addon
 import app.fireplayer.vod.EpisodeRef
 import app.fireplayer.vod.FailureKind
+import app.fireplayer.vod.LastRelease
 import app.fireplayer.vod.OpenWhy
 import app.fireplayer.vod.Opened
 import app.fireplayer.vod.PlayOrigin
 import app.fireplayer.vod.PlayRequest
 import app.fireplayer.vod.Readiness
+import app.fireplayer.vod.ReleaseKey
 import app.fireplayer.vod.SourceGroup
 import app.fireplayer.vod.SourceTarget
 import app.fireplayer.vod.StartAt
@@ -65,6 +68,18 @@ class SourcePlaybackTest {
         assertEquals(listOf(Triple("k1", 600_000L, false)), starts)
         assertEquals("k1", p.current?.key)
         assertTrue(questions.isEmpty())
+    }
+
+    @Test
+    fun aResumeOnAnotherCopySaysTheOneLeftIsntAvailable() {
+        val request = PlayRequest(SourceTarget(Fixtures.film), StartAt.At(600_000), PlayOrigin.CONTINUE_CARD,
+            preferred = LastRelease(Addon.TORRENTIO, ReleaseKey(Fixtures.hash(9), 0), 1L))
+        val session = FakeSession(request)
+        session.list = Fixtures.list(request.target, listOf(Fixtures.source(1)))
+        SourcePlayback(request, session, library, ticker, host).start()
+        session.ready(Fixtures.source(1), startMs = 595_000, resumedNear = true)
+        assertEquals(Triple("k1", 595_000L, false), starts.single())
+        assertEquals("notice ${SourcePlayback.COPY_GONE_NOTE}", log.last())
     }
 
     @Test

@@ -18,7 +18,8 @@ import org.json.JSONObject
  * version 1 only creates the new table, and My List, watched marks and Continue Watching stay as they were.
  *
  * Version 3 (sources and playback) adds `last_release`: the release each film or episode last played from, as info hash
- * + file index + add-on name (never a link). The upgrade only creates that table.
+ * + file index + add-on name (never a link). The upgrade only creates that table. Its rows are deleted when forgotten
+ * (the title left Continue Watching): what a resume plays, not a list to sync.
  */
 class VodDb(context: Context) : SQLiteOpenHelper(context, "vod.db", null, VERSION), LibraryStore, IdStore {
 
@@ -204,6 +205,17 @@ class VodDb(context: Context) : SQLiteOpenHelper(context, "vod.db", null, VERSIO
             put("file_idx", r.fileIdx)
             put("at", r.at)
         }, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    override fun dropReleases(rows: List<ReleaseRow>) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            for (r in rows) db.delete("last_release", "kind = ? AND id = ?", arrayOf(r.kind.type, r.id))
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
     }
 
     // ---- IdStore ----

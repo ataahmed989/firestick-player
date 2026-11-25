@@ -440,7 +440,7 @@ data class PlayRequest(
     val list: SourceList? = null,
     /** A row chosen in Sources, or "OK again plays the best so far"; null: the session picks. */
     val chosen: PlaybackSource? = null,
-    /** The release to play again (Resume, a Continue card): the same file first, from its add-on. */
+    /** On a resume only (Resume, a Continue card): the release to play again, that very file first, from its add-on first. */
     val preferred: LastRelease? = null,
     /** The source the previous episode played from: the next episode prefers the same kind (§6.5). */
     val like: PlaybackSource? = null,
@@ -848,6 +848,9 @@ interface PlaybackLibrary {
     fun lastRelease(title: Title, episode: EpisodeRef?): LastRelease?
 
     fun recordRelease(title: Title, episode: EpisodeRef?, release: LastRelease)
+
+    /** Forgets the releases [title] last played from (a show: every episode's), so its next resume is the ranking's pick. */
+    fun forgetReleases(title: Title) = Unit
 
     /**
      * Where playback stopped, as [VodRepository.recordProgress]; also marks the film or episode watched when

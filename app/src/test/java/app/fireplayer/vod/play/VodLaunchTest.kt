@@ -52,8 +52,11 @@ class VodLaunchTest {
         assertEquals("tt1695360:2:5", r.target.streamId)
         // A card for an episode with no position of its own (watched to the end): from the beginning.
         repo.recordProgress(Fixtures.show, EpisodeRef(2, 6), 2_690_000, 2_700_000)
+        library.recordRelease(Fixtures.show, EpisodeRef(2, 6), release)
         val done = VodLaunch.fromContinueCard(Card(Fixtures.show, episode = EpisodeRef(2, 6)), repo, library)!!
         assertEquals(StartAt.Beginning, done.start)
+        // Not a resume: the ranking's pick, not the copy played last.
+        assertNull(done.preferred)
     }
 
     @Test

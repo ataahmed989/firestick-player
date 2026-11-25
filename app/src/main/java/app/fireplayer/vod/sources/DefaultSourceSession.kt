@@ -29,9 +29,9 @@ import java.util.EnumMap
 import java.util.EnumSet
 
 /**
- * One play of a film or episode, stages 1-4 (design-brief §6.5). Picks the source (the release played last, then the
- * same release from the other add-on, then the closest match "Resumed near"; a row chosen in Sources; the same kind as
- * the previous episode; else "Best for this TV"), checks its link ([LinkCheck]), and on a failure follows the table
+ * One play of a film or episode, stages 1-4 (design-brief §6.5). Picks the source (on a resume, the very file played
+ * last, from its add-on first, whatever the ranking says; a row chosen in Sources; the same kind as the previous
+ * episode; else "Best for this TV"), checks its link ([LinkCheck]), and on a failure follows the table
  * ([failed]): skip the file and its copies in every add-on, refresh an expired link once, decode the sound on the Stick,
  * use the other add-on, or stop and say why. Limits: 3 start tries and 2 automatic switches per film or episode, at
  * least 3 minutes apart; a source not cached is never opened without [fetch], asked once. Main thread.
@@ -67,6 +67,11 @@ internal class DefaultSourceSession(
     private var currentWhy = OpenWhy.START
     private var playing: PlaybackSource? = null
     private var playingOffer: Offer? = null
+    /**
+     * Another episode with no copy of the kind the show followed ([PlayRequest.like]): at its first frame the show's
+     * remembered copies are forgotten ([app.fireplayer.vod.PlaybackLibrary.forgetReleases]), so the ranking decides on.
+     */
+    private var kindLost = false
 
     private val skipped = HashSet<String>()
     private val skippedHashes = HashSet<String>()
@@ -173,6 +178,10 @@ internal class DefaultSourceSession(
         visited += source.key
         releaseOf(source, offer)?.let { visitedFiles += it.storeKey }
         tries += Attempt(source, repo.wall(), currentWhy, null)
+        if (kindLost) {
+            kindLost = false
+            runCatching { repo.library.forgetReleases(target.title) }
+        }
         // The file that played: a merged row's offer can be another re-upload than the row's first.
         releaseOf(source, offer)?.let { release ->
             runCatching { repo.library.recordRelease(target.title, target.episode, LastRelease(offer.addon, release, repo.wall())) }
@@ -374,12 +383,14 @@ internal class DefaultSourceSession(
 
     private fun blankList() = SourceList(target, Addon.entries.associateWith { AddonState.NotAsked }, emptyList(), null)
 
-    /** The row holding the release played last, while it plays without asking (cached, not skipped). */
+    /**
+     * The row holding the very file played last (same info hash and file index, any add-on), while that file plays
+     * without asking (cached, not skipped, not one this Stick showed no picture for); the ranking doesn't matter.
+     */
     private fun findPreferred(l: SourceList?): PlaybackSource? {
         val p = request.preferred ?: return null
-        val row = repo.rowKeyOf(target, p.release)
-        return l?.sources?.firstOrNull {
-            (it.release == p.release || it.key == row) && it.automatic && usable(it) && !noPictureHere(it)
+        return l?.sources?.firstOrNull { s ->
+            usable(s) && !noPictureHere(s) && s.offers.any { releaseOf(s, it) == p.release && openable(s, it) }
         }
     }
 
@@ -458,22 +469,21 @@ internal class DefaultSourceSession(
                 val fresh = l.sources.firstOrNull { it.key == c.key } ?: c
                 if (usable(fresh)) return fresh to false
             }
-            request.preferred?.let { p ->
-                val near = request.start is StartAt.At
-                findPreferred(l)?.let { row ->
-                    // The same file first, then its add-on; another re-upload in the row is only "near".
-                    val ordered = row.copy(offers = row.offers.sortedWith(
-                        compareBy({ if (releaseOf(row, it) == p.release) 0 else 1 }, { if (it.addon == p.addon) 0 else 1 }),
-                    ))
-                    val same = ordered.offers.firstOrNull { openable(ordered, it) }?.let { releaseOf(ordered, it) == p.release } == true
-                    return ordered to (near && !same)
-                }
-                // Gone, or no longer cached: the closest ready match, "Resumed near …".
-                val sameAddon = auto.firstOrNull { p.addon in it.addons }
-                return (sameAddon ?: auto.firstOrNull()) to near
+            val p = request.preferred
+            if (p != null) findPreferred(l)?.let { row ->
+                // That very file first, from its add-on first: the timeline left.
+                return row.copy(offers = row.offers.sortedWith(
+                    compareBy({ if (releaseOf(row, it) == p.release) 0 else 1 }, { if (it.addon == p.addon) 0 else 1 }),
+                )) to false
             }
-            request.like?.let { like -> SourceRank.mostLike(auto, like)?.let { return it to false } }
-            return auto.firstOrNull() to false
+            // Its own file gone or no longer cached: the ranking's pick, a little before where it was.
+            val near = p != null && request.start is StartAt.At
+            request.like?.let { like ->
+                val same = SourceRank.mostLike(auto, like)
+                kindLost = same == null
+                if (same != null) return same to near
+            }
+            return auto.firstOrNull() to near
         }
         return nextOf(l) to startedOnce
     }

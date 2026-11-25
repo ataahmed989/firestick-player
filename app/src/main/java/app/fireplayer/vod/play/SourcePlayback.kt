@@ -243,6 +243,10 @@ class SourcePlayback(
         val why = switchNote
         switchNote = null
         if (why != null) host.notice(why)
+        // A resume whose own copy isn't in the full list: the ranking's pick plays instead.
+        else if (o.resumedNear && !everPlayed && request.preferred != null && session.list?.complete == true) {
+            host.notice(COPY_GONE_NOTE)
+        }
         else if ((o.resumedNear || everPlayed) && start > 0) host.notice("Resumed near ${PlayRules.clock(start)}")
         armLoad(o.source)
     }
@@ -653,6 +657,8 @@ class SourcePlayback(
         const val LIMIT_NOTE = "Playback keeps pausing · Next source in Picture & sound tries another"
         /** Said as the next source starts after one this Stick showed no picture for ([noPicture]). */
         const val NO_PICTURE_NOTE = "This copy showed no picture here · playing the next one"
+        /** Said as a resume starts on another copy: the one left is no longer listed, or no longer cached. */
+        const val COPY_GONE_NOTE = "The copy you were watching isn't available · playing the best one"
         const val NOT_FETCHED = "Nothing played · Sources lists every file"
         const val GENERIC_STOP = "This title couldn't play · Sources lists every file"
         /** The network stayed away ([Recovery.NET_WAIT_MS]): the failure table's words for it. */
