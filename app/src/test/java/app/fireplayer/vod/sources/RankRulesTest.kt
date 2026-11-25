@@ -2,6 +2,7 @@ package app.fireplayer.vod.sources
 
 import app.fireplayer.player.CopyHealth
 import app.fireplayer.player.CopyLanguage
+import app.fireplayer.player.DvBaseLayer
 import app.fireplayer.player.MediaSpec
 import app.fireplayer.vod.Addon
 import app.fireplayer.vod.Hdr
@@ -18,7 +19,13 @@ import app.fireplayer.vod.SourceGroup
 import app.fireplayer.vod.TvCapabilities
 import app.fireplayer.vod.TvFit
 import app.fireplayer.vod.TvPlan
+import app.fireplayer.vod.AddonState
+import app.fireplayer.vod.Kind
+import app.fireplayer.vod.SourceList
+import app.fireplayer.vod.SourceTarget
+import app.fireplayer.vod.Title
 import app.fireplayer.vod.data.TmdbDetails
+import app.fireplayer.vod.play.PlayRules
 import app.fireplayer.vod.play.SourcesModel
 import app.fireplayer.vod.play.TvPlanRules
 import app.fireplayer.vod.sources.SourceFixtures.answer
@@ -27,6 +34,7 @@ import app.fireplayer.vod.sources.SourceFixtures.torrentio
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -54,7 +62,9 @@ class RankRulesTest {
         /** Settings › This TV › HDR10+ reaches this TV: on here, as the order was decided; off by default. */
         plus: Boolean = true,
         imaxMove: (String) -> Boolean? = { null },
-    ) = RankInput(plan.copy(hdr10PlusReaches = plus), wanted, measured, 120, episode, line, imaxAlways, subtitles, now, imaxMove)
+        /** Settings › Playback › Preferred bitrate. */
+        preferred: Double = 60.0,
+    ) = RankInput(plan.copy(hdr10PlusReaches = plus), wanted, measured, 120, episode, line, imaxAlways, subtitles, now, imaxMove, preferred)
 
     private fun src(
         key: String,
@@ -71,10 +81,11 @@ class RankRulesTest {
         bits: Int? = null,
         name: String = "Film.Name.2021.$key",
         hash: String? = null,
+        codec: String? = "HEVC",
     ) = PlaybackSource(
         key = key,
         release = hash?.let { ReleaseKey(it, 0) },
-        facts = SourceFacts(height = height, hdr = hdr, avgMbps = mbps, origin = origin, codec = "HEVC", dvProfile = dvProfile, bitDepth = bits,
+        facts = SourceFacts(height = height, hdr = hdr, avgMbps = mbps, origin = origin, codec = codec, dvProfile = dvProfile, bitDepth = bits,
             languages = langs, subs = subs, audio = audio, channels = channels, sizeBytes = size),
         offers = listOf(Offer(Addon.TORRENTIO, Readiness.PROBABLY_READY, name, link = SecretUrl.of("https://tio.invalid/$key")!!)),
         readiness = Readiness.PROBABLY_READY,
@@ -421,6 +432,258 @@ class RankRulesTest {
         assertEquals(list.map { it.key }, next(null))
         assertEquals(SourceGroup.THREE_D, SourceMerge.groupOf(SourceFacts(height = 1080), Readiness.PROBABLY_READY, cinema = false, threeD = true))
         assertEquals(SourceGroup.OTHER, SourceMerge.groupOf(SourceFacts(), Readiness.PROBABLY_READY, cinema = false, threeD = false))
+    }
+
+    // ---- Preferred bitrate (Settings › Playback): a soft preference among copies of the same picture ----
+
+    /** A 4K HDR10 remux at [mbps], its size what that is over the two hours the inputs say. */
+    private fun at(key: String, mbps: Double, origin: String? = "REMUX", height: Int? = 2160, hdr: Set<Hdr> = setOf(Hdr.HDR10),
+        codec: String? = "HEVC", name: String = "Film.Name.2021.$key", hash: String? = null, dvProfile: Int? = null) =
+        src(key, height, hdr, mbps, origin, dvProfile = dvProfile, size = (mbps * 900_000_000L).toLong(), name = name, hash = hash, codec = codec)
+
+    @Test
+    fun ofTwoCopiesNearThePreferredBitrateTheHigherWinsUnlessTheConnectionKeepsLess() {
+        val r64 = at("64", 64.0)
+        val r56 = at("56", 56.0)
+        assertEquals(57_600_000_000L, r64.facts.sizeBytes)
+        assertEquals(listOf("64", "56"), keys(listOf(r56, r64)))
+        assertEquals(listOf("64", "56"), keys(listOf(r64, r56)))
+        // 59 against 64: both near 60, the higher; 54 against 67: both a band off, the higher.
+        assertEquals(listOf("64", "59"), keys(listOf(at("59", 59.0), r64)))
+        assertEquals(listOf("67", "54"), keys(listOf(at("54", 54.0), at("67", 67.0))))
+        // A 75 Mb/s evening keeps about 57.7 with room: 56 is nearer that.
+        val slow = input(line = 75.0)
+        val ranked = SourceRank.rank(listOf(r64, r56), slow)
+        assertEquals(listOf("56", "64"), ranked.map { it.key })
+        val why = SourceRank.why(ranked, slow)!!
+        assertEquals(RankStep.RATE, why.step)
+        assertEquals("needs more room on your connection", why.lacks)
+    }
+
+    @Test
+    fun nearThePreferredBitrateWinsOverARemuxLabelOfTheSamePicture() {
+        val web = at("web58", 58.0, origin = "WEB-DL")
+        val remux = at("remux85", 85.0)
+        val ranked = SourceRank.rank(listOf(remux, web), input())
+        assertEquals(listOf("web58", "remux85"), ranked.map { it.key })
+        val why = SourceRank.why(ranked, input())!!
+        assertEquals("remux85", why.beatenKey)
+        assertEquals(RankStep.RATE, why.step)
+        assertEquals("further from your 60 Mb/s", why.lacks)
+        // The viewer's own target moves it.
+        assertEquals(listOf("remux85", "web58"), keys(listOf(web, remux), input(preferred = 85.0)))
+        assertEquals("further from your 85 Mb/s", SourceRank.why(SourceRank.rank(listOf(web, remux), input(preferred = 85.0)), input(preferred = 85.0))!!.lacks)
+        // The setting's ends and default.
+        assertEquals(60, SourceRank.PREFERRED_MBPS)
+        assertEquals(20, SourceRank.preferredMbps(5))
+        assertEquals(120, SourceRank.preferredMbps(500))
+        assertEquals(65, SourceRank.preferredMbps(65))
+    }
+
+    @Test
+    fun resolutionAndTheHdrTheTvGetsComeBeforeTheBitrateAndTheRemuxLabel() {
+        // Case 1: a 4K HDR WEB-DL far from 60 against a 1080p SDR remux close to it.
+        val web4k = at("web4k", 22.0, origin = "WEB-DL")
+        val remux1080 = at("remux1080", 58.0, height = 1080, hdr = emptySet(), codec = "H.264")
+        val ranked = SourceRank.rank(listOf(remux1080, web4k), input())
+        assertEquals(listOf("web4k", "remux1080"), ranked.map { it.key })
+        val why = SourceRank.why(ranked, input())!!
+        assertEquals(RankStep.HEIGHT, why.step)
+        assertEquals("lower resolution", why.lacks)
+        // A 4K SDR remux at 58: HDR decides, before the rate.
+        val sdr4k = at("sdr4k", 58.0, hdr = emptySet())
+        val sdrRanked = SourceRank.rank(listOf(sdr4k, web4k), input())
+        assertEquals(listOf("web4k", "sdr4k"), sdrRanked.map { it.key })
+        assertEquals(RankStep.HDR, SourceRank.why(sdrRanked, input())!!.step)
+    }
+
+    @Test
+    fun a4kCopyStarvedOfDataCountsJustUnderTheResolutionBelow() {
+        val starved = at("starved", 6.0)
+        val remux1080 = at("remux1080", 30.0, height = 1080, hdr = emptySet())
+        val x265 = at("x265", 10.0, height = 1080, origin = "BluRay")
+        assertEquals(listOf("remux1080", "starved"), keys(listOf(starved, remux1080)))
+        val ranked = SourceRank.rank(listOf(starved, x265), input())
+        assertEquals(listOf("x265", "starved"), ranked.map { it.key })
+        val why = SourceRank.why(ranked, input())!!
+        assertEquals(RankStep.HEIGHT, why.step)
+        assertEquals("less picture data", why.lacks)
+        // HEVC 4K needs about 8 Mb/s, H.264 about 12.7.
+        assertEquals(listOf("fed", "x265"), keys(listOf(x265, at("fed", 9.0))))
+        assertEquals(listOf("x265", "avc"), keys(listOf(at("avc", 11.0, codec = "H.264"), x265)))
+        // Alone, it is still the Best, with no warning.
+        val alone = SourceRank.rank(listOf(starved), input())
+        assertEquals(TvFit.LIKELY, alone.single().fit)
+        assertEquals("starved", SourceRank.best(alone)?.key)
+    }
+
+    @Test
+    fun anUnknownBitrateIsNeitherNearNorFarAndKeepsItsResolution() {
+        val near = at("near", 58.0)
+        val unknown = src("unknown", mbps = null, size = null)
+        val far = at("far", 85.0)
+        assertEquals(listOf("near", "unknown", "far"), keys(listOf(far, unknown, near)))
+        assertEquals(listOf("unknown", "hd"), keys(listOf(at("hd", 60.0, height = 1080), unknown)))
+        assertEquals(TvFit.LIKELY to null, SourceRank.fit(unknown.facts, q60r, null, lineMbps = 30.0))
+        assertTrue(LineRate.room(null, 30.0, remux = true))
+        // An unknown one beaten on the rate: nothing is said of what it lacks.
+        val ranked = SourceRank.rank(listOf(unknown, near), input())
+        assertEquals(listOf("near", "unknown"), ranked.map { it.key })
+        val why = SourceRank.why(ranked, input())!!
+        assertEquals(RankStep.RATE, why.step)
+        assertNull(why.lacks)
+    }
+
+    @Test
+    fun whenTheConnectionKeepsNeitherNearCopyASmootherLighterOneIsBest() {
+        val r58 = at("r58", 58.0)
+        val r64 = at("r64", 64.0)
+        val enc = at("enc40", 40.0, origin = "BluRay")
+        val web = at("web25", 25.0, origin = "WEB-DL")
+        val line60 = input(line = 60.0)
+        val ranked = SourceRank.rank(listOf(r64, r58, web, enc), line60)
+        assertEquals(listOf("enc40", "web25", "r58", "r64"), ranked.map { it.key })
+        assertEquals(TvFit.LIKELY_NOT, ranked[2].fit)
+        assertEquals("Needs 58 Mb/s · this connection brought 60", ranked[2].warning)
+        val why = SourceRank.why(ranked, line60)!!
+        assertEquals("r58", why.beatenKey)
+        assertEquals(RankStep.PLAYS, why.step)
+        assertEquals("Needs 58 Mb/s · this connection brought 60", why.lacks)
+        // Every copy too fast for a 50 Mb/s line: the one nearest what it keeps.
+        assertEquals(listOf("a47", "b56", "r64"), keys(listOf(r64, at("b56", 56.0), at("a47", 47.0)), input(line = 50.0)))
+    }
+
+    // ---- Dolby Vision: the picture this TV gets ----
+
+    @Test
+    fun profile7Hdr10AndProfile8AtTheSameRateTieOnThePictureTheTvGets() {
+        val p7 = src("p7", hdr = setOf(Hdr.DOLBY_VISION), dvProfile = 7, mbps = 58.0, size = 52_300_000_000L)
+        val hdr10 = src("hdr10", mbps = 58.0, size = 52_200_000_000L)
+        val p8 = src("p8", hdr = setOf(Hdr.DOLBY_VISION), dvProfile = 8, mbps = 58.0, size = 52_100_000_000L)
+        val ranked = SourceRank.rank(listOf(p8, hdr10, p7), input())
+        assertEquals(listOf("p7", "hdr10", "p8"), ranked.map { it.key })
+        assertTrue(ranked.all { it.fit == TvFit.LIKELY && it.warning == null })
+        assertEquals(SourceRank.hdrRank(hdr10.facts, q60r), SourceRank.hdrRank(p7.facts, q60r))
+        assertEquals(SourceRank.hdrRank(hdr10.facts, q60r), SourceRank.hdrRank(p8.facts, q60r))
+    }
+
+    @Test
+    fun aProfile8FileIsItsBaseLayerAsReadWhenItPlayed() {
+        val hdr10 = src("hdr10", mbps = 58.0, size = 52_200_000_000L)
+        val p8 = src("p8hlg", hdr = setOf(Hdr.DOLBY_VISION), dvProfile = 8, mbps = 58.0, size = 60_000_000_000L, hash = SourceFixtures.H1)
+        fun playedAs(signal: Int) = played(MediaSpec(hdr = "Dolby Vision", dvProfile = 8, decoder = MediaSpec.Decoder.PLAIN, dvSignal = signal))
+        val hlg = playedAs(DvBaseLayer.SIGNAL_HLG)
+        assertEquals(setOf(Hdr.HLG), SourceRank.shownHdr(SourceRank.asPlayedHere(p8.facts, hlg), q60r))
+        val ranked = SourceRank.rank(listOf(p8, hdr10), input(measured = { if (it.contains(SourceFixtures.H1)) hlg else null }))
+        assertEquals(listOf("hdr10", "p8hlg"), ranked.map { it.key })
+        assertEquals("HLG", PlayRules.tvHdr(ranked[1], q60r))
+        assertEquals("HLG (Dolby Vision profile 8 file)", hlg.spec!!.rangeLine(hdrScreen = true))
+        assertTrue(SourcesModel.details(ranked[1], q60r) { "" }.contains("Dolby Vision" to "Profile 8 · played here as HLG"))
+        // Measured HDR10 (8.1): HDR10, as a native HDR10 copy.
+        val pq = playedAs(DvBaseLayer.SIGNAL_HDR10)
+        assertEquals(setOf(Hdr.HDR10), SourceRank.asPlayedHere(p8.facts, pq).hdr)
+        assertEquals("HDR10 (Dolby Vision profile 8 file)", pq.spec!!.rangeLine(hdrScreen = true))
+        assertEquals(listOf("p8hlg", "hdr10"), keys(listOf(hdr10, p8), input(measured = { if (it.contains(SourceFixtures.H1)) pq else null })))
+        // Kept before its base was read: not said to be HDR10.
+        assertEquals("Dolby Vision profile 8 file", playedAs(0).spec!!.rangeLine(hdrScreen = true))
+    }
+
+    @Test
+    fun aProfile8NameSaysItsBaseAndABareOneIsntCalledHdr10UntilItPlays() {
+        val named = Words.read("Film.2021.2160p.WEB-DL.DV.P8.4.HEVC")
+        assertEquals(8, named.dvProfile)
+        assertTrue(Hdr.HLG in named.hdr)
+        assertTrue(Hdr.HDR10 in Words.read("Film.2021.2160p.DV.P8.1.HEVC").hdr)
+        assertEquals(setOf(Hdr.DOLBY_VISION), Words.read("Film.2021.2160p.DV.P8.HEVC").hdr)
+        assertEquals(7, Words.read("Film.2021.2160p.DV.P7.1080p.HEVC").dvProfile)
+        // "DV HLG": its HLG, not a Dolby Vision-only file.
+        val dvHlg = src("dvhlg", hdr = setOf(Hdr.DOLBY_VISION, Hdr.HLG))
+        assertEquals(TvFit.LIKELY to null, SourceRank.fit(dvHlg.facts, q60r, null))
+        assertEquals(setOf(Hdr.HLG), SourceRank.shownHdr(dvHlg.facts, q60r))
+        // A bare profile 8: ranked as its likely HDR10, called "DV" until a play reads it.
+        val bare = SourceRank.rank(listOf(src("bare", hdr = setOf(Hdr.DOLBY_VISION), dvProfile = 8)), input()).single()
+        assertEquals(setOf(Hdr.HDR10), SourceRank.shownHdr(bare.facts, q60r))
+        assertEquals("DV", PlayRules.tvHdr(bare, q60r))
+        assertFalse(SourcesModel.details(bare, q60r) { "" }.any { it.first == "This TV shows" })
+        assertEquals(setOf(Hdr.DOLBY_VISION), SourceRank.why(listOf(bare), input())!!.hdr)
+    }
+
+    // ---- Frames lost here: a copy that stuttered goes down, quietly ----
+
+    private fun stuttering(at: Long, watched: Long = 5 * 60_000L, rendered: Long = 7_000, late: Long = 300) =
+        Measured(MediaSpec(hdr = "HDR10", dvProfile = 7, dvBaseLayer = 7, decoder = MediaSpec.Decoder.PLAIN),
+            CopyHealth(watchedMs = watched, droppedFrames = late, renderedFrames = rendered, lateFrames = late, at = at), now)
+
+    @Test
+    fun aCopyThatLostFramesHereLatelyGoesBelowOneOfTheSamePictureWithoutAWord() {
+        val p7 = src("p7", hdr = setOf(Hdr.DOLBY_VISION), dvProfile = 7, mbps = 59.0, size = 53_100_000_000L, hash = SourceFixtures.H1)
+        val other = at("other", 75.0)
+        fun with(m: Measured) = input(measured = { if (it.contains(SourceFixtures.H1)) m else null })
+        val shaky = with(stuttering(now - day))
+        val ranked = SourceRank.rank(listOf(p7, other), shaky)
+        assertEquals(listOf("other", "p7"), ranked.map { it.key })
+        assertEquals(TvFit.MEASURED_OK, ranked[1].fit)
+        assertNull(ranked[1].warning)
+        assertNull(SourceRank.why(ranked, shaky)!!.beatenKey)
+        // A week on, too short a watch, or 1 % lost: no penalty.
+        assertEquals("p7", keys(listOf(other, p7), with(stuttering(now - 7 * day))).first())
+        assertEquals("p7", keys(listOf(other, p7), with(stuttering(now - day, watched = 90_000))).first())
+        assertEquals("p7", keys(listOf(other, p7), with(stuttering(now - day, late = 70))).first())
+        // A later smooth two hours dilutes it away.
+        val later = stuttering(now - day).let { it.copy(health = it.health!! + CopyHealth(watchedMs = 7_200_000, renderedFrames = 172_800, at = now)) }
+        assertEquals("p7", keys(listOf(other, p7), with(later)).first())
+        // IMAX first: always passes over one that stuttered.
+        val imax = src("imax", mbps = 59.0, name = "Film.2021.IMAX.2160p.REMUX", hash = SourceFixtures.H1)
+        assertEquals("other", keys(listOf(imax, other), input(imaxAlways = true, measured = { if (it.contains(SourceFixtures.H1)) stuttering(now - day) else null })).first())
+    }
+
+    @Test
+    fun framesLostWithoutBufferingArentCalledBuffered() {
+        val copy = src("copy", mbps = 50.0, origin = "BluRay")
+        val choppy = Measured(null, CopyHealth(watchedMs = 20 * 60_000L, droppedFrames = 2_000, renderedFrames = 10_000, at = now - day), null)
+        assertEquals(TvFit.LIKELY to null, SourceRank.fit(copy.facts, q60r, choppy, now = now))
+        assertFalse(SourceRank.stuttered(choppy, now))
+        val buffered = Measured(null, CopyHealth(watchedMs = 600_000, stalls = 12, stallMs = 120_000, at = now - day), null)
+        assertEquals(TvFit.LIKELY_NOT to SourceRank.BUFFERED, SourceRank.fit(copy.facts, q60r, buffered, now = now))
+    }
+
+    // ---- IMAX with the preferred bitrate ----
+
+    @Test
+    fun withImaxFirstOffBestMayComeFromThe4kGroupAndTheImaxGroupStaysFirst() {
+        val imax = at("imax51", 51.0, name = "Film.2021.IMAX.2160p.REMUX")
+        val remux = at("remux59", 59.0)
+        val off = input(plus = false)
+        val ranked = SourceRank.rank(listOf(imax, remux), off)
+        assertEquals(listOf("remux59", "imax51"), ranked.map { it.key })
+        val why = SourceRank.why(ranked, off)!!
+        assertEquals("imax51", why.beatenKey)
+        assertEquals("further from your 60 Mb/s", why.lacks)
+        val list = SourceList(SourceTarget(Title("tt0000001", Kind.MOVIE, "Film")), mapOf(Addon.TORRENTIO to AddonState.Answered(2)),
+            ranked, SourceRank.best(ranked), null, why)
+        val view = SourcesModel.view(list)
+        assertEquals(SourcesModel.Section.IMAX, view.groups.first().section)
+        assertEquals("remux59", view.best?.key)
+        // Near 60 both: IMAX breaks the tie.
+        assertEquals(listOf("imax58", "remux59"), keys(listOf(remux, at("imax58", 58.0, name = "Film.2021.IMAX.2160p.REMUX")), off))
+        // IMAX first: always, and the viewer's move to 4K.
+        assertEquals("imax51", keys(listOf(remux, imax), input(imaxAlways = true)).first())
+        val movedOut = at("moved", 51.0, name = "Film.2021.IMAX.2160p.REMUX", hash = SourceFixtures.H2)
+        val moved = SourceRank.rank(listOf(movedOut), input(imaxMove = { false })).single()
+        assertEquals(SourcesModel.Section.UHD, SourcesModel.sectionOf(moved))
+    }
+
+    @Test
+    fun episodesRankByTheSameSteps() {
+        // 45 minutes: 9 GB is 26.7 Mb/s, 5 GB 14.8, 3 GB 8.9.
+        assertEquals(26.7, StreamParser.avgMbps(9_000_000_000L, 45)!!, 0.05)
+        val big = src("big", mbps = 26.7, origin = "WEB-DL", size = 9_000_000_000L)
+        val small = src("small", mbps = 14.8, origin = "WEB-DL", size = 5_000_000_000L)
+        val hd = src("hd", 1080, mbps = 8.9, origin = "WEB-DL", size = 3_000_000_000L)
+        val ranked = SourceRank.rank(listOf(hd, small, big), input(episode = true))
+        assertEquals(listOf("big", "small", "hd"), ranked.map { it.key })
+        assertEquals(listOf("small", "hd"), SourceRank.nextOrder(ranked, "big", film = false).map { it.key })
+        assertNotNull(SourceRank.why(ranked, input(episode = true)))
     }
 
     // ---- What the TV reading and TMDB keep ----

@@ -80,6 +80,28 @@ class PictureWatchTest {
     }
 
     @Test
+    fun aHeavyFileSlowToShowItsFirstFrameKeepsItsSource() {
+        // A 90 Mb/s TorBox file buffering toward its first frame: Media3 isn't playing yet (frames -1, no decoder output).
+        assertNull(play(8_000, playing = false))
+        var shown = 0L
+        assertNull(play(30_000, frames = { shown += 5; shown }))
+        // The joining window: ready with no frame yet for under Media3's five seconds, then frames.
+        watch.reset()
+        assertNull(play(4_800, frames = { 0L }))
+        assertNull(play(30_000, frames = { shown += 5; shown }))
+        // A stall later on (Media3 not playing): nothing counted. A jump or a resume watches afresh, and the new decoder's
+        // first frames may take a while; a dark scene is frames like any other.
+        assertNull(play(20_000, frames = { shown }, playing = false))
+        watch.reset()
+        assertNull(play(9_000, frames = { shown }))
+        watch.reset()
+        assertNull(play(60_000, frames = { shown += 5; shown }))
+        // Frames that stop while the film plays on: still said, after ten seconds.
+        assertNull(play(9_800, frames = { shown }))
+        assertEquals(PictureWatch.Why.NO_FRAMES, play(400, frames = { shown }))
+    }
+
+    @Test
     fun aFileWithNoPictureAndTheFilmsEndAreNotWatched() {
         assertNull(play(60_000, hasVideo = false))
         // The last minute: a file whose picture ends a little before its sound.

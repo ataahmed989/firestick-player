@@ -114,14 +114,65 @@ object DvBaseLayer {
     const val SINGLE_LAYER_PROFILE = 8
 
     /**
+     * What a Dolby Vision file's base layer is, as its configuration record says (dv_bl_signal_compatibility_id): HDR10
+     * (8.1), SDR (8.2), HLG (8.4), or the Blu-ray's HDR10 (profile 7, 8.6). 0 when not known.
+     */
+    const val SIGNAL_HDR10 = 1
+    const val SIGNAL_SDR = 2
+    const val SIGNAL_HLG = 4
+    const val SIGNAL_BLU_RAY = 6
+
+    /** A Matroska track's record signal, kept on its Format (Format.customData) by the MKV reader ([MkvHeader]). */
+    data class Signal(val id: Int)
+
+    /**
+     * The base layer's signal from a Dolby Vision configuration record (the body of a dvcC, dvvC or dvwC box, or of a
+     * Matroska BlockAddIDExtraData): version 1, a profile from 4 to 10; null for anything else (an HEVC parameter set
+     * starts with 00).
+     */
+    fun signalOf(b: ByteArray): Int? {
+        if (b.size < 5 || b[0].toInt() != 1) return null
+        val profile = (b[2].toInt() and 0xFF) shr 1
+        if (profile !in 4..10) return null
+        return (b[4].toInt() and 0xF0) shr 4
+    }
+
+    /**
+     * The record's signal of a Dolby Vision track as Media3 gives it: the MKV reader's ([Signal]), else the MP4 readers'
+     * (the record follows the parameter sets in its initialization data); null without one. Once per format.
+     */
+    @OptIn(UnstableApi::class)
+    fun recordSignal(format: androidx.media3.common.Format): Int? =
+        (format.customData as? Signal)?.id ?: format.initializationData.firstNotNullOfOrNull { signalOf(it) }
+
+    /**
+     * What a Dolby Vision track's base layer is ([SIGNAL_HDR10], [SIGNAL_SDR], [SIGNAL_HLG]…): its record's, else its
+     * transfer, the track's stated colour or its picture's own (the SPS): PQ is HDR10, HLG is HLG, SDR is SDR; 0 when
+     * none says. Once per format, never per frame.
+     */
+    @OptIn(UnstableApi::class)
+    fun baseSignal(format: androidx.media3.common.Format): Int {
+        recordSignal(format)?.let { return it }
+        val unstated = androidx.media3.common.Format.NO_VALUE
+        val transfer = format.colorInfo?.colorTransfer?.takeIf { it != unstated }
+            ?: spsColour(format.initializationData)?.colorTransfer
+        return when (transfer) {
+            androidx.media3.common.C.COLOR_TRANSFER_ST2084 -> SIGNAL_HDR10
+            androidx.media3.common.C.COLOR_TRANSFER_HLG -> SIGNAL_HLG
+            androidx.media3.common.C.COLOR_TRANSFER_SDR -> SIGNAL_SDR
+            else -> 0
+        }
+    }
+
+    /**
      * The colour to give the HEVC decoder for a Dolby Vision profile 8 track it decodes ([decoderMime] video/hevc:
      * Media3's own way back to HEVC for profile 8, on a TV without Dolby Vision): HDR10 colour and static metadata
      * ([hdr10]: the file's own values where it states them, else BT.2020, PQ, limited range and generic metadata) when
      * the track states PQ without its static metadata, or no colour at all and its picture's own (the SPS in [initData],
      * as Media3's Matroska reader leaves it unread) is PQ or says none. Measured on a Fire TV Stick 4K Max: a profile 8
      * IMAX copy reached the screen as PQ with no static metadata at all (the TV left to guess the brightness). Null to
-     * leave the track's colour as it is: one stating, or whose picture states, HLG (8.4), SDR (8.2) or a colour space
-     * other than BT.2020; HDR10 in full; any other format, profile, or decoder.
+     * leave the track's colour as it is: one stating, or whose picture or record ([signal], [recordSignal]) states, HLG
+     * (8.4), SDR (8.2) or a colour space other than BT.2020; HDR10 in full; any other format, profile, or decoder.
      */
     @OptIn(UnstableApi::class)
     fun hevcColour(
@@ -130,9 +181,11 @@ object DvBaseLayer {
         decoderMime: String?,
         own: androidx.media3.common.ColorInfo?,
         initData: List<ByteArray>? = null,
+        signal: Int? = null,
     ): androidx.media3.common.ColorInfo? {
         if (sampleMime != MimeTypes.VIDEO_DOLBY_VISION || decoderMime != MimeTypes.VIDEO_H265) return null
         if (profileOf(codecs) != SINGLE_LAYER_PROFILE) return null
+        if (signal == SIGNAL_SDR || signal == SIGNAL_HLG) return null
         val unstated = androidx.media3.common.Format.NO_VALUE
         var space = own?.colorSpace ?: unstated
         var transfer = own?.colorTransfer ?: unstated

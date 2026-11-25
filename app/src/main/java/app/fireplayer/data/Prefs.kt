@@ -157,6 +157,16 @@ class Prefs(context: Context) {
         set(v) = sp.edit().putBoolean("faster_downloads", v).apply()
 
     /**
+     * Settings › Playback › Preferred bitrate, Mb/s: the data rate Best for this TV and the automatic picks lean toward
+     * among copies of the same picture ([app.fireplayer.vod.sources.SourceRank.PREFERRED_MBPS] unless changed, within
+     * its ends). Any copy can still be picked by hand.
+     */
+    var preferredMbps: Int
+        get() = app.fireplayer.vod.sources.SourceRank.preferredMbps(
+            sp.getInt("preferred_mbps", app.fireplayer.vod.sources.SourceRank.PREFERRED_MBPS))
+        set(v) = sp.edit().putInt("preferred_mbps", app.fireplayer.vod.sources.SourceRank.preferredMbps(v)).apply()
+
+    /**
      * Settings › This TV › IMAX first: always: a 4K IMAX copy this TV plays is Best whatever else is offered (the
      * earlier order). Off (the default), IMAX breaks a tie after picture, HDR and source.
      */
