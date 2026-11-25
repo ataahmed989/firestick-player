@@ -15,7 +15,7 @@ import org.junit.Test
 
 /**
  * A film that keeps stopping to load because the connection brings it no faster than it plays ([FilmSupply]), and what
- * the player does about it by Settings › Playback › When a film keeps buffering ([SourcePlayback]). Figures as measured:
+ * the player does about it by Settings › Playback › When a film keeps stalling ([SourcePlayback]). Figures as measured:
  * an 89 GB remux of 2 h 53 min (69 Mb/s) on a line sustaining 72 Mb/s.
  */
 class FilmSupplyTest {
@@ -74,7 +74,12 @@ class FilmSupplyTest {
     }
 
     @Test fun theSettingsWordsAndItsDefault() {
-        assertEquals(listOf("Ask", "Switch to a lighter source", "Keep trying"), WhenBuffering.entries.map { it.label })
+        assertEquals(listOf("Ask first", "Switch to the next copy", "Keep trying"), WhenBuffering.entries.map { it.label })
+        // As the row says them, beside its long name.
+        assertEquals(listOf("Ask", "Switch", "Keep"), WhenBuffering.entries.map { it.short })
+        // Saved by these names since before the row was renamed: every choice made carries over.
+        assertEquals(listOf("ASK", "LIGHTER", "KEEP"), WhenBuffering.entries.map { it.name })
+        assertEquals(WhenBuffering.LIGHTER, WhenBuffering.named("LIGHTER"))
         assertEquals(WhenBuffering.ASK, WhenBuffering.named(null))
         assertEquals(WhenBuffering.ASK, WhenBuffering.named("something else"))
         assertEquals(WhenBuffering.KEEP, WhenBuffering.named("KEEP"))
@@ -208,11 +213,12 @@ class FilmSupplyTest {
         p2.buffering(true)
         assertEquals(1, s2.opens.size)
         assertEquals(1, questions.size)
-        // Another source of the same film is judged afresh.
+        // Another source of the same film is judged afresh: asked about, as any copy that keeps stalling.
         val (p3, s3) = playing(first = Fixtures.source(3, mbps = 25.0))
         s3.switchNow = true
         p3.buffering(true)
-        assertEquals(null to OpenWhy.STALLS, s3.opens.last())
+        assertEquals(FilmSupply.PLAIN_QUESTION, questions.last().first)
+        assertEquals(1, s3.opens.size)
     }
 
     @Test fun theSettingSwitchesWithoutAskingAndSaysWhy() {
@@ -258,15 +264,24 @@ class FilmSupplyTest {
         assertEquals(listOf(72.0), lineShorts)
     }
 
-    @Test fun aSourceTheLineKeepsUpWithMovesOnAsBefore() {
-        // 25 Mb/s on a 72 Mb/s line, picked by FirePlayer: the stalls are the server's, the next source is tried.
+    @Test fun aSourceTheLineKeepsUpWithIsAskedAboutThenMovesOnByTheSetting() {
+        // 25 Mb/s on a 72 Mb/s line, picked by FirePlayer: the stalls are the server's. Ask first: the next source
+        // only if the viewer says so, never a lighter one (the line isn't short).
         val (p, s) = playing(first = Fixtures.source(3, mbps = 25.0))
         s.switchNow = true
         p.buffering(true)
-        assertEquals(null to OpenWhy.STALLS, s.opens.last())
-        assertTrue(questions.isEmpty())
+        assertEquals(FilmSupply.PLAIN_QUESTION, questions.single().first)
+        assertEquals(1, s.opens.size)
         assertTrue(lineShorts.isEmpty())
         assertTrue(s.lighterAsked.isEmpty())
+        // Switch to the next copy: the next source is tried, as before.
+        mode = WhenBuffering.LIGHTER
+        val (p2, s2) = playing(first = Fixtures.source(3, mbps = 25.0))
+        s2.switchNow = true
+        p2.buffering(true)
+        assertEquals(null to OpenWhy.STALLS, s2.opens.last())
+        assertEquals(1, questions.size)
+        assertTrue(s2.lighterAsked.isEmpty())
     }
 
     @Test fun aSourcePickedByHandIsOnlyLeftWhenTheViewerSaysSo() {

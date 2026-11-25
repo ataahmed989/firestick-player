@@ -80,7 +80,7 @@ class SourcePlayback(
         /** One line for the log about a recovery ("stall 9 s, nothing arriving: same source reopened"): no links, no titles. */
         fun log(text: String) = Unit
 
-        /** Settings › Playback › When a film keeps buffering. */
+        /** Settings › Playback › When a film keeps stalling. */
         fun whenBuffering(): WhenBuffering = WhenBuffering.ASK
 
         /** What the player measured of the film's download ([FilmSupply.Reading]); null when it measured nothing. */
@@ -140,14 +140,12 @@ class SourcePlayback(
     /** A stall's first aid: the same source opened again before any switch ([StallAid]). */
     private val aid = StallAid()
     private var stalledAt = 0L
-    /** The source the viewer picked by hand (a Sources row): never switched away from without asking or the setting. */
-    private var pickedKey: String? = request.chosen?.key
     /** A question about the stalls is on screen: the stall watch waits for its answer. */
     private var asking = false
     /** The source playing was found too heavy for the connection, and that was dealt with (asked, switched or noted). */
     private var supplyDone = false
-    /** Asked once in this play whether to leave a source the viewer picked. */
-    private var plainAsked = false
+    /** The copies (by key) asked about in this play whether to try the next source: each is asked once ([askToLeave]). */
+    private val plainAsked = HashSet<String>()
     private var keepLogged = false
     /** The network is waited for (it dropped while the film played): the same link again once it's back ([Recovery]). */
     private var netWait: Cancel? = null
@@ -200,7 +198,6 @@ class SourcePlayback(
 
     /** A row picked in the player's Sources panel; [beginning] from its start (held OK › Play from beginning). */
     fun pick(source: PlaybackSource, beginning: Boolean) {
-        pickedKey = source.key
         chosenKey = source.key
         if (source.readiness == Readiness.NOT_READY) {
             fromBeginning = beginning
@@ -428,15 +425,17 @@ class SourcePlayback(
     }
 
     /**
-     * The stall rules call for a switch. What happens goes by Settings › Playback › When a film keeps buffering
+     * The stall rules call for a switch. What happens goes by Settings › Playback › When a film keeps stalling
      * ([WhenBuffering]) and by why it stalls:
      * - Keep trying, or "Keep this source" answered for this film before: nothing is switched or asked. When the
      *   connection brings the film no faster than it plays, that is said once, plainly, with the copy that would fit.
      * - The connection brings the film no faster than it plays ([FilmSupply.short]): the next source in the list is
      *   most often the same film at the same size, and stalls the same. The best source this connection keeps up with
      *   is offered instead, once (or switched to with a note, by the setting or the film's remembered answer).
-     * - Else, a source the viewer picked by hand is only left when they say so (asked once); one FirePlayer picked
-     *   itself moves on to the next source, as before.
+     * - Else, with Ask first, the copy is only left when the viewer says so (asked once for it), whoever picked it: the
+     *   viewer, or FirePlayer at the start, a resume, Next source or a switch. Switch to the next copy moves on to the
+     *   next source without asking, as before.
+     * Copies that can't play at all ([noPicture], [giveWay], [failed]) are left by their own paths, never through here.
      */
     private fun checkStalls(now: Long) {
         if (stallSwitching || asking || !session.stalls.shouldSwitch(now)) return
@@ -462,8 +461,8 @@ class SourcePlayback(
             shortSupply(s, reading, mode == WhenBuffering.LIGHTER || choice == StallChoice.LIGHTER)
             return
         }
-        if (s.key == pickedKey && mode == WhenBuffering.ASK) {
-            askToLeave()
+        if (mode == WhenBuffering.ASK) {
+            askToLeave(s)
             return
         }
         switchForStalls(now)
@@ -511,12 +510,14 @@ class SourcePlayback(
         )
     }
 
-    /** A source the viewer picked keeps pausing, though the connection is fast enough for it: asked once. */
-    private fun askToLeave() {
-        if (plainAsked) return
-        plainAsked = true
+    /**
+     * [s] keeps pausing, though the connection is fast enough for it (Ask first): asked once for it in this play. Keep,
+     * or Back: it plays on and isn't asked about again.
+     */
+    private fun askToLeave(s: PlaybackSource) {
+        if (!plainAsked.add(s.key)) return
         asking = true
-        host.log("stalls past the limit on a source picked by hand: asking before any switch")
+        host.log("stalls past the limit: asking before any switch")
         host.ask(
             FilmSupply.PLAIN_QUESTION,
             listOf(
@@ -568,7 +569,7 @@ class SourcePlayback(
     /**
      * The Stick showed no picture for the source playing: its video decoder failed, none of this TV's decoders takes its
      * picture, or no frame came while its sound played ([app.fireplayer.player.PictureWatch]). A failure, not a stall:
-     * Settings › Playback › When a film keeps buffering has no say, and a source picked by hand is left too. The next
+     * Settings › Playback › When a film keeps stalling has no say, and a source picked by hand is left too. The next
      * source down the list plays (the session skips this one, and the copies that showed none here before, within its
      * limits on switches), and says why as it starts ([NO_PICTURE_NOTE], when [said]: none of its picture showed).
      * [formatWide]: none of this TV's decoders takes its format, so the session passes over that format's copies too

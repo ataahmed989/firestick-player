@@ -38,7 +38,7 @@ enum class SettingsCategory(val title: String, val icon: Int, val settings: List
         "Playback",
         R.drawable.ic_head_play,
         listOf(
-            "Play next episode", "Resume where I left off", "Match frame rate", "Surround passthrough", "When a film keeps buffering",
+            "Play next episode", "Resume where I left off", "Match frame rate", "Surround passthrough", "When a film keeps stalling",
             "Faster downloads", "Preferred bitrate", "Skip buttons", "Next episode / Exit countdown",
         ),
     ),
@@ -94,8 +94,8 @@ enum class SettingsCategory(val title: String, val icon: Int, val settings: List
         /** The Settings tab's last row, after the categories: a tool rather than settings. */
         const val OPEN_A_LINK = "Open a link"
 
-        /** Playback: what a film from the add-ons does when it keeps stopping to load. */
-        const val WHEN_BUFFERING = "When a film keeps buffering"
+        /** Playback: what a film from the add-ons does when it keeps stopping to load (a dropdown of its three choices). */
+        const val WHEN_STALLING = "When a film keeps stalling"
 
         /** Home Header's switch. */
         val HOME_HEADER_MATCH: String get() = HOME_HEADER.settings[0]

@@ -44,7 +44,11 @@ class SourcePlaybackTest {
         override fun playNext(next: PlayRequest) { nextPlay = next }
         override fun notWhole() { log += "not whole" }
         override fun runtimeMinutes() = runtime
+        override fun whenBuffering() = mode
     }
+
+    /** Settings › Playback › When a film keeps stalling, as the test sets it (Ask first unless changed). */
+    private var mode = WhenBuffering.ASK
 
     /** The film's runtime as the title's details give it (0: the title's own). */
     private var runtime = 0
@@ -153,6 +157,8 @@ class SourcePlaybackTest {
 
     @Test
     fun stallsSwitchWhenAllowedThenOnlyNoteNextSource() {
+        // Switch to the next copy: switched without asking, within the session's limit.
+        mode = WhenBuffering.LIGHTER
         val (p, s) = play()
         s.ready(Fixtures.source(1))
         p.firstFrame()
@@ -174,6 +180,7 @@ class SourcePlaybackTest {
 
     @Test
     fun aStallThatNeverEndsIsJudgedWhileItLasts() {
+        mode = WhenBuffering.LIGHTER
         val (p, s) = play()
         s.ready(Fixtures.source(1))
         p.firstFrame()
@@ -202,6 +209,143 @@ class SourcePlaybackTest {
         val opens = s.opens.size
         p.tick()
         assertEquals(opens, s.opens.size)
+    }
+
+    // ---- When a film keeps stalling: Ask first (the default) never changes copy without asking
+
+    /** A play whose copy [first] showed its first frame at 1:00:00 and has stalled past the watch's limit. */
+    private fun stalledOn(
+        first: app.fireplayer.vod.PlaybackSource = Fixtures.source(1),
+        chosen: app.fireplayer.vod.PlaybackSource? = null,
+    ): Pair<SourcePlayback, FakeSession> {
+        val (p, s) = play(chosen = chosen)
+        s.ready(first)
+        p.firstFrame()
+        position = 3_600_000
+        s.switchNow = true
+        p.buffering(true)
+        return p to s
+    }
+
+    private fun answer(label: String) = questions.last().second.first { it.first == label }.second()
+
+    @Test
+    fun askFirstAsksBeforeLeavingACopyFirePlayerPicked() {
+        val (p, s) = stalledOn()
+        assertEquals(FilmSupply.PLAIN_QUESTION, questions.single().first)
+        assertEquals(listOf(FilmSupply.TRY_NEXT, FilmSupply.KEEP), questions.single().second.map { it.first })
+        // Not switched: the only open is the start's.
+        assertEquals(listOf(null to OpenWhy.START), s.opens)
+        // While the question is up, the stall watch waits.
+        p.tick()
+        p.buffering(false)
+        p.buffering(true)
+        assertEquals(1, questions.size)
+        assertEquals(1, s.opens.size)
+    }
+
+    @Test
+    fun askFirstAsksAboutACopyPickedByHandAsBefore() {
+        val mine = Fixtures.source(1)
+        val (_, s) = stalledOn(mine, chosen = mine)
+        assertEquals(FilmSupply.PLAIN_QUESTION, questions.single().first)
+        assertEquals(listOf(mine to OpenWhy.START), s.opens)
+    }
+
+    @Test
+    fun tryNextSourceSwitchesAndTheCopyItPlaysIsAskedAboutInItsTurn() {
+        val (p, s) = stalledOn()
+        answer(FilmSupply.TRY_NEXT)
+        // At the current position, as Next source in Picture & sound.
+        assertEquals(null to OpenWhy.USER, s.opens.last())
+        s.ready(Fixtures.source(2))
+        assertEquals(Triple("k2", PlayRules.switchStart(3_600_000), true), starts.last())
+        // The copy it picked stalls too: asked about that one as well, not switched.
+        p.firstFrame()
+        p.buffering(true)
+        assertEquals(2, questions.size)
+        assertEquals(FilmSupply.PLAIN_QUESTION, questions.last().first)
+        assertEquals(2, s.opens.size)
+    }
+
+    @Test
+    fun keepThisSourceMeansNoSwitchLaterForThatCopy() {
+        val (p, s) = stalledOn()
+        answer(FilmSupply.KEEP)
+        p.buffering(false)
+        p.buffering(true)
+        p.tick()
+        ticker.advance(SourcePlayback.STALL_RETRY_MS)
+        p.tick()
+        assertEquals(1, questions.size)
+        assertEquals(1, s.opens.size)
+        // Back on the question is the same: it plays on, and isn't asked about again.
+        val (q, t) = stalledOn()
+        val back: () -> Unit = dismisses[dismisses.size - 1]
+        back()
+        q.buffering(false)
+        q.buffering(true)
+        q.tick()
+        assertEquals(2, questions.size)
+        assertEquals(1, t.opens.size)
+    }
+
+    @Test
+    fun switchToTheNextCopySwitchesWithoutAskingWhoeverPickedIt() {
+        mode = WhenBuffering.LIGHTER
+        val (_, s) = stalledOn()
+        assertTrue(questions.isEmpty())
+        assertEquals(null to OpenWhy.STALLS, s.opens.last())
+        s.ready(Fixtures.source(2))
+        assertEquals("notice Resumed near 59:55", log.last())
+        val mine = Fixtures.source(3)
+        val (_, t) = stalledOn(mine, chosen = mine)
+        assertTrue(questions.isEmpty())
+        assertEquals(null to OpenWhy.STALLS, t.opens.last())
+    }
+
+    @Test
+    fun keepTryingNeitherAsksNorSwitches() {
+        mode = WhenBuffering.KEEP
+        val (p, s) = stalledOn()
+        p.tick()
+        p.buffering(false)
+        p.buffering(true)
+        assertTrue(questions.isEmpty())
+        assertEquals(1, s.opens.size)
+    }
+
+    @Test
+    fun underAskFirstACopyThatCantPlayIsStillLeftWithoutAsking() {
+        // No picture: the next copy, with its note.
+        val (p, s) = play()
+        s.ready(Fixtures.source(1))
+        p.firstFrame()
+        p.noPicture()
+        assertEquals(null to OpenWhy.FAILED, s.opens.last())
+        s.ready(Fixtures.source(2))
+        assertEquals("notice " + SourcePlayback.NO_PICTURE_NOTE, log.last())
+        // Not the whole film: the same.
+        val (q, t) = play(target = avatar)
+        t.ready(Fixtures.source(1))
+        assertTrue(q.lengthKnown(makingOfMs))
+        assertEquals(null to OpenWhy.FAILED, t.opens.last())
+        t.ready(Fixtures.source(2))
+        assertEquals("notice " + SourcePlayback.NOT_WHOLE_NOTE, log.last())
+        // A failure the player's retries didn't get past: the failure table's next source.
+        val (r, u) = play()
+        u.ready(Fixtures.source(1))
+        r.firstFrame()
+        r.failed(2004, 404)
+        assertEquals(null to OpenWhy.FAILED, u.opens.last())
+        assertTrue(questions.isEmpty())
+        // The copy a fallback plays is a copy like any: its stalls are asked about.
+        u.ready(Fixtures.source(2))
+        r.firstFrame()
+        u.switchNow = true
+        r.buffering(true)
+        assertEquals(FilmSupply.PLAIN_QUESTION, questions.single().first)
+        assertEquals(2, u.opens.size)
     }
 
     @Test

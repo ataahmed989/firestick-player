@@ -107,8 +107,8 @@ class Prefs(context: Context) {
         set(v) = sp.edit().putInt("auto_countdown", v).apply()
 
     /**
-     * Settings › Playback › When a film keeps buffering: the name of a [app.fireplayer.vod.play.WhenBuffering]
-     * ("ASK" until it's set).
+     * Settings › Playback › When a film keeps stalling: the name of a [app.fireplayer.vod.play.WhenBuffering]
+     * ("ASK", shown as Ask first, until it's set). The key keeps its first name, so a choice made before still holds.
      */
     var whenBuffering: String
         get() = sp.getString("when_buffering", null) ?: "ASK"
