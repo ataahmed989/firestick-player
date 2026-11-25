@@ -25,6 +25,8 @@ import app.fireplayer.vod.play.PlayerMeta
 import app.fireplayer.vod.play.Recovery
 import app.fireplayer.vod.play.SourcePlayback
 import app.fireplayer.vod.play.SourcesModel
+import app.fireplayer.vod.play.KeptTracks
+import app.fireplayer.vod.play.ResumeTracks
 import app.fireplayer.vod.play.VodFix
 import app.fireplayer.vod.ui.SourcesPanel
 import android.os.Build
@@ -421,6 +423,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private var reapplyWishes = false
     // The film or show whose remembered sound was put back, so it's done once per title.
     private var audioRecalledFor: String? = null
+    // A resume from the add-ons: the sound and subtitles last chosen for its film or episode (see ResumeTracks), read
+    // off the main thread as it starts and put back once its tracks are in (applyResumeTracks); null once done or none.
+    private var resumeKept: ResumeTracks.Kept? = null
+    // The sound or subtitles chosen by hand in this play: what was kept from before isn't put back over them.
+    private var chosenAudio = false
+    private var chosenSubs = false
     // The film was paused for the TV to change refresh rate, and goes on by itself afterwards.
     private var pausedForSwitch = false
     // The film stood still while meant to be playing (see FreezeWatch): paused for a moment, and played again by itself.
@@ -1999,6 +2007,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // Another sound track (or the same one set up again) gets its own time to start.
         freezeWatch.jumped()
         pictureWatch.reset()
+        // A resume: the sound and subtitles chosen last time, first (what's remembered for the show, or the downloaded
+        // subtitles last on for this copy, aren't put over them).
+        applyResumeTracks()
         pendingExternalSubId?.let { id ->
             val option = trackOptions(C.TRACK_TYPE_TEXT).firstOrNull { sameId(it, id) }
             if (option != null) {
@@ -4843,6 +4854,19 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (type == C.TRACK_TYPE_TEXT) currentEntry()?.let { SavedSubtitles.use(this, it.key, savedFileOf(f.id)) }
         // The sound picked for a film or show is picked again when it's opened another time.
         if (type == C.TRACK_TYPE_AUDIO) currentEntry()?.let { e -> audioKey(e)?.let { rememberAudio(it, trackWishes[type]!!) } }
+        // And both are put back when this film or episode is resumed (see ResumeTracks).
+        currentEntry()?.let { e ->
+            when {
+                type == C.TRACK_TYPE_AUDIO -> keepChoice(audio = trackOf(f, e, text = false))
+                type != C.TRACK_TYPE_TEXT -> Unit
+                // A downloaded file, by its name; a file handed over with the video can't be put back, so isn't kept.
+                o.external -> {
+                    val file = savedFileOf(f.id)?.let { ResumeTracks.Subs.Downloaded(it, f.language, e.key) }
+                    keepChoice(subs = file, text = true)
+                }
+                else -> keepChoice(subs = ResumeTracks.Subs.Embedded(trackOf(f, e, text = true)))
+            }
+        }
         // For as long as the player is open, that language comes first (Settings keeps the default).
         val p = player ?: return
         val language = f.language ?: return
@@ -4925,7 +4949,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         reapplyWishes = true
     }
 
+    /** Subtitles turned off by hand: off, and off again when this film or episode is resumed. */
     private fun subtitlesOff() {
+        keepChoice(subs = ResumeTracks.Subs.Off)
+        textOff()
+    }
+
+    private fun textOff() {
         trackWishes.remove(C.TRACK_TYPE_TEXT)
         currentEntry()?.let { SavedSubtitles.use(this, it.key, null) }
         val p = player ?: return
@@ -4934,6 +4964,181 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
             .build()
     }
+
+    // ---- The sound and subtitles last chosen, put back on a resume (see ResumeTracks) ----
+
+    /**
+     * A resume of a film or episode from the add-ons (as its copy left is played again): what was chosen last for it is
+     * read now, off the main thread, to be put back once its tracks are in ([applyResumeTracks]).
+     */
+    private fun readResumeTracks(s: SourcePlayback) {
+        resumeKept = null
+        chosenAudio = false
+        chosenSubs = false
+        if (!ResumeTracks.applies(s.request)) return
+        val target = s.request.target
+        val store = KeptTracks.of(this)
+        runCatching {
+            io.execute {
+                val kept = runCatching { store.read(target.title.kind, target.streamId) }.getOrNull() ?: return@execute
+                handler.post {
+                    if (isFinishing || source !== s) return@post
+                    resumeKept = kept
+                    // Chosen by hand in the meantime: that stays.
+                    dropChosen()
+                    applyResumeTracks()
+                }
+            }
+        }
+    }
+
+    /**
+     * Keeps the sound ([audio]) or subtitles ([subs]) just chosen by hand for this film or episode from the add-ons, for
+     * its next resume; what a resume was still to put back of that kind ([resumeKept]) no longer is. [text] marks a
+     * subtitle choice that can't be kept (a file handed over with the video).
+     */
+    private fun keepChoice(
+        audio: ResumeTracks.Track? = null,
+        subs: ResumeTracks.Subs? = null,
+        text: Boolean = subs != null,
+    ) {
+        if (audio != null) chosenAudio = true
+        if (text) chosenSubs = true
+        dropChosen()
+        val target = source?.request?.target ?: return
+        if (currentEntry()?.storeKey == null || (audio == null && subs == null)) return
+        val now = System.currentTimeMillis()
+        runCatching { KeptTracks.of(this).chose(target.title.kind, target.streamId, audio, subs, now) }
+    }
+
+    /** What a resume is still to put back of a kind chosen by hand in this play isn't any more. */
+    private fun dropChosen() {
+        resumeKept = resumeKept?.let { k -> k.copy(audio = k.audio.takeUnless { chosenAudio }, subs = k.subs.takeUnless { chosenSubs }) }
+            ?.takeIf { it.audio != null || it.subs != null }
+    }
+
+    /** A track as kept: what it's like (a subtitle named SDH counts as SDH), the copy it's on and its id in it. */
+    private fun trackOf(f: Format, entry: Entry, text: Boolean): ResumeTracks.Track {
+        val sdh = text && ReferenceCues.hearingImpairedLabel(f.label)
+        val roles = f.roleFlags or (if (sdh) C.ROLE_FLAG_DESCRIBES_MUSIC_AND_SOUND else 0)
+        return ResumeTracks.Track(f.language, f.label, roles, forcedish(f), f.channelCount, copyOf(entry), f.id)
+    }
+
+    /**
+     * The copy [entry] is of this play's film or episode: its release ("<info hash>|<file index>") or its add-on's name,
+     * never its link. Null for any other video.
+     */
+    private fun copyOf(entry: Entry): String? {
+        val key = entry.storeKey ?: return null
+        val id = source?.request?.target?.streamId ?: return null
+        return key.substringAfter("vod|$id|", "").ifEmpty { null }
+    }
+
+    /**
+     * A resume whose subtitles were last a downloaded file not kept for [entry]'s copy (another copy plays): it's kept
+     * for this copy too, with the timing found for it on the other, and put in [entry]'s list before the player is built,
+     * so it's on from the start ([applyResumeTracks] picks it). Nothing when it's gone.
+     */
+    private fun resumeFileFor(entry: Entry) {
+        (resumeKept?.subs as? ResumeTracks.Subs.Downloaded)?.let { fileFor(entry, it) }
+    }
+
+    /** Downloaded subtitles [subs] in [entry]'s list (added, see [resumeFileFor]); their id there, null once they're gone. */
+    private fun fileFor(entry: Entry, subs: ResumeTracks.Subs.Downloaded): String? {
+        entry.subtitles.firstOrNull { c -> c.id?.let { savedFiles[it] } == subs.file }?.let { return it.id }
+        val saved = SavedSubtitles.find(this, subs.file) ?: return null
+        val file = File(SavedSubtitles.dir(this), saved.file)
+        SavedSubtitles.add(this, entry.key, file, saved.language, saved.release, saved.fileId)
+        subs.video?.takeIf { it != entry.key }?.let { prefs.copySubtitleTiming(saved.file, it, entry.key) }
+        val config = subtitleConfig(Uri.fromFile(file), null, saved.language ?: subs.language)
+        val id = config.id ?: return null
+        entry.subtitles += config
+        savedFiles[id] = saved.file
+        return id
+    }
+
+    /**
+     * Puts back the sound and subtitles chosen last time ([resumeKept]) once the tracks are in, before the film shows: on
+     * the same copy, the very tracks; on another, the closest ([ResumeTracks.match]); subtitles off stay off; a downloaded
+     * file comes back while it's kept, else the film's own in its language. What finds nothing keeps today's defaults.
+     */
+    private fun applyResumeTracks() {
+        val kept = resumeKept ?: return
+        val p = player ?: return
+        if (p.currentTracks.groups.isEmpty()) return
+        val entry = currentEntry() ?: return
+        resumeKept = null
+        val copy = copyOf(entry)
+        var audioPicked: Format? = null
+        kept.audio?.let { wish ->
+            val options = trackOptions(C.TRACK_TYPE_AUDIO)
+            val tracks = options.map { trackOf(formatOf(it), entry, text = false) }
+            val o = options.getOrNull(ResumeTracks.match(wish, tracks, copy, audio = true)) ?: return@let
+            val f = formatOf(o)
+            if (!o.selected) selectTrack(o)
+            trackWishes[C.TRACK_TYPE_AUDIO] = wishOf(f)
+            // As when picked by hand: that language first for as long as the player is open.
+            f.language?.let { lang ->
+                p.trackSelectionParameters = p.trackSelectionParameters.buildUpon().setPreferredAudioLanguage(lang).build()
+            }
+            // Not put over by the sound remembered for the film or show (recallAudio).
+            audioRecalledFor = audioKey(entry)
+            audioPicked = f
+        }
+        var subsPut = false
+        kept.subs?.let { subs ->
+            val options = trackOptions(C.TRACK_TYPE_TEXT)
+            val embedded = options.filter { !it.external }
+            val tracks = embedded.map { trackOf(formatOf(it), entry, text = true) }
+            val pick = ResumeTracks.pickSubs(subs, tracks, copy) { name -> SavedSubtitles.find(this, name) != null }
+            when (pick) {
+                ResumeTracks.SubsPick.Off -> {
+                    textOff()
+                    subsPut = true
+                }
+                is ResumeTracks.SubsPick.Embedded -> embedded.getOrNull(pick.index)?.let { o ->
+                    val f = formatOf(o)
+                    if (!o.selected) selectTrack(o)
+                    trackWishes[C.TRACK_TYPE_TEXT] = wishOf(f)
+                    p.trackSelectionParameters = p.trackSelectionParameters.buildUpon().apply {
+                        f.language?.let { setPreferredTextLanguage(it).setPreferredTextRoleFlags(f.roleFlags) }
+                    }.build()
+                    // The downloaded subtitles kept for this copy aren't the ones on.
+                    if (SavedSubtitles.forVideo(this, entry.key).any { it.on }) SavedSubtitles.use(this, entry.key, null)
+                    subsPut = true
+                }
+                is ResumeTracks.SubsPick.File -> {
+                    val o = options.firstOrNull { it.external && savedFileOf(formatOf(it).id) == pick.name }
+                    if (o != null) {
+                        if (!o.selected) selectTrack(o)
+                        trackWishes[C.TRACK_TYPE_TEXT] = wishOf(formatOf(o))
+                        SavedSubtitles.use(this, entry.key, pick.name)
+                        subsPut = true
+                    } else {
+                        // Not in this copy's list yet (the choice was read after the player was built): added, which
+                        // loads the video again where it is, with the sound just picked; on once its tracks are in.
+                        val id = (subs as? ResumeTracks.Subs.Downloaded)?.let { fileFor(entry, it) }
+                        if (id != null) {
+                            pendingExternalSubId = id
+                            pendingAudioId = audioPicked?.id ?: selectedFormat(C.TRACK_TYPE_AUDIO)?.id
+                            if (audioPicked != null) reapplyWishes = false
+                            captureState()
+                            p.setMediaItems(entries.map { mediaItem(it) }, p.currentMediaItemIndex, startPositionMs)
+                            p.prepare()
+                            return
+                        }
+                    }
+                }
+                ResumeTracks.SubsPick.Default -> Unit
+            }
+        }
+        // The downloaded subtitles last on for this copy aren't put over what was put back.
+        if (subsPut) pendingExternalSubId = null
+        // Matched already: the kind picked by hand before isn't matched again over it.
+        if (audioPicked != null || subsPut) reapplyWishes = false
+    }
+
+    private fun formatOf(o: TrackOption): Format = o.group.getTrackFormat(o.trackIndex)
 
     private fun openSubtitlesPanel(from: View) = openPanel("Subtitles", from) {
         val options = trackOptions(C.TRACK_TYPE_TEXT)
@@ -6199,6 +6404,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         entry.englishAsked = current.englishAsked
         entry.real = current.real
         attachSaved(entry, chooseOn = false)
+        // A resume whose copy gave way before its tracks were in: what was chosen last is put back on this one.
+        resumeFileFor(entry)
         // The same film: the subtitles and sound on now stay on, as the same kind (see reapplyChoices). Left to the new
         // copy's own tracks, its first English subtitles could be a forced or signs-only track, and the screen blank.
         val text = selectedFormat(C.TRACK_TYPE_TEXT)
@@ -6247,6 +6454,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         buffering.visibility = View.VISIBLE
         bufferingInfo.visibility = View.GONE
         warmDecoders()
+        readResumeTracks(s)
         launchMark(LaunchLog.SOURCES)
         s.start()
         // Skip intro's times are asked for now, while the sources are found: ready when the film starts (SkipTimes.warm).
@@ -6387,6 +6595,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             // Explicit either way: FirePlayer's own plays never ask "Resume from?".
             startPositionMs = startMs
             attachSaved(entry, chooseOn = true)
+            resumeFileFor(entry)
             // Built now, or at onStart from the memory free then (the old player's budget is kept for this moment only).
             if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) initPlayer() else keepBudgetBytes = 0
         }
@@ -7144,6 +7353,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             addExternalSubtitle(Uri.fromFile(File(SavedSubtitles.dir(this), s.file)), s.language)
             pendingExternalSubId?.let { savedFiles[it] = s.file }
             SavedSubtitles.use(this, entry.key, s.file)
+            keepChoice(subs = ResumeTracks.Subs.Downloaded(s.file, s.language, entry.key))
             panel.close()
         }
     }
@@ -7278,7 +7488,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                     findLoadedSubId = pendingExternalSubId
                     // Kept for this video, to be there next time.
                     pendingExternalSubId?.let { savedFiles[it] = file.name }
-                    currentEntry()?.let { SavedSubtitles.add(this, it.key, file, r.language, r.release, r.fileId) }
+                    currentEntry()?.let {
+                        SavedSubtitles.add(this, it.key, file, r.language, r.release, r.fileId)
+                        // Put back on a resume of this film or episode, as any subtitles chosen.
+                        keepChoice(subs = ResumeTracks.Subs.Downloaded(file.name, r.language, it.key))
+                    }
                     panel.close()
                     // Made for a longer or shorter cut (extended, or with a recap): the next one may fit better.
                     if (length > 10 * 60_000L && last > 0 && (last > length + 90_000L || last < length * 7 / 10)) {

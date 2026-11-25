@@ -3,6 +3,9 @@ package app.fireplayer.vod.data
 import app.fireplayer.vod.EpisodeRef
 import app.fireplayer.vod.Kind
 import app.fireplayer.vod.Title
+import app.fireplayer.vod.play.KeptTracks
+import app.fireplayer.vod.play.MemoryTrackStore
+import app.fireplayer.vod.play.ResumeTracks
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -56,6 +59,53 @@ class VodLibraryTest {
         assertFalse(kept(Kind.SERIES, "${show.id}:1:2"))
         assertTrue(kept(Kind.SERIES, "${show.id}0:1:1"))
         assertEquals(setOf("series|${show.id}0:1:1"), store.releases.keys)
+    }
+
+    @Test
+    fun theSoundAndSubtitlesChosenAreForgottenWithTheCopyLeft() {
+        val kept = KeptTracks(MemoryTrackStore())
+        val lib = VodLibrary(MemoryLibraryStore(), { now }, direct, { null }, kept) { changes++ }
+        fun choose(kind: Kind, id: String) = kept.chose(kind, id, subs = ResumeTracks.Subs.Off, now = now)
+        fun chosen(kind: Kind, id: String) = kept.read(kind, id) != null
+        // A film with choices kept and no copy (one that wasn't the whole film isn't kept): they go with the title all the same.
+        lib.recordProgress(film, null, 600_000, 7_200_000)
+        choose(Kind.MOVIE, film.id)
+        // Mark unwatched keeps it in Continue Watching, and its choices.
+        lib.setWatched(film, false)
+        assertTrue(chosen(Kind.MOVIE, film.id))
+        // Mark watched: it leaves, and they're forgotten.
+        lib.setWatched(film, true)
+        assertFalse(chosen(Kind.MOVIE, film.id))
+        // Remove from Continue Watching (here, or in Glass Home's row, which does the same), and watched to the end.
+        lib.recordProgress(film, null, 600_000, 7_200_000)
+        choose(Kind.MOVIE, film.id)
+        lib.recordRelease(ReleaseRow(Kind.MOVIE, film.id, "TORRENTIO", "a".repeat(40), 0, now))
+        lib.removeFromContinueWatching(film.id)
+        assertFalse(chosen(Kind.MOVIE, film.id))
+        assertNull(lib.lastRelease(Kind.MOVIE, film.id))
+        lib.recordProgress(film, null, 600_000, 7_200_000)
+        choose(Kind.MOVIE, film.id)
+        lib.recordProgress(film, null, 7_200_000, 7_200_000)
+        assertFalse(chosen(Kind.MOVIE, film.id))
+        // A show: an episode watched to the end while the show stays (and Mark unwatched) keeps every episode's.
+        choose(Kind.SERIES, "${show.id}:1:1")
+        choose(Kind.SERIES, "${show.id}:1:2")
+        choose(Kind.SERIES, "${show.id}0:1:1")
+        lib.recordProgress(show, EpisodeRef(1, 1), 2_700_000, 2_700_000)
+        assertTrue(chosen(Kind.SERIES, "${show.id}:1:1"))
+        lib.setWatched(show, false)
+        assertTrue(chosen(Kind.SERIES, "${show.id}:1:1"))
+        // Taken out: every episode's go, nothing of another title's.
+        lib.removeFromContinueWatching(show.id)
+        assertFalse(chosen(Kind.SERIES, "${show.id}:1:1"))
+        assertFalse(chosen(Kind.SERIES, "${show.id}:1:2"))
+        assertTrue(chosen(Kind.SERIES, "${show.id}0:1:1"))
+        // Played again and marked watched as a whole: the same.
+        lib.recordProgress(show, EpisodeRef(2, 1), 600_000, 2_700_000)
+        choose(Kind.SERIES, "${show.id}:2:1")
+        lib.setWatched(show, true)
+        assertFalse(chosen(Kind.SERIES, "${show.id}:2:1"))
+        assertTrue(chosen(Kind.SERIES, "${show.id}0:1:1"))
     }
 
     @Test

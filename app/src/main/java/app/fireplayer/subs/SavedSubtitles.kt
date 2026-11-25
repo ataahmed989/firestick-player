@@ -41,6 +41,12 @@ object SavedSubtitles {
     /** This video's subtitles, last used first. */
     fun forVideo(context: Context, video: String): List<Saved> = forVideo(dir(context), video)
 
+    /**
+     * The kept subtitles in [file], whichever video they were kept for (the latest used); null once they're gone. For
+     * a film resumed on another copy than the one they were chosen on ([app.fireplayer.vod.play.ResumeTracks]).
+     */
+    fun find(context: Context, file: String): Saved? = find(dir(context), file)
+
     /** A file just downloaded for [video]: kept, and the one on. */
     fun add(context: Context, video: String, file: File, language: String?, release: String, fileId: Long) =
         add(dir(context), video, file, language, release, fileId, System.currentTimeMillis())
@@ -62,6 +68,10 @@ object SavedSubtitles {
     @Synchronized
     internal fun forVideo(dir: File, video: String): List<Saved> =
         read(dir).orEmpty().filter { it.video == video && File(dir, it.file).isFile }.sortedByDescending { it.lastUsed }
+
+    @Synchronized
+    internal fun find(dir: File, file: String): Saved? =
+        read(dir).orEmpty().filter { it.file == file && File(dir, it.file).isFile }.maxByOrNull { it.lastUsed }
 
     @Synchronized
     internal fun add(dir: File, video: String, file: File, language: String?, release: String, fileId: Long, now: Long) {

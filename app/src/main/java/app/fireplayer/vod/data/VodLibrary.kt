@@ -57,6 +57,19 @@ interface LibraryStore {
     fun dropReleases(rows: List<ReleaseRow>)
 }
 
+/**
+ * What else is kept for a film or an episode beside the copy it was left on ([ReleaseRow]), and forgotten with it when
+ * the title leaves Continue Watching (the sound and subtitles last chosen, vod/play/ResumeTracks). [kind]/[id] is a
+ * film's "tt…" or a show's: a show's covers its episodes' "tt…:S:E". Any thread.
+ */
+interface KeptWithCopy {
+    /** Whether anything is kept for [kind]/[id] (a show: for any of its episodes). */
+    fun has(kind: Kind, id: String): Boolean
+
+    /** Forgets what's kept for [kind]/[id] (a show: every episode's). */
+    fun forget(kind: Kind, id: String)
+}
+
 /** A title in My List ([inList] true) or taken out of it, at [at] (ms). */
 data class Listed(val title: Title, val at: Long, val inList: Boolean)
 
@@ -125,12 +138,16 @@ class MemoryLibraryStore : LibraryStore {
  *
  * A show's place in Continue Watching follows its episodes ([UpNext]): [episodesOf] gives a show's episodes as stored
  * here, null when they aren't (it may read the disk, so it's never called under the lock).
+ *
+ * What [keptWithCopy] keeps for a film or episode is forgotten with the copy it was left on, as the title leaves
+ * Continue Watching ([left]).
  */
 class VodLibrary(
     private val store: LibraryStore,
     private val clock: () -> Long,
     private val writer: Executor,
     private val episodesOf: (Title) -> List<Episode>? = { null },
+    private val keptWithCopy: KeptWithCopy? = null,
     private val changed: () -> Unit,
 ) {
     private val lock = Any()
@@ -384,7 +401,7 @@ class VodLibrary(
         if (entries.isEmpty()) return
         writer.execute { entries.forEach { runCatching { store.saveProgress(it) } } }
         changed()
-        entries.forEach { forgetReleases(it.title.kind, it.title.id) }
+        entries.forEach { left(it.title.kind, it.title.id) }
     }
 
     /**
@@ -447,11 +464,27 @@ class VodLibrary(
         writer.execute { runCatching { store.dropReleases(listOf(gone)) } }
     }
 
-    /** [kind]/[id] isn't in Continue Watching (any more): its releases are forgotten. Asked only when it has some. */
+    /**
+     * [kind]/[id] isn't in Continue Watching (any more): its releases are forgotten, and what's kept with them ([left]).
+     * Asked only when it has some.
+     */
     private fun forgetIfOut(kind: Kind, id: String) {
-        if (state { releasesOf(kind, id).isEmpty() }) return
-        if (continueEntry(kind, id) == null) forgetReleases(kind, id)
+        if (state { releasesOf(kind, id).isEmpty() } && !keptWith(kind, id)) return
+        if (continueEntry(kind, id) == null) left(kind, id)
     }
+
+    /**
+     * [kind]/[id] left Continue Watching (marked watched, taken out, watched to the end): the copies it was left on are
+     * forgotten (a show's: every episode's), and with them what [keptWithCopy] keeps for it.
+     */
+    private fun left(kind: Kind, id: String) {
+        forgetReleases(kind, id)
+        keptWithCopy?.let { k -> runCatching { k.forget(kind, id) } }
+    }
+
+    /** Whether [keptWithCopy] keeps anything for [kind]/[id]. */
+    private fun keptWith(kind: Kind, id: String): Boolean =
+        keptWithCopy?.let { k -> runCatching { k.has(kind, id) }.getOrNull() } == true
 
     /**
      * Next Episodes: shows played (not taken out of Continue Watching) whose next episode ([UpNext.of]) aired only after

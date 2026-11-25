@@ -74,6 +74,27 @@ class SavedSubtitlesTest {
     }
 
     @Test
+    fun aFileIsFoundByItsNameWhicheverVideoKeptItWhileItIsKept() {
+        val dir = folder()
+        val a = subtitle(dir, "11-a.srt")
+        val c = subtitle(dir, "13-c.srt")
+        SavedSubtitles.add(dir, film, a, "en", "Film.2019.1080p", 11, now)
+        SavedSubtitles.add(dir, other, a, "en", "Film.2019.1080p", 11, now + 5)
+        SavedSubtitles.add(dir, other, c, "ar", "Other", 13, now + 6)
+        // Kept for two copies: the latest used, with what's known of it (for a resume on a third copy).
+        val found = SavedSubtitles.find(dir, "11-a.srt")!!
+        assertEquals(other, found.video)
+        assertEquals("en", found.language)
+        assertEquals("Film.2019.1080p", found.release)
+        assertEquals(11L, found.fileId)
+        assertEquals("ar", SavedSubtitles.find(dir, "13-c.srt")?.language)
+        // Never downloaded, or its file gone: not found.
+        assertNull(SavedSubtitles.find(dir, "99-x.srt"))
+        c.delete()
+        assertNull(SavedSubtitles.find(dir, "13-c.srt"))
+    }
+
+    @Test
     fun theListIsReadOnce() {
         val dir = folder()
         val a = subtitle(dir, "11-a.srt")
