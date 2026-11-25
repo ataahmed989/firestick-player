@@ -901,6 +901,22 @@ class TwoRangesTest {
     }
 
     @Test
+    fun asThePlayerMakesItOnlyAnswersOf150MsOrMoreSendRequestsAhead() {
+        // The player's own settings (the tests above set theirs): fast answers never open a connection more at each
+        // span's end. Told the answer times here, with no clock.
+        val film = TwoRanges(log = {})
+        assertFalse(film.sendAhead(40_000L))
+        film.answered(1_000_000L)
+        assertFalse(film.sendAhead(40_000L))
+        // Slow answers lately: the next span goes ahead.
+        film.answered(1_000_000_000L)
+        assertTrue(film.sendAhead(40_000L))
+        // Where it starts.
+        assertFalse(TwoRanges(log = {}).apply { answered(149_999_999L) }.sendAhead(40_000L))
+        assertTrue(TwoRanges(log = {}).apply { answered(150_000_000L) }.sendAhead(40_000L))
+    }
+
+    @Test
     fun cancelledReadsAreToldFromFailures() {
         assertTrue(TwoRanges.cancelled(InterruptedIOException()))
         assertTrue(TwoRanges.cancelled(IOException(InterruptedIOException())))
