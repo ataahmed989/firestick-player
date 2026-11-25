@@ -39,6 +39,8 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
     private var onPick: ((PlaybackSource, Boolean) -> Unit)? = null
     private var session = -1
     private var held = false
+    /** The moved copy's row in its new kind ([details]), until the list has it (it ranks again on its own thread). */
+    private var landOn: String? = null
 
     /** Whether this panel is the window showing now. */
     val isOpen: Boolean get() = panel.isOpen && panel.session == session
@@ -72,6 +74,7 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
         this.onPick = onPick
         opened = HashSet()
         held = false
+        landOn = null
         val render: SidePanel.() -> Unit = { longList(entries()) }
         if (sub && panel.isOpen) panel.openSub(title, wide = true, render = render) else panel.open(title, onClose, wide = true, render = render)
         session = panel.session
@@ -82,12 +85,19 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
         this.list = list
         this.attempts = attempts
         this.playingKey = playingKey
-        if (isOpen && !FireDialog.isShowing(activity)) panel.refresh()
+        if (isOpen && !FireDialog.isShowing(activity)) {
+            val to = landOn
+            panel.refresh()
+            // Back after a move came before the list ranked again: focus goes to the copy's new row, now listed.
+            if (to != null && landOn == null) panel.focusEntry(to)
+        }
     }
 
     private fun entries(): LongList {
         items = SourcesModel.items(list, android.os.SystemClock.elapsedRealtime(), opened, attempts, playingKey, smooth, next, ::time, ::day,
             VodSizes.SOURCES_LINE_CHARS, VodSizes.SOURCES_NOTE_CHARS)
+        // The moved copy's new row is listed: Back lands on it by its key, or update() moves focus to it.
+        if (landOn != null && items.any { it.key == landOn }) landOn = null
         val shown = items
         return object : LongList {
             override val size: Int get() = shown.size
@@ -122,7 +132,7 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
                 if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
                     val item = shown.getOrNull(index) ?: return false
                     val s = item.source ?: return false
-                    if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && !held) details(s, item.section)
+                    if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && !held) details(s)
                     return true
                 }
                 val ok = keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER
@@ -131,7 +141,7 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
                 if (event.action == KeyEvent.ACTION_DOWN && (event.repeatCount > 0 || event.isLongPress)) {
                     if (!held) {
                         held = true
-                        shown.getOrNull(index)?.let { item -> item.source?.let { holdMenu(it, item.section) } }
+                        shown.getOrNull(index)?.source?.let { holdMenu(it) }
                     }
                     return true
                 }
@@ -163,14 +173,14 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
     }
 
     /** Hold OK on a row: Play from beginning, Details, in the hold window beside the row (it's selected). */
-    private fun holdMenu(s: PlaybackSource, section: SourcesModel.Section?) {
+    private fun holdMenu(s: PlaybackSource) {
         FireDialog.hold(
             activity,
             // The row's own main line, so the window names the copy as the list did.
             mainLine(s),
             listOf(
                 "Play from beginning" to { play(s, beginning = true) },
-                "Details" to { details(s, section) },
+                "Details" to { details(s) },
             ),
             fromPanel = true,
         )
@@ -185,9 +195,10 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
     /**
      * Details: what the row leaves out, and each add-on's own words (never a link), over the window titled as the row
      * names the copy; Back returns to it. A film's 4K copy has one more row, Move to IMAX group (or to 4K group): kept at
-     * once ([move]), the list ranks again, and Back finds the row from a kind ([section]) under its new one, opened.
+     * once ([move]), the list ranks again, and Back lands on the copy's row in its new kind, opened (from the rows at the
+     * top too: what they show may change with the move).
      */
-    private fun details(s: PlaybackSource, section: SourcesModel.Section?) {
+    private fun details(s: PlaybackSource) {
         val serverNow = if (s.key == playingKey) server() else null
         var copy = s
         panel.openSub(mainLine(s), wide = true) {
@@ -200,11 +211,11 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
                 val imax = label == SourcesModel.TO_IMAX
                 copy = copy.copy(imaxMove = imax)
                 keep(copy, imax)
-                if (section != null) {
-                    val to = SourcesModel.sectionOf(copy, film)
-                    opened += to
-                    backTo(SourcesModel.rowKey(to, copy))
-                }
+                val to = SourcesModel.sectionOf(copy, film)
+                opened += to
+                val key = SourcesModel.rowKey(to, copy)
+                landOn = key
+                backTo(key)
                 setTitle(mainLine(copy))
                 refresh()
             }
