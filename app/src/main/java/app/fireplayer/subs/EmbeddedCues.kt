@@ -3,6 +3,7 @@ package app.fireplayer.subs
 import android.net.Uri
 import android.os.Bundle
 import android.os.Parcel
+import android.os.SystemClock
 import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.C
@@ -19,6 +20,7 @@ import androidx.media3.extractor.ExtractorsFactory
 import androidx.media3.extractor.PositionHolder
 import androidx.media3.extractor.SeekMap
 import androidx.media3.extractor.TrackOutput
+import app.fireplayer.player.PlaybackDiag
 
 /**
  * The timing of the film's own subtitle tracks, read as the film loads, for [AutoSync] to line downloaded subtitles up
@@ -225,12 +227,32 @@ class EmbeddedCues {
     /** [inner], tapped for the film loaded from [uri]: what an extractor of it puts out passes on here as well. */
     internal fun output(uri: String, inner: ExtractorOutput): ExtractorOutput = TapOutput(inner, sourceFor(uri), this)
 
-    /** An extractor whose output is tapped; the [Source] is only made once it's the one reading the file. */
+    /**
+     * An extractor whose output is tapped; the [Source] is only made once it's the one reading the file. Tells the log
+     * (under [PlaybackDiag.TAG]) which kind of extractor reads the film, and the first [SEEKS_TOLD] places it asks to
+     * go on from (an MKV's index and back, a search): one look at each read's result, nothing more per sample.
+     */
     private class Tapped(private val inner: Extractor, private val tap: (ExtractorOutput) -> ExtractorOutput) : Extractor {
+        private var initAt = 0L
+        private var seeksTold = 0
+
         override fun sniff(input: ExtractorInput): Boolean = inner.sniff(input)
         override fun getSniffFailureDetails() = inner.sniffFailureDetails
-        override fun init(output: ExtractorOutput) = inner.init(tap(output))
-        override fun read(input: ExtractorInput, seekPosition: PositionHolder): Int = inner.read(input, seekPosition)
+        override fun init(output: ExtractorOutput) {
+            // Only the extractor that read the start of the film as its own is given an output.
+            initAt = SystemClock.elapsedRealtime()
+            Log.i(PlaybackDiag.TAG, "extractor ${inner.underlyingImplementation.javaClass.simpleName}")
+            inner.init(tap(output))
+        }
+        override fun read(input: ExtractorInput, seekPosition: PositionHolder): Int {
+            val result = inner.read(input, seekPosition)
+            if (result == Extractor.RESULT_SEEK && seeksTold < SEEKS_TOLD) {
+                seeksTold++
+                Log.i(PlaybackDiag.TAG, "extractor seek ${input.position} -> ${seekPosition.position} of ${input.length} " +
+                    "+${SystemClock.elapsedRealtime() - initAt}ms")
+            }
+            return result
+        }
         override fun seek(position: Long, timeUs: Long) = inner.seek(position, timeUs)
         override fun release() = inner.release()
         override fun getUnderlyingImplementation(): Extractor = inner.underlyingImplementation
@@ -493,6 +515,8 @@ class EmbeddedCues {
 
     companion object {
         private const val TAG = "EmbeddedCues"
+        // The places an extractor asks to go on from that are told to the log, for each film it reads.
+        private const val SEEKS_TOLD = 20
         // Further than this from where loading had got to: loading started somewhere else.
         private const val JUMP_MS = 10_000L
         // The file keeps a cue among the pictures and sound of about when it starts: trusted this far behind them.

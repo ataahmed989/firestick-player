@@ -12,6 +12,7 @@ import android.view.Display
 import androidx.annotation.OptIn
 import androidx.media3.common.Format
 import androidx.media3.common.Player
+import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DecoderCounters
 import androidx.media3.exoplayer.DecoderReuseEvaluation
@@ -28,7 +29,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * decoder never giving them, the film's memory, the system short of memory, or heat.
  *
  * - Events, one line each: the video decoder chosen (and released), the picture's and the sound's format, the film
- *   stopping to load and going on, Media3's batches of dropped frames.
+ *   stopping to load and going on, Media3's batches of dropped frames, and how long the film took to say what tracks
+ *   it has ([PrepareClock]).
  * - Once every [LOG_EVERY_S] seconds while the film plays, one line: the frames shown and lost in those seconds and over
  *   the last minute ([FrameTally]), how much is loaded ahead and the memory it holds (of what it fills to), how fast the
  *   film downloads ([DownloadRate]: "down" over all of those seconds, "free" over the ones it loaded with room in the
@@ -89,6 +91,8 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
     private var jumpedAt = 0L
     // The video decoder in use, by its name ("OMX.MTK.VIDEO.DECODER.HEVC"). Media3 tells its listeners on the main thread.
     private var decoder = "none"
+    // How long the film took to say what tracks it has (the "prepared" line).
+    private val prepared = PrepareClock()
     // The second before was one of loading with room in the buffer.
     private var wasFree = false
     // Whether the film was loading at the last second, and how often loading had been held back by then.
@@ -119,6 +123,7 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
         download.reset()
         loaderSeconds = 0
         loaderFrom = SystemClock.elapsedRealtime()
+        prepared.start(loaderFrom, meter.bytes)
         meter.loader.take()
         onReader {
             receivedBefore = NetPath.received()
@@ -394,6 +399,10 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
             (format.codecs?.let { " codecs=$it" } ?: ""))
     }
 
+    override fun onTracksChanged(eventTime: AnalyticsListener.EventTime, tracks: Tracks) {
+        prepared.tracks(tracks.isEmpty, SystemClock.elapsedRealtime(), meter.bytes)?.let { Log.i(TAG, it) }
+    }
+
     override fun onDroppedVideoFrames(eventTime: AnalyticsListener.EventTime, droppedFrames: Int, elapsedMs: Long) {
         Log.i(TAG, "drops $droppedFrames in ${elapsedMs}ms")
     }
@@ -487,5 +496,35 @@ class PlaybackDiag(context: Context) : AnalyticsListener {
                 " hdr=${spec.hdr ?: "unstated"}" +
                 (spec.bitDepth.takeIf { it > 0 }?.let { " bits=$it" } ?: "")
         }
+    }
+}
+
+/**
+ * The "prepared" line: how long a film took to say what tracks it has, from its player being made (or from the tracks
+ * last being none, as when the player let the film go and opened it again), and how much had come by then: "prepared
+ * +2140ms got=3.1MB". A film whose track list is only met at the end of its file reads all of it first. Once each
+ * time; nothing per frame.
+ */
+internal class PrepareClock {
+    private var from = 0L
+    private var fromBytes = 0L
+    private var waiting = false
+
+    /** A new player: the clock starts at [now], with [bytes] come so far. */
+    fun start(now: Long, bytes: Long) {
+        from = now
+        fromBytes = bytes
+        waiting = true
+    }
+
+    /** The tracks changed ([empty]: to none): the line, when they're known for the first time since the clock started. */
+    fun tracks(empty: Boolean, now: Long, bytes: Long): String? {
+        if (empty) {
+            if (!waiting) start(now, bytes)
+            return null
+        }
+        if (!waiting) return null
+        waiting = false
+        return "prepared +${now - from}ms got=" + String.format(Locale.US, "%.1fMB", (bytes - fromBytes) / 1_048_576.0)
     }
 }
