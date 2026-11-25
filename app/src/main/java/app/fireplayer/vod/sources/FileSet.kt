@@ -21,8 +21,11 @@ class FileSet(private val episode: Boolean, private val sizeNow: (ReleaseKey) ->
     /** An episode's files by info hash, with what tells them apart in their torrent. */
     private val packs = HashMap<String, MutableList<File>>()
 
-    /** A file of an episode's torrent: its row's height, its own size to the byte, its name ([nameOf]). */
-    private class File(val release: ReleaseKey, val height: Int?, val size: Long?, val name: String?)
+    /**
+     * A file of an episode's torrent: its row's height, its own size to the byte, its name ([nameOf]) and whether that is
+     * surely the file's own ([SourceMerge.namesFile]).
+     */
+    private class File(val release: ReleaseKey, val height: Int?, val size: Long?, val name: String?, val own: Boolean)
 
     /**
      * Adds every file [s]'s row holds (one file by what its offers say, as it was merged), and its size to the byte when
@@ -50,7 +53,7 @@ class FileSet(private val episode: Boolean, private val sizeNow: (ReleaseKey) ->
 
     private fun add(r: ReleaseKey, s: PlaybackSource, o: Offer?) {
         keys += r.storeKey
-        if (episode) packs.getOrPut(r.infoHash) { ArrayList(2) } += File(r, s.facts.height, sizeOf(s, o), nameOf(o))
+        if (episode) packs.getOrPut(r.infoHash) { ArrayList(2) } += File(r, s.facts.height, sizeOf(s, o), nameOf(o), ownName(o, r))
     }
 
     /** Whether [s] holds one of these files (any of its offers, or its size to the byte). */
@@ -65,9 +68,11 @@ class FileSet(private val episode: Boolean, private val sizeNow: (ReleaseKey) ->
             // Only for a row of the same torrent as one of these: a few a list.
             val size = sizeOf(s, o)
             val name = nameOf(o)
+            val own = ownName(o, r)
             for (f in seen) {
                 val same = SourceMerge.samePackFile(
                     f.release.fileIdx, r.fileIdx, f.height, s.facts.height, sizeNow(f.release) ?: f.size, size, f.name, name,
+                    f.own && own,
                 )
                 if (same == true) return true
                 if (same == false) apart = true
@@ -104,5 +109,8 @@ class FileSet(private val episode: Boolean, private val sizeNow: (ReleaseKey) ->
 
         /** The name of the file [o] opens, normalised ([Words.sameName]); null when the add-on gave none. */
         private fun nameOf(o: Offer?): String? = o?.filename?.let { Words.sameName(it) }
+
+        /** Whether [o]'s name is surely the file's own ([r]'s; [SourceMerge.namesFile]), not maybe its torrent's. */
+        private fun ownName(o: Offer?, r: ReleaseKey): Boolean = SourceMerge.namesFile(o?.filename, r)
     }
 }

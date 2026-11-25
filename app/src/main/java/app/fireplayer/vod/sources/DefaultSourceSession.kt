@@ -181,7 +181,10 @@ internal class DefaultSourceSession(
         if (why == OpenWhy.USER && startedOnce) widen()
         when {
             closed -> op.final(Opened.NoneLeft(FailureWords.NONE_READY))
-            source != null -> check(op, source, why, near = startedOnce, countTry = true)
+            source != null -> {
+                watchFromNow()
+                check(op, source, why, near = startedOnce, countTry = true)
+            }
             why == OpenWhy.START && firstPick -> startFirst(op)
             else -> pick(op, why)
         }
@@ -193,8 +196,19 @@ internal class DefaultSourceSession(
         ops += op
         fetchAgreed += source.key
         repo.fetchAsked += target.key
+        if (!closed) watchFromNow()
         check(op, source, OpenWhy.USER, near = startedOnce, countTry = false)
         return op
+    }
+
+    /**
+     * A row handed in to open (chosen in a Sources window: the title page's, started at OK by [app.fireplayer.vod.EarlyOpen],
+     * or the player's): the list it came from is kept current from now on, as for a pick of the session's own
+     * ([startFirst]). Before, such a play kept the list handed over at OK all through: what the play measured was ranked
+     * into the engine's list, never into the player's Sources window, its Playing row or Next source.
+     */
+    private fun watchFromNow() {
+        if (listSub == null) watchList(null)
     }
 
     override fun refresh(source: PlaybackSource, addon: Addon?, onOpened: (Opened) -> Unit): Cancel {

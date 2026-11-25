@@ -6092,7 +6092,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val p = player ?: return
         val uri = p.currentMediaItem?.localConfiguration?.uri ?: return
         val spec = playingSpec()?.takeIf { it.videoHow == MediaSpec.How.MEASURED } ?: return
-        val key = qualityKey(uri) ?: return
+        val key = qualityKey(uri) ?: run {
+            // A copy from the add-ons whose file isn't known (its add-on gave no info hash): said once a copy.
+            if (source != null && keptUnknown != uri) {
+                keptUnknown = uri
+                android.util.Log.i(TAG, "measured not kept: this copy's file isn't known")
+            }
+            return
+        }
         // Added to what earlier plays measured, once per play: this play's figure replaces its own last one.
         val playKey = "$key@${p.currentMediaItemIndex}"
         val before = if (keptPlay == playKey) keptBefore else keptOf(uri)?.let { MediaSpec.decode(it) }
@@ -6114,8 +6121,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // measured here and moves where that puts it (a starved picture under every well-fed copy), the Sources window
         // open redraws with it, and the same file from the other add-on joins its row (SourceMerge), so Next source and
         // Sources don't offer it again as another copy. Only this title's list: the figures are its file's.
-        val s = source ?: return
-        if (!keptRanks.kept(sized = spec.sizeBytes > 0L)) return
+        val s = source
+        val rank = s != null && keptRanks.kept(sized = spec.sizeBytes > 0L)
+        // Said as a play first keeps its figures, and at each rank they ask for: the record's key as a fingerprint only.
+        if (rank || keptSaid != playKey) {
+            keptSaid = playKey
+            android.util.Log.i(TAG, "measured kept: key=${app.fireplayer.vod.sources.SourceLog.fp(key)} size=${spec.sizeBytes} " +
+                "video=${spec.videoBps} rerank=${if (rank) "y" else "n"}")
+        }
+        if (s == null || !rank) return
         (Sources.get(this) as? app.fireplayer.vod.sources.DefaultSourcesRepository)?.rerank(s.request.target)
     }
 
@@ -6226,6 +6240,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private var keptAt = 0L
     // Whether this play's measured rate, and the file's size, have been ranked into its title's list (once each a play).
     private val keptRanks = app.fireplayer.vod.play.MeasuredRerank()
+    // The play whose keeping the log said, and the copy whose file wasn't known (said once each).
+    private var keptSaid: String? = null
+    private var keptUnknown: Uri? = null
 
     /** What was measured of the copy at [uri] when it was played; null if it never was. Any thread. */
     private fun measuredQuality(uri: Uri): MediaSpec? = keptOf(uri)?.let { MediaSpec.decode(it) }
@@ -6823,6 +6840,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             s.pick(picked, beginning)
         }
         s.session.setListener { sp.update(s.session.list, s.session.attempts, playingRow(s)) }
+        // Which row the Playing line is (the play's list's row of the file playing) and the size it says, once an open.
+        val key = playingRow(s)
+        val row = s.session.list?.sources?.firstOrNull { it.key == key }
+        android.util.Log.i(TAG, "sources: playing row=${app.fireplayer.vod.sources.SourceLog.fp(key)} listed=${if (row != null) "y" else "n"} " +
+            "played=${if (row?.measured?.spec != null) "y" else "n"} size=${row?.let { r ->
+                PlayRules.sizeWords(app.fireplayer.vod.sources.SourceRank.asPlayedHere(r.facts, r.measured)) } ?: "none"} " +
+            "rows=${s.session.list?.sources?.size ?: 0}")
     }
 
     /** The Sources row of the copy playing: its file's row now ([app.fireplayer.vod.SourceSession.rowKey]: the same file may have merged). */

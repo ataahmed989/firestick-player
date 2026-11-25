@@ -6,6 +6,7 @@ import app.fireplayer.vod.Addon
 import app.fireplayer.vod.AddonSave
 import app.fireplayer.vod.AddonState
 import app.fireplayer.vod.AddonSettings
+import app.fireplayer.vod.EarlyOpen
 import app.fireplayer.vod.EpisodeRef
 import app.fireplayer.vod.Hdr
 import app.fireplayer.vod.Kind
@@ -227,7 +228,9 @@ class PackSizeTest {
             countAsked++
             if (title.id == show.id && season == 1) seasonCount else null
         },
+        log = { logged += it },
     )
+    private val logged = ArrayList<String>()
 
     private fun list(): SourceList {
         val got = ArrayList<SourceList>()
@@ -259,7 +262,8 @@ class PackSizeTest {
         // The season's count was read from what's stored of the show, once each rank holding a pack: not for Torrentio's
         // answer alone, then for MediaFusion's and Torz's.
         assertEquals(2, countAsked)
-        // Picked in Sources and playing from MediaFusion's own offer (no index: kept for E9 only).
+        // Picked in Sources and playing from MediaFusion's own offer (no index: kept for E9 only). The session picks the
+        // chosen row itself here; the TV hands it in to open (aRowChosenInSourcesPlaysOnTheListItsPlayRanksAgain).
         val session = engine.session(PlayRequest(ep9, StartAt.Beginning, PlayOrigin.SOURCES_PANEL, list = before, chosen = amen))
         var told = 0
         session.setListener { told++ }
@@ -291,6 +295,110 @@ class PackSizeTest {
         // The Sources window says the same.
         val items = SourcesModel.items(after, now, setOf(SourcesModel.Section.UHD), playingKey = session.rowKey(ready.source))
         assertEquals("4K · HDR10 · WEB · 1.1 GB", items.first { it.key == SourcesModel.PLAYING_KEY }.label)
+    }
+
+    /**
+     * The TV's way in, which the test above missed: a row chosen in a Sources window is handed to the session to open
+     * (at OK on the title page by [EarlyOpen], or by [app.fireplayer.vod.play.SourcePlayback.start]), not picked by it.
+     * Such a play kept the list handed over at OK all through: the engine ranked the play's figures in, but the player's
+     * Sources window, its Playing row and Next source never had them (the Amen row still "≈1.0 GB (pack 10.2 GB)" after 3
+     * minutes measured, Torz's "1.1 GB" beside it). It watches the list now, as a pick of its own does.
+     */
+    @Test
+    fun aRowChosenInSourcesPlaysOnTheListItsPlayRanksAgain() {
+        val before = list()
+        val amen = before.sources.fromMf(ha)
+        assertEquals("4K · HDR10 · WEB · ≈1.0 GB (pack 10.2 GB)", line(amen))
+        val request = PlayRequest(ep9, StartAt.Beginning, PlayOrigin.SOURCES_PANEL, list = before, chosen = amen)
+        // As PlayHandoff starts it at OK, and the player takes it over.
+        val early = EarlyOpen(engine.session(request), amen, 0L)
+        val session = early.session
+        val got = ArrayList<Opened>()
+        early.attach { got += it }
+        loop.advance()
+        val ready = got.last() as Opened.Ready
+        assertEquals(Addon.MEDIAFUSION, ready.offer.addon)
+        session.started(ready.source, ready.offer)
+        // What PlayerActivity keeps the play under, and its rank once the figures are first kept.
+        val key = (ready.offer.release ?: ready.source.release)!!.measuredKey(ep9.episode)
+        kept[key] = amenPlayed
+        logged.clear()
+        engine.rerank(ep9)
+        loop.advance()
+        val after = session.list!!
+        val row = after.sources.fromMf(ha)
+        assertEquals("4K · HDR10 · WEB · 1.1 GB", line(row))
+        // Torz's file of the same size to the byte is its row now.
+        assertEquals(setOf(Addon.MEDIAFUSION, Addon.TORZ), row.addons.toSet())
+        assertEquals(before.sources.size - 1, after.sources.size)
+        // The Playing row is that row, as measured.
+        val playing = session.rowKey(ready.source)
+        assertEquals(row.key, playing)
+        val items = SourcesModel.items(after, now, setOf(SourcesModel.Section.UHD), playingKey = playing)
+        assertEquals("4K · HDR10 · WEB · 1.1 GB", items.first { it.key == SourcesModel.PLAYING_KEY }.label)
+        // Ranked by the figures: starved at 4K, under every well-fed 4K copy; Next source never names it.
+        val fed = after.sources.filter { s -> s.key != row.key && (s.facts.height ?: 0) >= 2160 && s.offers.none { it.release?.infoHash == hp } }
+        assertEquals(4, fed.size)
+        for (s in fed) assertTrue("${line(s)} above", after.sources.indexOf(s) < after.sources.indexOf(row))
+        assertNotEquals(row.key, session.nextPick()?.key)
+        // The log says what the row was looked up by, as fingerprints: never a key, whose hash names the torrent.
+        assertTrue(logged.toString(), logged.any { it.startsWith("rank: row ${SourceLog.fp(row.key)} measured=${SourceLog.fp(key)} tried=${SourceLog.fp(key)},") })
+        assertTrue(logged.toString(), logged.none { ha in it || "rd|" in it })
+        assertTrue(SourceLog.fp(key).matches(Regex("[0-9a-f]{8}")))
+        // The same from the player's own Sources window: a row picked there plays on the list as it is now.
+        val again = engine.session(request)
+        again.open(amen, OpenWhy.USER) { }
+        loop.advance()
+        assertEquals("4K · HDR10 · WEB · 1.1 GB", line(again.list!!.sources.fromMf(ha)))
+    }
+
+    /** A row not cached yet, fetched at the viewer's word, plays on the list as it is now too. */
+    @Test
+    fun aRowFetchedFromSourcesPlaysOnTheListItsPlayRanksAgain() {
+        answerOf[Addon.TORRENTIO] = { answer(torrentio(hd, idx = 0, ready = false, quality = "4k", name = sdrFile, size = "2.85 GB")) }
+        val before = list()
+        val chosen = before.sources.single { s -> s.offers.any { it.release?.infoHash == hd } }
+        val session = engine.session(PlayRequest(ep9, StartAt.Beginning, PlayOrigin.SOURCES_PANEL, list = before, chosen = chosen))
+        session.fetch(chosen) { }
+        loop.advance()
+        kept[ReleaseKey(hd, 0).storeKey] = Measured(MediaSpec(sizeBytes = 3_550_000_123L, overallBps = 14_500_000, videoBps = 13_000_000,
+            videoHow = MediaSpec.How.MEASURED, measuredSecs = 300, playedAt = now), null, now)
+        engine.rerank(ep9)
+        loop.advance()
+        assertEquals("3.1 GB", PlayRules.sizeWords(SourceRank.asPlayedHere(chosen.facts, chosen.measured)))
+        val played = session.list!!.sources.single { s -> s.key == chosen.key }
+        assertEquals("3.6 GB", PlayRules.sizeWords(SourceRank.asPlayedHere(played.facts, played.measured)))
+    }
+
+    /**
+     * Torrentio and Torz both list the Amen file in its season pack (index 8: one row), MediaFusion the pack with no
+     * index, named by its torrent. Once a play measured MediaFusion's file to the byte as Torz gives it, the three are
+     * one row, in any order of answers: Torrentio's name of the file (no size to the byte) never tells it apart from a
+     * torrent's name, which is no file's. A file of another size stays apart.
+     */
+    @Test
+    fun aTorrentsNameNeverTellsAFileApartFromItsOwnName() {
+        val pack = parsed(Addon.MEDIAFUSION, mf(ha, amenTorrent, 10_200_000_000L))
+        val tio = parsed(Addon.TORRENTIO, torrentio(ha, idx = 8, quality = "4k DV | HDR", name = amenTorrent, file = "$amenTorrent/$amenFile", size = "1.03 GB"))
+        val tz = parsed(Addon.TORZ, torz(ha, 8, amenFile, amenBytes, origin = "WEBRip"))
+        val measured = mapOf(ReleaseKey(ha, null).measuredKey(e9) to amenPlayed)
+        for (order in listOf(listOf(tio, pack, tz), listOf(pack, tz, tio), listOf(tz, tio, pack))) {
+            val before = rows(*order.toTypedArray(), count = 10)
+            assertEquals(2, before.size)
+            assertEquals("4K · HDR10 · WEB · ≈1.0 GB (pack 10.2 GB)", line(before.fromMf(ha)))
+            val row = rows(*order.toTypedArray(), count = 10, measured = measured).single()
+            assertEquals(setOf(Addon.MEDIAFUSION, Addon.TORRENTIO, Addon.TORZ), row.addons.toSet())
+            assertEquals("4K · HDR10 · WEB · 1.1 GB", line(row))
+            // The file a play opened from MediaFusion is that row's (Next source, Sources' marks).
+            val played = FileSet(episode = true) { r -> amenBytes.takeIf { r == ReleaseKey(ha, null) } }
+                .add(row, row.offers.first { it.addon == Addon.MEDIAFUSION })
+            assertTrue(played.holds(before.first { s -> s.offers.any { it.addon == Addon.TORZ } }))
+        }
+        // Torz's file of another size: another file, two rows, whatever the names say.
+        val other = parsed(Addon.TORZ, torz(ha, 8, amenFile, amenBytes + 4096, origin = "WEBRip"))
+        assertEquals(2, rows(tio, pack, other, count = 10, measured = measured).size)
+        // Nor does an estimate ever join them.
+        assertEquals(2, rows(tio, pack, tz, count = 10).size)
     }
 
     @Test

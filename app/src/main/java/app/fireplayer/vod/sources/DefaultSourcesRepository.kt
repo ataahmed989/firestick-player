@@ -94,6 +94,8 @@ class DefaultSourcesRepository(
      * quick; [app.fireplayer.vod.VodRepository.seasonEpisodes]); null when not known. Asked only for a season pack's size.
      */
     private val seasonEpisodes: (app.fireplayer.vod.Title, Int) -> Int? = { _, _ -> null },
+    /** The engine's few log lines ([SourceLog]: fingerprints, never a link or a key); Log.i on the device. */
+    private val log: (String) -> Unit = { android.util.Log.i(SourceLog.TAG, it) },
 ) : SourcesRepository {
 
     private class Answer(val parsed: ParsedAnswer, val keepUntil: Long)
@@ -214,9 +216,12 @@ class DefaultSourcesRepository(
         rerank(target)
     }
 
-    /** Only [target]'s list ranks again (a file of it played here and its exact size is known: its rows merge anew). */
+    /**
+     * Only [target]'s list ranks again (a file of it played here and its exact size is known: its rows merge anew). For
+     * an episode it says in the log what each row of a file of no index was looked up by ([SourceLog.rankLines]).
+     */
     fun rerank(target: SourceTarget) {
-        entries[target.key]?.takeIf { it.answers.isNotEmpty() }?.let(::rebuild)
+        entries[target.key]?.takeIf { it.answers.isNotEmpty() }?.let { rebuild(it, said = true) }
     }
 
     /**
@@ -462,7 +467,8 @@ class DefaultSourcesRepository(
 
     // ---- The list ----
 
-    private fun rebuild(entry: Entry) {
+    /** [said]: a rank asked for by a play's figures ([rerank]), whose lookups the log says. */
+    private fun rebuild(entry: Entry, said: Boolean = false) {
         val v = ++entry.version
         val from = entry.order.filterTo(EnumSet.noneOf(Addon::class.java)) { entry.answers.containsKey(it) }
         val answers = entry.order.mapNotNull { entry.answers[it]?.parsed?.streams }
@@ -508,6 +514,7 @@ class DefaultSourcesRepository(
                         ?.spec?.sizeBytes?.takeIf { it > 0 }
                 }
                 val ranked = SourceRank.rank(merged.sources, input)
+                if (said && episode != null) SourceLog.rankLines(ranked, episode) { measured(it) != null }.forEach(log)
                 val best = SourceRank.best(ranked)
                 // Read here first, so the library's store is loaded off the main thread (Last used is worked out there).
                 runCatching { library.lastRelease(target.title, target.episode) }

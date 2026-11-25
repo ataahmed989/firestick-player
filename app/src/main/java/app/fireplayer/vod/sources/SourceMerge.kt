@@ -139,6 +139,28 @@ object SourceMerge {
                 p.sameName?.let { byName.getOrPut(it) { ArrayList() } += fresh }
             }
         }
+        // An episode's file of no index left a row of its own while its torrent's other row had no size to the byte yet
+        // (Torz's, joining Torrentio's row of the same index, came after MediaFusion's): one row once what they say of
+        // the file agrees ([samePack]), as when the answers come the other way round. The earlier row keeps its key.
+        if (episode) {
+            var i = 1
+            while (i < rows.size) {
+                val late = rows[i]
+                val into = late.items.asSequence().mapNotNull { it.release?.infoHash }.filter { it in byLooseHash }.distinct()
+                    .flatMap { byHash[it].orEmpty().asSequence() }
+                    .firstOrNull { it !== late && rows.indexOf(it) in 0 until i && oneFile(it, late) }
+                if (into == null) {
+                    i++
+                    continue
+                }
+                into.items += late.items
+                into.sizes += late.sizes
+                into.releases += late.releases
+                if (into.exact == null) into.exact = late.exact
+                if (into.measured == null) into.measured = late.measured
+                rows.removeAt(i)
+            }
+        }
         val rowOf = HashMap<String, String>()
         for (row in rows) for (r in row.releases) rowOf[r] = row.key
         return Merged(rows.map { build(it, runtimeMin) }, rowOf)
@@ -168,7 +190,27 @@ object SourceMerge {
             val q = row.items[i]
             val qr = q.release ?: continue
             if (qr.infoHash != r.infoHash) continue
-            when (samePackFile(qr.fileIdx, r.fileIdx, q.facts.height, p.facts.height, row.sizes[i], exact, fileName(q), fileName(p))) {
+            when (samePackFile(qr.fileIdx, r.fileIdx, q.facts.height, p.facts.height, row.sizes[i], exact, fileName(q), fileName(p),
+                    ownName(q) && ownName(p))) {
+                false -> return false
+                true -> same = true
+                null -> Unit
+            }
+        }
+        return same
+    }
+
+    /**
+     * Whether [other]'s file is [row]'s by what their items of a torrent they share, one side of no index, say
+     * ([samePack]): one says so and none tells them apart.
+     */
+    private fun oneFile(row: Row, other: Row): Boolean {
+        var same = false
+        for (k in other.items.indices) {
+            val p = other.items[k]
+            val r = p.release ?: continue
+            if (row.items.none { q -> q.release?.let { it.infoHash == r.infoHash && (it.fileIdx == null || r.fileIdx == null) } == true }) continue
+            when (samePack(row, p, other.sizes[k])) {
                 false -> return false
                 true -> same = true
                 null -> Unit
@@ -189,7 +231,7 @@ object SourceMerge {
             if (qr.infoHash != r.infoHash || qr == r) continue
             if (qr.fileIdx != null && r.fileIdx != null) return true
             if (episode && samePackFile(qr.fileIdx, r.fileIdx, q.facts.height, p.facts.height, row.sizes[i], exact,
-                    fileName(q), fileName(p)) == false) return true
+                    fileName(q), fileName(p), ownName(q) && ownName(p)) == false) return true
         }
         return false
     }
@@ -203,20 +245,34 @@ object SourceMerge {
     /** [p]'s file's name as [samePackFile] compares it ([ParsedStream.sameName] when it is the file's, not a torrent's). */
     private fun fileName(p: ParsedStream): String? = p.sameName?.takeIf { p.offer.filename != null }
 
+    /** Whether [p]'s name is its file's own ([namesFile]). */
+    private fun ownName(p: ParsedStream): Boolean = namesFile(p.offer.filename, p.release)
+
+    /**
+     * Whether an offer's [name] is surely its file's own: an offer of a file index names that file; one of no index only
+     * when the name has a video file's extension. Else it may be its torrent's: MediaFusion names a season pack's row of
+     * no index by its torrent ("Show.S01.2160p.WEBRip-Amen"). Such a name says one file when it is the other's file name
+     * (a torrent of one episode is named as its file), never two ([samePackFile]): compared with Torrentio's name of that
+     * very file, it kept the file a play measured apart from Torz's of the same size.
+     */
+    fun namesFile(name: String?, release: ReleaseKey?): Boolean = name != null && (release?.fileIdx != null || Words.isFile(name))
+
     /**
      * Whether two offers of one torrent are one file by what they say, for an episode (MediaFusion's season packs come
      * without the file's index): two indexes are one file only when they're the same; heights that differ, never; then
      * their sizes to the byte when both are known (a size a play here measured, else an add-on's exact one): the same or
-     * not; else their file names ([Words.sameName]) when both are known. Null when nothing tells: they're not known to
-     * be one file, the same info hash alone isn't enough.
+     * not; else their file names ([Words.sameName]) when both are known: the same, one file; others, two only when
+     * both are surely the files' own ([namesApart], [namesFile]: a torrent's name differs from its files'). Null when
+     * nothing tells: they're not known to be one file, the same info hash alone isn't enough.
      */
     fun samePackFile(
         idxA: Int?, idxB: Int?, heightA: Int?, heightB: Int?, sizeA: Long?, sizeB: Long?, nameA: String?, nameB: String?,
+        namesApart: Boolean = true,
     ): Boolean? {
         if (idxA != null && idxB != null) return idxA == idxB
         if (heightsDiffer(heightA, heightB)) return false
         if (sizeA != null && sizeB != null && sizeA > 0 && sizeB > 0) return sizeA == sizeB
-        if (nameA != null && nameB != null) return nameA == nameB
+        if (nameA != null && nameB != null) return if (nameA == nameB) true else if (namesApart) false else null
         return null
     }
 
