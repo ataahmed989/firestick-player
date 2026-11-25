@@ -176,6 +176,161 @@ class DvBaseLayerTest {
         assertEquals(C.COLOR_SPACE_BT2020, noTransfer.colorSpace)
     }
 
+    // --- The base layer's brightness data from the SEI in its parameter sets
+
+    private fun hex(s: String) = ByteArray(s.length / 2) { s.substring(2 * it, 2 * it + 2).toInt(16).toByte() }
+
+    /** CTA-861.3 static metadata: type 1, then [v] (R, G, B, white (x, y), peak, black, MaxCLL, MaxFALL) little-endian. */
+    private fun cta(vararg v: Int): ByteArray {
+        val b = ByteBuffer.allocate(25).order(ByteOrder.LITTLE_ENDIAN)
+        b.put(0)
+        for (x in v) b.putShort(x.toShort())
+        return b.array()
+    }
+
+    /**
+     * The hvcC (MKV CodecPrivate) ffmpeg 6.1 wrote for a clip libx265 3.5 encoded with master-display
+     * G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(40000000,50) and max-cll 1452,400: VPS, SPS, PPS, then
+     * a prefix SEI array of a light level unit and a mastering display unit (x265's long info unit left out). The
+     * mastering display's black (00 00 00 32) carries an emulation prevention byte: 00 00 03 00 32.
+     */
+    private val x265Hvcc = hex(
+        "0102200000009000000000001ef000fcfdfafa00000f04200001001840010c01ffff02200000030090000003000003001e9598092100" +
+            "01002d42010102200000030090000003000003001ea0208104d96566924caf016a12201208000003000800000300c04022000100" +
+            "074401c172b4224027000200094e01900405ac019080001e4e01891833c286c41d4c0bb884d03e803d13404202625a0000030000" +
+            "3280",
+    )
+
+    /** [rbsp] as a NAL unit's bytes: an emulation prevention byte (03) after each two zeros followed by 00 to 03. */
+    private fun escaped(rbsp: ByteArray): ByteArray {
+        val out = java.io.ByteArrayOutputStream()
+        var zeros = 0
+        for (x in rbsp) {
+            val v = x.toInt() and 0xFF
+            if (zeros >= 2 && v <= 3) {
+                out.write(3)
+                zeros = 0
+            }
+            out.write(v)
+            zeros = if (v == 0) zeros + 1 else 0
+        }
+        return out.toByteArray()
+    }
+
+    /** A mastering display message (payload 137): primaries green, blue, red, then white, peak and black (0.0001 cd/m2). */
+    private fun mastering(g: IntArray, b: IntArray, r: IntArray, w: IntArray, peak: Long, black: Long): ByteArray {
+        val m = ByteBuffer.allocate(24)
+        for (v in g + b + r + w) m.putShort(v.toShort())
+        m.putInt(peak.toInt())
+        m.putInt(black.toInt())
+        return bytes(137, 24) + m.array()
+    }
+
+    private fun light(cll: Int, fall: Int) = bytes(144, 4, cll shr 8, cll and 0xFF, fall shr 8, fall and 0xFF)
+
+    /** An SEI NAL unit of [type] (39 prefix, 40 suffix) with [messages] and the stop bit, after a 4-byte start code. */
+    private fun seiUnit(vararg messages: ByteArray, type: Int = 39): ByteArray =
+        start4 + bytes(type shl 1, 1) + escaped(messages.fold(ByteArray(0)) { a, m -> a + m } + bytes(0x80))
+
+    /** A UHD Blu-ray's HDR10: BT.2020 primaries (green, blue, red), D65, 1000 nits, 0.0001 nits; MaxCLL 1452, MaxFALL 400. */
+    private val g2020 = intArrayOf(8500, 39850)
+    private val b2020 = intArrayOf(6550, 2300)
+    private val r2020 = intArrayOf(35400, 14600)
+    private val d65 = intArrayOf(15635, 16450)
+
+    @Test
+    fun theFilesOwnBrightnessDataIsReadFromTheSeiInItsHvcc() {
+        // As Media3's MKV and MP4 readers keep it: every unit of the hvcC, SEI arrays included, with start codes.
+        val initData = androidx.media3.extractor.HevcConfig.parse(androidx.media3.common.util.ParsableByteArray(x265Hvcc))
+            .initializationData
+        val info = DvBaseLayer.seiStaticInfo(initData)
+        // Red, green, blue, white; 4000 nits; 0.0050 nits (the escaped 50); MaxCLL 1452, MaxFALL 400.
+        assertArrayEquals(cta(34000, 16000, 13250, 34500, 7500, 3000, 15635, 16450, 4000, 50, 1452, 400), info)
+        // Given the decoder where the track states none; the track's own still comes first.
+        val pqOnly = ColorInfo.Builder().setColorSpace(C.COLOR_SPACE_BT2020).setColorTransfer(C.COLOR_TRANSFER_ST2084).build()
+        assertSame(info, DvBaseLayer.hdr10(null, info).hdrStaticInfo)
+        assertSame(info, DvBaseLayer.hdr10(pqOnly, info).hdrStaticInfo)
+        val own = ByteArray(25) { (it + 1).toByte() }
+        assertArrayEquals(own, DvBaseLayer.hdr10(ColorInfo.Builder().setHdrStaticInfo(own).build(), info).hdrStaticInfo)
+        assertEquals("HDR10 info from the file's SEI: 4000 nits, MaxCLL 1452, MaxFALL 400",
+            DvBaseLayer.brightnessLine(info, fromTrack = false, fromSei = true))
+    }
+
+    @Test
+    fun bothMessagesInOneUnitAsOnAUhdBluRay() {
+        // Mastering display then light level in one prefix SEI unit, after a VPS; black 1 (escaped: 00 00 03 00 01).
+        val vps = start4 + bytes(0x40, 0x01, 0x0c, 0x01)
+        val one = vps + seiUnit(mastering(g2020, b2020, r2020, d65, 10_000_000, 1), light(1452, 400))
+        val expected = cta(35400, 14600, 8500, 39850, 6550, 2300, 15635, 16450, 1000, 1, 1452, 400)
+        assertArrayEquals(expected, DvBaseLayer.seiStaticInfo(listOf(one)))
+        // A message before them whose type byte is 80 (128, structure of pictures) isn't taken for the stop bit.
+        val sop = bytes(128, 2, 0x12, 0x34)
+        assertArrayEquals(expected, DvBaseLayer.seiStaticInfo(listOf(vps + seiUnit(sop, mastering(g2020, b2020, r2020, d65, 10_000_000, 1), light(1452, 400)))))
+        // 3-byte start codes; the record a Dolby Vision MP4 adds after the parameter sets is passed over.
+        val three = start3 + bytes(39 shl 1, 1) + escaped(mastering(g2020, b2020, r2020, d65, 10_000_000, 1) + light(1452, 400) + bytes(0x80))
+        assertArrayEquals(expected, DvBaseLayer.seiStaticInfo(listOf(record(DvBaseLayer.SIGNAL_BLU_RAY, 7), three)))
+        // Without a light level message: MaxCLL and MaxFALL 0, "not known".
+        assertArrayEquals(cta(35400, 14600, 8500, 39850, 6550, 2300, 15635, 16450, 1000, 1, 0, 0),
+            DvBaseLayer.seiStaticInfo(listOf(seiUnit(mastering(g2020, b2020, r2020, d65, 10_000_000, 1)))))
+        // Light levels that make no sense go as 0; the mastering display stays.
+        assertArrayEquals(cta(35400, 14600, 8500, 39850, 6550, 2300, 15635, 16450, 1000, 1, 0, 0),
+            DvBaseLayer.seiStaticInfo(listOf(seiUnit(mastering(g2020, b2020, r2020, d65, 10_000_000, 1), light(20_000, 400)))))
+        // The first of each kind is used.
+        assertArrayEquals(expected, DvBaseLayer.seiStaticInfo(listOf(one,
+            seiUnit(mastering(g2020, b2020, r2020, d65, 40_000_000, 50), light(4000, 1000)))))
+    }
+
+    @Test
+    fun noBrightnessDataWhereTheSeiIsMissingOrMakesNoSense() {
+        val vps = start4 + bytes(0x40, 0x01, 0x0c, 0x01)
+        assertNull(DvBaseLayer.seiStaticInfo(null))
+        assertNull(DvBaseLayer.seiStaticInfo(emptyList()))
+        assertNull(DvBaseLayer.seiStaticInfo(listOf(ByteArray(0))))
+        // Parameter sets only (as most hvcCs), or only a light level message, or the messages in a suffix unit.
+        assertNull(DvBaseLayer.seiStaticInfo(listOf(vps)))
+        assertNull(DvBaseLayer.seiStaticInfo(listOf(vps + seiUnit(light(1452, 400)))))
+        assertNull(DvBaseLayer.seiStaticInfo(listOf(vps + seiUnit(mastering(g2020, b2020, r2020, d65, 10_000_000, 1), type = 40))))
+        // A peak under 100 or over 10000 nits, black not below it or past 16 bits, a coordinate past 1.
+        for (bad in listOf(
+            mastering(g2020, b2020, r2020, d65, 500_000, 1),
+            mastering(g2020, b2020, r2020, d65, 200_000_000, 1),
+            mastering(g2020, b2020, r2020, d65, 10_000_000, 10_000_000),
+            mastering(g2020, b2020, r2020, d65, 10_000_000, 70_000),
+            mastering(g2020, b2020, intArrayOf(60_000, 14600), d65, 10_000_000, 1),
+        )) assertNull(DvBaseLayer.seiStaticInfo(listOf(vps + seiUnit(bad, light(1452, 400)))))
+        // Cut short: the unit ends inside the message its size gives, or the size says less than the message holds.
+        val whole = seiUnit(mastering(g2020, b2020, r2020, d65, 10_000_000, 1))
+        assertNull(DvBaseLayer.seiStaticInfo(listOf(whole.copyOf(16))))
+        val short = start4 + bytes(39 shl 1, 1, 137, 10) + ByteArray(10) { 0x11 } + bytes(0x80)
+        assertNull(DvBaseLayer.seiStaticInfo(listOf(short)))
+        // Only a header, a header and a stop bit: nothing, and nothing thrown.
+        assertNull(DvBaseLayer.seiStaticInfo(listOf(start4 + bytes(39 shl 1, 1))))
+        assertNull(DvBaseLayer.seiStaticInfo(listOf(start4 + bytes(39 shl 1, 1, 0x80))))
+        assertNull(DvBaseLayer.seiStaticInfo(listOf(start4 + bytes(39 shl 1, 1, 0xFF, 0xFF, 0xFF))))
+        // The generic data, said so in the log.
+        assertEquals("HDR10 info generic: 1000 nits, MaxCLL 1000, MaxFALL 400 (none in the file's header)",
+            DvBaseLayer.brightnessLine(DvBaseLayer.hdr10(null).hdrStaticInfo, fromTrack = false, fromSei = false))
+        assertEquals("HDR10 info from the file's track: 4000 nits, MaxCLL 0, MaxFALL 0",
+            DvBaseLayer.brightnessLine(cta(0, 0, 0, 0, 0, 0, 0, 0, 4000, 0, 0, 0), fromTrack = true, fromSei = false))
+    }
+
+    @Test
+    fun randomBytesNeverThrowWhenReadForSei() {
+        val random = Random(7)
+        repeat(3000) {
+            val b = ByteArray(random.nextInt(0, 120)) { random.nextInt(256).toByte() }
+            // Start codes and SEI headers sprinkled in, so the messages are read.
+            for (k in 0 until random.nextInt(0, 4)) {
+                val at = random.nextInt(0, maxOf(1, b.size - 5))
+                if (at + 5 <= b.size) {
+                    b[at] = 0; b[at + 1] = 0; b[at + 2] = 1; b[at + 3] = (39 shl 1).toByte(); b[at + 4] = 1
+                }
+            }
+            val info = DvBaseLayer.seiStaticInfo(listOf(b))
+            if (info != null) assertEquals(25, info.size)
+        }
+    }
+
     // --- HDR10 colour for profile 8 on the HEVC decoder (Media3's own way back on a TV without Dolby Vision)
 
     @Test
