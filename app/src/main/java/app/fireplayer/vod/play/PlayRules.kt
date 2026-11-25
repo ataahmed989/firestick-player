@@ -167,7 +167,7 @@ object PlayRules {
             resolution(f.height),
             *hdr.toTypedArray(),
             f.origin,
-            f.sizeBytes?.let { size(it) },
+            sizeWords(f),
             f.avgMbps?.let { "≈${it.toInt()} Mb/s" },
             if (f.pack) "Pack" else null,
             if (s.copies > 1) "×${s.copies}" else null,
@@ -240,12 +240,13 @@ object PlayRules {
 
     /**
      * A Sources row's first line, and the title page's: quality · the HDR this TV shows ([tvHdr]) · what it was made
-     * from · size ("4K · HDR10+ · Remux · 81.4 GB"). Without a [plan], the add-ons' HDR words, which over [chars]
-     * characters (what the row has room for, so it's never cut inside a word) keep their first part.
+     * from · size ("4K · HDR10+ · Remux · 81.4 GB"; an episode's from a season pack, [sizeWords]). Without a [plan], the
+     * add-ons' HDR words, which over [chars] characters (what the row has room for, so it's never cut inside a word)
+     * keep their first part.
      */
     fun mainLine(s: PlaybackSource, chars: Int = Int.MAX_VALUE, film: Boolean = true, plan: TvPlan? = null): String {
         val f = SourceRank.asPlayedHere(s.facts, s.measured)
-        fun line(hdr: String?) = listOfNotNull(quality(s, film), hdr, kind(f.origin), f.sizeBytes?.let { size(it) }).joinToString(" · ")
+        fun line(hdr: String?) = listOfNotNull(quality(s, film), hdr, kind(f.origin), sizeWords(f)).joinToString(" · ")
         if (plan != null) return line(tvHdr(s, plan))
         return line(hdrKind(f)).takeIf { it.length <= chars } ?: line(hdrKind(f, one = true))
     }
@@ -378,6 +379,26 @@ object PlayRules {
         val gb = bytes / 1_000_000_000.0
         return if (gb >= 1.0) String.format(Locale.ROOT, "%.1f GB", gb) else "${(bytes / 1_000_000L).coerceAtLeast(1)} MB"
     }
+
+    /**
+     * A copy's size as its row says it ([f] as played here, so what a play measured first): "1.1 GB"; an episode's
+     * share of its season pack, estimated, "≈1.0 GB (pack 10.2 GB)"; the pack's size alone when no share is known,
+     * "(pack 10.2 GB)"; an add-on's one size that may be the pack's or the episode's, "(10.2 GB)". Null when none.
+     */
+    fun sizeWords(f: SourceFacts): String? {
+        val pack = f.packBytes
+        val own = f.sizeBytes
+        return when {
+            own != null && f.sizeEstimated -> "≈${size(own)}" + (pack?.let { " (pack ${size(it)})" } ?: "")
+            own != null -> size(own)
+            pack != null && f.packUnclear -> "(${size(pack)})"
+            pack != null -> "(pack ${size(pack)})"
+            else -> null
+        }
+    }
+
+    /** A copy's own size in a word ("1.1 GB", an estimate "≈1.0 GB"); null when only a pack's is known. */
+    fun sizeShort(f: SourceFacts): String? = f.sizeBytes?.let { if (f.sizeEstimated) "≈${size(it)}" else size(it) }
 
     /** "1:02:03" or "42:10", for "Resumed near 1:02:03". */
     fun clock(ms: Long): String {

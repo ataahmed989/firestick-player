@@ -577,6 +577,13 @@ class DefaultVodRepository(
         id?.let { storedExtras(kind, it)?.value?.originalLanguage }
     }.getOrNull()
 
+    override fun seasonEpisodes(title: Title, season: Int): Int? = runCatching {
+        val all = storedMeta(Kind.SERIES, title.id)?.value?.episodes?.filter { it.season == season }.orEmpty()
+        val now = clock()
+        val aired = all.count { e -> e.released?.let { it <= now } == true }
+        (if (aired > 0) aired else all.size).takeIf { it > 0 }
+    }.getOrNull()
+
     /** TMDB's stored details; a stored null value: TMDB had no such title lately. */
     private fun storedExtras(kind: Kind, tmdbId: Int): Stored<TmdbDetails.Extras?>? {
         val key = TmdbDetails.key(kind, tmdbId)

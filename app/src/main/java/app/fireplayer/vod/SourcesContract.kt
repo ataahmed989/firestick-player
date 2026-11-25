@@ -278,10 +278,25 @@ data class SourceFacts(
     /** [sizeBytes] is the file's to the byte (an add-on's videoSize, or what a play here measured), not a rounded "29.26 GB". */
     val sizeExact: Boolean = false,
     /**
-     * The only size the add-ons gave is the torrent's (an episode's season pack in all), so [sizeBytes] and [avgMbps]
-     * are null: the episode's own file could be any size. Memory only.
+     * The only size the add-ons gave is the torrent's (an episode's season pack in all), or may be ([packUnclear]), and
+     * no estimate was made of the file's, so [sizeBytes] and [avgMbps] are null: the episode's own file could be any
+     * size. Memory only.
      */
     val torrentTotal: Boolean = false,
+    /**
+     * [sizeBytes] is an estimate, never the file's: its season pack's total ([packBytes]) shared by [packEpisodes]
+     * episodes. Ranked as a stated size; never merges or tells files apart. Memory only.
+     */
+    val sizeEstimated: Boolean = false,
+    /**
+     * An episode's add-on's one size when it is its season pack's total, or may be ([packUnclear]), while nothing better
+     * is known of the file ("(pack 10.2 GB)", "(10.2 GB)"); null otherwise. Memory only.
+     */
+    val packBytes: Long? = null,
+    /** The episodes [packBytes] was shared by for [sizeBytes]'s estimate; null without one. Memory only. */
+    val packEpisodes: Int? = null,
+    /** [packBytes] may be the pack's or the episode's: nothing tells. Memory only. */
+    val packUnclear: Boolean = false,
 )
 
 /** What FirePlayer measured itself when this file played here before, keyed by [ReleaseKey.measuredKey]. */

@@ -89,6 +89,11 @@ class DefaultSourcesRepository(
     private val subtitles: () -> String? = { null },
     /** The viewer's moves of films' copies between 4K IMAX and 4K ([moveImax]). */
     private val moves: ImaxMoves? = null,
+    /**
+     * How many episodes a show's season has, from what's stored of the show on this TV (never fetched: any thread,
+     * quick; [app.fireplayer.vod.VodRepository.seasonEpisodes]); null when not known. Asked only for a season pack's size.
+     */
+    private val seasonEpisodes: (app.fireplayer.vod.Title, Int) -> Int? = { _, _ -> null },
 ) : SourcesRepository {
 
     private class Answer(val parsed: ParsedAnswer, val keepUntil: Long)
@@ -496,7 +501,9 @@ class DefaultSourcesRepository(
                 val singles = if (episode == null) emptySet() else answers.flatMapTo(HashSet()) { a ->
                     a.mapNotNull { p -> p.release?.takeIf { it.fileIdx == null && ReleaseKey.indexesEveryFile(p.offer.addon) } }
                 }
-                val merged = SourceMerge.mergeKeyed(answers, input.runtimeMin, episode != null) { r ->
+                // A season pack's size is shared by its season's episodes, as stored of the show (read only for one).
+                val count = { episode?.let { seasonEpisodes(target.title, it.season) } }
+                val merged = SourceMerge.mergeKeyed(answers, input.runtimeMin, episode != null, count) { r ->
                     (measured(r.measuredKey(episode)) ?: r.earlierKey(episode, r in singles)?.let { measured(it) })
                         ?.spec?.sizeBytes?.takeIf { it > 0 }
                 }
@@ -632,6 +639,7 @@ class DefaultSourcesRepository(
                 // The sound FirePlayer is set to (Settings › Playback), after the film's own language.
                 language = { viewer.audioLanguage.ifEmpty { Locale.getDefault().language.ifEmpty { "en" } } },
                 originalLanguage = { title -> vod.originalLanguage(title) },
+                seasonEpisodes = { title, season -> vod.seasonEpisodes(title, season) },
                 subtitles = { viewer.subtitleLanguage.ifEmpty { null } },
                 moves = ImaxMoves(Settings.records(app)) { SettingsWriter.shared.flush(it) },
                 main = loop,

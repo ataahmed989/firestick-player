@@ -27,11 +27,25 @@ class ParsedStream(
     /** MediaFusion's or Torz's exact size (behaviorHints.videoSize) rather than a rounded "💾 29.26 GB". */
     val exactSize: Boolean = false,
     /**
-     * The only size the add-on gave is the torrent's, not the file's (MediaFusion's one size for an episode: a season
-     * pack's total), so [facts] has no size and no rate rather than a wrong one.
+     * The only size the add-on gave may be the torrent's, not the file's (MediaFusion's one size for an episode, when its
+     * names don't say one episode: a season pack's total, [PackWords]), so [facts] has no size of the file's own: an
+     * estimate at most ([SourceFacts.sizeEstimated]), never a wrong one.
      */
     val torrentSize: Boolean = false,
-)
+    /**
+     * MediaFusion's one size for an episode (its videoSize, else its words'): the season pack's or the episode's, as
+     * [packRead] and the other add-ons tell ([SourceMerge]); null for every other stream.
+     */
+    val oneSize: Long? = null,
+    /** What MediaFusion's names say of [oneSize]'s torrent; null without [oneSize]. */
+    val packRead: PackWords.Read? = null,
+    /** [oneSize] as videoSize gave it to the byte: the file's own when it is another add-on's exact size ([SourceMerge]). */
+    val looseExact: Long? = null,
+) {
+    /** This stream with [facts] (a season pack's size worked out, [SourceMerge]), the rest as it is. */
+    fun with(facts: SourceFacts, torrentSize: Boolean): ParsedStream =
+        ParsedStream(offer, release, facts, sameName, cinema, threeD, exactSize, torrentSize, oneSize, packRead, looseExact)
+}
 
 /**
  * An add-on's answer, read: its streams, and what it said instead of them ([notice]: an error row such as "Invalid
@@ -173,16 +187,22 @@ object StreamParser {
         val fromName = Words.read(filename.orEmpty())
         val video = hints?.optLong("videoSize", 0L)?.takeIf { it > 0 }
         // A film's videoSize is its file's. An episode's one size (videoSize, "📦 10.2 GB") is its torrent's: a season
-        // pack's total, not the episode's file. Only MediaFusion's two sizes, "📦 1.01 GB / 10.2 GB", name the file
-        // (the first), and videoSize is the file's to the byte when it is that one.
+        // pack's total, or the episode's when the torrent is that one episode. Only MediaFusion's two sizes, "📦 1.01 GB /
+        // 10.2 GB", name the file (the first), and videoSize is the file's to the byte when it is that one.
         val file = if (episode) Words.fileOfTwo(text) else null
         val exact = if (!episode) video else video?.takeIf { v -> file != null && Words.near(v, file) }
+        val one = if (episode && exact == null && file == null) video ?: Words.size(text) else null
+        // What its names say of that torrent (the file's, the torrent's, each line of the description): a pack's total is
+        // never the episode's size (shown in parentheses or shared out, [SourceMerge]); one episode's is its own.
+        val read = one?.let { PackWords.read(listOf(filename) + text.lines().flatMap { it.split("┈➤") }) }
+        val single = read?.kind == PackWords.Kind.SINGLE
         val size = when {
             exact != null -> exact
+            single -> one
             episode -> file
             else -> Words.size(text)
         }
-        val torrentSize = size == null && episode && (video != null || Words.size(text) != null)
+        val torrentSize = one != null && !single
         val facts = SourceFacts(
             height = tail?.height ?: nameRes.height ?: groupFacts?.height ?: textFacts.height ?: fromName.height,
             hdr = (groupFacts?.hdr ?: emptySet()) + textFacts.hdr + fromName.hdr,
@@ -200,12 +220,15 @@ object StreamParser {
             seeders = Words.seeders(text),
             pack = false,
             sizeExact = exact != null,
+            packBytes = one?.takeIf { torrentSize },
+            packUnclear = torrentSize && read?.kind == PackWords.Kind.UNSAID,
         )
         val cinema = (groupFacts?.cinema ?: false) || textFacts.cinema || fromName.cinema
         val offer = Offer(Addon.MEDIAFUSION, readiness, text.lines().filter { it.isNotBlank() }.joinToString("\n"),
             filename, bingeGroup, link)
         return ParsedStream(offer, release, facts, filename?.let { Words.sameName(it) }, cinema,
-            fromName.threeD || textFacts.threeD, exactSize = exact != null, torrentSize = torrentSize)
+            fromName.threeD || textFacts.threeD, exactSize = exact != null, torrentSize = torrentSize, oneSize = one,
+            packRead = read, looseExact = video?.takeIf { one != null })
     }
 
     // ---- StremThru Torz ----

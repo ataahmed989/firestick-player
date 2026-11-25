@@ -65,7 +65,8 @@ class RankInput(
  * 7. Rate: nearest the viewer's preferred bitrate first ([rateKey]; what the connection keeps, when that is less), the
  *    higher side counting a little less, nearly equal distances tied; an unknown rate after those near it, and after
  *    every copy that played well here at a rate measured here; an episode's copy whose only size was its season pack's
- *    after every copy of a known rate ([keysOf]).
+ *    (or may be), with no estimate of its share, after every copy of a known rate ([keysOf]). A share estimated
+ *    ([SourceFacts.sizeEstimated]) ranks as a stated size, here and in fit and size.
  * 8. Source kind (Remux, BluRay encode, WEB-DL, WEBRip, HDTV), then bit depth (10-bit taken for HDR and 4K HEVC).
  * 9. HDR10+ where it reaches the TV ([TvPlan.hdr10PlusReaches]; Dolby Vision on a Dolby Vision TV); a picture that
  *    played here without HDR10's brightness data last.
@@ -492,13 +493,16 @@ object SourceRank {
      * on a plain decoder (as its HDR10 base layer, or Media3's own way back to HEVC) is its base layer here, not Dolby
      * Vision: HLG or SDR where the file's record said so ([MediaSpec.dvSignal]: 8.4, 8.2), else HDR10; its profile is
      * filled in from the play; HDR10+ seen in the picture is added. The file's size and average rate as the play
-     * measured them replace the add-ons' (a season pack's total isn't the episode's file). Otherwise [facts] as the
-     * add-ons have them.
+     * measured them replace the add-ons' (a season pack's total, or its share, isn't the episode's file). Otherwise
+     * [facts] as the add-ons have them.
      */
     fun asPlayedHere(facts: SourceFacts, measured: Measured?): SourceFacts {
         val spec = measured?.spec ?: return facts
         var f = facts
-        if (spec.sizeBytes > 0 && (f.sizeBytes != spec.sizeBytes || !f.sizeExact)) f = f.copy(sizeBytes = spec.sizeBytes, sizeExact = true)
+        if (spec.sizeBytes > 0 && (f.sizeBytes != spec.sizeBytes || !f.sizeExact)) {
+            f = f.copy(sizeBytes = spec.sizeBytes, sizeExact = true, torrentTotal = false, sizeEstimated = false, packBytes = null,
+                packEpisodes = null, packUnclear = false)
+        }
         if (spec.overallBps > 0) f = f.copy(avgMbps = spec.overallBps / 1_000_000.0)
         if (Hdr.DOLBY_VISION in f.hdr) {
             val plain = spec.dvBaseLayer > 0 || (spec.decoder == MediaSpec.Decoder.PLAIN && spec.dvProfile != 5)

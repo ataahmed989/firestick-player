@@ -8,6 +8,7 @@ import app.fireplayer.vod.BestWhy
 import app.fireplayer.vod.Hdr
 import app.fireplayer.vod.PlaybackSource
 import app.fireplayer.vod.Readiness
+import app.fireplayer.vod.SourceFacts
 import app.fireplayer.vod.SourceList
 import app.fireplayer.vod.TvFit
 import app.fireplayer.vod.TvPlan
@@ -335,12 +336,32 @@ object SourcesModel {
     /** A copy beaten, by what tells it from the Best: "the IMAX copy", "the 1080p Remux", "the 81.4 GB Remux". */
     private fun nameOf(b: PlaybackSource, best: PlaybackSource, film: Boolean): String {
         if (PlayRules.imax(b, film) && !PlayRules.imax(best, film)) return "the IMAX copy"
-        val what = if (b.facts.height != best.facts.height) PlayRules.resolution(b.facts.height) else b.facts.sizeBytes?.let { PlayRules.size(it) }
+        val what = if (b.facts.height != best.facts.height) PlayRules.resolution(b.facts.height) else PlayRules.sizeShort(b.facts)
         return "the " + listOfNotNull(what, PlayRules.kind(b.facts.origin) ?: "copy").joinToString(" ")
     }
 
     /** Set aside because this connection was measured too slow for it. */
     private fun slowLine(s: PlaybackSource): Boolean = s.fit == TvFit.LIKELY_NOT && s.warning?.contains(SLOW_LINE_WORDS) == true
+
+    /**
+     * Details' size: [measured] by a play here; else the add-ons' ("1.1 GB"), an episode's share of its season pack
+     * ("≈1.0 GB (estimated: pack 10.2 GB ÷ 10 episodes)"), the pack's ("10.2 GB (pack)"), or one that may be either
+     * ("10.2 GB (pack or episode)"); null when none is known.
+     */
+    private fun sizeDetail(f: SourceFacts, measured: Long?): String? {
+        if (measured != null) return PlayRules.size(measured)
+        val own = f.sizeBytes
+        val pack = f.packBytes
+        val n = f.packEpisodes
+        return when {
+            own != null && f.sizeEstimated && pack != null && n != null ->
+                "≈${PlayRules.size(own)} (estimated: pack ${PlayRules.size(pack)} ÷ $n episodes)"
+            own != null -> PlayRules.sizeShort(f)
+            pack != null && f.packUnclear -> "${PlayRules.size(pack)} (pack or episode)"
+            pack != null -> "${PlayRules.size(pack)} (pack)"
+            else -> null
+        }
+    }
 
     /** Whether OK on [s] first asks before the debrid service fetches it ([Readiness.NOT_READY]). */
     fun asksFirst(s: PlaybackSource): Boolean = s.readiness == Readiness.NOT_READY
@@ -386,11 +407,12 @@ object SourcesModel {
         val atmosLost = atmos && heard != PlayRules.ATMOS && plan != null
         val sound = stated ?: measuredSound?.let { "$it · measured here" }
         out += "Sound" to ((sound ?: "Not stated") + if (atmosLost) " · heard here as ${heard ?: "sound"}: Atmos not kept on this TV" else "")
-        // The file's size and average rate as a play here measured them, else the add-ons' (a season pack's total never).
-        (spec?.sizeBytes?.takeIf { it > 0 } ?: f.sizeBytes)?.let { out += "Size" to PlayRules.size(it) }
+        // The file's size and average rate as a play here measured them, else the add-ons' (a season pack's total never as
+        // the file's: its share estimated, or the pack's own said as such).
+        sizeDetail(f, spec?.sizeBytes?.takeIf { it > 0 })?.let { out += "Size" to it }
         val measuredMbps = spec?.overallBps?.takeIf { it > 0 }?.let { it / 1_000_000.0 }
         if (measuredMbps != null) out += "Data rate" to "≈${measuredMbps.toInt()} Mb/s average · measured here"
-        else f.avgMbps?.let { out += "Data rate" to "≈${it.toInt()} Mb/s average (from size)" }
+        else f.avgMbps?.let { out += "Data rate" to "≈${it.toInt()} Mb/s average (${if (f.sizeEstimated) "estimated" else "from size"})" }
         spec?.takeIf { it.videoHow == MediaSpec.How.MEASURED && it.videoBps > 0 }?.let { out += "Picture data" to "${MediaSpec.mbps(it.videoBps)} · measured here" }
         server?.let { out += "Server" to it }
         f.origin?.let { out += "Source" to it }

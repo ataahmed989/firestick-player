@@ -5843,7 +5843,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             keptPlay = playKey
             keptBefore = before
             keptAt = System.currentTimeMillis()
-            keptSized = (before?.sizeBytes ?: 0L) > 0L
+            keptRanks.newPlay()
         }
         // The play's date, the same all through it: "✓ played" in Sources, and when it last played here.
         val now = spec.copy(playedAt = keptAt)
@@ -5852,13 +5852,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val edit = qualitySeen.edit()
         if (qualitySeen.all.size >= MAX_QUALITY_SEEN && !qualitySeen.contains(key)) edit.clear()
         edit.putString(key, text).apply()
-        // The file's exact size, first known: the same file from the other add-on joins its row now (SourceMerge), so
-        // Next source and Sources don't offer it again as another copy. Only this title's list: the size is of its file.
-        val s = source
-        if (!keptSized && spec.sizeBytes > 0L && s != null) {
-            keptSized = true
-            (Sources.get(this) as? app.fireplayer.vod.sources.DefaultSourcesRepository)?.rerank(s.request.target)
-        }
+        // What this play measured, as it's first kept (the picture's rate; the file's exact size once known): this
+        // title's list ranks again with it, once each a play, whatever an earlier play kept. Its row shows the file as
+        // measured here and moves where that puts it (a starved picture under every well-fed copy), the Sources window
+        // open redraws with it, and the same file from the other add-on joins its row (SourceMerge), so Next source and
+        // Sources don't offer it again as another copy. Only this title's list: the figures are its file's.
+        val s = source ?: return
+        if (!keptRanks.kept(sized = spec.sizeBytes > 0L)) return
+        (Sources.get(this) as? app.fireplayer.vod.sources.DefaultSourcesRepository)?.rerank(s.request.target)
     }
 
     /** A title's name as copies of it are matched: letters and digits only, no year ("missionimpossiblefallout"). */
@@ -5966,8 +5967,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private var keptPlay: String? = null
     private var keptBefore: MediaSpec? = null
     private var keptAt = 0L
-    // Whether the copy's exact size was known when the play being kept started, or has been told since.
-    private var keptSized = false
+    // Whether this play's measured rate, and the file's size, have been ranked into its title's list (once each a play).
+    private val keptRanks = app.fireplayer.vod.play.MeasuredRerank()
 
     /** What was measured of the copy at [uri] when it was played; null if it never was. Any thread. */
     private fun measuredQuality(uri: Uri): MediaSpec? = keptOf(uri)?.let { MediaSpec.decode(it) }

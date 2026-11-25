@@ -78,7 +78,8 @@ class SeasonPackTest {
     private val amenFileE7 = "Your.Friendly.Neighborhood.Spider-Man.S01E07.2160p.WEBRip.x265.10bit.DV.HDR.DDP5.1-Amen.mkv"
     private val g66Pack = "Your.Friendly.Neighborhood.Spider-Man.S01.2160p.DSNP.WEB-DL.DDP5.1.Atmos.DV.HDR.H.265-G66"
     private val g66File = "Your.Friendly.Neighborhood.Spider-Man.S01E06.2160p.DSNP.WEB-DL.DDP5.1.Atmos.DV.HDR.H.265-G66.mkv"
-    private val packFile = "Your.Friendly.Neighborhood.Spider-Man.S01E06.2160p.DSNP.WEB-DL.DDP5.1.Atmos.DV.HDR.H.265-PACK.mkv"
+    /** The 28.8 GB pack's torrent, as MediaFusion names a pack's row whose file it doesn't index (its torrent's name). */
+    private val packFile = "Your.Friendly.Neighborhood.Spider-Man.S01.2160p.DSNP.WEB-DL.DDP5.1.Atmos.DV.HDR.H.265-PACK"
 
     /** As MediaFusion's Rust backend writes an episode of a season pack: one size (the torrent's), no fileIdx. */
     private fun mfPack(hash: String, file: String, videoSize: Long, sizeWords: String, origin: String, episode: EpisodeRef = e6) =
@@ -152,30 +153,46 @@ class SeasonPackTest {
     // ---- The add-ons' sizes ----
 
     @Test
-    fun anEpisodesOneSizeFromMediaFusionIsItsSeasonPacksSoItShowsNoSizeAndNoRate() {
-        val s = parsed(Addon.MEDIAFUSION, mfAnswer()).first()
+    fun anEpisodesOneSizeFromMediaFusionIsItsSeasonPacksWhenItsNamesSayPackNeverTheFiles() {
+        // Its torrent named as a season pack (MediaFusion names a pack's row by its torrent when it doesn't index the file).
+        val amenPack = "Your.Friendly.Neighborhood.Spider-Man.S01.2160p.WEBRip.x265.10bit.DV.HDR.DDP5.1-Amen"
+        val s = parsed(Addon.MEDIAFUSION, answer(mfPack(ha, amenPack, 10_200_000_000L, "10.2 GB", "WEBRip"))).single()
         assertEquals(ReleaseKey(ha, null), s.release)
         assertNull(s.facts.sizeBytes)
         assertNull(s.facts.avgMbps)
         assertFalse(s.exactSize)
         assertTrue(s.torrentSize)
+        // The pack's size is kept as the pack's, said in parentheses until a share or a play tells the file's.
+        assertEquals(10_200_000_000L, s.facts.packBytes)
+        assertFalse(s.facts.packUnclear)
         // Its other facts are its file's.
         assertEquals(2160, s.facts.height)
         assertEquals("WEBRip", s.facts.origin)
         assertEquals("Amen", s.facts.group)
         // Only the words' size (no videoSize): the same.
-        val words = JSONObject(mfPack(ha, amenFile, 10_200_000_000L, "10.2 GB", "WEBRip").toString()).apply {
+        val words = JSONObject(mfPack(ha, amenPack, 10_200_000_000L, "10.2 GB", "WEBRip").toString()).apply {
             getJSONObject("behaviorHints").remove("videoSize")
         }
         val fromWords = parsed(Addon.MEDIAFUSION, answer(words)).single()
         assertNull(fromWords.facts.sizeBytes)
         assertTrue(fromWords.torrentSize)
+        // Named as its one episode's file, with nothing else said: read as one episode's torrent, its size stated (never
+        // exact)...
+        val named = parsed(Addon.MEDIAFUSION, mfAnswer()).first()
+        assertEquals(10_200_000_000L, named.facts.sizeBytes)
+        assertFalse(named.exactSize)
+        assertFalse(named.torrentSize)
+        // ...until another add-on lists its torrent's file under an index (Torz: 5, 1.08 GB): the pack's, the file Torz's.
+        val row = SourceMerge.merge(answers(), 28, episode = true).holding(ha)
+        assertEquals(amenBytes, row.facts.sizeBytes)
+        assertTrue(row.facts.sizeExact)
         // A film's videoSize is its file's, as before.
         val film = StreamParser.parse(Addon.MEDIAFUSION, answer(mfPack(ha, amenFile, 10_200_000_000L, "10.2 GB", "WEBRip")), 120).streams.single()
         assertEquals(10_200_000_000L, film.facts.sizeBytes)
         assertTrue(film.exactSize)
         assertTrue(film.facts.sizeExact)
         assertFalse(film.torrentSize)
+        assertNull(film.facts.packBytes)
     }
 
     @Test

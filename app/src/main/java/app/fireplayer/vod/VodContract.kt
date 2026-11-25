@@ -611,6 +611,13 @@ interface VodRepository {
     fun setOnOriginalLanguage(listener: (() -> Unit)?) = Unit
 
     /**
+     * How many episodes [season] of the show [title] has aired (all it lists when none has a date), from its details
+     * already stored on this TV (never fetched here: any thread, quick); null when none are stored. Sources share a
+     * season pack's size by it.
+     */
+    fun seasonEpisodes(title: Title, season: Int): Int? = null
+
+    /**
      * Up to 15 POSTER cards like [title], never [title] itself, one per IMDb id. With a usable key: TMDB's
      * recommendations, topped up from its similar titles (those without a poster or with very few votes left out),
      * from the same TMDB call as [details]. Without a key, or when TMDB fails: Cinemeta's, for a film its director's
