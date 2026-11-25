@@ -563,9 +563,10 @@ internal object VodSizes {
      * What a Sources row's two lines have room for, in characters, so neither is ever cut inside a word. Beside the
      * widest marks ("✓ played Sep 30", 81 dp at 10.5 sp, and their 10 dp gap) a row's words have 275 dp: the first line
      * (13 sp Figtree, about 6.4 dp a character) holds 43, and the quieter second line (10.5 sp, about 4.8 dp) 115 over its
-     * two lines, less a long word lost where it wraps.
+     * two lines, less a long word lost where it wraps. By Figtree 600's own widths the rows' first lines run about 6.1 dp
+     * a character: 266 dp at 43 ("4K · HDR10 · WEB · ≈10.2 GB (pack 102.4 GB)"), 287 dp at 46, cut.
      */
-    const val SOURCES_LINE_CHARS = 40
+    const val SOURCES_LINE_CHARS = 43
     const val SOURCES_NOTE_CHARS = 96
 
     // The stage under the text block: the action column on the left; right of it a show's season dropdown, the

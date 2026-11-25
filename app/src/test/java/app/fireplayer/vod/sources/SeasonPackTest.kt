@@ -176,13 +176,14 @@ class SeasonPackTest {
         val fromWords = parsed(Addon.MEDIAFUSION, answer(words)).single()
         assertNull(fromWords.facts.sizeBytes)
         assertTrue(fromWords.torrentSize)
-        // Named as its one episode's file, with nothing else said: read as one episode's torrent, its size stated (never
-        // exact)...
+        // Named as its episode's file (a pack's file is so too), with nothing else said: never its size; said in
+        // parentheses...
         val named = parsed(Addon.MEDIAFUSION, mfAnswer()).first()
-        assertEquals(10_200_000_000L, named.facts.sizeBytes)
+        assertNull(named.facts.sizeBytes)
         assertFalse(named.exactSize)
-        assertFalse(named.torrentSize)
-        // ...until another add-on lists its torrent's file under an index (Torz: 5, 1.08 GB): the pack's, the file Torz's.
+        assertTrue(named.torrentSize)
+        assertTrue(named.facts.packUnclear)
+        // ...until another add-on lists its torrent's file of its own size (Torz: 5, 1.08 GB): the pack's, the file Torz's.
         val row = SourceMerge.merge(answers(), 28, episode = true).holding(ha)
         assertEquals(amenBytes, row.facts.sizeBytes)
         assertTrue(row.facts.sizeExact)

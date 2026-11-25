@@ -4,6 +4,7 @@ import app.fireplayer.player.CopyHealth
 import app.fireplayer.player.MediaSpec
 import app.fireplayer.vod.Addon
 import app.fireplayer.vod.AddonSave
+import app.fireplayer.vod.AddonState
 import app.fireplayer.vod.AddonSettings
 import app.fireplayer.vod.EpisodeRef
 import app.fireplayer.vod.Hdr
@@ -31,12 +32,14 @@ import app.fireplayer.vod.TvPlan
 import app.fireplayer.vod.play.MeasuredRerank
 import app.fireplayer.vod.play.PlayRules
 import app.fireplayer.vod.play.SourcesModel
+import app.fireplayer.vod.ui.VodSizes
 import app.fireplayer.vod.sources.SourceFixtures.answer
 import app.fireplayer.vod.sources.SourceFixtures.torrentio
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -328,9 +331,47 @@ class PackSizeTest {
         assertFalse(PackWords.one("Show.S01-S02.1080p").oneSeason)
         assertFalse(PackWords.one("Show.Complete.Series").oneSeason)
         // A torrent's "S01" with its file's "S01E09": a pack's file.
-        assertEquals(PackWords.Kind.PACK, PackWords.read(listOf("Show.S01E09.mkv", "📂 Show.S01.2160p ")).kind)
-        assertEquals(PackWords.Kind.SINGLE, PackWords.read(listOf("Show.S01E09.mkv", null)).kind)
+        assertEquals(PackWords.Kind.PACK, PackWords.read(listOf("📂 Show.S01.2160p "), listOf("Show.S01E09.mkv")).kind)
+        // Only a torrent's own name says one episode: a file's names its episode in a pack too.
+        assertEquals(PackWords.Kind.SINGLE, PackWords.read(listOf("Show.S01E09.2160p", null)).kind)
+        assertEquals(PackWords.Kind.UNSAID, PackWords.read(emptyList(), listOf("Show.S01E09.2160p.mkv", null)).kind)
         assertEquals(PackWords.Kind.UNSAID, PackWords.read(listOf(null, "")).kind)
+    }
+
+    @Test
+    fun theNamesSayRangesSeasonsAndAnimesEpisodesAsTheyAre() {
+        fun read(n: String) = PackWords.one(n)
+        // Ranges of the "1x01" form and with "to", counted, before one episode is read in them.
+        for ((name, count) in listOf(
+            "La Casa de Papel 1x01-1x13 [1080p]" to 13, "Show.1x01-10.720p" to 10, "Show.S01E01.to.S01E10.1080p" to 10,
+            "Show S01E01 to S01E10" to 10, "Show.E01.to.E08.1080p" to 8,
+        )) {
+            assertEquals(name, PackWords.Kind.PACK, read(name).kind)
+            assertEquals(name, count, read(name).episodes)
+            assertTrue(name, read(name).oneSeason)
+        }
+        // Anime's one episode, "S3 - 01": never a run of seasons, nor a season's pack.
+        for (one in listOf("[SubsPlease] Kaguya-sama wa Kokurasetai S3 - 01 (1080p).mkv", "[Judas] Mushoku Tensei S2 - 05 [1080p].mkv")) {
+            assertEquals(one, PackWords.Kind.SINGLE, read(one).kind)
+        }
+        // ...and its batch, a range.
+        assertEquals(12, read("[Judas] Mushoku Tensei S2 - 01-12 [1080p]").episodes)
+        // Seasons spaced around the dash still a run when both say "S"; several "Sxx" a run too.
+        for (run in listOf("Show S01 - S02 1080p", "Show.S01-02.1080p", "Show.S01.S02.S03.1080p", "Show Seasons 1 & 2")) {
+            assertEquals(run, PackWords.Kind.PACK, read(run).kind)
+            assertFalse(run, read(run).oneSeason)
+            assertNull(run, read(run).episodes)
+        }
+        assertTrue(read("Show.S01.2160p.S01.Extras").oneSeason)
+        // A range across seasons: a pack of no count.
+        for (across in listOf("Show.S01E01-S02E05.1080p", "Show.1x01-2x05.720p")) {
+            assertEquals(across, PackWords.Kind.PACK, read(across).kind)
+            assertNull(across, read(across).episodes)
+            assertFalse(across, read(across).oneSeason)
+        }
+        // A resolution after a dash is no range.
+        assertEquals(PackWords.Kind.SINGLE, read("Show.1x05-1080p").kind)
+        assertEquals(PackWords.Kind.SINGLE, read("Show S2 - 05 - 1080p").kind)
     }
 
     @Test
@@ -412,10 +453,84 @@ class PackSizeTest {
         assertTrue(same.single().facts.sizeExact)
         val other = rows(single, parsed(Addon.TORZ, torz(hk, 0, "Other.Name.2160p.WEBRip-X.mkv", amenBytes + 5_000_000, origin = "WEBRip")))
         assertEquals(2, other.size)
-        // Only its name saying one episode, nothing else said: its size as stated too.
-        val named = rows(parsed(Addon.MEDIAFUSION, mf(hc, amenFile, 10_200_000_000L)), count = 10).single()
-        assertEquals(10_200_000_000L, named.facts.sizeBytes)
-        assertEquals("10.2 GB", PlayRules.sizeWords(named.facts))
+        // Named by its torrent alone (MediaFusion indexes no file of it) as one episode, nothing else said: its size as
+        // stated too.
+        val named = rows(parsed(Addon.MEDIAFUSION, mf(hc, amenFile.removeSuffix(".mkv"), amenBytes, "1.03 GB")), count = 10).single()
+        assertEquals(amenBytes, named.facts.sizeBytes)
+        assertEquals("1.1 GB", PlayRules.sizeWords(named.facts))
+    }
+
+    @Test
+    fun aFilesNameNeverSaysItsTorrentIsOneEpisode() {
+        // E01 of a 25 GB season pack only MediaFusion lists: its first file (index 0), named as the episode's file, the
+        // pack's size. Not "25.0 GB" at 74 Mb/s ranked as the episode's: said in parentheses, ranked as a size not known.
+        val e01 = "Show.S01E01.2160p.WEB-DL.DDP5.1.H.265-GRP.mkv"
+        val heavy = parsed(Addon.TORZ, torz(hk, 0, kitsuneFile, 27_300_000_000L, hdr = "HDR"))
+        for (idx in listOf(0, 3, null)) {
+            val list = rows(parsed(Addon.MEDIAFUSION, mf(ha, e01, 25_000_000_000L, "25 GB", origin = "WEB-DL", idx = idx, hdr = "HDR")), heavy,
+                count = 10)
+            val row = list.fromMf(ha)
+            assertNull("$idx", row.facts.sizeBytes)
+            assertNull("$idx", row.facts.avgMbps)
+            assertFalse("$idx", row.facts.sizeEstimated)
+            assertEquals("$idx", "4K · HDR10 · WEB · (25.0 GB)", line(row))
+            assertEquals("$idx", listOf(list.holding(hk).key, row.key), list.map { it.key })
+        }
+        // The 28.8 GB pack the same: never "28.8 GB" as the episode's.
+        val pack = rows(parsed(Addon.MEDIAFUSION, mf(hp, "Show.S01E01.2160p.DSNP.WEB-DL-PACK.mkv", 28_800_000_000L, "28.8 GB", idx = 0))).single()
+        assertEquals("(28.8 GB)", PlayRules.sizeWords(pack.facts))
+        // With an index, even a name with no extension is the file's (MediaFusion names a file it indexes by its own).
+        val bare = rows(parsed(Addon.MEDIAFUSION, mf(hp, "Show.S01E01.2160p.DSNP.WEB-DL-PACK", 28_800_000_000L, "28.8 GB", idx = 0))).single()
+        assertEquals("(28.8 GB)", PlayRules.sizeWords(bare.facts))
+        // Index-less and named by its torrent ("📂 torrent ┈➤ file" too) as one episode: its torrent is that episode.
+        val torrentNamed = rows(parsed(Addon.MEDIAFUSION, mf(hc, e01, amenBytes, "1.03 GB", torrent = e01.removeSuffix(".mkv"), idx = 0))).single()
+        assertEquals(amenBytes, torrentNamed.facts.sizeBytes)
+        assertEquals("1.1 GB", PlayRules.sizeWords(torrentNamed.facts))
+    }
+
+    @Test
+    fun aTorrentOfOneEpisodeBesideATextFileOrASampleIsNeverShared() {
+        // "Show.S01E09.1080p.WEB.H264-GRP" = RARBG.txt, the episode's 1.50 GB file, a 60 MB sample: MediaFusion lists it
+        // under index 1 (the text file is first), named as the file, of the torrent's 1.56 GB.
+        val file = "Show.S01E09.1080p.WEB.H264-GRP.mkv"
+        val torrent = "Show.S01E09.1080p.WEB.H264-GRP"
+        val total = 1_560_000_000L
+        val video = 1_500_000_000L
+        val mfRow = parsed(Addon.MEDIAFUSION, mf(hs, file, total, "1.56 GB", origin = "WEB", idx = 1))
+        // Alone: nothing says, so no guess ("(1.6 GB)"), never "≈156 MB (pack 1.6 GB)".
+        val alone = rows(mfRow, count = 10).single()
+        assertFalse(alone.facts.sizeEstimated)
+        assertEquals("(1.6 GB)", PlayRules.sizeWords(alone.facts))
+        // Torrentio's file of it under an index, of its stated size near the torrent's: one episode's, its size its own.
+        val tio = parsed(Addon.TORRENTIO, torrentio(hs, idx = 1, quality = "1080p", name = torrent, file = "$torrent/$file", size = "1.40 GB"))
+        val withTio = rows(mfRow, tio, count = 10).fromMf(hs)
+        assertFalse(withTio.facts.sizeEstimated)
+        assertNull(withTio.facts.packBytes)
+        assertNotNull(withTio.facts.sizeBytes)
+        // Torz's exact size for the video alone, 4% under the torrent's (its sample): the same.
+        val tz = parsed(Addon.TORZ, torz(hs, 1, file, video, origin = "WEB", hdr = ""))
+        val withTorz = rows(mfRow, tz, count = 10).fromMf(hs)
+        assertFalse(withTorz.facts.sizeEstimated)
+        assertNull(withTorz.facts.packBytes)
+        // Torrentio's index never outweighs Torz's size near the torrent's.
+        val both = rows(mfRow, tio, tz, count = 10).fromMf(hs)
+        assertFalse(both.facts.sizeEstimated)
+        assertNull(both.facts.packBytes)
+        // Torrentio listing it with no file index: its size may be the torrent's, so it says nothing.
+        val noIdx = parsed(Addon.TORRENTIO, torrentio(hs, idx = -1, quality = "1080p", name = torrent, size = "1.45 GB"))
+        assertEquals("(1.6 GB)", PlayRules.sizeWords(rows(mfRow, noIdx, count = 10).fromMf(hs).facts))
+        // Its torrent named as one episode while a size says pack (an extra as big as the episode): the pack's size, no
+        // guess of the episode's.
+        val named = parsed(Addon.MEDIAFUSION, mf(hs, torrent, 3_000_000_000L, "3.0 GB", origin = "WEB"))
+        val extra = parsed(Addon.TORZ, torz(hs, 1, file, video, origin = "WEB", hdr = ""))
+        val shown = rows(named, extra, count = 10).fromMf(hs)
+        assertFalse(shown.facts.sizeEstimated)
+        // (One row with Torz's file of its name: its size to the byte.)
+        assertEquals(video, shown.facts.sizeBytes)
+        val apart = rows(named, parsed(Addon.TORZ, torz(hs, 1, "Other.Cut.1080p.WEB.H264-X.mkv", video, origin = "WEB", hdr = "")), count = 10)
+        assertEquals(2, apart.size)
+        assertFalse(apart.fromMf(hs).facts.sizeEstimated)
+        assertEquals("(pack 3.0 GB)", PlayRules.sizeWords(apart.fromMf(hs).facts))
     }
 
     @Test
@@ -457,8 +572,14 @@ class PackSizeTest {
         // The same file by name from another torrent, smaller to the byte: the same.
         val byName = parsed(Addon.TORZ, torz(hc, 0, amenFile, amenBytes, origin = "WEBRip"))
         assertTrue(rows(named, byName, count = 10).fromMf(ha).facts.sizeEstimated)
-        // Its own index past the first: the same.
-        assertTrue(rows(parsed(Addon.MEDIAFUSION, mf(ha, amenFile, 10_200_000_000L, idx = 8)), count = 10).single().facts.sizeEstimated)
+        // Its own index past the first says nothing alone (a text file or a sample may come first): no guess.
+        val indexed = rows(parsed(Addon.MEDIAFUSION, mf(ha, amenFile, 10_200_000_000L, idx = 8)), count = 10).single()
+        assertFalse(indexed.facts.sizeEstimated)
+        assertEquals("(10.2 GB)", PlayRules.sizeWords(indexed.facts))
+        // Torrentio's file of the torrent near its size, under an index: not a pack (a torrent of one file and a sample).
+        val near = parsed(Addon.TORRENTIO, torrentio(ha, idx = 8, quality = "4k DV | HDR", name = amenTorrent,
+            file = "$amenTorrent/Another.Name.S01E09.2160p.WEBRip-Amen.mkv", size = "9.40 GB"))
+        assertFalse(rows(named, near, count = 10).fromMf(ha).facts.sizeEstimated)
         // Torz's only file of the torrent, of its size to the byte: one episode's torrent, its size its own.
         val whole = parsed(Addon.MEDIAFUSION, mf(hc, "Spider-Man.2160p.WEBRip-X.mkv", amenBytes, "1.03 GB"))
         val alone = rows(whole, parsed(Addon.TORZ, torz(hc, 0, "Spider-Man.2160p.WEBRip-X.mkv", amenBytes, origin = "WEBRip")), count = 10)
@@ -470,6 +591,26 @@ class PackSizeTest {
         assertEquals(10_200_000_000L, film.facts.sizeBytes)
         assertTrue(film.exactSize)
         assertNull(film.facts.packBytes)
+    }
+
+    @Test
+    fun aRowTooLongForItsRoomLeavesOutThePacksSizeNeverCutInAWord() {
+        val chars = VodSizes.SOURCES_LINE_CHARS
+        val list = rows(parsed(Addon.MEDIAFUSION, mf(ha, amenTorrent, 10_200_000_000L, hdr = "HDR")), count = 10)
+        val row = list.single()
+        assertEquals("4K · HDR10 · WEB · ≈1.0 GB (pack 10.2 GB)", PlayRules.mainLine(row, chars, film = false, plan = plan))
+        // 46 characters: past the row's room, so the estimate goes alone (Details says the pack's).
+        val remux = row.copy(facts = row.facts.copy(origin = "REMUX", hdr = setOf(Hdr.HDR10_PLUS), sizeBytes = 10_240_000_000L,
+            packBytes = 102_400_000_000L))
+        assertEquals("4K · HDR10+ · Remux · ≈10.2 GB", PlayRules.mainLine(remux, chars, film = false, plan = plan))
+        assertEquals("≈10.2 GB (estimated: pack 102.4 GB ÷ 10 episodes)", details(remux)["Size"])
+        // With room (the hold window's title, Details' own), all of it.
+        assertEquals("4K · HDR10+ · Remux · ≈10.2 GB (pack 102.4 GB)", PlayRules.mainLine(remux, film = false, plan = plan))
+        // The Sources window's rows as the line says.
+        val listed = SourceList(ep9, mapOf(Addon.MEDIAFUSION to AddonState.Answered(1)), list, list.first(), plan = plan, wanted = listOf("en"))
+        val labels = SourcesModel.items(listed, now, setOf(SourcesModel.Section.UHD), lineChars = chars).mapNotNull { it.source?.let { _ -> it.label } }
+        assertTrue(labels.toString(), labels.all { it.length <= chars })
+        assertTrue(labels.toString(), "4K · HDR10 · WEB · ≈1.0 GB (pack 10.2 GB)" in labels)
     }
 
     @Test

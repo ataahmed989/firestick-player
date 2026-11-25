@@ -186,7 +186,10 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
         )
     }
 
-    /** Hold OK on a row: Play from beginning, Details, in the hold window beside the row (it's selected). */
+    /**
+     * Hold OK on a row: Play from beginning, Details, in the hold window beside the row (it's selected). A newer list
+     * that came while it was up is drawn as it closes, before what was chosen.
+     */
     private fun holdMenu(s: PlaybackSource) {
         FireDialog.hold(
             activity,
@@ -197,7 +200,7 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
                 "Details" to { details(s) },
             ),
             fromPanel = true,
-        )
+        )?.onDismiss = ::redrawIfStale
     }
 
     private fun mainLine(s: PlaybackSource): String {

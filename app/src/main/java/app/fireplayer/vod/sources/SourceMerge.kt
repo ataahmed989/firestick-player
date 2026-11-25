@@ -31,6 +31,15 @@ object SourceMerge {
     const val SIZE_CLOSE = 0.01
 
     /**
+     * A season pack's one size against its file's, as another add-on gives it ([packEvidence]): the file at least this
+     * share of it (and at most [SINGLE_OVER] over: Torrentio's rounding) is the torrent's one file beside a sample or a
+     * text file; at most [PACK_SHARE], one of its several episodes (two episodes' each about half).
+     */
+    private const val SINGLE_SHARE = 0.85
+    private const val SINGLE_OVER = 0.03
+    private const val PACK_SHARE = 0.6
+
+    /**
      * [exact]: the file's size to the byte, once an item knows it; [measured]: its size as a play here measured it (looked
      * up once for each item).
      */
@@ -308,10 +317,11 @@ object SourceMerge {
 
     /**
      * An episode's MediaFusion streams whose one size may be their torrent's ([ParsedStream.oneSize]), sized by what the
-     * add-ons say together. A season pack, on clear evidence only ([packEvidence], else its names: [PackWords]): its
-     * size shared by the episodes a range in its name counts, else by its season's ([seasonEpisodes], asked once, for a
-     * pack of one season), an estimate ranked as a stated size; with no count, none ("(pack 10.2 GB)"). One episode: its
-     * size, stated. Nothing said: no size ("(10.2 GB)"). What a play here measures replaces each ([mergeFacts]).
+     * add-ons say together. A season pack, on clear evidence only (the other add-ons' sizes, [packEvidence], else its
+     * names, [PackWords]): its size shared by the episodes a range in its name counts, else by its season's
+     * ([seasonEpisodes], asked once, for a pack of one season or one its names don't tell), an estimate ranked as a
+     * stated size; with no count, or a torrent named as one episode, none ("(pack 10.2 GB)"). One episode: its size,
+     * stated. Nothing said: no size ("(10.2 GB)"). What a play here measures replaces each ([mergeFacts]).
      */
     private fun packSizes(answers: List<List<ParsedStream>>, runtimeMin: Int?, seasonEpisodes: () -> Int?): List<List<ParsedStream>> {
         if (answers.none { a -> a.any { it.oneSize != null } }) return answers
@@ -339,9 +349,13 @@ object SourceMerge {
         return when (kind) {
             PackWords.Kind.SINGLE -> p.with(f.copy(sizeBytes = one, avgMbps = StreamParser.avgMbps(one, runtimeMin)), torrentSize = false)
             PackWords.Kind.PACK -> {
-                // A range's count, else its season's (not for a run of seasons, or a "Complete" naming none).
-                val n = (if (read.kind == PackWords.Kind.PACK) read.episodes else null)
-                    ?: if (read.kind != PackWords.Kind.PACK || read.oneSeason) season() else null
+                // A range's count, else its season's (not for a run of seasons, a "Complete" naming none, or a torrent
+                // its own name says is one episode: never a guess of one episode's size).
+                val n = when (read.kind) {
+                    PackWords.Kind.PACK -> read.episodes ?: if (read.oneSeason) season() else null
+                    PackWords.Kind.UNSAID -> season()
+                    PackWords.Kind.SINGLE -> null
+                }
                 val estimate = n?.takeIf { it >= 2 }?.let { one / it }
                 p.with(f.copy(sizeBytes = estimate, avgMbps = StreamParser.avgMbps(estimate, runtimeMin), sizeEstimated = estimate != null,
                     packBytes = one, packEpisodes = estimate?.let { n }), torrentSize = true)
@@ -351,32 +365,35 @@ object SourceMerge {
     }
 
     /**
-     * What the other add-ons say of [p]'s torrent, whose one size is [one]: true, a season pack (its own file index past
-     * the first; another add-on's file of the same torrent under an index, or of an exact size smaller than [one]; the
-     * same file by name smaller to the byte); false, [one] is the file's (another add-on's exact size of the same torrent
-     * is [one]); null when they say nothing.
+     * What the other add-ons' sizes say of [p]'s torrent, whose one size is [one], all read before deciding: false, [one]
+     * is the file's (a size of its file near [one]: a torrent of one episode may hold a sample or a text file too), which
+     * wins; true, a season pack (a size of its file at most [PACK_SHARE] of [one]); null when none says. A size of its
+     * file: another add-on's of the same torrent, to the byte (Torz's videoSize) or Torrentio's stated one under its file
+     * index (else Torrentio's may be the torrent's own); another torrent's file of the same name, to the byte. A file
+     * index alone never says: an add-on numbers every file of a torrent, so one episode's beside a text file or a sample
+     * is past the first.
      */
     private fun packEvidence(p: ParsedStream, one: Long, all: List<ParsedStream>): Boolean? {
         val r = p.release
-        if ((r?.fileIdx ?: 0) > 0) return true
         val name = fileName(p)
         var single = false
+        var pack = false
         for (q in all) {
             if (q === p || q.offer.addon == p.offer.addon) continue
             val qr = q.release
-            val exact = q.facts.sizeBytes?.takeIf { q.exactSize && it > 0 }
-            if (r != null && qr != null && qr.infoHash == r.infoHash) {
-                when {
-                    exact != null && sizeClose(exact, one) -> single = true
-                    exact != null && exact < one -> return true
-                    // Torrentio indexes a torrent's files only when it has several; StremThru's index 0 can be a torrent's only one.
-                    exact == null && qr.fileIdx != null && (q.offer.addon == Addon.TORRENTIO || qr.fileIdx > 0) -> return true
-                }
-            } else if (name != null && exact != null && exact < one && !sizeClose(exact, one) && fileName(q) == name) {
-                return true
+            val sameTorrent = r != null && qr != null && qr.infoHash == r.infoHash
+            val size = when {
+                q.exactSize -> q.facts.sizeBytes
+                sameTorrent && q.offer.addon == Addon.TORRENTIO && qr?.fileIdx != null -> q.facts.sizeBytes
+                else -> null
+            }?.takeIf { it > 0 } ?: continue
+            if (!sameTorrent && (name == null || fileName(q) != name)) continue
+            when {
+                size >= one * SINGLE_SHARE && size <= one * (1 + SINGLE_OVER) -> single = true
+                size <= one * PACK_SHARE -> pack = true
             }
         }
-        return if (single) false else null
+        return if (single) false else if (pack) true else null
     }
 
     /** Both sizes known and within [SIZE_CLOSE] of the larger. A size not known never merges by name. */

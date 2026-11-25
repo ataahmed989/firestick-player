@@ -241,14 +241,16 @@ object PlayRules {
     /**
      * A Sources row's first line, and the title page's: quality · the HDR this TV shows ([tvHdr]) · what it was made
      * from · size ("4K · HDR10+ · Remux · 81.4 GB"; an episode's from a season pack, [sizeWords]). Without a [plan], the
-     * add-ons' HDR words, which over [chars] characters (what the row has room for, so it's never cut inside a word)
-     * keep their first part.
+     * add-ons' HDR words. Over [chars] characters (what the row has room for, so it's never cut inside a word), the HDR
+     * words keep their first part, then an estimate leaves out its pack's size ("≈10.2 GB"; Details says it).
      */
     fun mainLine(s: PlaybackSource, chars: Int = Int.MAX_VALUE, film: Boolean = true, plan: TvPlan? = null): String {
         val f = SourceRank.asPlayedHere(s.facts, s.measured)
-        fun line(hdr: String?) = listOfNotNull(quality(s, film), hdr, kind(f.origin), sizeWords(f)).joinToString(" · ")
-        if (plan != null) return line(tvHdr(s, plan))
-        return line(hdrKind(f)).takeIf { it.length <= chars } ?: line(hdrKind(f, one = true))
+        fun line(hdr: String?, size: String?) = listOfNotNull(quality(s, film), hdr, kind(f.origin), size).joinToString(" · ")
+        val hdrs = if (plan != null) listOf(tvHdr(s, plan)) else listOf(hdrKind(f), hdrKind(f, one = true))
+        val sizes = listOf(sizeWords(f), sizeShort(f) ?: sizeWords(f)).distinct()
+        for (size in sizes) for (hdr in hdrs) line(hdr, size).let { if (it.length <= chars) return it }
+        return line(hdrs.last(), sizes.last())
     }
 
     /**

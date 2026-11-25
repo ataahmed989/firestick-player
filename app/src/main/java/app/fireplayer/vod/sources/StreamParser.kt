@@ -192,9 +192,18 @@ object StreamParser {
         val file = if (episode) Words.fileOfTwo(text) else null
         val exact = if (!episode) video else video?.takeIf { v -> file != null && Words.near(v, file) }
         val one = if (episode && exact == null && file == null) video ?: Words.size(text) else null
-        // What its names say of that torrent (the file's, the torrent's, each line of the description): a pack's total is
-        // never the episode's size (shown in parentheses or shared out, [SourceMerge]); one episode's is its own.
-        val read = one?.let { PackWords.read(listOf(filename) + text.lines().flatMap { it.split("┈➤") }) }
+        // What its names say of that torrent: a pack's total is never the episode's size (shown in parentheses or shared
+        // out, [SourceMerge]); one episode's is its own. Only the torrent's own name says one episode: its filename when
+        // it indexes no file (MediaFusion's backend names such a row by its torrent), the torrent's part of a "📂 torrent
+        // ┈➤ file" line, never with a video extension. A file's name, as MediaFusion gives a file it indexes (and older
+        // ones a file they don't, beside the pack's size), names its own episode in a pack too: it, and the rest of the
+        // description, say pack only.
+        val read = one?.let {
+            val hinted = hints?.optString("filename")?.takeIf { it.isNotBlank() }?.takeIf { release?.fileIdx == null }
+            val folder = Words.field(text, "📂")?.substringBefore("┈➤")
+            val torrents = listOfNotNull(hinted, folder).filterNot { Words.isFile(it) }
+            PackWords.read(torrents, listOf(filename) + text.lines().flatMap { it.split("┈➤") })
+        }
         val single = read?.kind == PackWords.Kind.SINGLE
         val size = when {
             exact != null -> exact
@@ -596,6 +605,9 @@ internal object Words {
     private val EXT = Regex("""\.(mkv|mp4|avi|ts|m2ts|m4v|mov|wmv|webm)$""", RegexOption.IGNORE_CASE)
 
     fun stripExtension(text: String): String = EXT.replace(text.trim(), "")
+
+    /** [name] ends in a video file's extension ("….mkv"): a file's name, not a torrent's of several files. */
+    fun isFile(name: String): Boolean = EXT.containsMatchIn(name.trim())
 
     /** The name re-uploads share: lower case, no extension, no "[TGx]"-style tags or site prefix, words only. */
     fun sameName(name: String): String? {
