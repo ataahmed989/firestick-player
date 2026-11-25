@@ -95,10 +95,11 @@ object DvBaseLayer {
 
     /**
      * The colour a profile 7 base layer is played with: its own when the file states HDR, otherwise HDR10 (BT.2020, PQ,
-     * limited range, generic static metadata), which is what a profile 7 base layer always is. Without it the decoder
-     * still outputs PQ but the TV is never switched to HDR, and on the 4K Max the video plane then stays black.
+     * limited range), which is what a profile 7 base layer always is, with the track's own static metadata where it
+     * states it, else [sei] (the film's own, from its parameter sets: [seiStaticInfo]), else generic. Without it the
+     * decoder still outputs PQ but the TV is never switched to HDR, and on the 4K Max the video plane then stays black.
      */
-    fun hdr10(own: androidx.media3.common.ColorInfo?): androidx.media3.common.ColorInfo {
+    fun hdr10(own: androidx.media3.common.ColorInfo?, sei: ByteArray? = null): androidx.media3.common.ColorInfo {
         if (own != null && own.colorTransfer == androidx.media3.common.C.COLOR_TRANSFER_ST2084 && own.hdrStaticInfo != null) {
             return own
         }
@@ -106,8 +107,123 @@ object DvBaseLayer {
             .setColorSpace(androidx.media3.common.C.COLOR_SPACE_BT2020)
             .setColorRange(own?.colorRange?.takeIf { it != androidx.media3.common.Format.NO_VALUE } ?: androidx.media3.common.C.COLOR_RANGE_LIMITED)
             .setColorTransfer(androidx.media3.common.C.COLOR_TRANSFER_ST2084)
-            .setHdrStaticInfo(own?.hdrStaticInfo ?: genericStaticInfo())
+            .setHdrStaticInfo(own?.hdrStaticInfo ?: sei ?: genericStaticInfo())
             .build()
+    }
+
+    /**
+     * The film's own HDR10 brightness data, from the SEI messages its parameter sets may carry. Media3 keeps every NAL
+     * unit of a file's hvcC (MKV's CodecPrivate, MP4's hvcC box), SEI arrays included, in [initData] (Annex B), and
+     * gives them to the decoder as they are, but reads none of them: its Matroska reader takes brightness data only from
+     * the track's Colour element, which a profile 7 remux may not have. A UHD Blu-ray's base layer carries its mastering
+     * display (mastering_display_colour_volume, payload 137) and light levels (content_light_level_info, 144) in prefix
+     * SEI NAL units (type 39), and a file made from one may have them in its hvcC too.
+     *
+     * As CTA-861.3 static metadata, laid out as [genericStaticInfo]. Null without a mastering display message whose
+     * values make sense ([masteringOf]); light levels that aren't there or make no sense go as 0, CTA-861.3's "not
+     * known". A few hundred bytes read once per format, never a sample.
+     */
+    @OptIn(UnstableApi::class)
+    fun seiStaticInfo(initData: List<ByteArray>?): ByteArray? {
+        var mastering: IntArray? = null
+        var light: IntArray? = null
+        for (data in initData ?: return null) {
+            val flags = BooleanArray(3)
+            var at = NalUnitUtil.findNalUnit(data, 0, data.size, flags)
+            while (at + 3 < data.size) {
+                val next = NalUnitUtil.findNalUnit(data, at + 3, data.size, flags)
+                if (NalUnitUtil.getH265NalUnitType(data, at) == NalUnitUtil.H265_NAL_UNIT_TYPE_PREFIX_SEI && at + 5 < next) {
+                    // Its messages, after the NAL unit's two-byte header, with emulation prevention taken out.
+                    val sei = data.copyOfRange(at + 5, next)
+                    forEachSei(sei, NalUnitUtil.unescapeStream(sei, sei.size)) { type, from, length ->
+                        if (type == MASTERING_DISPLAY && mastering == null) mastering = masteringOf(sei, from, length)
+                        if (type == CONTENT_LIGHT_LEVEL && light == null) light = lightOf(sei, from, length)
+                    }
+                }
+                at = next
+            }
+        }
+        val m = mastering ?: return null
+        val b = java.nio.ByteBuffer.allocate(25).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        b.put(0)
+        for (v in m) b.putShort(v.toShort())
+        for (v in light ?: IntArray(2)) b.putShort(v.toShort())
+        return b.array()
+    }
+
+    /**
+     * Calls [block] with each SEI message's payload type, and where its payload starts and how long it is, in the first
+     * [size] bytes of [b] (an SEI NAL unit's messages, emulation prevention taken out), up to the stop bit that ends
+     * them (a last 80, only zeros after it). A message cut short ends the reading.
+     */
+    private inline fun forEachSei(b: ByteArray, size: Int, block: (type: Int, from: Int, length: Int) -> Unit) {
+        var i = 0
+        while (i < size && !(b[i] == 0x80.toByte() && (i + 1 until size).all { b[it].toInt() == 0 })) {
+            // Payload type, then size: as many FF bytes (255 each) as it takes, then the rest.
+            var type = 0
+            while (i < size && b[i] == 0xFF.toByte()) { type += 255; i++ }
+            if (i >= size) return
+            type += b[i++].toInt() and 0xFF
+            var length = 0
+            while (i < size && b[i] == 0xFF.toByte()) { length += 255; i++ }
+            if (i >= size) return
+            length += b[i++].toInt() and 0xFF
+            if (length > size - i) return
+            block(type, i, length)
+            i += length
+        }
+    }
+
+    /**
+     * A mastering display message's values in CTA-861.3's order and units: red, green, blue and white (x, y) in 0.00002
+     * units (the message has them green, blue, red, then white, in the same units), the peak in cd/m2 (the message's is
+     * in 0.0001 cd/m2) and black in 0.0001 cd/m2. Null when they make no sense: a coordinate above 1 (50000), a peak
+     * outside 100 to 10000 nits, black not below the peak or too high for its 16 bits (6.5 nits).
+     */
+    private fun masteringOf(b: ByteArray, from: Int, length: Int): IntArray? {
+        if (length < 24) return null
+        val xy = intArrayOf(
+            u16(b, from + 8), u16(b, from + 10), u16(b, from), u16(b, from + 2),
+            u16(b, from + 4), u16(b, from + 6), u16(b, from + 12), u16(b, from + 14),
+        )
+        if (xy.any { it > 50_000 }) return null
+        val peak = u32(b, from + 16)
+        val black = u32(b, from + 20)
+        if (peak !in 1_000_000L..100_000_000L || black >= peak || black > 0xFFFF) return null
+        return xy + intArrayOf(((peak + 5_000) / 10_000).toInt(), black.toInt())
+    }
+
+    /** A content light level message's MaxCLL and MaxFALL (cd/m2); null when cut short or either is above 10000. */
+    private fun lightOf(b: ByteArray, from: Int, length: Int): IntArray? {
+        if (length < 4) return null
+        val levels = intArrayOf(u16(b, from), u16(b, from + 2))
+        return levels.takeIf { l -> l.all { it <= 10_000 } }
+    }
+
+    private fun u16(b: ByteArray, at: Int): Int = ((b[at].toInt() and 0xFF) shl 8) or (b[at + 1].toInt() and 0xFF)
+
+    private fun u32(b: ByteArray, at: Int): Long = (u16(b, at).toLong() shl 16) or u16(b, at + 2).toLong()
+
+    /** SEI payload types: mastering_display_colour_volume and content_light_level_info. */
+    private const val MASTERING_DISPLAY = 137
+    private const val CONTENT_LIGHT_LEVEL = 144
+
+    /**
+     * The log's one line on a base layer's brightness data ([hdr10]): from the file's track ([fromTrack], what Media3
+     * read of its container's colour), from its SEI ([fromSei], [seiStaticInfo]), or generic; with the peak and light
+     * levels [sent] to the decoder.
+     */
+    fun brightnessLine(sent: ByteArray?, fromTrack: Boolean, fromSei: Boolean): String {
+        val from = when {
+            fromTrack -> "from the file's track"
+            fromSei -> "from the file's SEI"
+            else -> "generic"
+        }
+        if (sent == null || sent.size < 25) return "HDR10 info $from"
+        // Little-endian, as CTA-861.3 has it.
+        fun le16(at: Int) = (sent[at].toInt() and 0xFF) or ((sent[at + 1].toInt() and 0xFF) shl 8)
+        val none = if (fromTrack || fromSei) "" else " (none in the file's header)"
+        return "HDR10 info $from: ${le16(17)} nits, MaxCLL ${le16(21)}, MaxFALL ${le16(23)}$none"
     }
 
     /** Dolby Vision's single-layer profile with an HDR10, SDR or HLG base (8.1, 8.2, 8.4): streaming's Dolby Vision. */
