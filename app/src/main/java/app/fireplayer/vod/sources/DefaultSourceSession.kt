@@ -182,8 +182,8 @@ internal class DefaultSourceSession(
         when {
             closed -> op.final(Opened.NoneLeft(FailureWords.NONE_READY))
             source != null -> {
-                watchFromNow()
                 check(op, source, why, near = startedOnce, countTry = true)
+                watchFromNow()
             }
             why == OpenWhy.START && firstPick -> startFirst(op)
             else -> pick(op, why)
@@ -196,8 +196,8 @@ internal class DefaultSourceSession(
         ops += op
         fetchAgreed += source.key
         repo.fetchAsked += target.key
-        if (!closed) watchFromNow()
         check(op, source, OpenWhy.USER, near = startedOnce, countTry = false)
+        if (!closed) watchFromNow()
         return op
     }
 
@@ -205,10 +205,23 @@ internal class DefaultSourceSession(
      * A row handed in to open (chosen in a Sources window: the title page's, started at OK by [app.fireplayer.vod.EarlyOpen],
      * or the player's): the list it came from is kept current from now on, as for a pick of the session's own
      * ([startFirst]). Before, such a play kept the list handed over at OK all through: what the play measured was ranked
-     * into the engine's list, never into the player's Sources window, its Playing row or Next source.
+     * into the engine's list, never into the player's Sources window, its Playing row or Next source. Called after its
+     * link check is sent: io runs in order, so that check never waits behind the add-ons' look-ups the watch may send.
      */
     private fun watchFromNow() {
         if (listSub == null) watchList(null)
+    }
+
+    /**
+     * Every add-on's copies, asked again where an answer was dropped since the watch began: a look-up past an answer's
+     * time drops it ([DefaultSourcesRepository.lookUp]), and a refresh's look-up asks only its own add-on, so the
+     * others' rows would stay out of [list] (and it never complete) for the rest of the play. Nothing in [list] or being
+     * asked is asked again.
+     */
+    private fun watchAll() {
+        listSub?.cancel()
+        listSub = null
+        watchList(null)
     }
 
     override fun refresh(source: PlaybackSource, addon: Addon?, onOpened: (Opened) -> Unit): Cancel {
@@ -318,10 +331,12 @@ internal class DefaultSourceSession(
         repo.lookUp(SourceTarget(target.title, next), LookupWhy.NEXT_EPISODE, null, onList)
 
     override fun widen() {
-        if (closed || listOnly == null) return
+        if (closed) return
+        // Every add-on watched and none dropped since ([watchAll]): nothing to ask.
+        if (listOnly == null && list?.states?.values?.none { it is AddonState.NotAsked } != false) return
         widening?.let { repo.main.remove(it) }
         widening = null
-        watchList(null)
+        watchAll()
     }
 
     override fun close() {
@@ -697,9 +712,9 @@ internal class DefaultSourceSession(
         val (choice, near) = choose(l, why)
         if (choice == null) {
             // Only one add-on was asked (a Continue card), or one is still looking (the best so far was played, and it
-            // failed): the rest is waited for before giving up.
+            // failed), or its answer was dropped since (a refresh past its time): the rest is waited for before giving up.
             if (listOnly != null || !l.complete) {
-                watchList(null)
+                watchAll()
                 waitFor(op, { it.complete }) { pick(op, why) }
                 return
             }

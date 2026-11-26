@@ -831,8 +831,9 @@ interface SourceSession {
     fun lookUpNext(next: EpisodeRef, onList: (SourceList) -> Unit): Cancel
 
     /**
-     * Every add-on is asked now, when only one was (a Continue card's resume asks the add-on of its copy first): the
-     * viewer opened the player's Sources window. Nothing is asked again that is already in [list].
+     * Every add-on is asked now, when only one was (a Continue card's resume asks the add-on of its copy first) or one's
+     * answer was dropped since (past its time, at a refresh): the viewer opened the player's Sources window. Nothing is
+     * asked again that is already in [list].
      */
     fun widen() = Unit
 
