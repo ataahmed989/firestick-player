@@ -140,11 +140,13 @@ object SourceRank {
     /**
      * What was measured of a row's file: its own release's, else a merged offer's (the same file from another add-on),
      * each under its key for the episode ranked for ([ReleaseKey.measuredKey]; what an earlier version kept of a torrent
-     * of one episode file, [ReleaseKey.earlierKey], while there's nothing newer).
+     * of one episode file, [ReleaseKey.earlierKey], while there's nothing newer); else an offer's of no release known, by
+     * its [app.fireplayer.vod.Offer.copyKey] (MediaFusion's when its answer and link show no info hash).
      */
     private fun measuredOf(s: PlaybackSource, input: RankInput): Measured? {
         s.release?.let { r -> measuredOf(s, r, input)?.let { return it } }
         for (o in s.offers) o.release?.let { r -> if (r != s.release) measuredOf(s, r, input)?.let { return it } }
+        for (o in s.offers) if (o.release == null) o.copyKey?.let { k -> input.measured(k)?.let { return it } }
         return null
     }
 
@@ -163,13 +165,15 @@ object SourceRank {
     /**
      * [m], measured of a film's file without an index: a collection's films share that key, so a size (and the rate from
      * it) other than the one an add-on gave to the byte ([SourceFacts.sizeExact]) was another film's, and isn't this
-     * row's ([asPlayedHere] keeps the add-on's).
+     * row's ([asPlayedHere] keeps the add-on's); nor is the HDR its picture played with (HDR10, HDR10+, Dolby Vision and
+     * how this TV played it: [asPlayedHere] and Details keep what the name says).
      */
     private fun ownSize(m: Measured, facts: SourceFacts): Measured {
         val spec = m.spec ?: return m
         val stated = facts.sizeBytes?.takeIf { facts.sizeExact } ?: return m
         if (spec.sizeBytes <= 0 || SourceMerge.sizeClose(spec.sizeBytes, stated)) return m
-        return m.copy(spec = spec.copy(sizeBytes = 0, overallBps = 0))
+        return m.copy(spec = spec.copy(sizeBytes = 0, overallBps = 0, hdr = null, hdr10Plus = false, hdrInfo = null, dvProfile = 0,
+            dvBaseLayer = 0, dvSignal = 0, decoder = MediaSpec.Decoder.UNKNOWN))
     }
 
     /** The viewer's move of a row's file ([RankInput.imaxMove]): its own release's, else a merged offer's. */
@@ -492,18 +496,25 @@ object SourceRank {
      * [facts] as this TV played the file, by what FirePlayer [measured] when it played here: a Dolby Vision file played
      * on a plain decoder (as its HDR10 base layer, or Media3's own way back to HEVC) is its base layer here, not Dolby
      * Vision: HLG or SDR where the file's record said so ([MediaSpec.dvSignal]: 8.4, 8.2), else HDR10; its profile is
-     * filled in from the play; HDR10+ seen in the picture is added. The file's size and average rate as the play
-     * measured them replace the add-ons' (a season pack's total, or its share, isn't the episode's file). Otherwise
-     * [facts] as the add-ons have them.
+     * filled in from the play; HDR10+ seen in the picture is added; a name that said no HDR takes the HDR the file played
+     * with ([playedHdr]: a WEB copy whose name leaves out its HDR10). The file's size and average rate as the play
+     * measured them replace the add-ons' (a season pack's total, or its share, isn't the episode's file: the pack's total
+     * stays beside it when it is known to be one, [SourceMerge.packBeside]). Otherwise [facts] as the add-ons have them.
      */
     fun asPlayedHere(facts: SourceFacts, measured: Measured?): SourceFacts {
         val spec = measured?.spec ?: return facts
         var f = facts
         if (spec.sizeBytes > 0 && (f.sizeBytes != spec.sizeBytes || !f.sizeExact)) {
-            f = f.copy(sizeBytes = spec.sizeBytes, sizeExact = true, torrentTotal = false, sizeEstimated = false, packBytes = null,
-                packEpisodes = null, packUnclear = false)
+            // An episode's file of a season pack: its size, its pack's total beside it when it is known to be one.
+            f = f.copy(sizeBytes = spec.sizeBytes, sizeExact = true, torrentTotal = false, sizeEstimated = false,
+                packBytes = SourceMerge.packBeside(spec.sizeBytes, f.packBytes, f.packUnclear), packEpisodes = null, packUnclear = false)
         }
         if (spec.overallBps > 0) f = f.copy(avgMbps = spec.overallBps / 1_000_000.0)
+        // A name that said no HDR: the HDR the file played with here (a WEB copy whose name leaves out its HDR10).
+        if (f.hdr.isEmpty()) {
+            val played = playedHdr(spec)
+            if (played.isNotEmpty()) f = f.copy(hdr = played, dvProfile = f.dvProfile ?: spec.dvProfile.takeIf { it > 0 })
+        }
         if (Hdr.DOLBY_VISION in f.hdr) {
             val plain = spec.dvBaseLayer > 0 || (spec.decoder == MediaSpec.Decoder.PLAIN && spec.dvProfile != 5)
             val profile = spec.dvProfile.takeIf { it > 0 }
@@ -515,6 +526,18 @@ object SourceRank {
         }
         if (spec.hdr10Plus && Hdr.HDR10_PLUS !in f.hdr) f = f.copy(hdr = f.hdr + Hdr.HDR10_PLUS)
         return f
+    }
+
+    /**
+     * The HDR kinds of the file as it played here ([MediaSpec.hdr], what its picture's track declares): Dolby Vision (its
+     * base layer as this TV played it is worked out from there), HDR10, HLG; empty for SDR or when it didn't say. HDR10+
+     * is added where it was seen ([asPlayedHere]).
+     */
+    fun playedHdr(spec: MediaSpec): Set<Hdr> = when {
+        spec.dvProfile > 0 || spec.dvBaseLayer > 0 || spec.hdr == "Dolby Vision" -> setOf(Hdr.DOLBY_VISION)
+        spec.hdr == "HDR10" -> setOf(Hdr.HDR10)
+        spec.hdr == "HLG" -> setOf(Hdr.HLG)
+        else -> emptySet()
     }
 
     /** A Dolby Vision file's base layer, by its record's signal ([MediaSpec.dvSignal]): HLG, SDR, else HDR10. */

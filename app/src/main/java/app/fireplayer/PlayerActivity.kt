@@ -6654,14 +6654,18 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             val uri = Uri.parse(ready.link.reveal())
             // What was measured of this file is kept by its release (the link changes daily); an episode's file whose
             // index the add-on didn't give, by the episode too (a season pack's episodes share one hash). A torrent of
-            // that one file (Torrentio gave it no index) goes on from what 1.0.360 kept of it.
-            (ready.offer.release ?: ready.source.release)?.let { r ->
+            // that one file (Torrentio gave it no index) goes on from what 1.0.360 kept of it. A copy whose add-on gave
+            // no info hash (MediaFusion's, at times), by its own key: its words for this film or episode (CopyKey).
+            val rel = ready.offer.release ?: ready.source.release
+            if (rel != null) {
                 val episode = request.target.episode
-                copyKeys[uri.toString()] = r.measuredKey(episode)
-                val single = r.fileIdx == null && ready.source.offers.any { o ->
-                    app.fireplayer.vod.ReleaseKey.indexesEveryFile(o.addon) && (o.release ?: ready.source.release) == r
+                copyKeys[uri.toString()] = rel.measuredKey(episode)
+                val single = rel.fileIdx == null && ready.source.offers.any { o ->
+                    app.fireplayer.vod.ReleaseKey.indexesEveryFile(o.addon) && (o.release ?: ready.source.release) == rel
                 }
-                r.earlierKey(episode, single)?.let { copyEarlier[uri.toString()] = it }
+                rel.earlierKey(episode, single)?.let { copyEarlier[uri.toString()] = it }
+            } else {
+                ready.offer.copyKey?.let { copyKeys[uri.toString()] = it }
             }
             errorBox.visibility = View.GONE
             cannotOpen = false

@@ -45,6 +45,10 @@ class ParsedStream(
     /** This stream with [facts] (a season pack's size worked out, [SourceMerge]), the rest as it is. */
     fun with(facts: SourceFacts, torrentSize: Boolean): ParsedStream =
         ParsedStream(offer, release, facts, sameName, cinema, threeD, exactSize, torrentSize, oneSize, packRead, looseExact)
+
+    /** This stream with [offer] (its [Offer.copyKey] given), the rest as it is. */
+    fun with(offer: Offer): ParsedStream =
+        ParsedStream(offer, release, facts, sameName, cinema, threeD, exactSize, torrentSize, oneSize, packRead, looseExact)
 }
 
 /**
@@ -70,9 +74,11 @@ object StreamParser {
 
     /**
      * [json]: the add-on's answer to /stream/…json; [runtimeMin]: the film's or episode's length, for "≈25 Mb/s";
-     * [episode]: it answers for an episode (MediaFusion's one size is then its torrent's, [ParsedStream.torrentSize]).
+     * [episode]: it answers for an episode (MediaFusion's one size is then its torrent's, [ParsedStream.torrentSize]);
+     * [streamId]: the film or episode it answers for ([app.fireplayer.vod.SourceTarget.streamId]), which keys a stream
+     * of no info hash by its words ([Offer.copyKey], [CopyKey]); null: none is keyed.
      */
-    fun parse(addon: Addon, json: String, runtimeMin: Int?, episode: Boolean = false): ParsedAnswer {
+    fun parse(addon: Addon, json: String, runtimeMin: Int?, episode: Boolean = false, streamId: String? = null): ParsedAnswer {
         val root = runCatching { JSONObject(json) }.getOrNull() ?: return ParsedAnswer(emptyList())
         val streams = root.optJSONArray("streams") ?: JSONArray()
         val out = ArrayList<ParsedStream>(streams.length())
@@ -103,7 +109,9 @@ object StreamParser {
                 Addon.MEDIAFUSION -> mediaFusion(s, name, text, link, runtimeMin, episode)
                 Addon.TORZ -> torz(s, name, text, link, runtimeMin)
             } ?: continue
-            out += parsed
+            // A stream of no info hash: known by its words, so what a play here measures of it is kept ([CopyKey]).
+            out += if (parsed.release == null && streamId != null) parsed.with(parsed.offer.copy(copyKey = CopyKey.of(parsed.offer, streamId)))
+                else parsed
             // Which debrid service serves it: the first source's that tells, a cached one's when there is one.
             val cached = parsed.offer.readiness == Readiness.PROBABLY_READY
             if (!serviceCached && (service == null || cached)) Debrids.of(name, url)?.let {

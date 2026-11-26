@@ -329,10 +329,10 @@ class SeasonPackTest {
         val amen = list.holding(ha)
         assertEquals(TvFit.MEASURED_OK, amen.fit)
         // What it played as here: its size and its rate.
-        assertEquals("4K · HDR10 · WEB · 1.1 GB", PlayRules.mainLine(amen, film = false, plan = plan))
+        assertEquals("4K · HDR10 · WEB · 1.1 GB (pack 10.2 GB)", PlayRules.mainLine(amen, film = false, plan = plan))
         assertTrue(PlayRules.badges(amen).contains("≈5 Mb/s"))
         val details = SourcesModel.details(amen, plan, film = false) { "Nov 25" }.toMap()
-        assertEquals("1.1 GB", details["Size"])
+        assertEquals("1.08 GB · measured here (pack 10.2 GB)", details["Size"])
         assertEquals("≈5 Mb/s average · measured here", details["Data rate"])
     }
 
@@ -439,6 +439,42 @@ class SeasonPackTest {
             RankInput(plan, listOf("en"), { if (it == "rd|$ha|3") ironMan else null }, 120, episode = false)).single()
         assertEquals(9_000_000_000L, own.facts.sizeBytes)
         assertEquals(9.8, SourceRank.asPlayedHere(own.facts, own.measured).avgMbps!!, 0.01)
+    }
+
+    @Test
+    fun aFilmsIndexlessRecordOfAnotherSizeGivesItsRowNoneOfThatFilmsHdr() {
+        // Iron Man played here as HDR10 with HDR10+ from a collection torrent MediaFusion gives no index; Iron Man 2's row
+        // (the same key), whose name says no HDR, never played.
+        val ironMan = Measured(MediaSpec(hdr = "HDR10", hdr10Plus = true, hdrInfo = true, sizeBytes = 9_000_000_000L, overallBps = 9_800_000),
+            CopyHealth(watchedMs = 60_000, at = now), now)
+        val sdrName = "Iron.Man.2.2010.1080p.WEB-DL.DDP5.1.H.264-GRP.mkv"
+        fun rowOf(stream: JSONObject, record: Measured) = SourceRank.rank(SourceMerge.merge(listOf(StreamParser.parse(Addon.MEDIAFUSION, answer(stream), 120).streams), 120),
+            RankInput(plan, listOf("en"), { if (it == "rd|$ha|-1") record else null }, 120, episode = false)).single()
+        val bare = SourceFixtures.mediaFusion(ha, fileIdx = null, resolution = "1080p", hdr = "SDR", filename = sdrName)
+        val row = rowOf(bare, ironMan)
+        assertTrue(row.facts.hdr.isEmpty())
+        assertTrue(SourceRank.asPlayedHere(row.facts, row.measured).hdr.isEmpty())
+        assertNull(PlayRules.tvHdr(row, plan))
+        assertFalse(PlayRules.mainLine(row, film = true, plan = plan), PlayRules.mainLine(row, film = true, plan = plan).contains("HDR"))
+        assertFalse(PlayRules.badges(row), PlayRules.badges(row).contains("HDR"))
+        val details = SourcesModel.details(row, plan, film = true) { "Nov 26" }.toMap()
+        assertFalse(details["Picture"].orEmpty(), details["Picture"].orEmpty().contains("HDR"))
+        assertNull(details["This TV shows"])
+        // How it played is read as before (shared, as in 1.0.360).
+        assertEquals(ironMan.health, row.measured?.health)
+        // Its own size played (the record is this film's): the HDR its file played with is its.
+        val own = rowOf(bare, ironMan.copy(spec = ironMan.spec!!.copy(sizeBytes = 31_420_000_000L)))
+        assertEquals(setOf(Hdr.HDR10, Hdr.HDR10_PLUS), SourceRank.asPlayedHere(own.facts, own.measured).hdr)
+        // A Dolby Vision film's row: another film's base layer as this TV played it isn't said of it either.
+        val dvPlayed = Measured(MediaSpec(hdr = "HDR10", dvProfile = 7, dvBaseLayer = 7, decoder = MediaSpec.Decoder.PLAIN,
+            sizeBytes = 9_000_000_000L, overallBps = 9_800_000), CopyHealth(watchedMs = 60_000, at = now), now)
+        val dvRow = rowOf(SourceFixtures.mediaFusion(ha, fileIdx = null), dvPlayed)
+        assertTrue(Hdr.DOLBY_VISION in SourceRank.asPlayedHere(dvRow.facts, dvRow.measured).hdr)
+        assertNull(SourcesModel.details(dvRow, plan, film = true) { "Nov 26" }.toMap()["Dolby Vision"])
+        // Its own: played as its HDR10 base layer here.
+        val dvOwn = rowOf(SourceFixtures.mediaFusion(ha, fileIdx = null), dvPlayed.copy(spec = dvPlayed.spec!!.copy(sizeBytes = 31_420_000_000L)))
+        assertEquals(setOf(Hdr.HDR10), SourceRank.asPlayedHere(dvOwn.facts, dvOwn.measured).hdr)
+        assertEquals("Profile 7 · played here as its HDR10 base layer", SourcesModel.details(dvOwn, plan, film = true) { "Nov 26" }.toMap()["Dolby Vision"])
     }
 
     @Test

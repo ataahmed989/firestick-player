@@ -127,8 +127,13 @@ class DefaultSourcesRepository(
         /** What it was last ranked for: this TV's plan and the sound languages wanted. */
         var plan: TvPlan? = null
         var wanted: List<String> = emptyList()
-        /** The row each release went into (merged copies). */
+        /** The row each release went into (merged copies), and each copy of no release known ([Offer.copyKey]). */
         var rowOf: Map<String, String> = emptyMap()
+        /**
+         * The copy of no release known that played last here ([usedNow]), by its key: Last used through ranks, while the
+         * list is kept (no release is stored for it, [PlaybackLibrary.recordRelease]).
+         */
+        var usedCopy: String? = null
         /** It was ranked knowing the title's own language ([originalLanguage]). */
         var originalKnown = false
         var version = 0
@@ -257,18 +262,33 @@ class DefaultSourcesRepository(
     /** The key of [target]'s row holding [release], also when it was merged into another release's row (×N). */
     internal fun rowKeyOf(target: SourceTarget, release: ReleaseKey): String? = entries[target.key]?.rowOf?.get(release.storeKey)
 
+    /** The key of [target]'s row holding the copy of no release known [copyKey] ([Offer.copyKey]), merged or not. */
+    internal fun rowKeyOf(target: SourceTarget, copyKey: String): String? = entries[target.key]?.rowOf?.get(copyKey)
+
     /**
      * [key]'s row of [target], its [file], started playing: it is Last used now, in the lists shown (not only once they
-     * rank again). The row holding that file when [key]'s isn't in the list any more (merged or keyed anew since).
+     * rank again). The row holding that file when [key]'s isn't in the list any more (merged or keyed anew since); a
+     * copy of no release known by its [copy] key, which keeps it Last used as the list ranks again.
      */
-    internal fun usedNow(target: SourceTarget, key: String, file: ReleaseKey? = null) {
+    internal fun usedNow(target: SourceTarget, key: String, file: ReleaseKey? = null, copy: String? = null) {
         val entry = entries[target.key] ?: return
+        entry.usedCopy = if (file == null) copy else null
         val row = entry.ranked.firstOrNull { it.key == key }
             ?: file?.let { f -> entry.rowOf[f.storeKey]?.let { k -> entry.ranked.firstOrNull { it.key == k } } }
+            ?: copy?.let { c -> entry.rowOf[c]?.let { k -> entry.ranked.firstOrNull { it.key == k } } }
             ?: return
         if (entry.lastUsed?.key == row.key) return
         entry.lastUsed = row
         notify(entry)
+    }
+
+    /**
+     * [copy] (a copy of no release known, [Offer.copyKey]) wasn't the whole film: it isn't Last used as the list ranks
+     * again ([usedNow]); the release kept before it is, as for a release put back.
+     */
+    internal fun notUsed(target: SourceTarget, copy: String) {
+        val entry = entries[target.key] ?: return
+        if (entry.usedCopy == copy) entry.usedCopy = null
     }
 
     // ---- Asking ----
@@ -361,7 +381,7 @@ class DefaultSourcesRepository(
             val result: Result<ParsedAnswer> = try {
                 if (call.cancelled) throw IOException("cancelled")
                 val json = http.get(link, entry.target, timeout, call.handle)
-                Result.success(StreamParser.parse(addon, json, runtime, episode))
+                Result.success(StreamParser.parse(addon, json, runtime, episode, entry.target.streamId))
             } catch (t: Throwable) {
                 Result.failure(t)
             }
@@ -509,7 +529,9 @@ class DefaultSourcesRepository(
                 }
                 // A season pack's size is shared by its season's episodes, as stored of the show (read only for one).
                 val count = { episode?.let { seasonEpisodes(target.title, it.season) } }
-                val merged = SourceMerge.mergeKeyed(answers, input.runtimeMin, episode != null, count) { r ->
+                // A copy of no release known (MediaFusion's of no info hash): under its own key ([CopyKey]).
+                val copySize = { k: String -> measured(k)?.spec?.sizeBytes?.takeIf { it > 0 } }
+                val merged = SourceMerge.mergeKeyed(answers, input.runtimeMin, episode != null, count, copySize) { r ->
                     (measured(r.measuredKey(episode)) ?: r.earlierKey(episode, r in singles)?.let { measured(it) })
                         ?.spec?.sizeBytes?.takeIf { it > 0 }
                 }
@@ -529,7 +551,8 @@ class DefaultSourcesRepository(
                     entry.best = made.best
                     // On the main thread, as it is now: a copy that started while this ranked is the one kept, not the
                     // release read before it ([usedNow] doesn't wait for a rank).
-                    entry.lastUsed = lastUsedOf(target, made.rowOf, made.sources)
+                    entry.lastUsed = entry.usedCopy?.let { c -> made.rowOf[c]?.let { k -> made.sources.firstOrNull { it.key == k } } }
+                        ?: lastUsedOf(target, made.rowOf, made.sources)
                     entry.why = made.why
                     entry.plan = plan
                     entry.wanted = made.wanted

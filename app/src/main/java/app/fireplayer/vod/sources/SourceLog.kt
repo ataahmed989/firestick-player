@@ -47,14 +47,16 @@ object SourceLog {
 
     /**
      * A rank asked for by a play's figures ([DefaultSourcesRepository.rerank]), [episode]'s: one line for each row of
-     * [ranked] holding a file of no index (MediaFusion's season packs), at most [MAX_RANK_LINES]: the keys its record was
-     * looked for under ([app.fireplayer.vod.ReleaseKey.measuredKey]) and the one [found], as fingerprints ([fp]).
+     * [ranked] holding a file of no index (MediaFusion's season packs) or a copy of no release known, at most
+     * [MAX_RANK_LINES]: the keys its record was looked for under ([app.fireplayer.vod.ReleaseKey.measuredKey],
+     * [app.fireplayer.vod.Offer.copyKey]) and the one [found], as fingerprints ([fp]).
      */
     fun rankLines(ranked: List<PlaybackSource>, episode: EpisodeRef, found: (String) -> Boolean): List<String> =
         ranked.asSequence().mapNotNull { s ->
             val files = (listOfNotNull(s.release) + s.offers.mapNotNull { it.release }).distinct()
-            if (files.none { it.fileIdx == null }) return@mapNotNull null
-            val tried = files.map { it.measuredKey(episode) }.distinct()
+            val copies = s.offers.mapNotNull { o -> o.copyKey?.takeIf { o.release == null } }
+            if (files.none { it.fileIdx == null } && copies.isEmpty()) return@mapNotNull null
+            val tried = (files.map { it.measuredKey(episode) } + copies).distinct()
             "rank: row ${fp(s.key)} measured=${fp(tried.firstOrNull(found))} tried=${tried.joinToString(",") { fp(it) }}"
         }.take(MAX_RANK_LINES).toList()
 
