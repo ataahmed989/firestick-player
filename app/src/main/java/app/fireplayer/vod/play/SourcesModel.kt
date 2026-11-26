@@ -344,12 +344,13 @@ object SourcesModel {
     private fun slowLine(s: PlaybackSource): Boolean = s.fit == TvFit.LIKELY_NOT && s.warning?.contains(SLOW_LINE_WORDS) == true
 
     /**
-     * Details' size: [measured] by a play here; else the add-ons' ("1.1 GB"), an episode's share of its season pack
-     * ("≈1.0 GB (estimated: pack 10.2 GB ÷ 10 episodes)"), the pack's ("10.2 GB (pack)"), or one that may be either
-     * ("10.2 GB (pack or episode)"); null when none is known.
+     * Details' size: [measured] by a play here, as Picture & sound says it, with its season pack's total when it is known
+     * to be one ([packTotal]: "1.87 GB · measured here (pack 18.9 GB)"); else the add-ons' ("1.1 GB"), an episode's share of
+     * its season pack ("≈1.0 GB (estimated: pack 10.2 GB ÷ 10 episodes)"), the pack's ("10.2 GB (pack)"), or one that
+     * may be either ("10.2 GB (pack or episode)"); null when none is known.
      */
-    private fun sizeDetail(f: SourceFacts, measured: Long?): String? {
-        if (measured != null) return PlayRules.size(measured)
+    private fun sizeDetail(f: SourceFacts, measured: Long?, packTotal: Long?): String? {
+        if (measured != null) return "${MediaSpec.size(measured)} · measured here" + (packTotal?.let { " (pack ${PlayRules.size(it)})" } ?: "")
         val own = f.sizeBytes
         val pack = f.packBytes
         val n = f.packEpisodes
@@ -378,15 +379,22 @@ object SourcesModel {
     ): List<Pair<String, String>> {
         val f = s.facts
         val spec = s.measured?.spec
+        val played = SourceRank.asPlayedHere(f, s.measured)
         val out = ArrayList<Pair<String, String>>()
-        out += "Picture" to (listOfNotNull(PlayRules.resolution(f.height), Hdr.entries.filter { it in f.hdr }.joinToString(" ") { it.label }.ifEmpty { null },
+        // The HDR its name gives, else the one its file played with here (a WEB copy whose name leaves out its HDR10).
+        val nameHdr = Hdr.entries.filter { it in f.hdr }.joinToString(" ") { it.label }.ifEmpty { null }
+        val playedHdr = if (nameHdr == null && spec != null) {
+            Hdr.entries.filter { it in SourceRank.playedHdr(spec) || (it == Hdr.HDR10_PLUS && spec.hdr10Plus) }.joinToString(" ") { it.label }
+                .ifEmpty { null }?.let { "$it (measured here)" }
+        } else null
+        out += "Picture" to (listOfNotNull(PlayRules.resolution(f.height), nameHdr ?: playedHdr,
             f.codec, f.bitDepth?.let { "$it-bit" }).joinToString(" · ").ifEmpty { "Not stated" })
         // HDR10+ only where it reaches the TV: elsewhere the TV gets the HDR10 inside.
         // Not for a profile 8 file not played yet: what its base layer is shows once it plays.
-        if (plan != null && !SourceRank.dv8Unmeasured(SourceRank.asPlayedHere(f, s.measured), plan)) PlayRules.tvHdr(s, plan)?.let {
+        if (plan != null && !SourceRank.dv8Unmeasured(played, plan)) PlayRules.tvHdr(s, plan)?.let {
             out += "This TV shows" to if (it == "HDR10+" && !plan.hdr10PlusReaches) "HDR10 (HDR10+ in the file)" else it
         }
-        (SourceRank.asPlayedHere(f, s.measured).dvProfile ?: f.dvProfile ?: spec?.dvProfile?.takeIf { it > 0 })?.let { p ->
+        (played.dvProfile ?: f.dvProfile ?: spec?.dvProfile?.takeIf { it > 0 })?.let { p ->
             val how = when {
                 spec?.dvBaseLayer?.let { it > 0 } == true -> " · played here as its HDR10 base layer"
                 spec?.decoder == MediaSpec.Decoder.PLAIN -> " · played here as " + when (spec.dvSignal) {
@@ -409,7 +417,7 @@ object SourcesModel {
         out += "Sound" to ((sound ?: "Not stated") + if (atmosLost) " · heard here as ${heard ?: "sound"}: Atmos not kept on this TV" else "")
         // The file's size and average rate as a play here measured them, else the add-ons' (a season pack's total never as
         // the file's: its share estimated, or the pack's own said as such).
-        sizeDetail(f, spec?.sizeBytes?.takeIf { it > 0 })?.let { out += "Size" to it }
+        sizeDetail(f, spec?.sizeBytes?.takeIf { it > 0 }, played.packBytes)?.let { out += "Size" to it }
         val measuredMbps = spec?.overallBps?.takeIf { it > 0 }?.let { it / 1_000_000.0 }
         if (measuredMbps != null) out += "Data rate" to "≈${measuredMbps.toInt()} Mb/s average · measured here"
         else f.avgMbps?.let { out += "Data rate" to "≈${it.toInt()} Mb/s average (${if (f.sizeEstimated) "estimated" else "from size"})" }

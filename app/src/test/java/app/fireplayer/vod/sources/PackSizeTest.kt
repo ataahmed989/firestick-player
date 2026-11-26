@@ -281,8 +281,8 @@ class PackSizeTest {
         assertTrue(told > 0)
         val after = session.list!!
         val row = after.sources.fromMf(ha)
-        assertEquals("4K · HDR10 · WEB · 1.1 GB", line(row))
-        assertEquals("1.1 GB", details(row)["Size"])
+        assertEquals("4K · HDR10 · WEB · 1.1 GB (pack 10.2 GB)", line(row))
+        assertEquals("1.10 GB · measured here (pack 10.2 GB)", details(row)["Size"])
         assertEquals("≈5 Mb/s average · measured here", details(row)["Data rate"])
         // The same file from Torz (a torrent of it alone, the same size to the byte) is its row now.
         assertEquals(setOf(Addon.MEDIAFUSION, Addon.TORZ), row.addons.toSet())
@@ -294,7 +294,7 @@ class PackSizeTest {
         assertEquals("4K · HDR10 · WEB · ≈2.9 GB (pack 28.8 GB)", line(after.sources.fromMf(hp)))
         // The Sources window says the same.
         val items = SourcesModel.items(after, now, setOf(SourcesModel.Section.UHD), playingKey = session.rowKey(ready.source))
-        assertEquals("4K · HDR10 · WEB · 1.1 GB", items.first { it.key == SourcesModel.PLAYING_KEY }.label)
+        assertEquals("4K · HDR10 · WEB · 1.1 GB (pack 10.2 GB)", items.first { it.key == SourcesModel.PLAYING_KEY }.label)
     }
 
     /**
@@ -327,7 +327,7 @@ class PackSizeTest {
         loop.advance()
         val after = session.list!!
         val row = after.sources.fromMf(ha)
-        assertEquals("4K · HDR10 · WEB · 1.1 GB", line(row))
+        assertEquals("4K · HDR10 · WEB · 1.1 GB (pack 10.2 GB)", line(row))
         // Torz's file of the same size to the byte is its row now.
         assertEquals(setOf(Addon.MEDIAFUSION, Addon.TORZ), row.addons.toSet())
         assertEquals(before.sources.size - 1, after.sources.size)
@@ -335,7 +335,7 @@ class PackSizeTest {
         val playing = session.rowKey(ready.source)
         assertEquals(row.key, playing)
         val items = SourcesModel.items(after, now, setOf(SourcesModel.Section.UHD), playingKey = playing)
-        assertEquals("4K · HDR10 · WEB · 1.1 GB", items.first { it.key == SourcesModel.PLAYING_KEY }.label)
+        assertEquals("4K · HDR10 · WEB · 1.1 GB (pack 10.2 GB)", items.first { it.key == SourcesModel.PLAYING_KEY }.label)
         // Ranked by the figures: starved at 4K, under every well-fed 4K copy; Next source never names it.
         val fed = after.sources.filter { s -> s.key != row.key && (s.facts.height ?: 0) >= 2160 && s.offers.none { it.release?.infoHash == hp } }
         assertEquals(4, fed.size)
@@ -349,7 +349,7 @@ class PackSizeTest {
         val again = engine.session(request)
         again.open(amen, OpenWhy.USER) { }
         loop.advance()
-        assertEquals("4K · HDR10 · WEB · 1.1 GB", line(again.list!!.sources.fromMf(ha)))
+        assertEquals("4K · HDR10 · WEB · 1.1 GB (pack 10.2 GB)", line(again.list!!.sources.fromMf(ha)))
     }
 
     /** A row not cached yet, fetched at the viewer's word, plays on the list as it is now too. */
@@ -388,7 +388,7 @@ class PackSizeTest {
             assertEquals("4K · HDR10 · WEB · ≈1.0 GB (pack 10.2 GB)", line(before.fromMf(ha)))
             val row = rows(*order.toTypedArray(), count = 10, measured = measured).single()
             assertEquals(setOf(Addon.MEDIAFUSION, Addon.TORRENTIO, Addon.TORZ), row.addons.toSet())
-            assertEquals("4K · HDR10 · WEB · 1.1 GB", line(row))
+            assertEquals("4K · HDR10 · WEB · 1.1 GB (pack 10.2 GB)", line(row))
             // The file a play opened from MediaFusion is that row's (Next source, Sources' marks).
             val played = FileSet(episode = true) { r -> amenBytes.takeIf { r == ReleaseKey(ha, null) } }
                 .add(row, row.offers.first { it.addon == Addon.MEDIAFUSION })
@@ -753,12 +753,12 @@ class PackSizeTest {
         assertEquals(amenBytes, row.facts.sizeBytes)
         assertTrue(row.facts.sizeExact)
         assertFalse(row.facts.sizeEstimated)
-        assertNull(row.facts.packBytes)
-        assertEquals("4K · HDR10 · WEB · 1.1 GB", line(row))
-        assertEquals("1.1 GB", details(row)["Size"])
+        assertEquals(10_200_000_000L, row.facts.packBytes)
+        assertEquals("4K · HDR10 · WEB · 1.1 GB (pack 10.2 GB)", line(row))
+        assertEquals("1.10 GB · measured here (pack 10.2 GB)", details(row)["Size"])
         // As played here too, whatever the list had.
         val played = SourceRank.asPlayedHere(before.fromMf(ha).facts, amenPlayed)
-        assertEquals("1.1 GB", PlayRules.sizeWords(played))
+        assertEquals("1.1 GB (pack 10.2 GB)", PlayRules.sizeWords(played))
         assertEquals(5.3, played.avgMbps!!, 0.01)
         // Its picture starved at 4K: under the G66 copy.
         assertEquals(listOf(after.holding(hg).key, row.key), after.map { it.key })

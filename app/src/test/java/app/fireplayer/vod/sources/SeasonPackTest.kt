@@ -329,10 +329,10 @@ class SeasonPackTest {
         val amen = list.holding(ha)
         assertEquals(TvFit.MEASURED_OK, amen.fit)
         // What it played as here: its size and its rate.
-        assertEquals("4K · HDR10 · WEB · 1.1 GB", PlayRules.mainLine(amen, film = false, plan = plan))
+        assertEquals("4K · HDR10 · WEB · 1.1 GB (pack 10.2 GB)", PlayRules.mainLine(amen, film = false, plan = plan))
         assertTrue(PlayRules.badges(amen).contains("≈5 Mb/s"))
         val details = SourcesModel.details(amen, plan, film = false) { "Nov 25" }.toMap()
-        assertEquals("1.1 GB", details["Size"])
+        assertEquals("1.08 GB · measured here (pack 10.2 GB)", details["Size"])
         assertEquals("≈5 Mb/s average · measured here", details["Data rate"])
     }
 

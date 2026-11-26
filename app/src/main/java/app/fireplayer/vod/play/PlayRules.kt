@@ -384,15 +384,16 @@ object PlayRules {
 
     /**
      * A copy's size as its row says it ([f] as played here, so what a play measured first): "1.1 GB"; an episode's
-     * share of its season pack, estimated, "≈1.0 GB (pack 10.2 GB)"; the pack's size alone when no share is known,
-     * "(pack 10.2 GB)"; an add-on's one size that may be the pack's or the episode's, "(10.2 GB)". Null when none.
+     * share of its season pack, estimated, "≈1.0 GB (pack 10.2 GB)"; its file's as a play here measured it, beside its
+     * pack's total, "1.9 GB (pack 18.9 GB)"; the pack's size alone when no share is known, "(pack 10.2 GB)"; an add-on's
+     * one size that may be the pack's or the episode's, "(10.2 GB)". Null when none.
      */
     fun sizeWords(f: SourceFacts): String? {
         val pack = f.packBytes
         val own = f.sizeBytes
         return when {
             own != null && f.sizeEstimated -> "≈${size(own)}" + (pack?.let { " (pack ${size(it)})" } ?: "")
-            own != null -> size(own)
+            own != null -> size(own) + (pack?.takeUnless { f.packUnclear }?.let { " (pack ${size(it)})" } ?: "")
             pack != null && f.packUnclear -> "(${size(pack)})"
             pack != null -> "(pack ${size(pack)})"
             else -> null

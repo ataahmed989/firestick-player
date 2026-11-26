@@ -290,7 +290,9 @@ data class SourceFacts(
     val sizeEstimated: Boolean = false,
     /**
      * An episode's add-on's one size when it is its season pack's total, or may be ([packUnclear]), while nothing better
-     * is known of the file ("(pack 10.2 GB)", "(10.2 GB)"); null otherwise. Memory only.
+     * is known of the file ("(pack 10.2 GB)", "(10.2 GB)"); beside the file's size a play here measured, the pack's total
+     * when it is known to be one ("1.9 GB (pack 18.9 GB)": [app.fireplayer.vod.sources.SourceMerge.packBeside]); null
+     * otherwise. Memory only.
      */
     val packBytes: Long? = null,
     /** The episodes [packBytes] was shared by for [sizeBytes]'s estimate; null without one. Memory only. */
@@ -299,7 +301,10 @@ data class SourceFacts(
     val packUnclear: Boolean = false,
 )
 
-/** What FirePlayer measured itself when this file played here before, keyed by [ReleaseKey.measuredKey]. */
+/**
+ * What FirePlayer measured itself when this file played here before, keyed by [ReleaseKey.measuredKey] (a copy of no
+ * release known: by its [Offer.copyKey]).
+ */
 data class Measured(val spec: MediaSpec?, val health: CopyHealth?, val at: Long?)
 
 /** One add-on's offer of a file: its own words (for Details, no links), its ready mark, and the link to check. */
@@ -320,6 +325,12 @@ data class Offer(
      * when only rounded or not known. Its own, not its row's ([app.fireplayer.vod.sources.FileSet]). Memory only.
      */
     val size: Long? = null,
+    /**
+     * For an offer of no file known (its add-on gave no info hash: [release] null, and none in its row), what a play here
+     * measured of it is kept and found by ([app.fireplayer.vod.sources.CopyKey]: "x|mediafusion|<print>|tt…:1:1", from its
+     * words, never its link); null for an offer of a release. Memory only.
+     */
+    val copyKey: String? = null,
 )
 
 /**

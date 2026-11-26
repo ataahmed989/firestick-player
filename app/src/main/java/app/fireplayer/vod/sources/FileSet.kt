@@ -12,12 +12,16 @@ import app.fireplayer.vod.ReleaseKey
  * of their torrents, one side without the file's index (MediaFusion's season packs), and what the two say of the file
  * agrees as it does for one row ([SourceMerge.samePackFile]: their sizes to the byte, else their file names; the same
  * info hash alone is not enough); or when its size is one of theirs to the byte ([exactSize]), unless it is told apart
- * from one of them in its own torrent. [sizeNow]: a file's size to the byte as the list has it now (a play measured it
- * since it was added: the two may have turned out to be different files). Not thread-safe; a few entries a play.
+ * from one of them in its own torrent. A copy of no release known (its add-on gave no info hash) by its
+ * [Offer.copyKey], and by its size to the byte as any other. [sizeNow]: a file's size to the byte as the list has it now
+ * (a play measured it since it was added: the two may have turned out to be different files). Not thread-safe; a few
+ * entries a play.
  */
 class FileSet(private val episode: Boolean, private val sizeNow: (ReleaseKey) -> Long? = { null }) {
     private val keys = HashSet<String>()
     private val sizes = HashSet<Long>()
+    /** Copies of no release known, by [Offer.copyKey]. */
+    private val copies = HashSet<String>(2)
     /** An episode's files by info hash, with what tells them apart in their torrent. */
     private val packs = HashMap<String, MutableList<File>>()
 
@@ -35,6 +39,7 @@ class FileSet(private val episode: Boolean, private val sizeNow: (ReleaseKey) ->
         val own = s.release
         own?.let { add(it, s, offerOf(s, it)) }
         for (o in s.offers) o.release?.let { if (it != own) add(it, s, o) }
+        for (o in s.offers) if (o.release == null) o.copyKey?.let { copies += it }
         exactSize(s)?.let { sizes += it }
         return this
     }
@@ -45,9 +50,11 @@ class FileSet(private val episode: Boolean, private val sizeNow: (ReleaseKey) ->
      */
     fun add(s: PlaybackSource, offer: Offer?): FileSet {
         if (offer == null) return add(s)
-        val r = offer.release ?: s.release ?: return this
-        add(r, s, offer)
-        sizeOf(s, offer)?.let { sizes += it }
+        if (offer.release == null) offer.copyKey?.let { copies += it }
+        val r = offer.release ?: s.release
+        if (r != null) add(r, s, offer)
+        // A copy of no release known: by its key, and its size to the byte once a play here measured it.
+        if (r != null || offer.copyKey != null) sizeOf(s, offer)?.let { sizes += it }
         return this
     }
 
@@ -58,7 +65,8 @@ class FileSet(private val episode: Boolean, private val sizeNow: (ReleaseKey) ->
 
     /** Whether [s] holds one of these files (any of its offers, or its size to the byte). */
     fun holds(s: PlaybackSource): Boolean {
-        if (keys.isEmpty() && sizes.isEmpty()) return false
+        if (keys.isEmpty() && sizes.isEmpty() && copies.isEmpty()) return false
+        if (copies.isNotEmpty() && s.offers.any { o -> o.release == null && o.copyKey?.let { it in copies } == true }) return true
         var apart = false
         // One of [s]'s files: true when it is one of these; [apart] when it is told apart from one of them.
         fun check(r: ReleaseKey, o: Offer?): Boolean {
