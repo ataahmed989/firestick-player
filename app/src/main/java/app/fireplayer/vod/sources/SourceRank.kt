@@ -5,11 +5,13 @@ import app.fireplayer.player.CopyRank
 import app.fireplayer.player.DvBaseLayer
 import app.fireplayer.player.MediaSpec
 import app.fireplayer.vod.BestWhy
+import app.fireplayer.vod.EpisodeRef
 import app.fireplayer.vod.Hdr
 import app.fireplayer.vod.Measured
 import app.fireplayer.vod.PlaybackSource
 import app.fireplayer.vod.RankStep
 import app.fireplayer.vod.Readiness
+import app.fireplayer.vod.ReleaseKey
 import app.fireplayer.vod.SoundFormat
 import app.fireplayer.vod.SourceFacts
 import app.fireplayer.vod.SourceGroup
@@ -22,7 +24,7 @@ class RankInput(
     val plan: TvPlan,
     /** [CopyLanguage.wanted]: the film's own language first, then the viewer's (one when they're the same or unknown). */
     val wanted: List<String>,
-    /** What FirePlayer measured of a release, by [app.fireplayer.vod.ReleaseKey.storeKey]; null when never played. */
+    /** What FirePlayer measured of a release, by [app.fireplayer.vod.ReleaseKey.measuredKey]; null when never played. */
     val measured: (String) -> Measured?,
     val runtimeMin: Int?,
     val episode: Boolean,
@@ -41,6 +43,11 @@ class RankInput(
     val imaxMove: (String) -> Boolean? = { null },
     /** Settings › Playback › Preferred bitrate, Mb/s ([SourceRank.PREFERRED_MBPS] unless the viewer changed it). */
     val preferredMbps: Double = SourceRank.PREFERRED_MBPS.toDouble(),
+    /**
+     * The episode ranked for (null: a film, or not said): what was measured of a file whose index isn't known is kept
+     * for each episode ([app.fireplayer.vod.ReleaseKey.measuredKey]).
+     */
+    val episodeRef: EpisodeRef? = null,
 )
 
 /**
@@ -56,7 +63,10 @@ class RankInput(
  * 5. Height ([shownHeight]: a copy starved of data for its frame, [CopyRank.starved], counts just under the class
  *    below). 6. The HDR this TV shows ([shownHdr]: Dolby Vision by what this TV does with each profile).
  * 7. Rate: nearest the viewer's preferred bitrate first ([rateKey]; what the connection keeps, when that is less), the
- *    higher side counting a little less, nearly equal distances tied; an unknown rate after those near it.
+ *    higher side counting a little less, nearly equal distances tied; an unknown rate after those near it, and after
+ *    every copy that played well here at a rate measured here; an episode's copy whose only size was its season pack's
+ *    (or may be), with no estimate of its share, after every copy of a known rate ([keysOf]). A share estimated
+ *    ([SourceFacts.sizeEstimated]) ranks as a stated size, here and in fit and size.
  * 8. Source kind (Remux, BluRay encode, WEB-DL, WEBRip, HDTV), then bit depth (10-bit taken for HDR and 4K HEVC).
  * 9. HDR10+ where it reaches the TV ([TvPlan.hdr10PlusReaches]; Dolby Vision on a Dolby Vision TV); a picture that
  *    played here without HDR10's brightness data last.
@@ -116,21 +126,50 @@ object SourceRank {
 
     /** Ranks [sources] best first, without SD copies when the title has better ([withoutSd]). */
     fun rank(sources: List<PlaybackSource>, input: RankInput): List<PlaybackSource> {
-        val scored = withoutSd(sources).mapIndexed { i, s ->
+        val rows = withoutSd(sources).map { s ->
             val measured = measuredOf(s, input)
             val (fit, warning) = fit(asPlayedHere(s.facts, measured), input.plan, measured, input.lineMbps, input.now, input.episode)
             val moved = if (input.episode) null else movedOf(s, input)
-            val ranked = s.copy(fit = fit, warning = warning, measured = measured, imaxMove = moved)
-            Scored(ranked, i, keyOf(ranked, input))
+            s.copy(fit = fit, warning = warning, measured = measured, imaxMove = moved)
         }
+        val keys = keysOf(rows, input)
+        val scored = rows.mapIndexed { i, s -> Scored(s, i, keys[i]) }
         return pairLanguages(scored.sortedWith(ORDER), input).map { it.source }
     }
 
-    /** What was measured of a row's file: its own release's, else a merged offer's (the same file from another add-on). */
+    /**
+     * What was measured of a row's file: its own release's, else a merged offer's (the same file from another add-on),
+     * each under its key for the episode ranked for ([ReleaseKey.measuredKey]; what an earlier version kept of a torrent
+     * of one episode file, [ReleaseKey.earlierKey], while there's nothing newer).
+     */
     private fun measuredOf(s: PlaybackSource, input: RankInput): Measured? {
-        s.release?.let { r -> input.measured(r.storeKey)?.let { return it } }
-        for (o in s.offers) o.release?.let { r -> if (r != s.release) input.measured(r.storeKey)?.let { return it } }
+        s.release?.let { r -> measuredOf(s, r, input)?.let { return it } }
+        for (o in s.offers) o.release?.let { r -> if (r != s.release) measuredOf(s, r, input)?.let { return it } }
         return null
+    }
+
+    private fun measuredOf(s: PlaybackSource, r: ReleaseKey, input: RankInput): Measured? {
+        val episode = input.episodeRef
+        val m = input.measured(r.measuredKey(episode))
+            ?: r.earlierKey(episode, single(s, r))?.let { input.measured(it) }
+            ?: return null
+        return if (!input.episode && r.fileIdx == null) ownSize(m, s.facts) else m
+    }
+
+    /** Whether an add-on that gives each file of a torrent of several its index offers [r] in [s] without one ([ReleaseKey.earlierKey]: Torrentio). */
+    private fun single(s: PlaybackSource, r: ReleaseKey): Boolean =
+        r.fileIdx == null && s.offers.any { o -> ReleaseKey.indexesEveryFile(o.addon) && (o.release ?: s.release) == r }
+
+    /**
+     * [m], measured of a film's file without an index: a collection's films share that key, so a size (and the rate from
+     * it) other than the one an add-on gave to the byte ([SourceFacts.sizeExact]) was another film's, and isn't this
+     * row's ([asPlayedHere] keeps the add-on's).
+     */
+    private fun ownSize(m: Measured, facts: SourceFacts): Measured {
+        val spec = m.spec ?: return m
+        val stated = facts.sizeBytes?.takeIf { facts.sizeExact } ?: return m
+        if (spec.sizeBytes <= 0 || SourceMerge.sizeClose(spec.sizeBytes, stated)) return m
+        return m.copy(spec = spec.copy(sizeBytes = 0, overallBps = 0))
     }
 
     /** The viewer's move of a row's file ([RankInput.imaxMove]): its own release's, else a merged offer's. */
@@ -159,8 +198,14 @@ object SourceRank {
     /** The automatic pick: the first ranked source that may be picked by itself. */
     fun best(ranked: List<PlaybackSource>): PlaybackSource? = ranked.firstOrNull { it.automatic }
 
-    /** One value per [RankStep], higher first; [dub]: the viewer's language without the film's own. */
-    private class Key(val v: LongArray, val dub: Boolean)
+    /**
+     * One value per [RankStep], higher first; [dub]: the viewer's language without the film's own; [rateKnown]: its rate
+     * is known ([mbpsOf]); [proven]: it played well here at a rate measured here that feeds its picture; [torrentTotal]:
+     * its rate isn't known because its only size was its torrent's ([SourceFacts.torrentTotal]) ([keysOf]).
+     */
+    private class Key(
+        val v: LongArray, val dub: Boolean, val rateKnown: Boolean = true, val proven: Boolean = false, val torrentTotal: Boolean = false,
+    )
 
     private class Scored(val source: PlaybackSource, val index: Int, val key: Key)
 
@@ -206,9 +251,11 @@ object SourceRank {
         }
         v[RankStep.LANGUAGE_KNOWN.ordinal] = if (level == 0) 0 else 1
         v[RankStep.ROOM.ordinal] = if (LineRate.room(f.avgMbps, input.lineMbps, f.origin == REMUX)) 1 else 0
-        v[RankStep.HEIGHT.ordinal] = shownHeight(f, spec, input).toLong()
+        val shown = shownHeight(f, spec, input)
+        v[RankStep.HEIGHT.ordinal] = shown.toLong()
         v[RankStep.HDR.ordinal] = hdr.toLong()
-        v[RankStep.RATE.ordinal] = rateKey(mbpsOf(f, spec, input), input)
+        val mbps = mbpsOf(f, spec, input)
+        v[RankStep.RATE.ordinal] = rateKey(mbps, input)
         v[RankStep.KIND.ordinal] = originRank(f.origin) * 100L + bitDepth(f)
         v[RankStep.DYNAMIC_HDR.ordinal] = dynamicHdr(shownHdr(f, plan), spec, plan).toLong()
         v[RankStep.IMAX.ordinal] = if (isImaxCopy(s, !input.episode)) 1 else 0
@@ -218,7 +265,32 @@ object SourceRank {
         v[RankStep.SIZE.ordinal] = f.sizeBytes ?: 0L
         v[RankStep.SEEDERS.ordinal] = (f.seeders ?: 0).toLong()
         val dub = input.wanted.size > 1 && input.wanted[1] in known && input.wanted[0] !in known
-        return Key(v, dub)
+        // Its rate measured here (the file's size or average), and not starved for its picture ([shownHeight]).
+        val measuredRate = spec != null && (spec.overallBps > 0 || spec.sizeBytes > 0)
+        val proven = playedWell && measuredRate && mbps != null && f.height != null && shown == f.height
+        return Key(v, dub, rateKnown = mbps != null, proven = proven, torrentTotal = mbps == null && f.torrentTotal)
+    }
+
+    /**
+     * [rows]' keys ([keyOf]). A rate not known ([rateKey]'s guess, near the top) is never put above a copy that played
+     * well here at a rate measured here ([Key.proven]) when nothing before [RankStep.RATE] tells them apart: it goes just
+     * under the lowest such copy. A rate measured on this TV beats a guess. An episode's copy whose only size was its
+     * season pack's ([Key.torrentTotal]: the file could be any size) goes under every copy of a known rate it ties with
+     * there, played here or not, until it plays here and is measured.
+     */
+    private fun keysOf(rows: List<PlaybackSource>, input: RankInput): List<Key> {
+        val keys = rows.map { keyOf(it, input) }
+        if (keys.all { it.rateKnown }) return keys
+        val proven = keys.filter { it.proven }
+        val known = keys.filter { it.rateKnown }
+        val rate = RankStep.RATE.ordinal
+        for (k in keys) {
+            if (k.rateKnown) continue
+            val above = if (k.torrentTotal) known else proven
+            val lowest = above.filter { stepBetween(it, k, until = rate) == null }.minOfOrNull { it.v[rate] } ?: continue
+            k.v[rate] = minOf(k.v[rate], lowest - 1)
+        }
+        return keys
     }
 
     /**
@@ -257,7 +329,7 @@ object SourceRank {
     fun why(ranked: List<PlaybackSource>, input: RankInput): BestWhy? {
         val best = best(ranked) ?: return null
         val at = ranked.indexOf(best)
-        val keys = ranked.map { keyOf(it, input) }
+        val keys = keysOf(ranked, input)
         val mine = keys[at]
         val played = asPlayedHere(best.facts, best.measured)
         // A profile 8 file not played yet is said as the add-on has it: its base layer isn't known.
@@ -420,11 +492,18 @@ object SourceRank {
      * [facts] as this TV played the file, by what FirePlayer [measured] when it played here: a Dolby Vision file played
      * on a plain decoder (as its HDR10 base layer, or Media3's own way back to HEVC) is its base layer here, not Dolby
      * Vision: HLG or SDR where the file's record said so ([MediaSpec.dvSignal]: 8.4, 8.2), else HDR10; its profile is
-     * filled in from the play; HDR10+ seen in the picture is added. Otherwise [facts] as the add-ons have them.
+     * filled in from the play; HDR10+ seen in the picture is added. The file's size and average rate as the play
+     * measured them replace the add-ons' (a season pack's total, or its share, isn't the episode's file). Otherwise
+     * [facts] as the add-ons have them.
      */
     fun asPlayedHere(facts: SourceFacts, measured: Measured?): SourceFacts {
         val spec = measured?.spec ?: return facts
         var f = facts
+        if (spec.sizeBytes > 0 && (f.sizeBytes != spec.sizeBytes || !f.sizeExact)) {
+            f = f.copy(sizeBytes = spec.sizeBytes, sizeExact = true, torrentTotal = false, sizeEstimated = false, packBytes = null,
+                packEpisodes = null, packUnclear = false)
+        }
+        if (spec.overallBps > 0) f = f.copy(avgMbps = spec.overallBps / 1_000_000.0)
         if (Hdr.DOLBY_VISION in f.hdr) {
             val plain = spec.dvBaseLayer > 0 || (spec.decoder == MediaSpec.Decoder.PLAIN && spec.dvProfile != 5)
             val profile = spec.dvProfile.takeIf { it > 0 }
@@ -677,19 +756,34 @@ object SourceRank {
      * while a copy of it is still there to try (the lowest of three 4K copies goes on to the other two 4K ones, not to
      * 1080p); then the groups under that one, top to bottom, each in [ranked]'s order; only then the groups above, top
      * to bottom. Only those that may be picked by themselves, never one that showed no picture here or wasn't the whole
-     * film. With no [currentKey] in the list, [ranked]'s order.
+     * film, and never the copy itself: neither its row nor any row holding the same file ([same], e.g. [FileSet.holds]:
+     * another add-on's row of it, or its row under a new key once the list was ranked again). Its row not in the list by
+     * [currentKey], the one holding its file stands in; none, [current]'s own group from the top; with neither,
+     * [ranked]'s order.
      */
-    fun nextOrder(ranked: List<PlaybackSource>, currentKey: String?, film: Boolean): List<PlaybackSource> {
-        val at = ranked.indexOfFirst { it.key == currentKey }
-        if (at < 0) return ranked.filter { pickable(it) }
+    fun nextOrder(
+        ranked: List<PlaybackSource>,
+        currentKey: String?,
+        film: Boolean,
+        current: PlaybackSource? = null,
+        same: (PlaybackSource) -> Boolean = { false },
+    ): List<PlaybackSource> {
+        val at = ranked.indexOfFirst { it.key == currentKey }.takeIf { it >= 0 } ?: ranked.indexOfFirst(same)
+        val own = when {
+            at >= 0 -> listPlace(ranked[at], film)
+            current != null -> listPlace(current, film)
+            else -> return ranked.filter { pickable(it) && !same(it) }
+        }
         val places = IntArray(ranked.size) { listPlace(ranked[it], film) }
-        val own = places[at]
         val out = ArrayList<PlaybackSource>(ranked.size)
         fun take(from: Int, until: Int, place: Int) {
-            for (i in from until until) if (places[i] == place && pickable(ranked[i])) out += ranked[i]
+            for (i in from until until) {
+                val s = ranked[i]
+                if (places[i] == place && i != at && s.key != currentKey && pickable(s) && !same(s)) out += s
+            }
         }
         take(at + 1, ranked.size, own)
-        take(0, at, own)
+        if (at > 0) take(0, at, own)
         for (p in own + 1 until LIST_PLACES) take(0, ranked.size, p)
         for (p in 0 until own) take(0, ranked.size, p)
         return out

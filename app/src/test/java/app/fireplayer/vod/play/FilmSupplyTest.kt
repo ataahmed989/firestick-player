@@ -172,6 +172,24 @@ class FilmSupplyTest {
         assertNull(kept)
     }
 
+    @Test fun aCopyMeasuredHereIsJudgedByTheRateItPlayedAt() {
+        // The add-ons' size made it 69 Mb/s (a season pack's total, say); played here it measured 20 Mb/s, which this
+        // line keeps up with: not short, so the plain question, not "needs about 69 Mb/s".
+        val measured = remux.copy(measured = app.fireplayer.vod.Measured(app.fireplayer.player.MediaSpec(overallBps = 20_000_000), null, 1L))
+        val (p, s) = playing(first = measured)
+        s.switchNow = true
+        p.buffering(true)
+        assertEquals(FilmSupply.PLAIN_QUESTION, questions.single().first)
+        assertTrue(s.lighterAsked.isEmpty())
+        // Measured at 69: short, as by its size.
+        questions.clear()
+        val heavy = remux.copy(key = "k9", measured = app.fireplayer.vod.Measured(app.fireplayer.player.MediaSpec(overallBps = 69_000_000), null, 1L))
+        val (p2, s2) = playing(first = heavy)
+        s2.switchNow = true
+        p2.buffering(true)
+        assertTrue(questions.single().first.startsWith("This source needs about 69 Mb/s"))
+    }
+
     @Test fun switchingKeepsThePositionAndIsRememberedForTheFilm() {
         val (p, s) = playing()
         s.switchNow = true

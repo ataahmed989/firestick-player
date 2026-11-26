@@ -164,6 +164,39 @@ class SourcesModelTest {
     }
 
     @Test
+    fun inThePlayerPlayingTakesLastUsedsPlace() {
+        // The title page: Last used where it sits (fhd[1]).
+        assertEquals("Last used", SourcesModel.items(list, 0, emptySet()).at("src:FHD:k12").value)
+        // The player, another copy loading or playing: no Last used anywhere, the copy it goes on from is the Playing one.
+        val items = SourcesModel.items(list, 0, emptySet(), playingKey = "k3")
+        assertTrue(items.none { it.value.orEmpty().contains(SourcesModel.LAST_USED) })
+        assertEquals("Playing", items.at("src:UHD:k3").value)
+        // Nor on the Best's row when the Best was the one used last.
+        assertTrue(SourcesModel.items(list.copy(lastUsed = imax[0]), 0, emptySet(), playingKey = "k3")
+            .none { it.value.orEmpty().contains(SourcesModel.LAST_USED) })
+    }
+
+    @Test
+    fun nextSourceIsNeverTheFilePlayingOrTheBestUnderAnotherRow() {
+        // The Best (k41) and the same file listed again by another add-on, not merged: the next row down.
+        val best = imax[0]
+        val dup = best.copy(key = "dup", offers = best.offers.map { it.copy(addon = Addon.MEDIAFUSION, release = best.release) })
+        val l = list.copy(sources = listOf(best, dup) + list.sources.drop(1))
+        // Playing the Best: Next source is the other IMAX copy, never its duplicate.
+        val playing = SourcesModel.items(l, 0, emptySet(), playingKey = "k41")
+        assertEquals("k42", playing.at(SourcesModel.NEXT_KEY).source?.key)
+        assertEquals("k42", SourcesModel.view(l, "k41").next?.key)
+        // From the Best on the title page, the same.
+        assertEquals("k42", SourcesModel.view(l, null).next?.key)
+        // Its file's size to the byte under another hash: the same file too.
+        val exact = best.facts.copy(sizeExact = true)
+        val twin = dup.copy(key = "twin", release = app.fireplayer.vod.ReleaseKey(Fixtures.hash(99), 0),
+            offers = dup.offers.map { it.copy(release = app.fireplayer.vod.ReleaseKey(Fixtures.hash(99), 0)) }, facts = exact)
+        val l2 = list.copy(sources = listOf(best.copy(facts = exact), twin) + list.sources.drop(1))
+        assertEquals("k42", SourcesModel.view(l2, "k41").next?.key)
+    }
+
+    @Test
     fun aFourKCopyPlayingSmoothlyClosesTenEightyAndTheKindsUnderIt() {
         val smooth = keys(SourcesModel.items(list, 0, emptySet(), playingKey = "k1", smooth = true))
         assertFalse(smooth.contains("src:FHD:k11"))

@@ -115,9 +115,10 @@ object DvBaseLayer {
      * The film's own HDR10 brightness data, from the SEI messages its parameter sets may carry. Media3 keeps every NAL
      * unit of a file's hvcC (MKV's CodecPrivate, MP4's hvcC box), SEI arrays included, in [initData] (Annex B), and
      * gives them to the decoder as they are, but reads none of them: its Matroska reader takes brightness data only from
-     * the track's Colour element, which a profile 7 remux may not have. A UHD Blu-ray's base layer carries its mastering
-     * display (mastering_display_colour_volume, payload 137) and light levels (content_light_level_info, 144) in prefix
-     * SEI NAL units (type 39), and a file made from one may have them in its hvcC too.
+     * the track's Colour element, which a profile 7 remux may not have, nor a profile 8 file ([hevcHdr10]). A UHD
+     * Blu-ray's base layer carries its mastering display (mastering_display_colour_volume, payload 137) and light levels
+     * (content_light_level_info, 144) in prefix SEI NAL units (type 39), and a file made from one may have them in its
+     * hvcC too.
      *
      * As CTA-861.3 static metadata, laid out as [genericStaticInfo]. Null without a mastering display message whose
      * values make sense ([masteringOf]); light levels that aren't there or make no sense go as 0, CTA-861.3's "not
@@ -219,11 +220,17 @@ object DvBaseLayer {
             fromSei -> "from the file's SEI"
             else -> "generic"
         }
-        if (sent == null || sent.size < 25) return "HDR10 info $from"
+        val levels = levelsOf(sent) ?: return "HDR10 info $from"
+        val none = if (fromTrack || fromSei) "" else " (none in the file's header)"
+        return "HDR10 info $from: $levels$none"
+    }
+
+    /** "1000 nits, MaxCLL 1452, MaxFALL 400": the peak and light levels in CTA-861.3 static metadata; null when cut short. */
+    private fun levelsOf(sent: ByteArray?): String? {
+        if (sent == null || sent.size < 25) return null
         // Little-endian, as CTA-861.3 has it.
         fun le16(at: Int) = (sent[at].toInt() and 0xFF) or ((sent[at + 1].toInt() and 0xFF) shl 8)
-        val none = if (fromTrack || fromSei) "" else " (none in the file's header)"
-        return "HDR10 info $from: ${le16(17)} nits, MaxCLL ${le16(21)}, MaxFALL ${le16(23)}$none"
+        return "${le16(17)} nits, MaxCLL ${le16(21)}, MaxFALL ${le16(23)}"
     }
 
     /** Dolby Vision's single-layer profile with an HDR10, SDR or HLG base (8.1, 8.2, 8.4): streaming's Dolby Vision. */
@@ -283,10 +290,11 @@ object DvBaseLayer {
     /**
      * The colour to give the HEVC decoder for a Dolby Vision profile 8 track it decodes ([decoderMime] video/hevc:
      * Media3's own way back to HEVC for profile 8, on a TV without Dolby Vision): HDR10 colour and static metadata
-     * ([hdr10]: the file's own values where it states them, else BT.2020, PQ, limited range and generic metadata) when
-     * the track states PQ without its static metadata, or no colour at all and its picture's own (the SPS in [initData],
-     * as Media3's Matroska reader leaves it unread) is PQ or says none. Measured on a Fire TV Stick 4K Max: a profile 8
-     * IMAX copy reached the screen as PQ with no static metadata at all (the TV left to guess the brightness). Null to
+     * ([hdr10]: the file's own values where it states them, else BT.2020, PQ, limited range and generic metadata, which
+     * [hevcHdr10] replaces with the film's own from its SEI where it has them) when the track states PQ without its
+     * static metadata, or no colour at all and its picture's own (the SPS in [initData], as Media3's Matroska reader
+     * leaves it unread) is PQ or says none. Measured on a Fire TV Stick 4K Max: a profile 8 IMAX copy reached the
+     * screen as PQ with no static metadata at all (the TV left to guess the brightness). Null to
      * leave the track's colour as it is: one stating, or whose picture or record ([signal], [recordSignal]) states, HLG
      * (8.4), SDR (8.2) or a colour space other than BT.2020; HDR10 in full; any other format, profile, or decoder.
      */
@@ -331,10 +339,40 @@ object DvBaseLayer {
         return null
     }
 
-    /** The log's one line when a profile 8 track's HEVC decoder is given HDR10 colour ([hevcColour]). */
-    fun hevcColourLine(ownStaticInfo: Boolean): String =
-        "Dolby Vision profile $SINGLE_LAYER_PROFILE on the HEVC decoder: given HDR10 colour with " +
-            (if (ownStaticInfo) "the file's own brightness data" else "generic brightness data (the file states none)")
+    /**
+     * What a profile 8 track's HEVC decoder is given ([hevcColour]), with its brightness data as a profile 7 base
+     * layer's ([hdr10]): the track's own static metadata first, else the film's own from the SEI in its parameter sets
+     * ([seiStaticInfo]), else generic; and the log's one line on it ([hevcColourLine]). Null to leave the track's colour
+     * as it is. The SEI is read only for such a track, a few hundred bytes when its decoder is set up, never per frame;
+     * only the colour the decoder is configured with changes, so no decoder is made again for it.
+     */
+    @OptIn(UnstableApi::class)
+    fun hevcHdr10(format: androidx.media3.common.Format, decoderMime: String?): Hdr10? {
+        if (format.sampleMimeType != MimeTypes.VIDEO_DOLBY_VISION) return null
+        val colour = hevcColour(format.sampleMimeType, format.codecs, decoderMime, format.colorInfo,
+            format.initializationData, recordSignal(format)) ?: return null
+        val fromTrack = format.colorInfo?.hdrStaticInfo != null
+        val sei = if (fromTrack) null else seiStaticInfo(format.initializationData)
+        val given = if (sei == null) colour else colour.buildUpon().setHdrStaticInfo(sei).build()
+        return Hdr10(given, hevcColourLine(given.hdrStaticInfo, fromTrack, fromSei = sei != null))
+    }
+
+    /** [hevcHdr10]'s colour for the HEVC decoder, and the log's line on where its brightness data came from. */
+    class Hdr10(val colour: androidx.media3.common.ColorInfo, val line: String)
+
+    /**
+     * The log's one line when a profile 8 track's HEVC decoder is given HDR10 colour ([hevcHdr10]): with the file's own
+     * brightness data from its track ([fromTrack]), from its SEI ([fromSei], with the peak and light levels [sent]), or
+     * generic.
+     */
+    fun hevcColourLine(sent: ByteArray?, fromTrack: Boolean, fromSei: Boolean): String {
+        val with = when {
+            fromTrack -> "the file's own brightness data"
+            fromSei -> "brightness data from the file's SEI" + (levelsOf(sent)?.let { ": $it" } ?: "")
+            else -> "generic brightness data (the file states none)"
+        }
+        return "Dolby Vision profile $SINGLE_LAYER_PROFILE on the HEVC decoder: given HDR10 colour with $with"
+    }
 
     /**
      * CTA-861.3 static metadata (type 1, little-endian, as MediaFormat.KEY_HDR_STATIC_INFO): P3-D65 primaries, D65 white,

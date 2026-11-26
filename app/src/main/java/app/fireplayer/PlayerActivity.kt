@@ -25,6 +25,8 @@ import app.fireplayer.vod.play.PlayerMeta
 import app.fireplayer.vod.play.Recovery
 import app.fireplayer.vod.play.SourcePlayback
 import app.fireplayer.vod.play.SourcesModel
+import app.fireplayer.vod.play.KeptTracks
+import app.fireplayer.vod.play.ResumeTracks
 import app.fireplayer.vod.play.VodFix
 import app.fireplayer.vod.ui.SourcesPanel
 import android.os.Build
@@ -167,6 +169,9 @@ import java.io.IOException
 import java.lang.ref.WeakReference
 import java.util.Locale
 import java.util.concurrent.Executors
+import java.util.concurrent.FutureTask
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import kotlin.concurrent.thread
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -421,6 +426,16 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private var reapplyWishes = false
     // The film or show whose remembered sound was put back, so it's done once per title.
     private var audioRecalledFor: String? = null
+    // A resume from the add-ons: the sound and subtitles last chosen for its film or episode (see ResumeTracks), read
+    // off the main thread as it starts and put back once its tracks are in (applyResumeTracks); null once done or none.
+    private var resumeKept: ResumeTracks.Kept? = null
+    // That read, until what it found is taken into resumeKept (takeResumeRead).
+    private var resumeRead: FutureTask<ResumeTracks.Kept?>? = null
+    // The kinds of track just put back by it, left alone by reapplyChoices until they're on.
+    private val resumePutBack = ResumeTracks.PutBack()
+    // The sound or subtitles chosen by hand in this play: what was kept from before isn't put back over them.
+    private var chosenAudio = false
+    private var chosenSubs = false
     // The film was paused for the TV to change refresh rate, and goes on by itself afterwards.
     private var pausedForSwitch = false
     // The film stood still while meant to be playing (see FreezeWatch): paused for a moment, and played again by itself.
@@ -1981,6 +1996,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             refusedForIndex = -1
             rematches = 0
             reapplyWishes = trackWishes.isNotEmpty()
+            // Nothing a resume put back holds over another video's tracks.
+            resumePutBack.clear()
         }
         playingIndex = now
         deviceRetries = 0
@@ -1999,6 +2016,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // Another sound track (or the same one set up again) gets its own time to start.
         freezeWatch.jumped()
         pictureWatch.reset()
+        // A resume: the sound and subtitles chosen last time, first (what's remembered for the show, or the downloaded
+        // subtitles last on for this copy, aren't put over them).
+        applyResumeTracks()
         pendingExternalSubId?.let { id ->
             val option = trackOptions(C.TRACK_TYPE_TEXT).firstOrNull { sameId(it, id) }
             if (option != null) {
@@ -2018,6 +2038,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         recallAudio()
         if (reapplyWishes) reapplyChoices()
+        // What a resume put back is left alone only in this pass (or until its downloaded file is on, after the reload).
+        resumePutBack.settled(waiting = pendingExternalSubId != null)
         // The sound track playing is the one auto sync hears ahead, as it loads.
         embeddedCues.playingAudioId = selectedFormat(C.TRACK_TYPE_AUDIO)?.id
         followSubtitle()
@@ -4843,6 +4865,19 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (type == C.TRACK_TYPE_TEXT) currentEntry()?.let { SavedSubtitles.use(this, it.key, savedFileOf(f.id)) }
         // The sound picked for a film or show is picked again when it's opened another time.
         if (type == C.TRACK_TYPE_AUDIO) currentEntry()?.let { e -> audioKey(e)?.let { rememberAudio(it, trackWishes[type]!!) } }
+        // And both are put back when this film or episode is resumed (see ResumeTracks).
+        currentEntry()?.let { e ->
+            when {
+                type == C.TRACK_TYPE_AUDIO -> keepChoice(audio = trackOf(f, e, text = false))
+                type != C.TRACK_TYPE_TEXT -> Unit
+                // A downloaded file, by its name; a file handed over with the video can't be put back, so isn't kept.
+                o.external -> {
+                    val file = savedFileOf(f.id)?.let { ResumeTracks.Subs.Downloaded(it, f.language, e.key) }
+                    keepChoice(subs = file, text = true)
+                }
+                else -> keepChoice(subs = ResumeTracks.Subs.Embedded(trackOf(f, e, text = true)))
+            }
+        }
         // For as long as the player is open, that language comes first (Settings keeps the default).
         val p = player ?: return
         val language = f.language ?: return
@@ -4859,12 +4894,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private fun reapplyChoices() {
         if (player?.currentTracks?.groups.isNullOrEmpty()) return
         reapplyWishes = false
-        // A subtitle file carried over to another copy of the film stays the one on
+        // A subtitle file carried over to another copy of the film stays the one on (unless a resume just put others back)
         val keep = keepTextId?.let { id -> trackOptions(C.TRACK_TYPE_TEXT).firstOrNull { it.external && sameId(it, id) } }
+            ?.takeUnless { resumePutBack.holds(C.TRACK_TYPE_TEXT) }
         keepTextId = null
         if (keep != null && !keep.selected) selectTrack(keep)
         for ((type, wish) in trackWishes) {
             if (type == C.TRACK_TYPE_TEXT && keep != null) continue
+            // Put back by a resume just now: the very track chosen last, or its closest (see ResumeTracks.PutBack).
+            if (resumePutBack.holds(type)) continue
             val same = trackOptions(type).filter { it.group.getTrackFormat(it.trackIndex).language == wish.language }
             fun format(o: TrackOption) = o.group.getTrackFormat(o.trackIndex)
             // The same kind (forced or full subtitles, commentary or main sound) matters more than the name, which
@@ -4925,7 +4963,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         reapplyWishes = true
     }
 
+    /** Subtitles turned off by hand: off, and off again when this film or episode is resumed. */
     private fun subtitlesOff() {
+        keepChoice(subs = ResumeTracks.Subs.Off)
+        textOff()
+    }
+
+    private fun textOff() {
         trackWishes.remove(C.TRACK_TYPE_TEXT)
         currentEntry()?.let { SavedSubtitles.use(this, it.key, null) }
         val p = player ?: return
@@ -4934,6 +4978,219 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
             .build()
     }
+
+    // ---- The sound and subtitles last chosen, put back on a resume (see ResumeTracks) ----
+
+    /**
+     * A resume of a film or episode from the add-ons (as its copy left is played again): what was chosen last for it is
+     * read now, off the main thread, to be put back once its tracks are in ([applyResumeTracks]). On a thread of its own,
+     * not behind the sitting's start-up work on [io]: a link checked while the screen came up is handed over at once,
+     * and the first copy then waits for this read ([resumeFileFor]).
+     */
+    private fun readResumeTracks(s: SourcePlayback) {
+        resumeKept = null
+        resumeRead = null
+        resumePutBack.clear()
+        chosenAudio = false
+        chosenSubs = false
+        if (!ResumeTracks.applies(s.request)) return
+        val target = s.request.target
+        val store = KeptTracks.of(this)
+        val read = FutureTask { runCatching { store.read(target.title.kind, target.streamId) }.getOrNull() }
+        resumeRead = read
+        runCatching {
+            thread(name = "FirePlayerResume", isDaemon = true) {
+                read.run()
+                handler.post {
+                    if (isFinishing || source !== s || resumeRead !== read) return@post
+                    takeResumeRead(0L)
+                    applyResumeTracks()
+                }
+            }
+        }.onFailure { resumeRead = null }
+    }
+
+    /**
+     * What the resume's read found ([readResumeTracks]) taken into [resumeKept], once it's in: waited for [waitMs] at
+     * most (a small settings file), else left for when it comes.
+     */
+    private fun takeResumeRead(waitMs: Long) {
+        val read = resumeRead ?: return
+        if (waitMs <= 0L && !read.isDone) return
+        val kept = try {
+            read.get(waitMs, TimeUnit.MILLISECONDS)
+        } catch (e: TimeoutException) {
+            return
+        } catch (e: Exception) {
+            null
+        }
+        resumeRead = null
+        resumeKept = kept
+        // Chosen by hand in the meantime: that stays.
+        dropChosen()
+    }
+
+    /**
+     * Keeps the sound ([audio]) or subtitles ([subs]) just chosen by hand for this film or episode from the add-ons, for
+     * its next resume; what a resume was still to put back of that kind ([resumeKept]) no longer is. [text] marks a
+     * subtitle choice that can't be kept (a file handed over with the video).
+     */
+    private fun keepChoice(
+        audio: ResumeTracks.Track? = null,
+        subs: ResumeTracks.Subs? = null,
+        text: Boolean = subs != null,
+    ) {
+        if (audio != null) chosenAudio = true
+        if (text) chosenSubs = true
+        dropChosen()
+        val target = source?.request?.target ?: return
+        if (currentEntry()?.storeKey == null || (audio == null && subs == null)) return
+        val now = System.currentTimeMillis()
+        runCatching { KeptTracks.of(this).chose(target.title.kind, target.streamId, audio, subs, now) }
+    }
+
+    /** What a resume is still to put back of a kind chosen by hand in this play isn't any more. */
+    private fun dropChosen() {
+        resumeKept = resumeKept?.let { k -> k.copy(audio = k.audio.takeUnless { chosenAudio }, subs = k.subs.takeUnless { chosenSubs }) }
+            ?.takeIf { it.audio != null || it.subs != null }
+    }
+
+    /** A track as kept: what it's like (a subtitle named SDH counts as SDH), the copy it's on and its id in it. */
+    private fun trackOf(f: Format, entry: Entry, text: Boolean): ResumeTracks.Track {
+        val sdh = text && ReferenceCues.hearingImpairedLabel(f.label)
+        val roles = f.roleFlags or (if (sdh) C.ROLE_FLAG_DESCRIBES_MUSIC_AND_SOUND else 0)
+        return ResumeTracks.Track(f.language, f.label, roles, forcedish(f), f.channelCount, copyOf(entry), f.id)
+    }
+
+    /**
+     * The copy [entry] is of this play's film or episode: its release ("<info hash>|<file index>") or its add-on's name,
+     * never its link. Null for any other video.
+     */
+    private fun copyOf(entry: Entry): String? {
+        val key = entry.storeKey ?: return null
+        val id = source?.request?.target?.streamId ?: return null
+        return key.substringAfter("vod|$id|", "").ifEmpty { null }
+    }
+
+    /**
+     * A resume whose subtitles were last a downloaded file not kept for [entry]'s copy (another copy plays): it's kept
+     * for this copy too, with the timing found for it on the other, and put in [entry]'s list before the player is built,
+     * so it's on from the start ([applyResumeTracks] picks it). Nothing when it's gone.
+     */
+    private fun resumeFileFor(entry: Entry) {
+        // The first copy handed over before the read was in (its link checked while the screen came up, see
+        // EarlyOpen.attach): waited for, a moment at most, so the file is in the list as the player is built rather than
+        // the video loaded again for it once its tracks are in.
+        takeResumeRead(RESUME_READ_WAIT_MS)
+        (resumeKept?.subs as? ResumeTracks.Subs.Downloaded)?.let { fileFor(entry, it) }
+    }
+
+    /** Downloaded subtitles [subs] in [entry]'s list (added, see [resumeFileFor]); their id there, null once they're gone. */
+    private fun fileFor(entry: Entry, subs: ResumeTracks.Subs.Downloaded): String? {
+        // Kept for this copy too, with the timing found for them on the copy they were chosen on. Also when already in
+        // the list: carried over from a copy that gave way before its tracks were in (playInstead), never kept for this.
+        if (SavedSubtitles.alsoFor(this, entry.key, subs.file)) {
+            subs.video?.takeIf { it != entry.key }?.let { prefs.copySubtitleTiming(subs.file, it, entry.key) }
+        }
+        entry.subtitles.firstOrNull { c -> c.id?.let { savedFiles[it] } == subs.file }?.let { return it.id }
+        val saved = SavedSubtitles.find(this, subs.file) ?: return null
+        val file = File(SavedSubtitles.dir(this), saved.file)
+        val config = subtitleConfig(Uri.fromFile(file), null, saved.language ?: subs.language)
+        val id = config.id ?: return null
+        entry.subtitles += config
+        savedFiles[id] = saved.file
+        return id
+    }
+
+    /**
+     * Puts back the sound and subtitles chosen last time ([resumeKept]) once the tracks are in, before the film shows: on
+     * the same copy, the very tracks; on another, the closest ([ResumeTracks.match]); subtitles off stay off; a downloaded
+     * file comes back while it's kept, else the film's own in its language. What finds nothing keeps today's defaults.
+     */
+    private fun applyResumeTracks() {
+        val kept = resumeKept ?: return
+        val p = player ?: return
+        if (p.currentTracks.groups.isEmpty()) return
+        val entry = currentEntry() ?: return
+        resumeKept = null
+        val copy = copyOf(entry)
+        var audioPicked: Format? = null
+        kept.audio?.let { wish ->
+            val options = trackOptions(C.TRACK_TYPE_AUDIO)
+            val tracks = options.map { trackOf(formatOf(it), entry, text = false) }
+            val o = options.getOrNull(ResumeTracks.match(wish, tracks, copy, audio = true)) ?: return@let
+            val f = formatOf(o)
+            if (!o.selected) selectTrack(o)
+            trackWishes[C.TRACK_TYPE_AUDIO] = wishOf(f)
+            // As when picked by hand: that language first for as long as the player is open.
+            f.language?.let { lang ->
+                p.trackSelectionParameters = p.trackSelectionParameters.buildUpon().setPreferredAudioLanguage(lang).build()
+            }
+            // Not put over by the sound remembered for the film or show (recallAudio), nor matched again (reapplyChoices).
+            audioRecalledFor = audioKey(entry)
+            resumePutBack.put(C.TRACK_TYPE_AUDIO)
+            audioPicked = f
+        }
+        var subsPut = false
+        kept.subs?.let { subs ->
+            val options = trackOptions(C.TRACK_TYPE_TEXT)
+            val embedded = options.filter { !it.external }
+            val tracks = embedded.map { trackOf(formatOf(it), entry, text = true) }
+            val pick = ResumeTracks.pickSubs(subs, tracks, copy) { name -> SavedSubtitles.find(this, name) != null }
+            when (pick) {
+                ResumeTracks.SubsPick.Off -> {
+                    textOff()
+                    subsPut = true
+                }
+                is ResumeTracks.SubsPick.Embedded -> embedded.getOrNull(pick.index)?.let { o ->
+                    val f = formatOf(o)
+                    if (!o.selected) selectTrack(o)
+                    trackWishes[C.TRACK_TYPE_TEXT] = wishOf(f)
+                    p.trackSelectionParameters = p.trackSelectionParameters.buildUpon().apply {
+                        f.language?.let { setPreferredTextLanguage(it).setPreferredTextRoleFlags(f.roleFlags) }
+                    }.build()
+                    // The downloaded subtitles kept for this copy aren't the ones on.
+                    if (SavedSubtitles.forVideo(this, entry.key).any { it.on }) SavedSubtitles.use(this, entry.key, null)
+                    subsPut = true
+                }
+                is ResumeTracks.SubsPick.File -> {
+                    val o = options.firstOrNull { it.external && savedFileOf(formatOf(it).id) == pick.name }
+                    if (o != null) {
+                        if (!o.selected) selectTrack(o)
+                        trackWishes[C.TRACK_TYPE_TEXT] = wishOf(formatOf(o))
+                        SavedSubtitles.use(this, entry.key, pick.name)
+                        subsPut = true
+                    } else {
+                        // Not in this copy's list yet (the choice was read after the player was built): added, which
+                        // loads the video again where it is, with the sound just picked; on once its tracks are in.
+                        val id = (subs as? ResumeTracks.Subs.Downloaded)?.let { fileFor(entry, it) }
+                        if (id != null) {
+                            pendingExternalSubId = id
+                            pendingAudioId = audioPicked?.id ?: selectedFormat(C.TRACK_TYPE_AUDIO)?.id
+                            if (audioPicked != null) reapplyWishes = false
+                            // Nor is the file matched over once it's on (held until then, see onTracksChanged).
+                            resumePutBack.put(C.TRACK_TYPE_TEXT)
+                            captureState()
+                            p.setMediaItems(entries.map { mediaItem(it) }, p.currentMediaItemIndex, startPositionMs)
+                            p.prepare()
+                            return
+                        }
+                    }
+                }
+                ResumeTracks.SubsPick.Default -> Unit
+            }
+        }
+        if (subsPut) {
+            // The downloaded subtitles last on for this copy aren't put over what was put back, nor is the kind picked
+            // before matched again over it (when the sound remembered for the show sets reapplyChoices off just after).
+            pendingExternalSubId = null
+            resumePutBack.put(C.TRACK_TYPE_TEXT)
+        }
+        // Matched already: the kind picked by hand before isn't matched again over it.
+        if (audioPicked != null || subsPut) reapplyWishes = false
+    }
+
+    private fun formatOf(o: TrackOption): Format = o.group.getTrackFormat(o.trackIndex)
 
     private fun openSubtitlesPanel(from: View) = openPanel("Subtitles", from) {
         val options = trackOptions(C.TRACK_TYPE_TEXT)
@@ -5786,6 +6043,16 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     // Copies from elsewhere than a playlist (see Copies.Source), by link: what each is remembered by.
     private val copyKeys = java.util.concurrent.ConcurrentHashMap<String, String>()
+    // An episode's file with no index, by link: where 1.0.360 kept what it measured of it (ReleaseKey.earlierKey), read
+    // while nothing is kept under its own key yet.
+    private val copyEarlier = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    /** What's kept of the copy at [uri] ([prefix] "h|": how it played), under its key, else where 1.0.360 kept it. */
+    private fun keptOf(uri: Uri, prefix: String = ""): String? {
+        val key = qualityKey(uri) ?: return null
+        return qualitySeen.getString(prefix + key, null)
+            ?: copyEarlier[uri.toString()]?.let { qualitySeen.getString(prefix + it, null) }
+    }
 
     private fun qualityKey(uri: Uri): String? {
         copyKeys[uri.toString()]?.let { return it }
@@ -5825,15 +6092,22 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val p = player ?: return
         val uri = p.currentMediaItem?.localConfiguration?.uri ?: return
         val spec = playingSpec()?.takeIf { it.videoHow == MediaSpec.How.MEASURED } ?: return
-        val key = qualityKey(uri) ?: return
+        val key = qualityKey(uri) ?: run {
+            // A copy from the add-ons whose file isn't known (its add-on gave no info hash): said once a copy.
+            if (source != null && keptUnknown != uri) {
+                keptUnknown = uri
+                android.util.Log.i(TAG, "measured not kept: this copy's file isn't known")
+            }
+            return
+        }
         // Added to what earlier plays measured, once per play: this play's figure replaces its own last one.
         val playKey = "$key@${p.currentMediaItemIndex}"
-        val before = if (keptPlay == playKey) keptBefore else qualitySeen.getString(key, null)?.let { MediaSpec.decode(it) }
+        val before = if (keptPlay == playKey) keptBefore else keptOf(uri)?.let { MediaSpec.decode(it) }
         if (keptPlay != playKey) {
             keptPlay = playKey
             keptBefore = before
             keptAt = System.currentTimeMillis()
-            keptSized = (before?.sizeBytes ?: 0L) > 0L
+            keptRanks.newPlay()
         }
         // The play's date, the same all through it: "✓ played" in Sources, and when it last played here.
         val now = spec.copy(playedAt = keptAt)
@@ -5842,13 +6116,21 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val edit = qualitySeen.edit()
         if (qualitySeen.all.size >= MAX_QUALITY_SEEN && !qualitySeen.contains(key)) edit.clear()
         edit.putString(key, text).apply()
-        // The file's exact size, first known: the same file from the other add-on joins its row now (SourceMerge), so
-        // Next source and Sources don't offer it again as another copy. Only this title's list: the size is of its file.
+        // What this play measured, as it's first kept (the picture's rate; the file's exact size once known): this
+        // title's list ranks again with it, once each a play, whatever an earlier play kept. Its row shows the file as
+        // measured here and moves where that puts it (a starved picture under every well-fed copy), the Sources window
+        // open redraws with it, and the same file from the other add-on joins its row (SourceMerge), so Next source and
+        // Sources don't offer it again as another copy. Only this title's list: the figures are its file's.
         val s = source
-        if (!keptSized && spec.sizeBytes > 0L && s != null) {
-            keptSized = true
-            (Sources.get(this) as? app.fireplayer.vod.sources.DefaultSourcesRepository)?.rerank(s.request.target)
+        val rank = s != null && keptRanks.kept(sized = spec.sizeBytes > 0L)
+        // Said as a play first keeps its figures, and at each rank they ask for: the record's key as a fingerprint only.
+        if (rank || keptSaid != playKey) {
+            keptSaid = playKey
+            android.util.Log.i(TAG, "measured kept: key=${app.fireplayer.vod.sources.SourceLog.fp(key)} size=${spec.sizeBytes} " +
+                "video=${spec.videoBps} rerank=${if (rank) "y" else "n"}")
         }
+        if (s == null || !rank) return
+        (Sources.get(this) as? app.fireplayer.vod.sources.DefaultSourcesRepository)?.rerank(s.request.target)
     }
 
     /** A title's name as copies of it are matched: letters and digits only, no year ("missionimpossiblefallout"). */
@@ -5894,7 +6176,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (key != healthKey) {
             keepHealth()
             healthKey = key
-            healthBefore = key?.let { CopyHealth.decode(qualitySeen.getString("h|$it", null)) }
+            healthBefore = uri?.takeIf { key != null }?.let { CopyHealth.decode(keptOf(it, "h|")) }
             healthAt = System.currentTimeMillis()
             health = CopyHealth()
             readyOnce = false
@@ -5945,7 +6227,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     /** How the copy at [uri] has played, this play included if it's the one playing. */
     private fun healthOf(uri: Uri): CopyHealth? {
         val key = qualityKey(uri) ?: return null
-        val kept = CopyHealth.decode(qualitySeen.getString("h|$key", null))
+        val kept = CopyHealth.decode(keptOf(uri, "h|"))
         if (key != healthKey) return kept
         val now = SystemClock.elapsedRealtime()
         val sofar = if (watchingSince > 0) health.copy(watchedMs = health.watchedMs + now - watchingSince) else health
@@ -5956,12 +6238,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private var keptPlay: String? = null
     private var keptBefore: MediaSpec? = null
     private var keptAt = 0L
-    // Whether the copy's exact size was known when the play being kept started, or has been told since.
-    private var keptSized = false
+    // Whether this play's measured rate, and the file's size, have been ranked into its title's list (once each a play).
+    private val keptRanks = app.fireplayer.vod.play.MeasuredRerank()
+    // The play whose keeping the log said, and the copy whose file wasn't known (said once each).
+    private var keptSaid: String? = null
+    private var keptUnknown: Uri? = null
 
     /** What was measured of the copy at [uri] when it was played; null if it never was. Any thread. */
-    private fun measuredQuality(uri: Uri): MediaSpec? =
-        qualityKey(uri)?.let { qualitySeen.getString(it, null) }?.let { MediaSpec.decode(it) }
+    private fun measuredQuality(uri: Uri): MediaSpec? = keptOf(uri)?.let { MediaSpec.decode(it) }
 
     // Other copies of the title playing, as the provider describes them: for this entry, while it's the one shown; and
     // the language the title was made in (TMDB's), for which sound to look for.
@@ -6199,6 +6483,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         entry.englishAsked = current.englishAsked
         entry.real = current.real
         attachSaved(entry, chooseOn = false)
+        // A resume whose copy gave way before its tracks were in: what was chosen last is put back on this one.
+        resumeFileFor(entry)
         // The same film: the subtitles and sound on now stay on, as the same kind (see reapplyChoices). Left to the new
         // copy's own tracks, its first English subtitles could be a forced or signs-only track, and the screen blank.
         val text = selectedFormat(C.TRACK_TYPE_TEXT)
@@ -6247,6 +6533,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         buffering.visibility = View.VISIBLE
         bufferingInfo.visibility = View.GONE
         warmDecoders()
+        readResumeTracks(s)
         launchMark(LaunchLog.SOURCES)
         s.start()
         // Skip intro's times are asked for now, while the sources are found: ready when the film starts (SkipTimes.warm).
@@ -6365,8 +6652,17 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             launchMark(LaunchLog.LINK)
             android.util.Log.i(TAG, app.fireplayer.vod.sources.SourceLog.line(ready))
             val uri = Uri.parse(ready.link.reveal())
-            // What was measured of this file is kept by its release (the link changes daily).
-            (ready.offer.release ?: ready.source.release)?.let { copyKeys[uri.toString()] = it.storeKey }
+            // What was measured of this file is kept by its release (the link changes daily); an episode's file whose
+            // index the add-on didn't give, by the episode too (a season pack's episodes share one hash). A torrent of
+            // that one file (Torrentio gave it no index) goes on from what 1.0.360 kept of it.
+            (ready.offer.release ?: ready.source.release)?.let { r ->
+                val episode = request.target.episode
+                copyKeys[uri.toString()] = r.measuredKey(episode)
+                val single = r.fileIdx == null && ready.source.offers.any { o ->
+                    app.fireplayer.vod.ReleaseKey.indexesEveryFile(o.addon) && (o.release ?: ready.source.release) == r
+                }
+                r.earlierKey(episode, single)?.let { copyEarlier[uri.toString()] = it }
+            }
             errorBox.visibility = View.GONE
             cannotOpen = false
             bufferingInfo.visibility = View.GONE
@@ -6387,6 +6683,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             // Explicit either way: FirePlayer's own plays never ask "Resume from?".
             startPositionMs = startMs
             attachSaved(entry, chooseOn = true)
+            resumeFileFor(entry)
             // Built now, or at onStart from the memory free then (the old player's budget is kept for this moment only).
             if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) initPlayer() else keepBudgetBytes = 0
         }
@@ -6543,6 +6840,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             s.pick(picked, beginning)
         }
         s.session.setListener { sp.update(s.session.list, s.session.attempts, playingRow(s)) }
+        // Which row the Playing line is (the play's list's row of the file playing) and the size it says, once an open.
+        val key = playingRow(s)
+        val row = s.session.list?.sources?.firstOrNull { it.key == key }
+        android.util.Log.i(TAG, "sources: playing row=${app.fireplayer.vod.sources.SourceLog.fp(key)} listed=${if (row != null) "y" else "n"} " +
+            "played=${if (row?.measured?.spec != null) "y" else "n"} size=${row?.let { r ->
+                PlayRules.sizeWords(app.fireplayer.vod.sources.SourceRank.asPlayedHere(r.facts, r.measured)) } ?: "none"} " +
+            "rows=${s.session.list?.sources?.size ?: 0}")
     }
 
     /** The Sources row of the copy playing: its file's row now ([app.fireplayer.vod.SourceSession.rowKey]: the same file may have merged). */
@@ -7144,6 +7448,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             addExternalSubtitle(Uri.fromFile(File(SavedSubtitles.dir(this), s.file)), s.language)
             pendingExternalSubId?.let { savedFiles[it] = s.file }
             SavedSubtitles.use(this, entry.key, s.file)
+            keepChoice(subs = ResumeTracks.Subs.Downloaded(s.file, s.language, entry.key))
             panel.close()
         }
     }
@@ -7278,7 +7583,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                     findLoadedSubId = pendingExternalSubId
                     // Kept for this video, to be there next time.
                     pendingExternalSubId?.let { savedFiles[it] = file.name }
-                    currentEntry()?.let { SavedSubtitles.add(this, it.key, file, r.language, r.release, r.fileId) }
+                    currentEntry()?.let {
+                        SavedSubtitles.add(this, it.key, file, r.language, r.release, r.fileId)
+                        // Put back on a resume of this film or episode, as any subtitles chosen.
+                        keepChoice(subs = ResumeTracks.Subs.Downloaded(file.name, r.language, it.key))
+                    }
                     panel.close()
                     // Made for a longer or shorter cut (extended, or with a recap): the next one may fit better.
                     if (length > 10 * 60_000L && last > 0 && (last > length + 90_000L || last < length * 7 / 10)) {
@@ -7410,6 +7719,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // Looked up again for auto sync's new offsets at most this often.
         const val SEGMENTS_AGAIN_MS = 15_000L
         private const val AUDIO_KEPT = 300
+        // How long a resume's first copy waits at most for what was chosen last to be read (it takes a few ms).
+        private const val RESUME_READ_WAIT_MS = 250L
         private val FOCUS_EASE = DecelerateInterpolator(1.4f)
         private const val LOADING = "Loading from TMDB…"
         private val YEAR_IN_NAME = Regex("""\((\d{4})\)""")

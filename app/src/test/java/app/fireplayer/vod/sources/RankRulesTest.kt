@@ -399,8 +399,14 @@ class RankRulesTest {
         assertTrue(merged.bothAddons)
         assertEquals(exact, merged.facts.sizeBytes)
         assertEquals(setOf(Hdr.HDR10_PLUS, Hdr.DOLBY_VISION), merged.facts.hdr)
-        // Another size measured: apart.
-        assertEquals(2, SourceMerge.merge(listOf(tio, mf), 120) { exact + 1 }.size)
+        // Another size measured of Torrentio's file: apart.
+        assertEquals(2, SourceMerge.merge(listOf(tio, mf), 120) { if (it.infoHash == SourceFixtures.H3) exact + 1 else null }.size)
+        // What a play measured of a file comes before its add-on's videoSize: both files measured at one size are one
+        // row of that size, though MediaFusion said another.
+        val played = exact - 1_000
+        val byMeasure = SourceMerge.merge(listOf(tio, mf), 120) { played }.single()
+        assertEquals(played, byMeasure.facts.sizeBytes)
+        assertTrue(byMeasure.facts.sizeExact)
     }
 
     // ---- Next source ----

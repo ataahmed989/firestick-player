@@ -92,6 +92,32 @@ class SourcePlaybackTest {
     }
 
     @Test
+    fun aResumeThatDidntTakeTheCopyItLeftLogsWhyOnce() {
+        val logged = ArrayList<String>()
+        val logging = object : SourcePlayback.Host by host {
+            override fun log(text: String) { logged += text }
+        }
+        val request = PlayRequest(SourceTarget(Fixtures.film), StartAt.At(600_000), PlayOrigin.TITLE_PAGE,
+            preferred = LastRelease(Addon.TORRENTIO, ReleaseKey(Fixtures.hash(9), 0), 1L))
+        val session = FakeSession(request)
+        session.resumeMissWords = "not cached any more"
+        SourcePlayback(request, session, library, ticker, logging).start()
+        session.ready(Fixtures.source(1), startMs = 595_000, resumedNear = true)
+        assertEquals(listOf("resume: not the copy left (not cached any more)"), logged.filter { it.startsWith("resume") })
+        // Another copy before the first frame (the first failed): not said again.
+        session.ready(Fixtures.source(2), startMs = 595_000, resumedNear = true)
+        assertEquals(1, logged.count { it.startsWith("resume") })
+        // A resume that took its copy says nothing.
+        val quiet = FakeSession(request)
+        val heard = ArrayList<String>()
+        SourcePlayback(request, quiet, library, ticker, object : SourcePlayback.Host by host {
+            override fun log(text: String) { heard += text }
+        }).start()
+        quiet.ready(Fixtures.source(1), startMs = 600_000)
+        assertTrue(heard.none { it.startsWith("resume") })
+    }
+
+    @Test
     fun aResumeOnAnotherCopyWhileTheOneLeftIsListedIsOnlyResumedNear() {
         // The copy left was listed after the pick (a late answer): it isn't said to be unavailable.
         val request = PlayRequest(SourceTarget(Fixtures.film), StartAt.At(600_000), PlayOrigin.TITLE_PAGE,
@@ -559,6 +585,29 @@ class SourcePlaybackTest {
         assertEquals(StartAt.Beginning, n.start)
         assertEquals(PlayOrigin.NEXT_EPISODE, n.origin)
         assertEquals("k1", n.like?.key)
+    }
+
+    @Test
+    fun theNextEpisodeFollowsTheOfferThatPlayedNotEveryAddonOfItsRow() {
+        val ep = SourceTarget(Fixtures.show, EpisodeRef(1, 1))
+        val (p, s) = play(start = StartAt.Beginning, target = ep, next = EpisodeRef(1, 2))
+        // One file from two add-ons; it plays from the second add-on's offer.
+        val both = Fixtures.source(1, also = Addon.MEDIAFUSION)
+        val mf = both.offers.single { it.addon == Addon.MEDIAFUSION }
+        s.answer(Opened.Ready(both, mf, mf.link, null, false))
+        p.firstFrame()
+        assertTrue(p.ended(playNext = true))
+        val like = nextPlay!!.like!!
+        assertEquals("k1", like.key)
+        assertEquals(listOf(mf), like.offers)
+        assertEquals(both.facts, like.facts)
+        // The Episodes sheet's play hands on the same.
+        assertEquals(listOf(mf), p.episodeRequest(EpisodeRef(1, 3), StartAt.Beginning).like?.offers)
+        // A row of one offer goes on as it is.
+        val (p2, s2) = play(start = StartAt.Beginning, target = ep, next = EpisodeRef(1, 2))
+        s2.ready(Fixtures.source(2))
+        p2.firstFrame()
+        assertEquals(Fixtures.source(2), p2.nextRequest(EpisodeRef(1, 2)).like)
     }
 
     @Test

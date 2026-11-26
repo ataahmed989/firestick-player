@@ -58,6 +58,8 @@ class DefaultVodRepository(
     private val lookups: Executor,
     private val clock: () -> Long = System::currentTimeMillis,
     rowStore: RowLayoutStore = RowLayoutStore.Memory(),
+    /** Kept for each film or episode beside the copy it was left on, and forgotten with it ([VodLibrary]). */
+    keptWithCopy: KeptWithCopy? = null,
 ) : VodRepository {
 
     private val listeners = CopyOnWriteArrayList<() -> Unit>()
@@ -72,7 +74,7 @@ class DefaultVodRepository(
      * The library; also for later steps (playback records where it stopped with [VodLibrary.recordProgress]). A show's
      * place in Continue Watching follows its stored episodes ([showEpisodes]).
      */
-    val library = VodLibrary(libraryStore, clock, io, { showEpisodes(it) }) { libraryChanged() }
+    val library = VodLibrary(libraryStore, clock, io, { showEpisodes(it) }, keptWithCopy) { libraryChanged() }
 
     /** Settings › Rows: each page's rows as the viewer set them (main thread). */
     val rowSettings = RowSettings(rowStore) { newYear(it) }
@@ -575,6 +577,13 @@ class DefaultVodRepository(
         val kind = title.kind
         val id = title.tmdbId ?: storedMeta(kind, title.id)?.value?.title?.tmdbId ?: tmdbIdOf(kind, title.id, fetch = false)
         id?.let { storedExtras(kind, it)?.value?.originalLanguage }
+    }.getOrNull()
+
+    override fun seasonEpisodes(title: Title, season: Int): Int? = runCatching {
+        val all = storedMeta(Kind.SERIES, title.id)?.value?.episodes?.filter { it.season == season }.orEmpty()
+        val now = clock()
+        val aired = all.count { e -> e.released?.let { it <= now } == true }
+        (if (aired > 0) aired else all.size).takeIf { it > 0 }
     }.getOrNull()
 
     /** TMDB's stored details; a stored null value: TMDB had no such title lately. */

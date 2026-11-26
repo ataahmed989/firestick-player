@@ -53,7 +53,8 @@ import androidx.media3.exoplayer.video.MediaCodecVideoRenderer.CodecMaxValues
  * ([DvBaseLayer.hdr10]: brightness data from the SEI in its parameter sets where the track has none,
  * [DvBaseLayer.seiStaticInfo], read once). Its samples go to it with their Dolby Vision units hidden
  * ([DvBaseLayer.hideDolbyVision]).
- * A profile 8 track Media3 itself gives to an HEVC decoder gets HDR10 colour the same way ([getMediaFormat]).
+ * A profile 8 track Media3 itself gives to an HEVC decoder gets HDR10 colour the same way, its brightness data from its
+ * SEI too ([getMediaFormat]).
  */
 @OptIn(UnstableApi::class)
 class PacedVideoRenderer(
@@ -241,7 +242,8 @@ class PacedVideoRenderer(
     /**
      * The decoder's set-up: a Dolby Vision profile 8 track that Media3 gives to an HEVC decoder (its own way back on a
      * TV without Dolby Vision) gets HDR10 colour and static metadata where the track states none and its picture or
-     * record doesn't say HLG or SDR ([DvBaseLayer.hevcColour]), so the TV isn't left to guess the brightness. Once per
+     * record doesn't say HLG or SDR ([DvBaseLayer.hevcColour]), so the TV isn't left to guess the brightness: the film's
+     * own from the SEI in its parameter sets where it has them, else generic ([DvBaseLayer.hevcHdr10]). Once per
      * decoder, never per frame.
      */
     override fun getMediaFormat(
@@ -254,10 +256,9 @@ class PacedVideoRenderer(
     ): MediaFormat {
         val made = super.getMediaFormat(format, codecMimeType, codecMaxValues, codecOperatingRate,
             deviceNeedsNoPostProcessWorkaround, tunnelingAudioSessionId)
-        val colour = DvBaseLayer.hevcColour(format.sampleMimeType, format.codecs, codecMimeType, format.colorInfo,
-            format.initializationData, DvBaseLayer.recordSignal(format)) ?: return made
-        MediaFormatUtil.maybeSetColorInfo(made, colour)
-        Log.i(TAG, DvBaseLayer.hevcColourLine(ownStaticInfo = format.colorInfo?.hdrStaticInfo != null))
+        val hdr10 = DvBaseLayer.hevcHdr10(format, codecMimeType) ?: return made
+        MediaFormatUtil.maybeSetColorInfo(made, hdr10.colour)
+        Log.i(TAG, hdr10.line)
         return made
     }
 

@@ -694,6 +694,101 @@ class EngineTest {
         assertTrue(session.maySwitch(loop.now))
     }
 
+    /**
+     * Torrentio's row picked in Sources plays; more than ten minutes in its link expires and is refreshed. The refresh's
+     * look-up asks Torrentio only, and drops MediaFusion's answer, past its time: the play's list has Torrentio's row alone.
+     */
+    private fun handPickedAndRefreshedPastItsTime(): app.fireplayer.vod.SourceSession {
+        answers[Addon.TORRENTIO] = { answer(torrentio(H1)) }
+        answers[Addon.MEDIAFUSION] = { answer(mediaFusion(H2)) }
+        val l = lists(why = LookupWhy.PLAY)
+        loop.advance()
+        val row = l.last().sources.single { it.release == ReleaseKey(H1, 0) }
+        val session = engine.session(PlayRequest(filmTarget, StartAt.Beginning, PlayOrigin.SOURCES_PANEL, list = l.last(), chosen = row))
+        val got = ArrayList<Opened>()
+        session.open(row, OpenWhy.USER) { got += it }
+        loop.advance()
+        val ready = got.last() as Opened.Ready
+        session.started(ready.source, ready.offer)
+        loop.advance(DefaultSourcesRepository.KEEP_MS + 1)
+        assertEquals(Step.Refresh, session.failed(ready.source, session.failureOf(2004, 403)))
+        got.clear()
+        session.refresh(ready.source, Addon.TORRENTIO) { got += it }
+        loop.advance()
+        val again = got.last() as Opened.Ready
+        session.started(again.source, again.offer)
+        assertEquals(AddonState.NotAsked, session.list!!.states[Addon.MEDIAFUSION])
+        assertEquals(1, session.list!!.sources.size)
+        return session
+    }
+
+    @Test
+    fun nextSourceAfterARefreshPastItsTimeAsksAgainForTheAddonItDroppedAndPlaysItsCopy() {
+        val session = handPickedAndRefreshedPastItsTime()
+        val got = ArrayList<Opened>()
+        session.open(null, OpenWhy.USER) { got += it }
+        loop.advance()
+        assertEquals(2, asked.count { it.first == Addon.MEDIAFUSION })
+        assertEquals(ReleaseKey(H2, 0), (got.last() as Opened.Ready).source.release)
+        assertTrue(session.list!!.complete)
+        assertEquals(2, session.list!!.sources.size)
+    }
+
+    /** A stall switch doesn't widen first: its pick asks the dropped add-on again rather than wait on it for ever. */
+    @Test
+    fun aStallSwitchAfterARefreshPastItsTimeEndsOnTheOtherAddonsCopy() {
+        val session = handPickedAndRefreshedPastItsTime()
+        val got = ArrayList<Opened>()
+        session.open(null, OpenWhy.STALLS) { got += it }
+        loop.advance()
+        assertEquals(ReleaseKey(H2, 0), (got.last() as Opened.Ready).source.release)
+    }
+
+    /** The player's Sources window opens (widen): the dropped add-on is asked again, and its copies join the window. */
+    @Test
+    fun theSourcesWindowAfterARefreshPastItsTimeHasEveryAddonAgain() {
+        val session = handPickedAndRefreshedPastItsTime()
+        session.widen()
+        loop.advance()
+        assertTrue(session.list!!.complete)
+        assertEquals(2, session.list!!.sources.size)
+        assertEquals(ReleaseKey(H2, 0), session.nextPick()?.release)
+        // Nothing dropped now: opening it again asks nothing.
+        val asks = asked.size
+        session.widen()
+        loop.advance()
+        assertEquals(asks, asked.size)
+    }
+
+    /**
+     * A row picked in Sources once the list's answers are past their time: its link check is sent before the look-ups the
+     * play's watch sends again, so on io (three threads on the TV, in order) it never waits behind them.
+     */
+    @Test
+    fun aHandPickedRowsLinkCheckGoesAheadOfTheLookUpsItsWatchSends() {
+        answers[Addon.TORRENTIO] = { answer(torrentio(H1)) }
+        answers[Addon.MEDIAFUSION] = { answer(mediaFusion(H2)) }
+        val held = ArrayList<Runnable>()
+        val e = engineWith(Executor { held += it })
+        e.lookUp(filmTarget, LookupWhy.PLAY, null) { }.cancel()
+        while (held.isNotEmpty()) held.removeAt(0).run()
+        loop.advance()
+        val l = e.cached(filmTarget)!!
+        assertTrue(l.complete)
+        loop.advance(DefaultSourcesRepository.KEEP_MS)
+        val row = l.sources.single { it.release == ReleaseKey(H1, 0) }
+        val session = e.session(PlayRequest(filmTarget, StartAt.Beginning, PlayOrigin.SOURCES_PANEL, list = l, chosen = row))
+        val opened = ArrayList<Opened>()
+        session.open(row, OpenWhy.USER) { opened += it }
+        // The link check, then Torrentio's and MediaFusion's look-ups.
+        assertEquals(3, held.size)
+        val asks = asked.size
+        held.removeAt(0).run()
+        assertEquals(asks, asked.size)
+        loop.advance()
+        assertEquals(ReleaseKey(H1, 0), (opened.last() as Opened.Ready).source.release)
+    }
+
     @Test
     fun nextSourceNeverPlaysTheSameFileAgainOnceItsRowsMerge() {
         // One file from both add-ons: MediaFusion's exact size, Torrentio's rounded, so two rows until a play measures it.
@@ -707,14 +802,13 @@ class EngineTest {
             answer(mediaFusion(H1, hdr = "DV|HDR10+", origin = "BluRay REMUX", videoSize = 86_261_275_745L,
                 filename = "Film.2021.2160p.BluRay.REMUX.DV.HDR10Plus.TrueHD-M.mkv"))
         }
-        val session = engine.session(PlayRequest(filmTarget, StartAt.Beginning, PlayOrigin.TITLE_PAGE))
-        open(session)
-        // MediaFusion's copy plays, picked in Sources.
-        val mf = session.list!!.sources.first { it.release == ReleaseKey(H1, 0) }
-        val got = ArrayList<Opened>()
-        session.open(mf, OpenWhy.USER) { got += it }
+        val lists = lists(why = LookupWhy.PLAY)
         loop.advance()
-        val ready = got.last() as Opened.Ready
+        // MediaFusion's copy plays, picked in Sources.
+        val mf = lists.last().sources.first { it.release == ReleaseKey(H1, 0) }
+        val session = engine.session(PlayRequest(filmTarget, StartAt.Beginning, PlayOrigin.SOURCES_PANEL, list = lists.last(), chosen = mf))
+        val ready = open(session).last() as Opened.Ready
+        assertEquals(mf.key, ready.source.key)
         session.started(ready.source, ready.offer)
         // Torrentio's copy had played before: its exact size is known now, and the two rows are one, under Torrentio's key.
         kept["rd|$H2|0"] = Measured(app.fireplayer.player.MediaSpec(sizeBytes = 86_261_275_745L), null, 1L)

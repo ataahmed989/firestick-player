@@ -595,4 +595,26 @@ class DefaultVodRepositoryTest {
         assertEquals(standInId(Kind.SERIES, 136315), got?.id)
         assertEquals(listOf("Comedy", "Drama"), got?.genres)
     }
+
+    // ---- A season's episode count, for a season pack's share in Sources ----
+
+    @Test
+    fun aSeasonsEpisodeCountIsReadFromTheStoredShowNeverFetched() {
+        val show = Title("tt0903747", Kind.SERIES, "Breaking Bad")
+        val url = Cinemeta.metaUrl(Kind.SERIES, show.id)
+        http.answers[url] = Fixtures.text("cinemeta_meta_series.json")
+        val r = repo()
+        // Nothing stored yet: not known, and nothing asked.
+        assertNull(r.seasonEpisodes(show, 1))
+        assertEquals(0, http.count(url))
+        // The title page stored the show: its season's episodes, aired.
+        r.details(show) { _, _ -> }
+        assertEquals(1, http.count(url))
+        assertEquals(2, r.seasonEpisodes(show, 1))
+        assertEquals(1, r.seasonEpisodes(show, 2))
+        assertNull(r.seasonEpisodes(show, 3))
+        // Read again from what's stored, never fetched again.
+        assertEquals(2, repo().seasonEpisodes(show, 1))
+        assertEquals(1, http.count(url))
+    }
 }

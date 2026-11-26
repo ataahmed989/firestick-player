@@ -224,6 +224,10 @@ class FakeSession(override val request: PlayRequest) : SourceSession {
         return Cancel { }
     }
 
+    /** Why the resume didn't take the copy it left, as the test sets it ([SourceSession.resumeMiss]). */
+    var resumeMissWords: String? = null
+    override fun resumeMiss(): String? = resumeMissWords
+
     override fun close() {
         closed = true
     }

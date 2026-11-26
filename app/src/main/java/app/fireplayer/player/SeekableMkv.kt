@@ -1,6 +1,7 @@
 package app.fireplayer.player
 
 import android.net.Uri
+import android.os.SystemClock
 import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.C
@@ -18,6 +19,9 @@ import androidx.media3.extractor.SeekPoint
 import androidx.media3.extractor.TrackOutput
 import androidx.media3.extractor.mkv.MatroskaExtractor
 import java.io.EOFException
+import java.io.IOException
+import java.io.InterruptedIOException
+import java.util.Locale
 
 /**
  * Passes on each MKV's frame rate (from the video track's DefaultDuration), which Media3 leaves out,
@@ -33,12 +37,19 @@ import java.io.EOFException
  * clusters should, instead of failing at the same spot every time it's tried again (which looked like endless
  * buffering). With nothing usable after the damage, it fails as a damaged file rather than as a dropped connection, so
  * the error shows at once. A file without an index is left to fail as before.
+ *
+ * And a file that keeps its track list (Tracks) after its clusters, as some muxers write it, starts as quickly as any
+ * other: Media3's reader passes over every block it meets before it knows the tracks, so the whole file was read before
+ * the film could start (79 s for a 1 GB episode). The track list is read first instead ([SeekableMkvExtractor.Detour]).
+ * A file with no SeekHead to say where its track list is has its last 64 KiB looked at for it.
  */
 @OptIn(UnstableApi::class)
 class SeekableMkvExtractorsFactory(
     private val base: ExtractorsFactory,
     /** Told of each damaged stretch gone past: the film's link, and the times it plays to and goes on from. */
     private val onSkip: ((uri: String?, fromUs: Long, toUs: Long) -> Unit)? = null,
+    /** Whether how the file is laid out and when its tracks came go in the log: the film's player, not the preview's. */
+    private val logs: Boolean = true,
 ) : ExtractorsFactory by base {
 
     override fun createExtractors(): Array<Extractor> = wrap(base.createExtractors(), null)
@@ -49,7 +60,7 @@ class SeekableMkvExtractorsFactory(
     private fun wrap(extractors: Array<Extractor>, uri: String?): Array<Extractor> =
         Array(extractors.size) { i ->
             val e = extractors[i]
-            if (e is MatroskaExtractor) SeekableMkvExtractor(e, uri, onSkip) else e
+            if (e is MatroskaExtractor) SeekableMkvExtractor(e, uri, onSkip, logs) else e
         }
 }
 
@@ -58,6 +69,7 @@ private class SeekableMkvExtractor(
     private val inner: Extractor,
     private val uri: String?,
     private val onSkip: ((uri: String?, fromUs: Long, toUs: Long) -> Unit)?,
+    private val logs: Boolean,
 ) : Extractor by inner {
 
     private class Cluster(val position: Long, val timeUs: Long)
@@ -73,7 +85,8 @@ private class SeekableMkvExtractor(
     private var dataStart = 0L
     private var first: Cluster? = null
     private var search: Search? = null
-    // Where a finished search sent the player, until reading starts there; -1 when none is pending.
+    // Where a finished search, a damaged stretch got past or the track list read first sent the reader, until reading
+    // starts there; -1 when none is pending.
     private var landingPos = -1L
     private val buffer = ByteArray(CHUNK + TAIL)
 
@@ -93,9 +106,22 @@ private class SeekableMkvExtractor(
     @Volatile private var lastSampleUs = C.TIME_UNSET
     private var jumpedToUs = 0L
 
+    /** The track list read before the clusters, for a file that keeps it after them; null once read, or when not needed. */
+    private var detour: Detour? = null
+
+    // For the log: when the first read came (elapsedRealtime), and whether the first track and the end of the track
+    // list have been told of yet. Once per file each.
+    private var startedAt = 0L
+    private var trackTold = false
+    private var endTracksTold = false
+
     override fun init(output: ExtractorOutput) {
         inner.init(object : ExtractorOutput by output {
             override fun track(id: Int, type: Int): TrackOutput {
+                if (!trackTold) {
+                    trackTold = true
+                    tell("mkv first track()")
+                }
                 val track = output.track(id, type)
                 if (type != C.TRACK_TYPE_VIDEO && type != C.TRACK_TYPE_AUDIO) return track
                 return object : TrackOutput by track {
@@ -124,7 +150,20 @@ private class SeekableMkvExtractor(
                 }
             }
 
+            override fun endTracks() {
+                // Met again at the end of a file whose track list was read first ([Detour]): told of once.
+                if (!endTracksTold) {
+                    endTracksTold = true
+                    tell("mkv endTracks")
+                }
+                output.endTracks()
+            }
+
             override fun seekMap(seekMap: SeekMap) {
+                if (logs) {
+                    val seconds = if (seekMap.durationUs == C.TIME_UNSET) "unknown" else "${seekMap.durationUs / 1_000_000}s"
+                    tell("mkv seekMap seekable=${seekMap.isSeekable} dur=$seconds")
+                }
                 val position = input?.position ?: -1L
                 val usable = !seekMap.isSeekable && seekMap.durationUs != C.TIME_UNSET && length > 0 && position > 0
                 if (!usable) {
@@ -146,9 +185,13 @@ private class SeekableMkvExtractor(
         this.input = input
         if (input.length != C.LENGTH_UNSET.toLong()) length = input.length
         if (!headerScanned && input.position == 0L) {
-            headerScanned = true
+            if (startedAt == 0L) startedAt = SystemClock.elapsedRealtime()
+            // Scanned once it's been read: a connection that failed on it (tried again from the start) has it read again.
             readHeader(input)
+            headerScanned = true
         }
+        // Null once the track list has been read (or when it's where it should be): one look per read.
+        detour?.let { d -> d.step(input, seekPosition)?.let { return it } }
         search?.let { return it.step(input, seekPosition) }
         recovery?.let { return it.step(input, seekPosition) }
         val landing = landingPos
@@ -199,7 +242,13 @@ private class SeekableMkvExtractor(
         return r.step(input, holder)
     }
 
+    // A Java default method, which `by` doesn't pass on: the log names the reader underneath (MatroskaExtractor).
+    override fun getUnderlyingImplementation(): Extractor = inner.underlyingImplementation
+
     override fun seek(position: Long, timeUs: Long) {
+        // Media3 starts every load with a seek: from the start, the track list is read first again; from anywhere else
+        // (nothing asks for that before the tracks are known), the file is read as it would be without this.
+        detour?.let { if (position == 0L) it.restart() else detour = null }
         landingPos = -1
         recovery = null
         lastSampleUs = C.TIME_UNSET
@@ -309,6 +358,201 @@ private class SeekableMkvExtractor(
             }
             return b
         }
+    }
+
+    /**
+     * The track list (Tracks) of a file that keeps it after its clusters, read before them. Without this Media3's reader
+     * passes over every block it meets before it knows the tracks, and the film only starts once the whole file has
+     * been read (79 s for a 1 GB episode).
+     *
+     * The reader reads the file's first bytes up to where the Segment's contents begin ([HEAD]), then the track list
+     * where the SeekHead says it is ([TRACKS]), then goes back to where it stopped and reads on as ever, its index
+     * (Cues) and all. It's told the file ends at each of those two points, so it reads nothing past them; nothing of
+     * the film is read twice. What it costs: two more requests, once per film.
+     *
+     * When the track list isn't where the SeekHead says, or doesn't read as one whole, the reader goes back to where it
+     * stopped and reads on from there as it would without this.
+     *
+     * A file with no SeekHead (or one that doesn't list the track list), whose first bytes don't hold it either, has its
+     * last bytes ([TAIL_BYTES]) looked at for it instead ([tail]), as some muxers write it there with no SeekHead at all:
+     * the same two requests, the first for those 64 KiB. Not found there, the reader goes back and reads on as before.
+     */
+    private inner class Detour(
+        private val segmentStart: Long,
+        /** Where the track list is: as the SeekHead says, or as found in the file's last bytes; -1 until found there. */
+        private var tracksAt: Long,
+        /** Where the file's last bytes that are looked at for the track list begin; -1 when the SeekHead lists it. */
+        private val tailFrom: Long = -1,
+    ) {
+        private var phase = HEAD
+        // Where the track list ends, once it was found whole where the SeekHead says; -1 before.
+        private var tracksEnd = -1L
+
+        /** The file is read from its start again (a new load): the same way again, straight to a track list found before. */
+        fun restart() {
+            phase = HEAD
+            tracksEnd = -1
+        }
+
+        /** The next step: what [read] returns; null when given up, and the file is read as before from here. */
+        fun step(input: ExtractorInput, holder: PositionHolder): Int? = when (phase) {
+            HEAD -> head(input, holder)
+            TAIL_LOOK -> tail(input, holder)
+            else -> tracks(input, holder)
+        }
+
+        private fun head(input: ExtractorInput, holder: PositionHolder): Int? {
+            if (input.position >= segmentStart) return giveUp("at ${input.position}")
+            val bounded = BoundedInput(input, segmentStart)
+            val result = try {
+                inner.read(bounded, holder)
+            } catch (e: EOFException) {
+                if (!bounded.overran) throw e
+                // Something in the first bytes runs on past where the Segment's contents begin: the read it was refused
+                // moved nothing, so the reader reads on from here as before.
+                return giveUp("the header runs on past $segmentStart")
+            }
+            if (result != Extractor.RESULT_END_OF_INPUT) {
+                // Anything before the end of the first bytes is as it would have been anyway.
+                detour = null
+                return result
+            }
+            // The file itself ended there: as before.
+            if (input.position != segmentStart) return giveUp("ended at ${input.position}")
+            // To the track list where the SeekHead says (or where it was found before); not known yet, the file's last
+            // bytes are looked at for it first.
+            phase = if (tracksAt >= 0) TRACKS else TAIL_LOOK
+            holder.position = if (tracksAt >= 0) tracksAt else tailFrom
+            return Extractor.RESULT_SEEK
+        }
+
+        /**
+         * The file's last bytes, looked at once for the track list ([MkvHeader.tailTracks]). Found, the reader goes on to it
+         * within the bytes looked at (no further request) and reads it as one the SeekHead lists ([tracks]). Not found,
+         * or when those bytes couldn't be had, the reader goes back to where it stopped and reads on as before.
+         */
+        private fun tail(input: ExtractorInput, holder: PositionHolder): Int? {
+            if (input.position != tailFrom) {
+                // The request couldn't be opened: Media3 tries again where the last connection had got to, where the
+                // first bytes ended, and the reader reads on from there as before.
+                tellTail(null, failed = true)
+                if (input.position != segmentStart) return back(holder)
+                detour = null
+                return null
+            }
+            val window = ByteArray((length - tailFrom).toInt())
+            val read = try {
+                input.peekFully(window, 0, window.size, true)
+            } catch (e: InterruptedIOException) {
+                // The load was let go: looked at again when it's started again.
+                throw e
+            } catch (e: IOException) {
+                false
+            } finally {
+                input.resetPeekPosition()
+            }
+            val found = if (read) MkvHeader.tailTracks(window, window.size) else null
+            tellTail(found, failed = !read)
+            if (found == null || !found.whole) return back(holder)
+            // Still held by the input from the look: no request.
+            input.skipFully(found.offset)
+            tracksAt = tailFrom + found.offset
+            phase = TRACKS
+            return tracks(input, holder)
+        }
+
+        /** "mkv tail: tracks@1103711534 size=1995 ok": what the file's last bytes held of a track list. */
+        private fun tellTail(found: MkvHeader.TailTracks?, failed: Boolean) {
+            if (logs) Log.i(TAG, "mkv tail: " + MkvHeader.tailText(found, tailFrom) + if (failed) " (read failed)" else "")
+        }
+
+        private fun tracks(input: ExtractorInput, holder: PositionHolder): Int? {
+            if (tracksEnd < 0) {
+                if (input.position != tracksAt) {
+                    holder.position = tracksAt
+                    return Extractor.RESULT_SEEK
+                }
+                val end = check(input)
+                if (end < 0) {
+                    // Not there after all: back to where the reader stopped, which reads on as before.
+                    if (logs) Log.i(TAG, "mkv Tracks not found whole at $tracksAt: read as before")
+                    return back(holder)
+                }
+                tracksEnd = end
+            }
+            val bounded = BoundedInput(input, tracksEnd)
+            val result = try {
+                inner.read(bounded, holder)
+            } catch (e: EOFException) {
+                if (!bounded.overran) throw e
+                throw ParserException.createForMalformedContainer("Tracks run on past their end", e)
+            }
+            when (result) {
+                Extractor.RESULT_END_OF_INPUT -> {
+                    // The connection ended early, not the track list: tried again from here, as any read.
+                    if (input.position != tracksEnd) throw EOFException()
+                    if (logs) Log.i(TAG, "mkv Tracks read first: $tracksAt-$tracksEnd, fps=${MkvHeader.fpsText(videoFrameRate)} " +
+                        "dvRecord=${dvSignal ?: "none"}, back to $segmentStart")
+                    return back(holder)
+                }
+                Extractor.RESULT_SEEK -> detour = null
+            }
+            return result
+        }
+
+        /**
+         * Where the track list at [tracksAt] ends when it's there whole and reads as one ([MkvHeader.lateTracks]); -1
+         * otherwise. Its frame rate and Dolby Vision record are taken from it, as from a file's first bytes. Only looks:
+         * what it looked at stays with [input], for the reader to read from there.
+         */
+        private fun check(input: ExtractorInput): Long {
+            val room = length - tracksAt
+            try {
+                val head = ByteArray(minOf(12L, room).toInt())
+                if (!input.peekFully(head, 0, head.size, true)) return -1
+                val size = MkvHeader.elementSize(head, head.size, MkvHeader.ID_TRACKS)
+                if (size <= 0 || size > room || size > MAX_TRACKS) return -1
+                input.resetPeekPosition()
+                val whole = ByteArray(size.toInt())
+                if (!input.peekFully(whole, 0, whole.size, true)) return -1
+                val found = MkvHeader.lateTracks(whole, whole.size) ?: return -1
+                found.video?.let {
+                    videoFrameRate = it.frameRate
+                    dvSignal = it.dvSignal
+                }
+                return tracksAt + size
+            } catch (e: EOFException) {
+                return -1
+            } finally {
+                input.resetPeekPosition()
+            }
+        }
+
+        /**
+         * Back to where the reader stopped in the first bytes, to read on from there; asked for again until reading
+         * starts there, as a finished search's jump is ([landingPos]). Media3 tries a reconnect that failed again where
+         * the last connection had got to, which here is past the track list (or in the middle of whatever the SeekHead
+         * pointed at): reading on from there would miss the clusters, or start part-way into one.
+         */
+        private fun back(holder: PositionHolder): Int {
+            detour = null
+            landingPos = segmentStart
+            holder.position = segmentStart
+            return Extractor.RESULT_SEEK
+        }
+
+        private fun giveUp(why: String): Int? {
+            detour = null
+            if (logs) Log.i(TAG, "mkv Tracks not read first ($why): read as before")
+            return null
+        }
+    }
+
+    /** "position/length +ms since the first read": where the reader is, for the log. */
+    private fun tell(what: String) {
+        if (!logs) return
+        val ms = if (startedAt > 0) (SystemClock.elapsedRealtime() - startedAt).toString() else "?"
+        Log.i(TAG, "$what at ${input?.position ?: -1}/$length +${ms}ms")
     }
 
     /** Points the player at a rough spot; [Search] then finds the exact cluster. */
@@ -475,10 +719,12 @@ private class SeekableMkvExtractor(
 
     /**
      * Reads the TimecodeScale (units of cluster timestamps; most files use 1 ms), the video frame rate and its Dolby
-     * Vision record ([MkvHeader]) from the start of the file.
+     * Vision record ([MkvHeader]) from the start of the file; and from the same bytes, whether the track list is kept
+     * after the clusters, to be read first, or is to be looked for at the end ([Detour]). One line in the log for each
+     * file, of what the bytes say.
      */
     private fun readHeader(input: ExtractorInput) {
-        val size = if (length > 0) minOf(65_536L, length).toInt() else 65_536
+        val size = if (length > 0) minOf(HEAD_BYTES.toLong(), length).toInt() else HEAD_BYTES
         val header = ByteArray(size)
         val ok = try {
             input.peekFully(header, 0, size, true)
@@ -488,10 +734,20 @@ private class SeekableMkvExtractor(
             input.resetPeekPosition()
         }
         if (!ok) return
-        runCatching { MkvHeader.video(header, size) }.getOrNull()?.let {
+        val video = runCatching { MkvHeader.video(header, size) }.getOrNull()
+        video?.let {
             videoFrameRate = it.frameRate
             dvSignal = it.dvSignal
         }
+        val layout = runCatching { MkvHeader.layout(header, size) }.getOrNull()
+        val late = layout?.lateTracks(size, length) ?: -1L
+        if (layout != null && late > 0) {
+            detour = Detour(layout.segmentStart, late)
+        } else if (layout != null && layout.tailLook(size, length)) {
+            // Neither in the first bytes nor listed in them: looked for in the last ones ([Detour.tail]).
+            detour = Detour(layout.segmentStart, -1, maxOf(length - TAIL_BYTES, size.toLong()))
+        }
+        if (logs) Log.i(TAG, "mkv head: " + MkvHeader.describe(layout, video, length) + if (late > 0) ", Tracks read first" else "")
         for (i in 0 until size - 5) {
             if (header[i] == 0x2A.toByte() && header[i + 1] == 0xD7.toByte() && header[i + 2] == 0xB1.toByte()) {
                 if (vintLength(header[i + 3]) != 1) continue
@@ -509,6 +765,19 @@ private class SeekableMkvExtractor(
 
     companion object {
         private const val TAG = "FirePlayerMkv"
+        /**
+         * The parts of reading a track list kept after the clusters ([Detour]): the file's first bytes, then the list; or
+         * between them, the file's last bytes looked at for it.
+         */
+        private const val HEAD = 0
+        private const val TRACKS = 1
+        private const val TAIL_LOOK = 2
+        /** The file's first bytes looked at for how it's laid out. */
+        private const val HEAD_BYTES = 65_536
+        /** The file's last bytes looked at for a track list no SeekHead lists ([Detour.tail]). */
+        private const val TAIL_BYTES = 65_536L
+        /** A track list bigger than this isn't read first: a few kB is usual. */
+        private const val MAX_TRACKS = 1L shl 20
         /** Damaged stretches got past in one file before it counts as damaged throughout. */
         private const val MAX_RECOVERIES = 20
         /** Places looked at after a damaged stretch: further on (each step twice as far, from 2 s), then halving back. */
@@ -545,22 +814,218 @@ internal object MkvHeader {
      * record of the first one; null when the bytes hold no video track.
      */
     fun video(h: ByteArray, size: Int): Video? {
-        var fps = 0f
-        var signal: Int? = null
-        var seen = false
+        val pick = VideoPick()
         forEachElement(h, 0, size) { id, start, end ->
             if (id == ID_SEGMENT) forEachElement(h, start, end) { id2, start2, end2 ->
                 if (id2 == ID_TRACKS) forEachElement(h, start2, end2) { id3, start3, end3 ->
-                    if (id3 == ID_TRACK_ENTRY && fps == 0f) trackEntry(h, start3, end3)?.let { v ->
-                        fps = v.frameRate
-                        if (!seen) signal = v.dvSignal
-                        seen = true
-                    }
+                    if (id3 == ID_TRACK_ENTRY) pick.entry(h, start3, end3)
                 }
             }
         }
-        return if (seen) Video(fps, signal) else null
+        return pick.video()
     }
+
+    /** The TrackEntries' video track as they come: the frame rate of the first one stating it, the record of the first. */
+    private class VideoPick {
+        private var fps = 0f
+        private var signal: Int? = null
+        private var seen = false
+
+        fun entry(h: ByteArray, start: Int, end: Int) {
+            if (fps != 0f) return
+            trackEntry(h, start, end)?.let { v ->
+                fps = v.frameRate
+                if (!seen) signal = v.dvSignal
+                seen = true
+            }
+        }
+
+        fun video(): Video? = if (seen) Video(fps, signal) else null
+    }
+
+    /**
+     * Where things are in an MKV, from its first bytes ([layout]). Positions count from the start of the file; -1 when
+     * the SeekHead doesn't list one.
+     */
+    class Layout(
+        /** Where the Segment's contents begin (its first child). */
+        val segmentStart: Long,
+        /** Whether the track list (Tracks) starts within the bytes read. */
+        val tracksInHead: Boolean,
+        /** Whether a cluster starts within the bytes read before any track list. */
+        val clusterFirst: Boolean,
+        val info: Long,
+        val tracks: Long,
+        val cues: Long,
+        val tags: Long,
+    ) {
+        /**
+         * Where the track list is, when it's kept after the clusters and so wants reading first ([SeekableMkvExtractor]);
+         * -1 otherwise. That's when it isn't in the first [headSize] bytes but the SeekHead lists it further on, inside
+         * the file's [length], and either a cluster came first in those bytes or it's in the second half of the file
+         * (where only what follows the clusters can be). A file whose track list merely sits beyond the first bytes but
+         * before the clusters is read as it always was.
+         */
+        fun lateTracks(headSize: Int, length: Long): Long = when {
+            length <= 0 || tracksInHead || tracks < 0 -> -1
+            tracks < headSize || tracks <= segmentStart || tracks > length - MIN_TRACKS -> -1
+            !clusterFirst && tracks <= length / 2 -> -1
+            else -> tracks
+        }
+
+        /**
+         * Whether the track list is to be looked for in the file's last bytes ([tailTracks]): when it's neither in the
+         * first [headSize] bytes nor listed by a SeekHead (some muxers write none), and the file's [length] is known and
+         * longer than those bytes.
+         */
+        fun tailLook(headSize: Int, length: Long): Boolean = length > headSize && !tracksInHead && tracks < 0
+    }
+
+    /**
+     * The Segment's start, what its SeekHead lists, and whether a cluster or the track list comes first, in the first
+     * [size] bytes of [h] (from the file's start); null when they hold no Segment.
+     */
+    fun layout(h: ByteArray, size: Int): Layout? {
+        var segmentStart = -1L
+        var tracksInHead = false
+        var clusterFirst = false
+        val listed = longArrayOf(-1, -1, -1, -1)
+        forEachElement(h, 0, size) { id, start, end ->
+            if (id != ID_SEGMENT || segmentStart >= 0) return@forEachElement
+            segmentStart = start.toLong()
+            forEachElement(h, start, end) { id2, start2, end2 ->
+                when (id2) {
+                    ID_SEEK_HEAD -> forEachElement(h, start2, end2) { id3, start3, end3 ->
+                        if (id3 == ID_SEEK) seekEntry(h, start3, end3, segmentStart, listed)
+                    }
+                    ID_TRACKS -> tracksInHead = true
+                    ID_CLUSTER -> if (!tracksInHead) clusterFirst = true
+                }
+            }
+        }
+        if (segmentStart < 0) return null
+        return Layout(segmentStart, tracksInHead, clusterFirst, listed[0], listed[1], listed[2], listed[3])
+    }
+
+    /** A SeekHead's entry: where it says the Info, the track list, the index (Cues) or the Tags are; the first of each. */
+    private fun seekEntry(h: ByteArray, start: Int, end: Int, segmentStart: Long, listed: LongArray) {
+        var id = -1L
+        var position = -1L
+        forEachElement(h, start, end) { id2, s, e ->
+            when (id2) {
+                ID_SEEK_ID -> id = uint(h, s, e)
+                ID_SEEK_POSITION -> if (e - s in 1..8) position = uint(h, s, e)
+            }
+        }
+        if (position < 0) return
+        val k = when (id) {
+            ID_INFO -> 0
+            ID_TRACKS -> 1
+            ID_CUES -> 2
+            ID_TAGS -> 3
+            else -> return
+        }
+        if (listed[k] < 0) listed[k] = segmentStart + position
+    }
+
+    /**
+     * The size of the element at [from] in the first [size] bytes of [b], its ID and size included, when it's [id] with
+     * a size stated; -1 otherwise.
+     */
+    fun elementSize(b: ByteArray, size: Int, id: Long, from: Int = 0): Long {
+        if (from < 0 || size - from < 1) return -1
+        val idLength = vintLength(b[from])
+        if (idLength !in 1..4 || from + idLength >= size) return -1
+        var found = 0L
+        for (k in 0 until idLength) found = (found shl 8) or (b[from + k].toLong() and 0xFF)
+        if (found != id) return -1
+        val sizeLength = vintLength(b[from + idLength])
+        if (sizeLength !in 1..8 || from + idLength + sizeLength > size) return -1
+        val data = sizeAt(b, from + idLength, sizeLength)
+        if (data < 0) return -1
+        return idLength + sizeLength + data
+    }
+
+    /** A track list read on its own ([lateTracks]): its video track, null when it has none. */
+    class LateTracks(val video: Video?)
+
+    /**
+     * [b] holding a track list (Tracks) whole from [from] to [size], from its ID to its end, as read from where a SeekHead
+     * says it is: its video track as [video] gives it, when it reads as one whole: every element in it and in each of its
+     * TrackEntries lying whole inside, with its size stated, and each TrackEntry having a TrackNumber and a CodecID. With
+     * [onlyEntries], nothing but TrackEntries in it (a Void or a CRC-32 aside). Null otherwise, and then it's left to
+     * Media3 to read where it is, as ever.
+     */
+    fun lateTracks(b: ByteArray, size: Int, from: Int = 0, onlyEntries: Boolean = false): LateTracks? {
+        val pick = VideoPick()
+        var entries = 0
+        var lists = 0
+        val whole = wholeElements(b, from, size) list@{ id, start, end ->
+            if (id != ID_TRACKS || lists++ > 0) return@list false
+            wholeElements(b, start, end) entry@{ id2, start2, end2 ->
+                // Anything else in it (Void, CRC-32) Media3 passes over; found by its ID alone ([tailTracks]), nothing
+                // else may be in it.
+                if (id2 != ID_TRACK_ENTRY) return@entry !onlyEntries || id2 == ID_VOID || id2 == ID_CRC32
+                var number = false
+                var codec = false
+                val entryWhole = wholeElements(b, start2, end2) { id3, _, _ ->
+                    if (id3 == ID_TRACK_NUMBER) number = true
+                    if (id3 == ID_CODEC_ID) codec = true
+                    true
+                }
+                if (!entryWhole || !number || !codec) return@entry false
+                entries++
+                pick.entry(b, start2, end2)
+                true
+            }
+        }
+        return if (whole && entries > 0) LateTracks(pick.video()) else null
+    }
+
+    /**
+     * What a file's last bytes hold of a track list ([tailTracks]): where it starts in them ([offset]), its [size] (its ID
+     * and size included; -1 when not stated), and whether it reads as one ([whole]).
+     */
+    class TailTracks(val offset: Int, val size: Long, val whole: Boolean)
+
+    /**
+     * The track list (Tracks) in the first [size] bytes of [b], a file's last bytes, for a file whose first bytes neither
+     * hold it nor list it: the last place its ID starts an element that ends within them and reads as one track list of
+     * TrackEntries only ([lateTracks]). When none does, the last place its ID was seen, not [TailTracks.whole] (the same
+     * four bytes inside a block, by chance, or a list running on past the end); null when it wasn't seen at all.
+     */
+    fun tailTracks(b: ByteArray, size: Int): TailTracks? {
+        var seen: TailTracks? = null
+        for (i in size - 4 downTo 0) {
+            if (b[i] != TRACKS0 || b[i + 1] != TRACKS1 || b[i + 2] != TRACKS2 || b[i + 3] != TRACKS3) continue
+            val n = elementSize(b, size, ID_TRACKS, i)
+            if (n > 0 && n <= size - i && lateTracks(b, i + n.toInt(), i, onlyEntries = true) != null) return TailTracks(i, n, true)
+            if (seen == null) seen = TailTracks(i, n, false)
+        }
+        return seen
+    }
+
+    /** The log's words for what a file's last bytes from [from] held of a track list: "tracks@1103711534 size=1995 ok". */
+    fun tailText(found: TailTracks?, from: Long): String {
+        if (found == null) return "tracks@none size=none not found"
+        val size = if (found.size >= 0) found.size.toString() else "none"
+        return "tracks@${from + found.offset} size=$size ${if (found.whole) "ok" else "invalid"}"
+    }
+
+    /**
+     * The log's words for a file's first bytes: "tracks=absent fps=none dvRecord=none
+     * seekhead=Info@4185,Tracks@1083949310,Cues@1083100160,Tags@none len=1083950014". Sizes and places only.
+     */
+    fun describe(layout: Layout?, video: Video?, length: Long): String {
+        fun at(p: Long) = if (p >= 0) p.toString() else "none"
+        val seekHead = if (layout == null) "none"
+        else "Info@${at(layout.info)},Tracks@${at(layout.tracks)},Cues@${at(layout.cues)},Tags@${at(layout.tags)}"
+        return "tracks=${if (layout?.tracksInHead == true) "in-header" else "absent"} fps=${fpsText(video?.frameRate ?: 0f)} " +
+            "dvRecord=${video?.dvSignal ?: "none"} seekhead=$seekHead len=$length"
+    }
+
+    /** "23.976", or "none" for 0. */
+    fun fpsText(fps: Float): String = if (fps > 0f) String.format(Locale.US, "%.3f", fps) else "none"
 
     private fun trackEntry(h: ByteArray, start: Int, end: Int): Video? {
         var video = false
@@ -620,13 +1085,62 @@ internal object MkvHeader {
         }
     }
 
+    /**
+     * As [forEachElement], but every element must lie whole between [from] and [to], with its size stated: false when
+     * one doesn't, or when [block] says so.
+     */
+    private fun wholeElements(b: ByteArray, from: Int, to: Int, block: (id: Long, start: Int, end: Int) -> Boolean): Boolean {
+        var i = from
+        while (i < to) {
+            val idLength = vintLength(b[i])
+            if (idLength !in 1..4 || i + idLength >= to) return false
+            var id = 0L
+            for (k in 0 until idLength) id = (id shl 8) or (b[i + k].toLong() and 0xFF)
+            i += idLength
+            val sizeLength = vintLength(b[i])
+            if (sizeLength !in 1..8 || i + sizeLength > to) return false
+            val size = sizeAt(b, i, sizeLength)
+            i += sizeLength
+            if (size < 0 || size > to - i) return false
+            if (!block(id, i, i + size.toInt())) return false
+            i += size.toInt()
+        }
+        return true
+    }
+
+    /** The element size of [length] bytes at [at]; -1 for "unknown" (every bit of it set). */
+    private fun sizeAt(b: ByteArray, at: Int, length: Int): Long {
+        var size = (b[at].toLong() and 0xFF) and (0xFF shr length).toLong()
+        for (k in 1 until length) size = (size shl 8) or (b[at + k].toLong() and 0xFF)
+        return if (size == (1L shl (7 * length)) - 1) -1 else size
+    }
+
     fun vintLength(first: Byte): Int {
         val v = first.toInt() and 0xFF
         return if (v == 0) 0 else Integer.numberOfLeadingZeros(v) - 23
     }
 
     private const val ID_SEGMENT = 0x18538067L
-    private const val ID_TRACKS = 0x1654AE6BL
+    const val ID_TRACKS = 0x1654AE6BL
+    /** The track list's ID byte by byte, as [tailTracks] looks for it. */
+    private val TRACKS0 = (ID_TRACKS shr 24).toByte()
+    private val TRACKS1 = (ID_TRACKS shr 16).toByte()
+    private val TRACKS2 = (ID_TRACKS shr 8).toByte()
+    private val TRACKS3 = ID_TRACKS.toByte()
+    private const val ID_VOID = 0xECL
+    private const val ID_CRC32 = 0xBFL
+    private const val ID_SEEK_HEAD = 0x114D9B74L
+    private const val ID_SEEK = 0x4DBBL
+    private const val ID_SEEK_ID = 0x53ABL
+    private const val ID_SEEK_POSITION = 0x53ACL
+    private const val ID_INFO = 0x1549A966L
+    private const val ID_CUES = 0x1C53BB6BL
+    private const val ID_TAGS = 0x1254C367L
+    private const val ID_CLUSTER = 0x1F43B675L
+    private const val ID_TRACK_NUMBER = 0xD7L
+    private const val ID_CODEC_ID = 0x86L
+    /** The least a track list with one track in it can be. */
+    private const val MIN_TRACKS = 8L
     private const val ID_TRACK_ENTRY = 0xAEL
     private const val ID_TRACK_TYPE = 0x83L
     private const val ID_DEFAULT_DURATION = 0x23E383L
@@ -793,4 +1307,88 @@ internal class BatchedInput(private val base: ExtractorInput) : ExtractorInput {
     companion object {
         const val CHUNK = 16 * 1024
     }
+}
+
+/**
+ * [base] as if the file ended at [end]: reads, skips and peeks stop there. One that would run on past it is refused
+ * whole ([overran]), [base] left where it was, so the reader can be given the rest of the file and go on from there.
+ * For reading a track list kept after the clusters first ([SeekableMkvExtractor.Detour]): a few hundred calls a film
+ * at most, so nothing is batched.
+ */
+@OptIn(UnstableApi::class)
+internal class BoundedInput(private val base: ExtractorInput, private val end: Long) : ExtractorInput {
+    /** Set when a read, skip or peek was refused for running on past [end]. */
+    var overran = false
+        private set
+
+    private fun left(): Long = end - base.position
+
+    private fun peekLeft(): Long = end - base.peekPosition
+
+    /** Whether [length] bytes fit in [left]; false at the end (when that's allowed); refused otherwise. */
+    private fun fits(length: Int, left: Long, allowEndOfInput: Boolean): Boolean {
+        if (length <= left) return true
+        if (left <= 0 && allowEndOfInput) return false
+        overran = true
+        throw EOFException()
+    }
+
+    override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+        if (length == 0) return 0
+        val left = left()
+        if (left <= 0) return C.RESULT_END_OF_INPUT
+        return base.read(buffer, offset, minOf(length.toLong(), left).toInt())
+    }
+
+    override fun readFully(target: ByteArray, offset: Int, length: Int, allowEndOfInput: Boolean): Boolean =
+        fits(length, left(), allowEndOfInput) && base.readFully(target, offset, length, allowEndOfInput)
+
+    override fun readFully(target: ByteArray, offset: Int, length: Int) {
+        readFully(target, offset, length, false)
+    }
+
+    override fun skip(length: Int): Int {
+        if (length == 0) return 0
+        val left = left()
+        if (left <= 0) return C.RESULT_END_OF_INPUT
+        return base.skip(minOf(length.toLong(), left).toInt())
+    }
+
+    override fun skipFully(length: Int, allowEndOfInput: Boolean): Boolean =
+        fits(length, left(), allowEndOfInput) && base.skipFully(length, allowEndOfInput)
+
+    override fun skipFully(length: Int) {
+        skipFully(length, false)
+    }
+
+    override fun peek(target: ByteArray, offset: Int, length: Int): Int {
+        if (length == 0) return 0
+        val left = peekLeft()
+        if (left <= 0) return C.RESULT_END_OF_INPUT
+        return base.peek(target, offset, minOf(length.toLong(), left).toInt())
+    }
+
+    override fun peekFully(target: ByteArray, offset: Int, length: Int, allowEndOfInput: Boolean): Boolean =
+        fits(length, peekLeft(), allowEndOfInput) && base.peekFully(target, offset, length, allowEndOfInput)
+
+    override fun peekFully(target: ByteArray, offset: Int, length: Int) {
+        peekFully(target, offset, length, false)
+    }
+
+    override fun advancePeekPosition(length: Int, allowEndOfInput: Boolean): Boolean =
+        fits(length, peekLeft(), allowEndOfInput) && base.advancePeekPosition(length, allowEndOfInput)
+
+    override fun advancePeekPosition(length: Int) {
+        advancePeekPosition(length, false)
+    }
+
+    override fun resetPeekPosition() = base.resetPeekPosition()
+
+    override fun getPeekPosition(): Long = base.peekPosition
+
+    override fun getPosition(): Long = base.position
+
+    override fun getLength(): Long = base.length
+
+    override fun <E : Throwable> setRetryPosition(position: Long, e: E) = base.setRetryPosition(position, e)
 }

@@ -41,6 +41,8 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
     private var held = false
     /** The moved copy's row in its new kind ([details]), until the list has it (it ranks again on its own thread). */
     private var landOn: String? = null
+    /** A newer list came while this window's question was up: drawn once it's answered or closed ([redrawIfStale]). */
+    private var stale = false
 
     /** Whether this panel is the window showing now. */
     val isOpen: Boolean get() = panel.isOpen && panel.session == session
@@ -80,17 +82,28 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
         session = panel.session
     }
 
-    /** A newer list or attempts: the rows redraw in place (focus kept). */
+    /**
+     * A newer list or attempts (late answers; a play's measured size and rate, ranked again): the rows redraw in place
+     * (focus kept), or once the question over them closes.
+     */
     fun update(list: SourceList?, attempts: List<Attempt> = this.attempts, playingKey: String? = this.playingKey) {
         this.list = list
         this.attempts = attempts
         this.playingKey = playingKey
-        if (isOpen && !FireDialog.isShowing(activity)) {
-            val to = landOn
-            panel.refresh()
-            // Back after a move came before the list ranked again: focus goes to the copy's new row, now listed.
-            if (to != null && landOn == null) panel.focusEntry(to)
+        if (!isOpen) return
+        if (FireDialog.isShowing(activity)) {
+            stale = true
+            return
         }
+        stale = false
+        val to = landOn
+        panel.refresh()
+        // Back after a move came before the list ranked again: focus goes to the copy's new row, now listed.
+        if (to != null && landOn == null) panel.focusEntry(to)
+    }
+
+    private fun redrawIfStale() {
+        if (stale) update(list, attempts, playingKey)
     }
 
     private fun entries(): LongList {
@@ -165,14 +178,18 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
             "Your debrid service (Real-Debrid, TorBox...) has to download this file first. It can take a while and uses a download slot.",
             listOf(
                 "Ask the debrid service to fetch it" to { onPick?.invoke(s, beginning) },
-                "Not now" to {},
+                "Not now" to ::redrawIfStale,
             ),
+            onDismiss = ::redrawIfStale,
             focus = 1,
             fromPanel = true,
         )
     }
 
-    /** Hold OK on a row: Play from beginning, Details, in the hold window beside the row (it's selected). */
+    /**
+     * Hold OK on a row: Play from beginning, Details, in the hold window beside the row (it's selected). A newer list
+     * that came while it was up is drawn as it closes, before what was chosen.
+     */
     private fun holdMenu(s: PlaybackSource) {
         FireDialog.hold(
             activity,
@@ -183,7 +200,7 @@ class SourcesPanel(private val activity: Activity, private val panel: SidePanel)
                 "Details" to { details(s) },
             ),
             fromPanel = true,
-        )
+        )?.onDismiss = ::redrawIfStale
     }
 
     private fun mainLine(s: PlaybackSource): String {

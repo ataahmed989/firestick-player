@@ -12,6 +12,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import app.fireplayer.vod.parseLink
 import java.util.Locale
+import kotlin.math.abs
 
 /** One stream of an add-on's answer, read. Its link stays inside [offer] (memory only). */
 class ParsedStream(
@@ -25,7 +26,26 @@ class ParsedStream(
     val threeD: Boolean,
     /** MediaFusion's or Torz's exact size (behaviorHints.videoSize) rather than a rounded "💾 29.26 GB". */
     val exactSize: Boolean = false,
-)
+    /**
+     * The only size the add-on gave may be the torrent's, not the file's (MediaFusion's one size for an episode, when its
+     * names don't say one episode: a season pack's total, [PackWords]), so [facts] has no size of the file's own: an
+     * estimate at most ([SourceFacts.sizeEstimated]), never a wrong one.
+     */
+    val torrentSize: Boolean = false,
+    /**
+     * MediaFusion's one size for an episode (its videoSize, else its words'): the season pack's or the episode's, as
+     * [packRead] and the other add-ons tell ([SourceMerge]); null for every other stream.
+     */
+    val oneSize: Long? = null,
+    /** What MediaFusion's names say of [oneSize]'s torrent; null without [oneSize]. */
+    val packRead: PackWords.Read? = null,
+    /** [oneSize] as videoSize gave it to the byte: the file's own when it is another add-on's exact size ([SourceMerge]). */
+    val looseExact: Long? = null,
+) {
+    /** This stream with [facts] (a season pack's size worked out, [SourceMerge]), the rest as it is. */
+    fun with(facts: SourceFacts, torrentSize: Boolean): ParsedStream =
+        ParsedStream(offer, release, facts, sameName, cinema, threeD, exactSize, torrentSize, oneSize, packRead, looseExact)
+}
 
 /**
  * An add-on's answer, read: its streams, and what it said instead of them ([notice]: an error row such as "Invalid
@@ -48,8 +68,11 @@ class ParsedAnswer(
  */
 object StreamParser {
 
-    /** [json]: the add-on's answer to /stream/…json; [runtimeMin]: the film's or episode's length, for "≈25 Mb/s". */
-    fun parse(addon: Addon, json: String, runtimeMin: Int?): ParsedAnswer {
+    /**
+     * [json]: the add-on's answer to /stream/…json; [runtimeMin]: the film's or episode's length, for "≈25 Mb/s";
+     * [episode]: it answers for an episode (MediaFusion's one size is then its torrent's, [ParsedStream.torrentSize]).
+     */
+    fun parse(addon: Addon, json: String, runtimeMin: Int?, episode: Boolean = false): ParsedAnswer {
         val root = runCatching { JSONObject(json) }.getOrNull() ?: return ParsedAnswer(emptyList())
         val streams = root.optJSONArray("streams") ?: JSONArray()
         val out = ArrayList<ParsedStream>(streams.length())
@@ -77,7 +100,7 @@ object StreamParser {
             val link = url?.let { SecretUrl.of(it) } ?: continue
             val parsed = when (addon) {
                 Addon.TORRENTIO -> torrentio(s, name, text, link, runtimeMin)
-                Addon.MEDIAFUSION -> mediaFusion(s, name, text, link, runtimeMin)
+                Addon.MEDIAFUSION -> mediaFusion(s, name, text, link, runtimeMin, episode)
                 Addon.TORZ -> torz(s, name, text, link, runtimeMin)
             } ?: continue
             out += parsed
@@ -145,7 +168,7 @@ object StreamParser {
 
     // ---- MediaFusion ----
 
-    private fun mediaFusion(s: JSONObject, name: String, text: String, link: SecretUrl, runtimeMin: Int?): ParsedStream? {
+    private fun mediaFusion(s: JSONObject, name: String, text: String, link: SecretUrl, runtimeMin: Int?, episode: Boolean): ParsedStream? {
         val hints = s.optJSONObject("behaviorHints")
         val filename = hints?.optString("filename")?.takeIf { it.isNotBlank() }
             ?: Words.field(text, "📂")?.substringAfterLast("┈➤")?.trim()
@@ -162,8 +185,33 @@ object StreamParser {
         val nameRes = Words.read(name.substringAfterLast(' '), quality = true)
         val tail = bingeGroup?.substringAfterLast('-')?.let { Words.read(it, quality = true) }
         val fromName = Words.read(filename.orEmpty())
-        val exact = hints?.optLong("videoSize", 0L)?.takeIf { it > 0 }
-        val size = exact ?: Words.size(text)
+        val video = hints?.optLong("videoSize", 0L)?.takeIf { it > 0 }
+        // A film's videoSize is its file's. An episode's one size (videoSize, "📦 10.2 GB") is its torrent's: a season
+        // pack's total, or the episode's when the torrent is that one episode. Only MediaFusion's two sizes, "📦 1.01 GB /
+        // 10.2 GB", name the file (the first), and videoSize is the file's to the byte when it is that one.
+        val file = if (episode) Words.fileOfTwo(text) else null
+        val exact = if (!episode) video else video?.takeIf { v -> file != null && Words.near(v, file) }
+        val one = if (episode && exact == null && file == null) video ?: Words.size(text) else null
+        // What its names say of that torrent: a pack's total is never the episode's size (shown in parentheses or shared
+        // out, [SourceMerge]); one episode's is its own. Only the torrent's own name says one episode: its filename when
+        // it indexes no file (MediaFusion's backend names such a row by its torrent), the torrent's part of a "📂 torrent
+        // ┈➤ file" line, never with a video extension. A file's name, as MediaFusion gives a file it indexes (and older
+        // ones a file they don't, beside the pack's size), names its own episode in a pack too: it, and the rest of the
+        // description, say pack only.
+        val read = one?.let {
+            val hinted = hints?.optString("filename")?.takeIf { it.isNotBlank() }?.takeIf { release?.fileIdx == null }
+            val folder = Words.field(text, "📂")?.substringBefore("┈➤")
+            val torrents = listOfNotNull(hinted, folder).filterNot { Words.isFile(it) }
+            PackWords.read(torrents, listOf(filename) + text.lines().flatMap { it.split("┈➤") })
+        }
+        val single = read?.kind == PackWords.Kind.SINGLE
+        val size = when {
+            exact != null -> exact
+            single -> one
+            episode -> file
+            else -> Words.size(text)
+        }
+        val torrentSize = one != null && !single
         val facts = SourceFacts(
             height = tail?.height ?: nameRes.height ?: groupFacts?.height ?: textFacts.height ?: fromName.height,
             hdr = (groupFacts?.hdr ?: emptySet()) + textFacts.hdr + fromName.hdr,
@@ -180,12 +228,16 @@ object StreamParser {
             subs = fromName.subs,
             seeders = Words.seeders(text),
             pack = false,
+            sizeExact = exact != null,
+            packBytes = one?.takeIf { torrentSize },
+            packUnclear = torrentSize && read?.kind == PackWords.Kind.UNSAID,
         )
         val cinema = (groupFacts?.cinema ?: false) || textFacts.cinema || fromName.cinema
         val offer = Offer(Addon.MEDIAFUSION, readiness, text.lines().filter { it.isNotBlank() }.joinToString("\n"),
             filename, bingeGroup, link)
         return ParsedStream(offer, release, facts, filename?.let { Words.sameName(it) }, cinema,
-            fromName.threeD || textFacts.threeD, exactSize = exact != null)
+            fromName.threeD || textFacts.threeD, exactSize = exact != null, torrentSize = torrentSize, oneSize = one,
+            packRead = read, looseExact = video?.takeIf { one != null })
     }
 
     // ---- StremThru Torz ----
@@ -237,6 +289,7 @@ object StreamParser {
             subs = fromName.subs,
             seeders = Words.seeders(text),
             pack = false,
+            sizeExact = exact != null,
         )
         val offer = Offer(Addon.TORZ, readiness, text.lines().filter { it.isNotBlank() }.joinToString("\n"),
             filename, bingeGroup, link)
@@ -487,13 +540,32 @@ internal object Words {
     }
 
     private val SIZE = Regex("""(?:💾|📦)\s*([0-9]+(?:[.,][0-9]+)?)\s*(TB|GB|MB|KB)""", RegexOption.IGNORE_CASE)
+    private val TWO_SIZES = Regex(
+        """(?:💾|📦)\s*([0-9]+(?:[.,][0-9]+)?)\s*(TB|GB|MB|KB)\s*/\s*[0-9]+(?:[.,][0-9]+)?\s*(?:TB|GB|MB|KB)""", RegexOption.IGNORE_CASE,
+    )
     private val SEEDERS = Regex("""👤\s*([0-9]+)""")
 
     /** "💾 29.26 GB" / "📦 31.42 GB" in bytes: binary units, as both add-ons write them. */
-    fun size(text: String): Long? {
-        val m = SIZE.find(text) ?: return null
-        val n = m.groupValues[1].replace(',', '.').toDoubleOrNull() ?: return null
-        val unit = when (m.groupValues[2].uppercase(Locale.ROOT)) {
+    fun size(text: String): Long? = SIZE.find(text)?.let { bytes(it.groupValues[1], it.groupValues[2]) }
+
+    /**
+     * MediaFusion's two sizes, "📦 1.01 GB / 10.2 GB" (the file, then the torrent it sits in): the file's, in bytes
+     * ([size]'s units); null when the text has only one.
+     */
+    fun fileOfTwo(text: String): Long? = TWO_SIZES.find(text)?.let { bytes(it.groupValues[1], it.groupValues[2]) }
+
+    /**
+     * Whether an exact size in bytes is the one [stated] in words ([size]) within [NEAR]: the words' rounding, in binary
+     * or decimal units. A torrent's total is at least two files', so it is never this near one of them.
+     */
+    fun near(exact: Long, stated: Long): Boolean = stated > 0 && abs(exact - stated) <= stated * NEAR
+
+    /** [near]'s share: wide enough for "1.08 GB" written in decimal units where [size] reads binary ones (7 %). */
+    const val NEAR = 0.1
+
+    private fun bytes(number: String, unitWord: String): Long? {
+        val n = number.replace(',', '.').toDoubleOrNull() ?: return null
+        val unit = when (unitWord.uppercase(Locale.ROOT)) {
             "TB" -> 1L shl 40
             "GB" -> 1L shl 30
             "MB" -> 1L shl 20
@@ -533,6 +605,9 @@ internal object Words {
     private val EXT = Regex("""\.(mkv|mp4|avi|ts|m2ts|m4v|mov|wmv|webm)$""", RegexOption.IGNORE_CASE)
 
     fun stripExtension(text: String): String = EXT.replace(text.trim(), "")
+
+    /** [name] ends in a video file's extension ("….mkv"): a file's name, not a torrent's of several files. */
+    fun isFile(name: String): Boolean = EXT.containsMatchIn(name.trim())
 
     /** The name re-uploads share: lower case, no extension, no "[TGx]"-style tags or site prefix, words only. */
     fun sameName(name: String): String? {

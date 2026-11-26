@@ -12,64 +12,153 @@ import kotlin.math.max
 
 /**
  * One row per file (r3_sources-organize §4.7): the same info hash + file index, the same exact size in bytes from two
- * add-ons (both known exactly: an add-on's videoSize, or what a play here measured of the file), or the same normalised
- * file name with the size within 1 %, is one source; across add-ons it reads "Both add-ons" (any two or more), under several
- * hashes "×N". Facts merge: HDR kinds joined (one add-on's "DV" and the other's "HDR10+"), MediaFusion's exact size,
- * Torrentio's seeders. Offers are tried ready mark first, then Torrentio. Answers are merged in the order they
- * arrived, so a row keeps its key as later answers join it.
+ * add-ons (both known exactly: what a play here measured of the file, else an add-on's videoSize), or the same normalised
+ * file name with the size within 1 % (the row's best-known size: exact when known), is one source; for an episode, the
+ * same info hash too when one add-on gave no file index (MediaFusion's season packs: its link names the season and
+ * episode, and MediaFusion picks the file) and what the two say of the file agrees ([samePackFile]: their sizes to the
+ * byte, else their file names). The same hash alone never is: in a pack MediaFusion numbers differently, its file for
+ * the episode is another than the one the other add-on's index names. Two indexes of one torrent are never one file.
+ * Across add-ons it reads "Both add-ons" (any two or more), under several hashes "×N". Facts merge: HDR kinds joined
+ * (one add-on's "DV" and the other's "HDR10+"), the size measured here or an add-on's exact one, else a stated one, else
+ * an estimate of a season pack's episode ([packSizes]; never a torrent's total as the file's), Torrentio's seeders.
+ * Offers are tried ready mark first, then Torrentio; each keeps its own link, file and size ([Offer.size]). Answers are
+ * merged in the order they arrived, so a row keeps its key as later answers join it. A film's files keep to hash +
+ * index: a collection holds several films.
  */
 object SourceMerge {
 
     /** Re-uploads within this share of each other's size are the same release. */
     const val SIZE_CLOSE = 0.01
 
-    private class Row(val first: ParsedStream, val key: String) {
+    /**
+     * A season pack's one size against its file's, as another add-on gives it ([packEvidence]): the file at least this
+     * share of it (and at most [SINGLE_OVER] over: Torrentio's rounding) is the torrent's one file beside a sample or a
+     * text file; at most [PACK_SHARE], one of its several episodes (two episodes' each about half).
+     */
+    private const val SINGLE_SHARE = 0.85
+    private const val SINGLE_OVER = 0.03
+    private const val PACK_SHARE = 0.6
+
+    /**
+     * [exact]: the file's size to the byte, once an item knows it; [measured]: its size as a play here measured it (looked
+     * up once for each item).
+     */
+    private class Row(val first: ParsedStream, val key: String, var exact: Long?, var measured: Long?) {
         val items = ArrayList<ParsedStream>().also { it.add(first) }
+        /** Each item's own size to the byte (measured here, else the add-on's exact one), as [items]. */
+        val sizes = ArrayList<Long?>().also { it.add(exact) }
         val releases = LinkedHashSet<String>().also { set -> first.release?.let { set.add(it.storeKey) } }
+
+        /**
+         * The size the name rule compares: the file's to the byte once an item knows it ([exact]), else the first stated
+         * (never an estimate: [SourceFacts.sizeEstimated]).
+         */
+        val size: Long? get() = exact ?: items.firstNotNullOfOrNull { statedOf(it) }
+
+        /** The height its items state first, as its facts have it ([mergeFacts]); null when none does. */
+        val height: Int? get() = items.firstNotNullOfOrNull { it.facts.height }
     }
 
     /** Merged rows, and the row each release (by [app.fireplayer.vod.ReleaseKey.storeKey]) went into ("×N" copies). */
     class Merged(val sources: List<PlaybackSource>, val rowOf: Map<String, String>)
 
     /**
-     * [answers]: each add-on's streams, in the order the add-ons answered. [measuredSize]: a file's exact size in bytes
-     * as a play here measured it, by release; null when it never played. Unranked: [SourceRank] orders them.
+     * [answers]: each add-on's streams, in the order the add-ons answered. [episode]: they're an episode's (the hash
+     * rule above). [seasonEpisodes]: how many episodes the episode's season has, from what's stored of the show (asked
+     * at most once, only for a season pack's size, [packSizes]); null when not known. [measuredSize]: a file's exact
+     * size in bytes as a play here measured it, by release; null when it never played. Unranked: [SourceRank] orders them.
      */
-    fun merge(answers: List<List<ParsedStream>>, runtimeMin: Int?, measuredSize: (ReleaseKey) -> Long? = { null }): List<PlaybackSource> =
-        mergeKeyed(answers, runtimeMin, measuredSize).sources
+    fun merge(
+        answers: List<List<ParsedStream>>, runtimeMin: Int?, episode: Boolean = false, seasonEpisodes: () -> Int? = { null },
+        measuredSize: (ReleaseKey) -> Long? = { null },
+    ): List<PlaybackSource> = mergeKeyed(answers, runtimeMin, episode, seasonEpisodes, measuredSize).sources
 
-    fun mergeKeyed(answers: List<List<ParsedStream>>, runtimeMin: Int?, measuredSize: (ReleaseKey) -> Long? = { null }): Merged {
+    fun mergeKeyed(
+        answers: List<List<ParsedStream>>, runtimeMin: Int?, episode: Boolean = false, seasonEpisodes: () -> Int? = { null },
+        measuredSize: (ReleaseKey) -> Long? = { null },
+    ): Merged {
+        val streams = if (episode) packSizes(answers, runtimeMin, seasonEpisodes) else answers
         val rows = ArrayList<Row>()
         val byRelease = HashMap<String, Row>()
+        // An episode's: the rows holding each info hash, and those holding one without a file index.
+        val byHash = HashMap<String, MutableList<Row>>()
+        val byLooseHash = HashMap<String, MutableList<Row>>()
         val byName = HashMap<String, MutableList<Row>>()
         val bySize = HashMap<Long, Row>()
+        // An episode's MediaFusion file of one episode, by its videoSize ([ParsedStream.looseExact]): another add-on's
+        // file of that size to the byte is the same file, though MediaFusion's own size isn't counted exact.
+        val byLoose = HashMap<Long, Row>()
         val keys = HashSet<String>()
-        for (answer in answers) {
+        fun index(row: Row, p: ParsedStream, exact: Long?) {
+            p.release?.let { r ->
+                row.releases += r.storeKey
+                byRelease.getOrPut(r.storeKey) { row }
+                if (episode) {
+                    byHash.getOrPut(r.infoHash) { ArrayList(1) }.let { if (row !in it) it += row }
+                    if (r.fileIdx == null) byLooseHash.getOrPut(r.infoHash) { ArrayList(1) }.let { if (row !in it) it += row }
+                }
+            }
+            exact?.let { bySize.getOrPut(it) { row } }
+            looseOf(p, exact)?.let { byLoose.getOrPut(it) { row } }
+        }
+        for (answer in streams) {
             for (p in answer) {
-                val exact = exactSize(p, measuredSize)
-                val row = p.release?.let { byRelease[it.storeKey] }
-                    ?: exact?.let { bySize[it] }?.takeIf { sameFile(it, p) }
-                    ?: p.sameName?.let { n -> byName[n]?.firstOrNull { sizeClose(it.first.facts.sizeBytes, p.facts.sizeBytes) } }
+                // Looked up once a stream: the size a play here measured first (to the byte, whatever an add-on says),
+                // else the add-on's own (videoSize).
+                val measured = measuredOf(p, episode, measuredSize)
+                val exact = measured ?: p.facts.sizeBytes?.takeIf { p.exactSize && it > 0 }
+                val r = p.release
+                val row = r?.let { byRelease[it.storeKey] }
+                    // The same torrent, one side without the file's index: one file only when what they say of it agrees
+                    // ([samePack]), never by the hash alone.
+                    ?: r?.takeIf { episode }?.let { if (it.fileIdx == null) byHash[it.infoHash] else byLooseHash[it.infoHash] }
+                        ?.firstOrNull { samePack(it, p, exact) == true }
+                    // Never a row holding another file of its torrent ([apart]).
+                    ?: exact?.let { bySize[it] ?: byLoose[it] }?.takeIf { sameFile(it, p) && !apart(it, p, exact, episode) }
+                    ?: looseOf(p, exact)?.let { bySize[it] }?.takeIf { sameFile(it, p) && !apart(it, p, null, episode) }
+                    ?: p.sameName?.let { n ->
+                        byName[n]?.firstOrNull { sizeClose(it.size, exact ?: statedOf(p)) && !apart(it, p, exact, episode) }
+                    }
                 if (row != null) {
                     row.items += p
-                    p.release?.let { r ->
-                        row.releases += r.storeKey
-                        if (!byRelease.containsKey(r.storeKey)) byRelease[r.storeKey] = row
-                    }
-                    exact?.let { if (!bySize.containsKey(it)) bySize[it] = row }
+                    row.sizes += exact
+                    if (row.exact == null) row.exact = exact
+                    if (row.measured == null) row.measured = measured
+                    index(row, p, exact)
                     continue
                 }
                 val base = p.release?.storeKey
-                    ?: p.sameName?.let { "n|$it|${p.facts.sizeBytes ?: 0}" }
+                    ?: p.sameName?.let { "n|$it|${statedOf(p) ?: 0}" }
                     ?: "o|${p.offer.addon.name}|${p.offer.text.hashCode()}"
                 var key = base
                 var n = 2
                 while (!keys.add(key)) key = "$base#${n++}"
-                val fresh = Row(p, key)
+                val fresh = Row(p, key, exact, measured)
                 rows += fresh
-                p.release?.let { byRelease[it.storeKey] = fresh }
-                exact?.let { bySize[it] = fresh }
+                index(fresh, p, exact)
                 p.sameName?.let { byName.getOrPut(it) { ArrayList() } += fresh }
+            }
+        }
+        // An episode's file of no index left a row of its own while its torrent's other row had no size to the byte yet
+        // (Torz's, joining Torrentio's row of the same index, came after MediaFusion's): one row once what they say of
+        // the file agrees ([samePack]), as when the answers come the other way round. The earlier row keeps its key.
+        if (episode) {
+            var i = 1
+            while (i < rows.size) {
+                val late = rows[i]
+                val into = late.items.asSequence().mapNotNull { it.release?.infoHash }.filter { it in byLooseHash }.distinct()
+                    .flatMap { byHash[it].orEmpty().asSequence() }
+                    .firstOrNull { it !== late && rows.indexOf(it) in 0 until i && oneFile(it, late) }
+                if (into == null) {
+                    i++
+                    continue
+                }
+                into.items += late.items
+                into.sizes += late.sizes
+                into.releases += late.releases
+                if (into.exact == null) into.exact = late.exact
+                if (into.measured == null) into.measured = late.measured
+                rows.removeAt(i)
             }
         }
         val rowOf = HashMap<String, String>()
@@ -82,28 +171,138 @@ object SourceMerge {
      * already in the row (its own copies of one size are told apart by name, as before), and no height that differs.
      */
     private fun sameFile(row: Row, p: ParsedStream): Boolean = row.items.none { item ->
-        item.offer.addon == p.offer.addon || (item.facts.height != null && p.facts.height != null && item.facts.height != p.facts.height)
+        item.offer.addon == p.offer.addon || heightsDiffer(item.facts.height, p.facts.height)
     }
 
-    /** A file's exact size: the add-on's own (videoSize), else what a play here measured of its release; null otherwise. */
-    private fun exactSize(p: ParsedStream, measuredSize: (ReleaseKey) -> Long?): Long? {
-        if (p.exactSize) p.facts.sizeBytes?.takeIf { it > 0 }?.let { return it }
-        return p.release?.let { measuredSize(it) }?.takeIf { it > 0 }
+    /** Both heights stated, and not the same: never one file. */
+    private fun heightsDiffer(a: Int?, b: Int?): Boolean = a != null && b != null && a != b
+
+    /**
+     * For an episode: whether [p] is [row]'s file by what [row]'s items of [p]'s torrent say ([samePackFile]): true when
+     * one says so and none tells them apart, false when one tells them apart (or the heights differ), null when nothing
+     * tells. [exact]: [p]'s size to the byte.
+     */
+    private fun samePack(row: Row, p: ParsedStream, exact: Long?): Boolean? {
+        val r = p.release ?: return null
+        if (heightsDiffer(row.height, p.facts.height)) return false
+        var same: Boolean? = null
+        for (i in row.items.indices) {
+            val q = row.items[i]
+            val qr = q.release ?: continue
+            if (qr.infoHash != r.infoHash) continue
+            when (samePackFile(qr.fileIdx, r.fileIdx, q.facts.height, p.facts.height, row.sizes[i], exact, fileName(q), fileName(p),
+                    ownName(q) && ownName(p))) {
+                false -> return false
+                true -> same = true
+                null -> Unit
+            }
+        }
+        return same
+    }
+
+    /**
+     * Whether [other]'s file is [row]'s by what their items of a torrent they share, one side of no index, say
+     * ([samePack]): one says so and none tells them apart.
+     */
+    private fun oneFile(row: Row, other: Row): Boolean {
+        var same = false
+        for (k in other.items.indices) {
+            val p = other.items[k]
+            val r = p.release ?: continue
+            if (row.items.none { q -> q.release?.let { it.infoHash == r.infoHash && (it.fileIdx == null || r.fileIdx == null) } == true }) continue
+            when (samePack(row, p, other.sizes[k])) {
+                false -> return false
+                true -> same = true
+                null -> Unit
+            }
+        }
+        return same
+    }
+
+    /**
+     * [row] holds another file of [p]'s torrent: one under another index, or (an episode's, one side without the index)
+     * one what they say tells apart ([samePackFile]). Such a row never takes [p] by size or name either.
+     */
+    private fun apart(row: Row, p: ParsedStream, exact: Long?, episode: Boolean): Boolean {
+        val r = p.release ?: return false
+        for (i in row.items.indices) {
+            val q = row.items[i]
+            val qr = q.release ?: continue
+            if (qr.infoHash != r.infoHash || qr == r) continue
+            if (qr.fileIdx != null && r.fileIdx != null) return true
+            if (episode && samePackFile(qr.fileIdx, r.fileIdx, q.facts.height, p.facts.height, row.sizes[i], exact,
+                    fileName(q), fileName(p), ownName(q) && ownName(p)) == false) return true
+        }
+        return false
+    }
+
+    /** [p]'s stated size, never an estimate ([SourceFacts.sizeEstimated]): estimates don't tell files apart or join them. */
+    private fun statedOf(p: ParsedStream): Long? = p.facts.sizeBytes?.takeUnless { p.facts.sizeEstimated }
+
+    /** MediaFusion's videoSize of [p], an episode's file of one episode ([ParsedStream.looseExact]), while no exact size is known. */
+    private fun looseOf(p: ParsedStream, exact: Long?): Long? = p.looseExact?.takeIf { exact == null && !p.torrentSize }
+
+    /** [p]'s file's name as [samePackFile] compares it ([ParsedStream.sameName] when it is the file's, not a torrent's). */
+    private fun fileName(p: ParsedStream): String? = p.sameName?.takeIf { p.offer.filename != null }
+
+    /** Whether [p]'s name is its file's own ([namesFile]). */
+    private fun ownName(p: ParsedStream): Boolean = namesFile(p.offer.filename, p.release)
+
+    /**
+     * Whether an offer's [name] is surely its file's own: an offer of a file index names that file; one of no index only
+     * when the name has a video file's extension. Else it may be its torrent's: MediaFusion names a season pack's row of
+     * no index by its torrent ("Show.S01.2160p.WEBRip-Amen"). Such a name says one file when it is the other's file name
+     * (a torrent of one episode is named as its file), never two ([samePackFile]): compared with Torrentio's name of that
+     * very file, it kept the file a play measured apart from Torz's of the same size.
+     */
+    fun namesFile(name: String?, release: ReleaseKey?): Boolean = name != null && (release?.fileIdx != null || Words.isFile(name))
+
+    /**
+     * Whether two offers of one torrent are one file by what they say, for an episode (MediaFusion's season packs come
+     * without the file's index): two indexes are one file only when they're the same; heights that differ, never; then
+     * their sizes to the byte when both are known (a size a play here measured, else an add-on's exact one): the same or
+     * not; else their file names ([Words.sameName]) when both are known: the same, one file; others, two only when
+     * both are surely the files' own ([namesApart], [namesFile]: a torrent's name differs from its files'). Null when
+     * nothing tells: they're not known to be one file, the same info hash alone isn't enough.
+     */
+    fun samePackFile(
+        idxA: Int?, idxB: Int?, heightA: Int?, heightB: Int?, sizeA: Long?, sizeB: Long?, nameA: String?, nameB: String?,
+        namesApart: Boolean = true,
+    ): Boolean? {
+        if (idxA != null && idxB != null) return idxA == idxB
+        if (heightsDiffer(heightA, heightB)) return false
+        if (sizeA != null && sizeB != null && sizeA > 0 && sizeB > 0) return sizeA == sizeB
+        if (nameA != null && nameB != null) return if (nameA == nameB) true else if (namesApart) false else null
+        return null
+    }
+
+    /**
+     * [p]'s file's size as a play here measured it ([measuredSize]); null when it never played. For a film's file
+     * without an index (a collection's films share that key), only when it is the size the add-on gave to the byte (or
+     * the add-on gave none): another size was another film's.
+     */
+    private fun measuredOf(p: ParsedStream, episode: Boolean, measuredSize: (ReleaseKey) -> Long?): Long? {
+        val r = p.release ?: return null
+        val m = measuredSize(r)?.takeIf { it > 0 } ?: return null
+        val stated = p.facts.sizeBytes?.takeIf { p.exactSize && it > 0 }
+        return if (!episode && r.fileIdx == null && stated != null && !sizeClose(m, stated)) null else m
     }
 
     private fun build(row: Row, runtimeMin: Int?): PlaybackSource {
         val items = row.items
-        // One offer per add-on: the first one marked ready, else the first; it carries its own file (×N re-uploads).
-        val offers = items.groupBy { it.offer.addon }.map { (_, list) ->
-            val item = list.firstOrNull { it.offer.readiness == Readiness.PROBABLY_READY } ?: list.first()
-            item.offer.copy(release = item.release ?: item.offer.release)
+        // One offer per add-on: the first one marked ready, else the first; it carries its own file (×N re-uploads), and
+        // its own size to the byte. Its link is the add-on's own, as it came.
+        val offers = items.indices.groupBy { items[it].offer.addon }.map { (_, list) ->
+            val i = list.firstOrNull { items[it].offer.readiness == Readiness.PROBABLY_READY } ?: list.first()
+            val item = items[i]
+            item.offer.copy(release = item.release ?: item.offer.release, size = row.sizes[i])
         }.sortedWith(compareBy<Offer>({ readyOrder(it.readiness) }, { it.addon.ordinal }))
         val readiness = when {
             items.any { it.offer.readiness == Readiness.PROBABLY_READY } -> Readiness.PROBABLY_READY
             items.all { it.offer.readiness == Readiness.NOT_READY } -> Readiness.NOT_READY
             else -> Readiness.UNKNOWN
         }
-        val facts = mergeFacts(items, runtimeMin)
+        val facts = mergeFacts(items, runtimeMin, row.measured)
         return PlaybackSource(
             key = row.key,
             release = items.firstNotNullOfOrNull { it.release },
@@ -134,9 +333,17 @@ object SourceMerge {
         }
     }
 
-    private fun mergeFacts(items: List<ParsedStream>, runtimeMin: Int?): SourceFacts {
+    /** [measured]: the row's file's size as a play here measured it ([Row.measured]). */
+    private fun mergeFacts(items: List<ParsedStream>, runtimeMin: Int?, measured: Long?): SourceFacts {
         fun <T> first(get: (SourceFacts) -> T?): T? = items.firstNotNullOfOrNull { get(it.facts) }
-        val size = items.firstOrNull { it.exactSize && it.facts.sizeBytes != null }?.facts?.sizeBytes ?: first { it.sizeBytes }
+        // The size measured here, else an add-on's exact one, else the first stated, else a season pack's share (never a
+        // torrent's total as the file's).
+        val exact = measured ?: items.firstOrNull { it.exactSize && it.facts.sizeBytes != null }?.facts?.sizeBytes
+        val stated = exact ?: items.firstNotNullOfOrNull { statedOf(it) }
+        val estimate = if (stated == null) items.firstOrNull { it.facts.sizeEstimated && it.facts.sizeBytes != null } else null
+        val size = stated ?: estimate?.facts?.sizeBytes
+        // The pack's own size, while nothing better is known of the file's: its estimate's, else the first one given.
+        val pack = if (stated != null) null else estimate ?: items.firstOrNull { it.facts.packBytes != null }
         val torrentioSeeders = items.filter { it.offer.addon == Addon.TORRENTIO }.mapNotNull { it.facts.seeders }.maxOrNull()
         return SourceFacts(
             height = first { it.height },
@@ -154,7 +361,95 @@ object SourceMerge {
             subs = items.flatMap { it.facts.subs }.distinct(),
             seeders = torrentioSeeders ?: items.mapNotNull { it.facts.seeders }.maxOrNull(),
             pack = items.any { it.facts.pack },
+            sizeExact = exact != null,
+            // No size but a torrent's total: the episode's file could be any size ([SourceRank] ranks it so).
+            torrentTotal = size == null && items.any { it.torrentSize },
+            sizeEstimated = estimate != null,
+            packBytes = pack?.facts?.packBytes,
+            packEpisodes = estimate?.facts?.packEpisodes,
+            packUnclear = pack?.facts?.packUnclear == true,
         )
+    }
+
+    /**
+     * An episode's MediaFusion streams whose one size may be their torrent's ([ParsedStream.oneSize]), sized by what the
+     * add-ons say together. A season pack, on clear evidence only (the other add-ons' sizes, [packEvidence], else its
+     * names, [PackWords]): its size shared by the episodes a range in its name counts, else by its season's
+     * ([seasonEpisodes], asked once, for a pack of one season or one its names don't tell), an estimate ranked as a
+     * stated size; with no count, or a torrent named as one episode, none ("(pack 10.2 GB)"). One episode: its size,
+     * stated. Nothing said: no size ("(10.2 GB)"). What a play here measures replaces each ([mergeFacts]).
+     */
+    private fun packSizes(answers: List<List<ParsedStream>>, runtimeMin: Int?, seasonEpisodes: () -> Int?): List<List<ParsedStream>> {
+        if (answers.none { a -> a.any { it.oneSize != null } }) return answers
+        val all = answers.flatten()
+        var asked = false
+        var count: Int? = null
+        val season = {
+            if (!asked) {
+                asked = true
+                count = runCatching { seasonEpisodes() }.getOrNull()
+            }
+            count
+        }
+        return answers.map { a -> a.map { p -> p.oneSize?.let { packSized(p, it, all, runtimeMin, season) } ?: p } }
+    }
+
+    private fun packSized(p: ParsedStream, one: Long, all: List<ParsedStream>, runtimeMin: Int?, season: () -> Int?): ParsedStream {
+        val read = p.packRead ?: PackWords.UNSAID
+        val kind = when (packEvidence(p, one, all)) {
+            true -> PackWords.Kind.PACK
+            false -> PackWords.Kind.SINGLE
+            null -> read.kind
+        }
+        val f = p.facts.copy(sizeExact = false, sizeEstimated = false, packBytes = null, packEpisodes = null, packUnclear = false)
+        return when (kind) {
+            PackWords.Kind.SINGLE -> p.with(f.copy(sizeBytes = one, avgMbps = StreamParser.avgMbps(one, runtimeMin)), torrentSize = false)
+            PackWords.Kind.PACK -> {
+                // A range's count, else its season's (not for a run of seasons, a "Complete" naming none, or a torrent
+                // its own name says is one episode: never a guess of one episode's size).
+                val n = when (read.kind) {
+                    PackWords.Kind.PACK -> read.episodes ?: if (read.oneSeason) season() else null
+                    PackWords.Kind.UNSAID -> season()
+                    PackWords.Kind.SINGLE -> null
+                }
+                val estimate = n?.takeIf { it >= 2 }?.let { one / it }
+                p.with(f.copy(sizeBytes = estimate, avgMbps = StreamParser.avgMbps(estimate, runtimeMin), sizeEstimated = estimate != null,
+                    packBytes = one, packEpisodes = estimate?.let { n }), torrentSize = true)
+            }
+            PackWords.Kind.UNSAID -> p.with(f.copy(sizeBytes = null, avgMbps = null, packBytes = one, packUnclear = true), torrentSize = true)
+        }
+    }
+
+    /**
+     * What the other add-ons' sizes say of [p]'s torrent, whose one size is [one], all read before deciding: false, [one]
+     * is the file's (a size of its file near [one]: a torrent of one episode may hold a sample or a text file too), which
+     * wins; true, a season pack (a size of its file at most [PACK_SHARE] of [one]); null when none says. A size of its
+     * file: another add-on's of the same torrent, to the byte (Torz's videoSize) or Torrentio's stated one under its file
+     * index (else Torrentio's may be the torrent's own); another torrent's file of the same name, to the byte. A file
+     * index alone never says: an add-on numbers every file of a torrent, so one episode's beside a text file or a sample
+     * is past the first.
+     */
+    private fun packEvidence(p: ParsedStream, one: Long, all: List<ParsedStream>): Boolean? {
+        val r = p.release
+        val name = fileName(p)
+        var single = false
+        var pack = false
+        for (q in all) {
+            if (q === p || q.offer.addon == p.offer.addon) continue
+            val qr = q.release
+            val sameTorrent = r != null && qr != null && qr.infoHash == r.infoHash
+            val size = when {
+                q.exactSize -> q.facts.sizeBytes
+                sameTorrent && q.offer.addon == Addon.TORRENTIO && qr?.fileIdx != null -> q.facts.sizeBytes
+                else -> null
+            }?.takeIf { it > 0 } ?: continue
+            if (!sameTorrent && (name == null || fileName(q) != name)) continue
+            when {
+                size >= one * SINGLE_SHARE && size <= one * (1 + SINGLE_OVER) -> single = true
+                size <= one * PACK_SHARE -> pack = true
+            }
+        }
+        return if (single) false else if (pack) true else null
     }
 
     /** Both sizes known and within [SIZE_CLOSE] of the larger. A size not known never merges by name. */
