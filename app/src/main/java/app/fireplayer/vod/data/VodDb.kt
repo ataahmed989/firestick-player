@@ -19,7 +19,9 @@ import org.json.JSONObject
  *
  * Version 3 (sources and playback) adds `last_release`: the release each film or episode last played from, as info hash
  * + file index + add-on name (never a link). The upgrade only creates that table. Its rows are deleted when forgotten
- * (the title left Continue Watching): what a resume plays, not a list to sync.
+ * (the title left Continue Watching): what a resume plays, not a list to sync. A copy whose add-on gave no info hash is
+ * kept in the same columns, its key ([app.fireplayer.vod.sources.CopyKey]) as the hash and -1 as the file index: no
+ * schema change, and a version that knows no such key reads no release from it ([app.fireplayer.vod.ReleaseKey.of]).
  */
 class VodDb(context: Context) : SQLiteOpenHelper(context, "vod.db", null, VERSION), LibraryStore, IdStore {
 

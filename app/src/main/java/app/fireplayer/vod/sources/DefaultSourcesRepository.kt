@@ -129,11 +129,6 @@ class DefaultSourcesRepository(
         var wanted: List<String> = emptyList()
         /** The row each release went into (merged copies), and each copy of no release known ([Offer.copyKey]). */
         var rowOf: Map<String, String> = emptyMap()
-        /**
-         * The copy of no release known that played last here ([usedNow]), by its key: Last used through ranks, while the
-         * list is kept (no release is stored for it, [PlaybackLibrary.recordRelease]).
-         */
-        var usedCopy: String? = null
         /** It was ranked knowing the title's own language ([originalLanguage]). */
         var originalKnown = false
         var version = 0
@@ -267,12 +262,11 @@ class DefaultSourcesRepository(
 
     /**
      * [key]'s row of [target], its [file], started playing: it is Last used now, in the lists shown (not only once they
-     * rank again). The row holding that file when [key]'s isn't in the list any more (merged or keyed anew since); a
-     * copy of no release known by its [copy] key, which keeps it Last used as the list ranks again.
+     * rank again, when it is found as the library keeps it: [lastUsedOf]). The row holding that file when [key]'s isn't in
+     * the list any more (merged or keyed anew since); a copy of no release known by its [copy] key.
      */
     internal fun usedNow(target: SourceTarget, key: String, file: ReleaseKey? = null, copy: String? = null) {
         val entry = entries[target.key] ?: return
-        entry.usedCopy = if (file == null) copy else null
         val row = entry.ranked.firstOrNull { it.key == key }
             ?: file?.let { f -> entry.rowOf[f.storeKey]?.let { k -> entry.ranked.firstOrNull { it.key == k } } }
             ?: copy?.let { c -> entry.rowOf[c]?.let { k -> entry.ranked.firstOrNull { it.key == k } } }
@@ -280,15 +274,6 @@ class DefaultSourcesRepository(
         if (entry.lastUsed?.key == row.key) return
         entry.lastUsed = row
         notify(entry)
-    }
-
-    /**
-     * [copy] (a copy of no release known, [Offer.copyKey]) wasn't the whole film: it isn't Last used as the list ranks
-     * again ([usedNow]); the release kept before it is, as for a release put back.
-     */
-    internal fun notUsed(target: SourceTarget, copy: String) {
-        val entry = entries[target.key] ?: return
-        if (entry.usedCopy == copy) entry.usedCopy = null
     }
 
     // ---- Asking ----
@@ -550,9 +535,8 @@ class DefaultSourcesRepository(
                     entry.ranked = made.sources
                     entry.best = made.best
                     // On the main thread, as it is now: a copy that started while this ranked is the one kept, not the
-                    // release read before it ([usedNow] doesn't wait for a rank).
-                    entry.lastUsed = entry.usedCopy?.let { c -> made.rowOf[c]?.let { k -> made.sources.firstOrNull { it.key == k } } }
-                        ?: lastUsedOf(target, made.rowOf, made.sources)
+                    // one read before it ([usedNow] doesn't wait for a rank).
+                    entry.lastUsed = lastUsedOf(target, made.rowOf, made.sources)
                     entry.why = made.why
                     entry.plan = plan
                     entry.wanted = made.wanted
@@ -588,10 +572,13 @@ class DefaultSourcesRepository(
         val originalKnown: Boolean,
     )
 
-    /** The row of [ranked] holding the release [target] last played from ([PlaybackLibrary.lastRelease]); null when none. */
+    /**
+     * The row of [ranked] holding the copy [target] last played from ([PlaybackLibrary.lastRelease]): by its release, or a
+     * copy of no release known by its key (the row it joined since, too: [SourceMerge.Merged.rowOf]); null when none.
+     */
     private fun lastUsedOf(target: SourceTarget, rowOf: Map<String, String>, ranked: List<PlaybackSource>): PlaybackSource? {
         val last = runCatching { library.lastRelease(target.title, target.episode) }.getOrNull() ?: return null
-        val key = rowOf[last.release.storeKey] ?: return null
+        val key = last.key?.let { rowOf[it] } ?: return null
         return ranked.firstOrNull { it.key == key }
     }
 

@@ -13,22 +13,35 @@ import app.fireplayer.vod.data.VodLibrary
 
 /**
  * What playback records, into the library on this TV ([VodLibrary], vod.db): where it stopped (Continue Watching and
- * resume points keyed by title and episode), watched past 90 % or into the credits ([countsAsWatched]), and the release
+ * resume points keyed by title and episode), watched past 90 % or into the credits ([countsAsWatched]), and the copy
  * last played from (info hash + file index + add-on, never a link). Any thread; listeners are called on change.
+ *
+ * A copy of no release known (its add-on gave no info hash) is kept by its [CopyKey] in the row's hash column, with file
+ * index -1 ([ReleaseRow]): no new column, no migration. A version before this one reads that row through
+ * [ReleaseKey.of], which takes only 40 hex digits: it gets no release, and its resume plays the ranking's pick. A row an
+ * earlier version kept (a release) reads as it always did.
  */
 class RecordedLibrary(private val library: VodLibrary) : PlaybackLibrary {
 
     override fun lastRelease(title: Title, episode: EpisodeRef?): LastRelease? {
         val row = library.lastRelease(title.kind, idOf(title, episode)) ?: return null
         val addon = Addon.entries.firstOrNull { it.name == row.addon } ?: return null
+        if (CopyKey.isCopyKey(row.hash)) {
+            return row.hash.takeIf { CopyKey.wellFormed(it) }?.let { LastRelease.ofCopy(addon, it, row.at) }
+        }
         val release = ReleaseKey.of(row.hash, row.fileIdx) ?: return null
         return LastRelease(addon, release, row.at)
     }
 
     override fun recordRelease(title: Title, episode: EpisodeRef?, release: LastRelease) {
+        val r = release.release
+        val (hash, fileIdx) = when {
+            r != null -> r.infoHash to (r.fileIdx ?: -1)
+            CopyKey.wellFormed(release.copyKey) -> release.copyKey!! to -1
+            else -> return
+        }
         library.recordRelease(
-            ReleaseRow(title.kind, idOf(title, episode), release.addon.name, release.release.infoHash,
-                release.release.fileIdx ?: -1, release.at),
+            ReleaseRow(title.kind, idOf(title, episode), release.addon.name, hash, fileIdx, release.at),
         )
     }
 

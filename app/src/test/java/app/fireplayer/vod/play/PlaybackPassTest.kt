@@ -252,6 +252,14 @@ class PlaybackPassTest {
         // From its beginning: no "last release" pinned.
         p.playEpisode(EpisodeRef(2, 1, "Back"), StartAt.Beginning)
         assertNull(handed!!.preferred)
+        // An episode left on a copy of no release known (MediaFusion's of no info hash): that copy, by its key; another
+        // episode's never.
+        val copy = LastRelease.ofCopy(app.fireplayer.vod.Addon.MEDIAFUSION, "x|mediafusion|0123456789abcdef|tt1695360:2:2", 1L)
+        library.recordRelease(show, EpisodeRef(2, 2), copy)
+        p.playEpisode(EpisodeRef(2, 2, "TBA"), StartAt.At(120_000))
+        assertEquals(copy, handed!!.preferred)
+        p.playEpisode(EpisodeRef(1, 2, "Episode 2"), StartAt.At(120_000))
+        assertNull(handed!!.preferred)
     }
 
     @Test

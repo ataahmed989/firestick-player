@@ -7,8 +7,9 @@ import java.util.Locale
 
 /**
  * What a copy is known by when its add-on gave no info hash (MediaFusion's, when neither its answer nor its link shows
- * one: its [Offer.release] is null), only to keep and find what a play here measured of it (its picture and sound,
- * [app.fireplayer.player.MediaSpec], and how it played, [app.fireplayer.player.CopyHealth], in "quality_seen"):
+ * one: its [Offer.release] is null), to keep and find what a play here measured of it (its picture and sound,
+ * [app.fireplayer.player.MediaSpec], and how it played, [app.fireplayer.player.CopyHealth], in "quality_seen"), and as
+ * the copy a film or episode was left on ([app.fireplayer.vod.LastRelease.copyKey], vod.db's last_release):
  * "x|<add-on>|<print>|<film or episode>" ("x|mediafusion|3f0c…|tt0000077:1:1"). The print is a short hash of what
  * the add-on says of the copy that doesn't change between look-ups: its file's name (behaviorHints.filename) with the
  * size it states, else its bingeGroup and its description without what does change ([stable]: seeders and peers, age,
@@ -38,6 +39,18 @@ object CopyKey {
 
     /** Whether [key] is one of these (not a release's). */
     fun isCopyKey(key: String?): Boolean = key?.startsWith(PREFIX) == true
+
+    /**
+     * Whether [key] is one of these in full, as [of] makes it: "x|<add-on>|<16 hex digits>|<film or episode>". What's read
+     * back as the copy a title was left on ([RecordedLibrary.lastRelease]) is only taken when it is.
+     */
+    fun wellFormed(key: String?): Boolean {
+        if (!isCopyKey(key)) return false
+        val p = key!!.split('|', limit = 4)
+        return p.size == 4 && p[1].isNotEmpty() && PRINT.matches(p[2]) && p[3].isNotBlank()
+    }
+
+    private val PRINT = Regex("[0-9a-f]{16}")
 
     /**
      * [text] without what changes between look-ups of the same copy: seeders and peers ("👤 12", "50 seeders"), its age
