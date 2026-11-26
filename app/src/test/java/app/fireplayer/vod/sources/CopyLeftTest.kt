@@ -21,6 +21,7 @@ import app.fireplayer.vod.Opened
 import app.fireplayer.vod.PlayOrigin
 import app.fireplayer.vod.PlayRequest
 import app.fireplayer.vod.PlaybackSource
+import app.fireplayer.vod.Readiness
 import app.fireplayer.vod.ReleaseKey
 import app.fireplayer.vod.SecretUrl
 import app.fireplayer.vod.SoundFormat
@@ -57,8 +58,9 @@ import java.util.concurrent.Executor
  * Episodes sheet play it again, in the same session and after a restart, and the title page's Last used says the same.
  * The TV case: Your Friendly Neighborhood Spider-Man S1 E9 on the Fire TV Max, MediaFusion's "4K · WEB · ≈2.9 GB (pack
  * 28.8 GB)" hand-picked in the title page's Sources window, played and measured (its row then one with Torz's file of
- * its size to the byte); Resume then played the 3.1 GB HDR copy kept the day before. Made-up names, ".invalid" links,
- * fake tokens; the library is vod.db's rows in memory ([MemoryLibraryStore]), kept across "restarts".
+ * its size to the byte); Resume then played the 3.1 GB HDR copy kept the day before. MediaFusion failing, silent or
+ * listing it not cached, that same file plays from Torz (or Torrentio's offer of Torz's release). Made-up names,
+ * ".invalid" links, fake tokens; the library is vod.db's rows in memory ([MemoryLibraryStore]), kept across "restarts".
  */
 class CopyLeftTest {
 
@@ -85,19 +87,19 @@ class CopyLeftTest {
     private val hdrName = "Your.Friendly.Neighborhood.Spider-Man.S01E09.2160p.WEB.HDR10.H265-FLUX"
 
     /** MediaFusion's pack copy for [target], its link hiding the torrent (no info hash): a token of that episode's. */
-    private fun mf(target: SourceTarget, file: String? = packName, ready: Boolean = true) = JSONObject().apply {
+    private fun mf(target: SourceTarget, file: String? = packName, ready: Boolean = true, videoSize: Long = packTotal) = JSONObject().apply {
         put("name", "MediaFusion | ElfHosted 🧲 RD ${if (ready) "⚡️" else "⏳"} 4k")
         put("description", "📺 WEB 🎞️ hevc 🎵 Dolby Digital Plus 🔊 5.1\n📦 28.8 GB 👤 12\n🌐 English")
         put("url", "https://mf.invalid/streaming_provider/FAKECONFIG_MF/stream/FAKETOKEN_${target.episode?.episode}/video.mkv")
         put("behaviorHints", JSONObject().apply {
             put("bingeGroup", "MediaFusion-|-ElfHosted-📺 WEB 🎞️ hevc 🎵 Dolby Digital Plus-4K")
             file?.let { put("filename", it) }
-            put("videoSize", packTotal)
+            put("videoSize", videoSize)
         })
     }
 
-    private fun torz(hash: String, file: String, videoSize: Long, idx: Int) = JSONObject().apply {
-        put("name", "⚡️ [RD] Torz\n2160p")
+    private fun torz(hash: String, file: String, videoSize: Long, idx: Int, ready: Boolean = true) = JSONObject().apply {
+        put("name", "${if (ready) "⚡️ " else ""}[RD] Torz\n2160p")
         put("description", "💿 WEB 🎞️ HEVC\n🎧 DDP | 5.1\n💾 2.9 GB 👤 12\n📄 $file")
         put("url", "https://torz.invalid/stremio/torz/FAKECONFIG_TORZ/_/strem/tt0000077/rd/$hash/$idx/$file")
         put("behaviorHints", JSONObject().put("videoSize", videoSize).put("filename", file))
@@ -110,11 +112,17 @@ class CopyLeftTest {
             answer(torrentio(hk, idx = e - 1, quality = "4k HDR", name = hdrName.replace("E09", "E%02d".format(e)), size = "3.1 GB"))
         }
         put(Addon.MEDIAFUSION) { t -> answer(mf(t)) }
-        put(Addon.TORZ) { t ->
-            val e = t.episode!!.episode
-            answer(torz(hz, "Your.Friendly.Neighborhood.Spider-Man.S01E%02d.2160p.WEB.H265-GRP.mkv".format(e), e9Bytes + (e - 9) * 7_000_000L, e - 1))
-        }
+        put(Addon.TORZ) { t -> answer(torzOf(t)) }
     }
+
+    /** Torz's file of [target]'s episode in its pack ([hz]): E9's is [e9Bytes] to the byte, each episode's its own size. */
+    private fun torzOf(target: SourceTarget, ready: Boolean = true) =
+        torz(hz, fileOf(target), bytesOf(target), target.episode!!.episode - 1, ready)
+
+    private fun fileOf(target: SourceTarget) =
+        "Your.Friendly.Neighborhood.Spider-Man.S01E%02d.2160p.WEB.H265-GRP.mkv".format(target.episode!!.episode)
+
+    private fun bytesOf(target: SourceTarget) = e9Bytes + (target.episode!!.episode - 9) * 7_000_000L
 
     // ---- The TV: the library's rows and what plays measured outlive a restart; the engine doesn't ----
 
@@ -235,7 +243,7 @@ class CopyLeftTest {
         assertEquals(Addon.MEDIAFUSION, ready.offer.addon)
         session.started(ready.source, ready.offer)
         val key = ready.offer.copyKey!!
-        kept[key] = played(e9Bytes, 8.0)
+        kept[key] = played(bytesOf(target), 8.0)
         engine.rerank(target)
         loop.advance()
         session.close()
@@ -471,14 +479,16 @@ class CopyLeftTest {
         assertEquals(again.lastUsed?.key, r2.source.key)
     }
 
-    // ---- (d) The copy left no longer offered ----
+    // ---- (d) The copy left no longer offered; offered by another add-on ----
 
     @Test
-    fun theCopyLeftNoLongerOfferedThePlayIsTheRankingsPickWithoutAHang() {
+    fun theCopyLeftsFileOfferedByNoAddonThePlayIsTheRankingsPickWithoutAHang() {
         playHandPicked()
-        // MediaFusion now offers another copy of its own (another release group's pack).
+        // MediaFusion now offers another copy of its own (another release group's pack), and Torz another file of E9, of
+        // another size: the file left is offered by no add-on.
         val other = packName.replace("GRP", "OTHER")
         answerOf[Addon.MEDIAFUSION] = { t -> answer(mf(t, other)) }
+        answerOf[Addon.TORZ] = { t -> answer(torz("d".repeat(40), fileOf(t).replace("GRP", "OTHER"), bytesOf(t) + 1_234_567, 8)) }
         restart()
         asked.clear()
         val s = engine.session(continueCard())
@@ -489,12 +499,16 @@ class CopyLeftTest {
         assertTrue(ready.resumedNear)
         assertEquals(600_000L - DefaultSourceSession.BACK_MS, ready.startMs)
         assertEquals("not listed any more", s.resumeMiss())
+        // In no row of the full list: "The copy you were watching isn't available" (SourcePlayback.copyGone).
+        assertTrue(s.list!!.complete)
+        assertTrue(s.list!!.sources.none { row -> row.offers.any { s.opensLeft(row, it) } })
         s.close()
         // MediaFusion failing: the same.
         answerOf[Addon.MEDIAFUSION] = { null }
         restart()
         val failed = engine.session(continueCard())
         assertEquals(ReleaseKey(hk, 8), (open(failed).last() as Opened.Ready).offer.release)
+        assertEquals("not listed any more", failed.resumeMiss())
         failed.close()
         // MediaFusion not answering at all: its limit ends the wait, then the others are asked.
         answerOf[Addon.MEDIAFUSION] = { t -> answer(mf(t)) }
@@ -510,20 +524,239 @@ class CopyLeftTest {
         val late = got.last() as Opened.Ready
         assertEquals(ReleaseKey(hk, 8), late.offer.release)
         assertTrue(silent.list!!.states[Addon.MEDIAFUSION] is AddonState.Failed)
-        // On the title page too: the ranking's pick.
+        // On the title page too: no Last used, the ranking's pick.
         answerOf[Addon.MEDIAFUSION] = { t -> answer(mf(t, other)) }
         restart()
         val l = list()
         assertNull(l.lastUsed)
         val page = engine.session(VodLaunch.fromTitlePage(ep9, StartAt.At(600_000), l, library))
         assertEquals(ReleaseKey(hk, 8), (open(page).last() as Opened.Ready).offer.release)
+        assertEquals("not listed any more", page.resumeMiss())
     }
 
     @Test
-    fun theCopyLeftSetAsideOrNotCachedIsntPlayedByItself() {
+    fun theCopyLeftsAddonFailingOrSilentItsFileStillPlaysFromAnotherAddonWhereItStopped() {
         val key = playHandPicked()
-        // No longer cached: the same copy (the same key), never opened without asking.
+        // MediaFusion failing after a restart: its copy isn't listed, but Torz still offers that very file (its size to the
+        // byte as the play measured it: the rule they were one row by).
+        answerOf[Addon.MEDIAFUSION] = { null }
+        restart()
+        asked.clear()
+        val s = engine.session(continueCard())
+        assertEquals(key, s.request.preferred?.copyKey)
+        val ready = open(s).last() as Opened.Ready
+        // MediaFusion asked first (the fast start), the others once its answer was final; that file, where it stopped.
+        assertEquals(Addon.MEDIAFUSION, asked.first())
+        assertEquals(Addon.TORZ, ready.offer.addon)
+        assertEquals(ReleaseKey(hz, 8), ready.offer.release)
+        assertEquals(600_000L, ready.startMs)
+        assertFalse(ready.resumedNear)
+        assertNull(s.resumeMiss())
+        assertTrue(s.opensLeft(ready.source, ready.offer))
+        s.close()
+        // The title page's Last used is that row, and its Resume plays it.
+        restart()
+        val l = list()
+        val torzRow = l.sources.holding(hz)
+        assertEquals(torzRow.key, l.lastUsed?.key)
+        assertEquals(l.sources.holding(hk).key, l.best?.key)
+        assertTrue(PlayRules.sourceLine(l)!!, PlayRules.sourceLine(l)!!.startsWith("Last used · "))
+        val page = engine.session(VodLaunch.fromTitlePage(ep9, StartAt.At(600_000), l, library))
+        val r = open(page).last() as Opened.Ready
+        assertEquals(torzRow.key, r.source.key)
+        assertEquals(ReleaseKey(hz, 8), r.offer.release)
+        assertEquals(600_000L, r.startMs)
+        assertNull(page.resumeMiss())
+        // Next source is never that file.
+        page.started(r.source, r.offer)
+        assertFalse(page.nextPick()!!.holds(hz))
+        // It played: Torz's file is the copy left now (a release, as every version reads it).
+        assertEquals(LastRelease(Addon.TORZ, ReleaseKey(hz, 8), now), library.lastRelease(show, e9))
+        page.close()
+        // Left on MediaFusion's copy again, MediaFusion not answering at all: its limit ends the fast start's wait; then
+        // that file from Torz, where it stopped.
+        library.recordRelease(show, e9, LastRelease.ofCopy(Addon.MEDIAFUSION, key, now))
+        answerOf[Addon.MEDIAFUSION] = { t -> answer(mf(t)) }
+        restart()
+        holdLookups = 1
+        val silent = engine.session(continueCard())
+        val got = ArrayList<Opened>()
+        silent.open(null, OpenWhy.START) { got += it }
+        loop.advance()
+        assertTrue(got.all { it is Opened.Looking })
+        loop.advance(Addon.MEDIAFUSION.answerLimitMs)
+        val late = got.last() as Opened.Ready
+        assertEquals(ReleaseKey(hz, 8), late.offer.release)
+        assertEquals(600_000L, late.startMs)
+        assertFalse(late.resumedNear)
+        assertNull(silent.resumeMiss())
+    }
+
+    @Test
+    fun theCopyLeftNotCachedByItsAddonPlaysAnotherAddonsOfferOfItsFileAndLastUsedAgrees() {
+        val key = playHandPicked()
+        // MediaFusion lists it not cached (⏳); its row, one with Torz's file of its size to the byte, is ready by Torz's.
         answerOf[Addon.MEDIAFUSION] = { t -> answer(mf(t, ready = false)) }
+        restart()
+        val l = list()
+        val row = l.sources.fromMf()
+        assertTrue(row.holds(hz))
+        assertEquals(Readiness.NOT_READY, row.offers.single { it.addon == Addon.MEDIAFUSION }.readiness)
+        assertEquals(Readiness.PROBABLY_READY, row.readiness)
+        // The title page's line names that row, and its Resume plays it: Torz's offer of that file, where it stopped.
+        assertEquals(row.key, l.lastUsed?.key)
+        assertTrue(PlayRules.sourceLine(l)!!, PlayRules.sourceLine(l)!!.startsWith("Last used · 4K · WEB · 2.9 GB (pack 28.8 GB)"))
+        val page = engine.session(VodLaunch.fromTitlePage(ep9, StartAt.At(600_000), l, library))
+        val r = open(page).last() as Opened.Ready
+        assertEquals(row.key, r.source.key)
+        assertEquals(Addon.TORZ, r.offer.addon)
+        assertEquals(ReleaseKey(hz, 8), r.offer.release)
+        assertEquals(600_000L, r.startMs)
+        assertFalse(r.resumedNear)
+        assertNull(page.resumeMiss())
+        // Both offers of its row open that file: its own by its key, Torz's by its size (so no "isn't available").
+        assertTrue(r.source.offers.all { page.opensLeft(r.source, it) })
+        page.close()
+        // A Continue card: MediaFusion asked alone first, its copy not cached; then every add-on, and the same.
+        restart()
+        asked.clear()
+        val card = engine.session(continueCard())
+        assertEquals(key, card.request.preferred?.copyKey)
+        val c = open(card).last() as Opened.Ready
+        assertEquals(Addon.MEDIAFUSION, asked.first())
+        assertEquals(ReleaseKey(hz, 8), c.offer.release)
+        assertEquals(600_000L, c.startMs)
+        assertNull(card.resumeMiss())
+    }
+
+    @Test
+    fun theCopyLeftsFileIsFoundUnderTheReleaseAnotherAddonsOfferOfItsSizeOpens() {
+        val key = playHandPicked()
+        // MediaFusion failing, Torz's offer of that file not cached; Torrentio offers the same file of Torz's torrent (its
+        // size only rounded: one row with Torz's by their release). Torrentio's offer, where it stopped.
+        answerOf[Addon.MEDIAFUSION] = { null }
+        answerOf[Addon.TORZ] = { t -> answer(torzOf(t, ready = false)) }
+        answerOf[Addon.TORRENTIO] = { t ->
+            answer(
+                torrentio(hk, idx = 8, quality = "4k HDR", name = hdrName, size = "3.1 GB"),
+                torrentio(hz, idx = 8, quality = "4k", name = fileOf(t).removeSuffix(".mkv"), size = "2.9 GB"),
+            )
+        }
+        restart()
+        val l = list()
+        val row = l.sources.single { it.holds(hz) }
+        assertEquals(setOf(Addon.TORRENTIO, Addon.TORZ), row.addons.toSet())
+        assertEquals(row.key, l.lastUsed?.key)
+        val s = engine.session(VodLaunch.fromTitlePage(ep9, StartAt.At(600_000), l, library))
+        assertEquals(key, s.request.preferred?.copyKey)
+        val r = open(s).last() as Opened.Ready
+        assertEquals(Addon.TORRENTIO, r.offer.addon)
+        assertEquals(ReleaseKey(hz, 8), r.offer.release)
+        assertEquals(600_000L, r.startMs)
+        assertNull(s.resumeMiss())
+    }
+
+    @Test
+    fun aReleaseAnEarlierVersionKeptThenMediaFusionsCopyPlayedInItsRowStillResumesFromAnotherAddon() {
+        val key = playHandPicked()
+        // What 1.0.364 kept when MediaFusion's copy played in the row it had joined: that row's release, from MediaFusion.
+        store.saveRelease(ReleaseRow(Kind.SERIES, "tt0000077:1:9", "MEDIAFUSION", hz, 8, now - day))
+        restart()
+        val l = list()
+        val row = l.sources.fromMf()
+        assertTrue(row.holds(hz))
+        assertEquals(row.key, l.lastUsed?.key)
+        // Resume: that row, MediaFusion's offer first (its add-on's); it plays, and its key is kept now (its size known).
+        val page = engine.session(VodLaunch.fromTitlePage(ep9, StartAt.At(600_000), l, library))
+        assertEquals(LastRelease(Addon.MEDIAFUSION, ReleaseKey(hz, 8), now - day), page.request.preferred)
+        val r = open(page).last() as Opened.Ready
+        assertEquals(key, r.offer.copyKey)
+        assertEquals(600_000L, r.startMs)
+        page.started(r.source, r.offer)
+        assertEquals(key, library.lastRelease(show, e9)?.copyKey)
+        page.close()
+        // MediaFusion failing after a restart: that very file from Torz, as the release 1.0.364 kept would have played it.
+        answerOf[Addon.MEDIAFUSION] = { null }
+        val requests = listOf({ continueCard() }, { VodLaunch.fromTitlePage(ep9, StartAt.At(600_000), list(), library) })
+        for (request in requests) {
+            restart()
+            val s = engine.session(request())
+            val ready = open(s).last() as Opened.Ready
+            assertEquals(Addon.TORZ, ready.offer.addon)
+            assertEquals(ReleaseKey(hz, 8), ready.offer.release)
+            assertEquals(600_000L, ready.startMs)
+            assertFalse(ready.resumedNear)
+            assertNull(s.resumeMiss())
+            s.close()
+        }
+    }
+
+    @Test
+    fun aCopyOfNoInfoHashInAReleasesRowNotMeasuredYetKeepsThatReleaseThenItsKeyOnceMeasured() {
+        // MediaFusion's file of E9 alone (not its pack), its videoSize Torz's to the byte: one row with Torz's file, though
+        // nothing of it was measured here.
+        answerOf[Addon.MEDIAFUSION] = { t -> answer(mf(t, fileOf(t), videoSize = bytesOf(t))) }
+        val l = list()
+        val row = l.sources.fromMf()
+        assertTrue(row.holds(hz))
+        val mfOffer = row.offers.single { it.addon == Addon.MEDIAFUSION }
+        assertNull(mfOffer.release)
+        assertNull(mfOffer.size)
+        // Chosen in Sources, MediaFusion's offer opens first; its row's release is kept, as 1.0.364 kept it.
+        val s = engine.session(VodLaunch.fromTitlePage(ep9, StartAt.Beginning, l, library, chosen = row))
+        val r = open(s, row).last() as Opened.Ready
+        assertEquals(Addon.MEDIAFUSION, r.offer.addon)
+        val key = r.offer.copyKey!!
+        s.started(r.source, r.offer)
+        assertEquals(LastRelease(Addon.MEDIAFUSION, ReleaseKey(hz, 8), now), library.lastRelease(show, e9))
+        s.close()
+        // MediaFusion failing after a restart: that file from Torz, where it stopped.
+        answerOf[Addon.MEDIAFUSION] = { null }
+        restart()
+        val card = engine.session(continueCard())
+        val c = open(card).last() as Opened.Ready
+        assertEquals(ReleaseKey(hz, 8), c.offer.release)
+        assertEquals(600_000L, c.startMs)
+        assertNull(card.resumeMiss())
+        card.close()
+        // Measured since, MediaFusion back: its copy plays again from that row, and its key is kept from then on.
+        kept[key] = played(bytesOf(ep9), 8.0)
+        answerOf[Addon.MEDIAFUSION] = { t -> answer(mf(t, fileOf(t), videoSize = bytesOf(t))) }
+        restart()
+        val page = engine.session(VodLaunch.fromTitlePage(ep9, StartAt.At(600_000), list(), library))
+        val p = open(page).last() as Opened.Ready
+        assertEquals(key, p.offer.copyKey)
+        assertEquals(600_000L, p.startMs)
+        page.started(p.source, p.offer)
+        assertEquals(key, library.lastRelease(show, e9)?.copyKey)
+    }
+
+    @Test
+    fun aCopyMeasuredWhileItPlaysIsKeptAsAtItsStartAllThroughThePlay() {
+        library.recordRelease(show, e9, nov25)
+        answerOf[Addon.MEDIAFUSION] = { t -> answer(mf(t, fileOf(t), videoSize = bytesOf(t))) }
+        val l = list()
+        val row = l.sources.fromMf()
+        val s = engine.session(VodLaunch.fromTitlePage(ep9, StartAt.Beginning, l, library, chosen = row))
+        val r = open(s, row).last() as Opened.Ready
+        assertEquals(Addon.MEDIAFUSION, r.offer.addon)
+        s.started(r.source, r.offer)
+        assertEquals(ReleaseKey(hz, 8), library.lastRelease(show, e9)?.release)
+        // Picture & sound's figures kept while it plays; its picture again: what it is kept by stays as at its start.
+        kept[r.offer.copyKey!!] = played(bytesOf(ep9), 8.0)
+        s.started(r.source, r.offer)
+        assertEquals(ReleaseKey(hz, 8), library.lastRelease(show, e9)?.release)
+        // Not the whole episode: the copy kept before it is the one left again.
+        s.notWhole(r.source)
+        assertEquals(Addon.TORRENTIO to ReleaseKey(hk, 8), library.lastRelease(show, e9)?.let { it.addon to it.release })
+    }
+
+    @Test
+    fun theCopyLeftSetAsideOrNotCachedAnywhereIsntPlayedByItself() {
+        val key = playHandPicked()
+        // No longer cached, by MediaFusion nor Torz: that file is never opened without asking.
+        answerOf[Addon.MEDIAFUSION] = { t -> answer(mf(t, ready = false)) }
+        answerOf[Addon.TORZ] = { t -> answer(torzOf(t, ready = false)) }
         restart()
         val uncached = engine.session(continueCard())
         val first = open(uncached).last() as Opened.Ready
@@ -531,13 +764,15 @@ class CopyLeftTest {
         assertEquals(ReleaseKey(hk, 8), first.offer.release)
         assertEquals("not cached any more", uncached.resumeMiss())
         assertEquals(key, uncached.list!!.sources.fromMf().offers.first { it.addon == Addon.MEDIAFUSION }.copyKey)
-        // Cached again, but this Stick showed no picture for it.
+        // Cached again, but this Stick showed no picture for it: nor from Torz, in the row it is one with.
         answerOf[Addon.MEDIAFUSION] = { t -> answer(mf(t)) }
+        answerOf[Addon.TORZ] = { t -> answer(torzOf(t)) }
         kept[key] = Measured(kept[key]!!.spec, CopyHealth(noPicture = 1, at = now), now)
         restart()
         val s = engine.session(continueCard())
         val ready = open(s).last() as Opened.Ready
         assertNotEquals(key, ready.offer.copyKey)
+        assertFalse(ready.source.holds(hz))
         assertEquals("set aside here: it showed no picture", s.resumeMiss())
     }
 

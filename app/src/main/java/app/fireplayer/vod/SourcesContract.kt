@@ -844,6 +844,13 @@ interface SourceSession {
      */
     fun resumeMiss(): String? = null
 
+    /**
+     * Whether [o], an offer of [s], opens the copy a resume left ([PlayRequest.preferred]): its release, from any add-on;
+     * a copy of no release known by its key, or as the same file from another add-on (its size to the byte as a play here
+     * measured it: [app.fireplayer.vod.sources.CopyLeft]). False when there's none.
+     */
+    fun opensLeft(s: PlaybackSource, o: Offer): Boolean = request.preferred?.openedBy(s, o) == true
+
     /** The next episode's sources, once, in the last ~4 minutes ([LookupWhy.NEXT_EPISODE]); same-kind first. */
     fun lookUpNext(next: EpisodeRef, onList: (SourceList) -> Unit): Cancel
 
@@ -947,8 +954,9 @@ data class LastRelease(val addon: Addon, val release: ReleaseKey?, val at: Long,
 
     /**
      * Whether [o], an offer of row [s], opens this copy: [release] its own file, else its row's (a merged row's offer of
-     * no release known opens its row's file); a copy of no release known only by that very [copyKey], whichever row it
-     * joined since, never another of its add-on's copies.
+     * no release known opens its row's file); a copy of no release known by that very [copyKey], whichever row it joined
+     * since, never another of its add-on's copies. The same file from another add-on, known by its size to the byte as a
+     * play here measured it, is [SourceSession.opensLeft]'s ([app.fireplayer.vod.sources.CopyLeft]).
      */
     fun openedBy(s: PlaybackSource, o: Offer): Boolean {
         val r = release

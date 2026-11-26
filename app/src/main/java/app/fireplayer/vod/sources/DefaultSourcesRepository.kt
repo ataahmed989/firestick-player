@@ -261,6 +261,13 @@ class DefaultSourcesRepository(
     internal fun rowKeyOf(target: SourceTarget, copyKey: String): String? = entries[target.key]?.rowOf?.get(copyKey)
 
     /**
+     * The size to the byte of the file kept under [key] (a release's measured key or a copy's [CopyKey]) as a play here
+     * measured it ("quality_seen"); null when never. Read only for a resume of a copy of no release known ([CopyLeft]).
+     */
+    internal fun measuredSize(key: String): Long? =
+        runCatching { measured(key) }.getOrNull()?.spec?.sizeBytes?.takeIf { it > 0 }
+
+    /**
      * [key]'s row of [target], its [file], started playing: it is Last used now, in the lists shown (not only once they
      * rank again, when it is found as the library keeps it: [lastUsedOf]). The row holding that file when [key]'s isn't in
      * the list any more (merged or keyed anew since); a copy of no release known by its [copy] key.
@@ -574,12 +581,15 @@ class DefaultSourcesRepository(
 
     /**
      * The row of [ranked] holding the copy [target] last played from ([PlaybackLibrary.lastRelease]): by its release, or a
-     * copy of no release known by its key (the row it joined since, too: [SourceMerge.Merged.rowOf]); null when none.
+     * copy of no release known by its key (the row it joined since, too: [SourceMerge.Merged.rowOf]); null when none. A
+     * copy of no release known that its add-on didn't list this time (failing, slow, another answer): the row holding
+     * its file from another add-on ([CopyLeft]), the one a resume plays.
      */
     private fun lastUsedOf(target: SourceTarget, rowOf: Map<String, String>, ranked: List<PlaybackSource>): PlaybackSource? {
         val last = runCatching { library.lastRelease(target.title, target.episode) }.getOrNull() ?: return null
-        val key = last.key?.let { rowOf[it] } ?: return null
-        return ranked.firstOrNull { it.key == key }
+        last.key?.let { rowOf[it] }?.let { key -> return ranked.firstOrNull { it.key == key } }
+        val bytes = CopyLeft.bytes(last, target.streamId, ::measuredSize) ?: return null
+        return ranked.firstOrNull { s -> s.offers.any { CopyLeft.sameFile(last, s, it, bytes) } }
     }
 
     private fun notify(entry: Entry) {

@@ -296,12 +296,13 @@ class SourcePlayback(
      * picture for. Listed late (after the pick), or the list not full yet: "Resumed near" instead. One pass, once.
      */
     private fun copyGone(): Boolean {
-        // Its release, or a copy of no release known by its key ([app.fireplayer.vod.LastRelease.openedBy]).
-        val left = request.preferred?.takeIf { it.key != null } ?: return false
+        // Its release, or a copy of no release known by its key or as its file from another add-on
+        // ([app.fireplayer.vod.SourceSession.opensLeft]).
+        request.preferred?.takeIf { it.key != null } ?: return false
         val l = session.list?.takeIf { it.complete } ?: return false
         return l.sources.none { s ->
             s.measured?.health?.setAside != true &&
-                s.offers.any { left.openedBy(s, it) && it.readiness != Readiness.NOT_READY }
+                s.offers.any { session.opensLeft(s, it) && it.readiness != Readiness.NOT_READY }
         }
     }
 
