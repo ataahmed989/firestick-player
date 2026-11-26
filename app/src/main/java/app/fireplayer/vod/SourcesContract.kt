@@ -408,7 +408,10 @@ data class SourceList(
     val sources: List<PlaybackSource>,
     /** The top automatic pick, or null (none ready). Shows as "Best so far" until [complete]. */
     val best: PlaybackSource?,
-    /** The release used last time for this film or episode, when offered (it may be [best] too). */
+    /**
+     * The copy used last time for this film or episode (its release, or a copy of no release known by its key), when
+     * offered (it may be [best] too).
+     */
     val lastUsed: PlaybackSource? = null,
     /** What put [best] first and what it beat ([app.fireplayer.vod.sources.SourceRank.why]); null when not worked out. */
     val why: BestWhy? = null,
@@ -506,7 +509,10 @@ data class PlayRequest(
     val list: SourceList? = null,
     /** A row chosen in Sources, or "OK again plays the best so far"; null: the session picks. */
     val chosen: PlaybackSource? = null,
-    /** On a resume only (Resume, a Continue card): the release to play again, that very file first, from its add-on first. */
+    /**
+     * On a resume only (Resume, a Continue card, the Episodes sheet's resume): the copy left to play again (its release, or
+     * a copy of no release known by its key), that very file first, from its add-on first.
+     */
     val preferred: LastRelease? = null,
     /** The source the previous episode played from: the next episode prefers the same kind (§6.5). */
     val like: PlaybackSource? = null,
@@ -838,6 +844,13 @@ interface SourceSession {
      */
     fun resumeMiss(): String? = null
 
+    /**
+     * Whether [o], an offer of [s], opens the copy a resume left ([PlayRequest.preferred]): its release, from any add-on;
+     * a copy of no release known by its key, or as the same file from another add-on (its size to the byte as a play here
+     * measured it: [app.fireplayer.vod.sources.CopyLeft]). False when there's none.
+     */
+    fun opensLeft(s: PlaybackSource, o: Offer): Boolean = request.preferred?.openedBy(s, o) == true
+
     /** The next episode's sources, once, in the last ~4 minutes ([LookupWhy.NEXT_EPISODE]); same-kind first. */
     fun lookUpNext(next: EpisodeRef, onList: (SourceList) -> Unit): Cancel
 
@@ -928,17 +941,45 @@ interface ThisTv {
 
 // ---- The library: what playback records (stored on this TV; no syncing) --------------------------------------------
 
-/** The release a film or episode last played from: info hash + file index + add-on, never a link. */
-data class LastRelease(val addon: Addon, val release: ReleaseKey, val at: Long)
+/**
+ * The copy a film or episode last played from (the copy left), never a link: its [release] (info hash + file index) and
+ * the add-on it played from; or, for a copy of no release known (its add-on gave no info hash: MediaFusion's, at times),
+ * its [copyKey] ([app.fireplayer.vod.sources.CopyKey]: "x|mediafusion|<print>|tt…:1:9", the same across look-ups and
+ * restarts) with [release] null. One of the two, never both.
+ */
+data class LastRelease(val addon: Addon, val release: ReleaseKey?, val at: Long, val copyKey: String? = null) {
+
+    /** What it is known by: [release]'s [ReleaseKey.storeKey], else [copyKey]; null for neither (nothing to find). */
+    val key: String? get() = release?.storeKey ?: copyKey
+
+    /**
+     * Whether [o], an offer of row [s], opens this copy: [release] its own file, else its row's (a merged row's offer of
+     * no release known opens its row's file); a copy of no release known by that very [copyKey], whichever row it joined
+     * since, never another of its add-on's copies. The same file from another add-on, known by its size to the byte as a
+     * play here measured it, is [SourceSession.opensLeft]'s ([app.fireplayer.vod.sources.CopyLeft]).
+     */
+    fun openedBy(s: PlaybackSource, o: Offer): Boolean {
+        val r = release
+        if (r != null) return (o.release ?: s.release) == r
+        val c = copyKey ?: return false
+        return o.copyKey == c
+    }
+
+    companion object {
+        /** A copy of no release known that played from [addon], by its [Offer.copyKey]. */
+        fun ofCopy(addon: Addon, copyKey: String, at: Long): LastRelease = LastRelease(addon, null, at, copyKey)
+    }
+}
 
 /**
  * What the player writes (any thread). Positions and Continue Watching go through [VodRepository.recordProgress]'s
  * rules; listeners are called, so rows and title pages refresh.
  */
 interface PlaybackLibrary {
-    /** The release [title] (and [episode]) last played from; null when never. */
+    /** The copy [title] (and [episode]) last played from (a release, or a copy of no release known); null when never. */
     fun lastRelease(title: Title, episode: EpisodeRef?): LastRelease?
 
+    /** Keeps [release] as the copy [title] (and [episode]) last played from, in place of the one kept before. */
     fun recordRelease(title: Title, episode: EpisodeRef?, release: LastRelease)
 
     /** Forgets the releases [title] last played from (a show: every episode's), so its next resume is the ranking's pick. */

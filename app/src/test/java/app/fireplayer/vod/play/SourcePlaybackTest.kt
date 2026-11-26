@@ -118,6 +118,53 @@ class SourcePlaybackTest {
     }
 
     @Test
+    fun aResumeOfACopyOfNoReleaseKnownSaysWhetherItsStillOfferedByItsKey() {
+        val key = "x|mediafusion|0123456789abcdef|tt0133093"
+        val request = PlayRequest(SourceTarget(Fixtures.film), StartAt.At(600_000), PlayOrigin.CONTINUE_CARD,
+            preferred = LastRelease.ofCopy(Addon.MEDIAFUSION, key, 1L))
+        // In no row of the full list (MediaFusion's other copy has another key): the one left isn't available.
+        val other = Fixtures.source(2, Addon.MEDIAFUSION).let { s ->
+            s.copy(release = null, offers = s.offers.map { it.copy(copyKey = "x|mediafusion|fedcba9876543210|tt0133093") })
+        }
+        val gone = FakeSession(request)
+        gone.list = Fixtures.list(request.target, listOf(Fixtures.source(1), other))
+        SourcePlayback(request, gone, library, ticker, host).start()
+        gone.ready(Fixtures.source(1), startMs = 595_000, resumedNear = true)
+        assertEquals("notice ${SourcePlayback.COPY_GONE_NOTE}", log.last())
+        // Listed (late, after the pick; in a row it joined, beside another add-on's file of its size): only "Resumed near".
+        val joined = Fixtures.source(3, also = Addon.MEDIAFUSION).let { s ->
+            s.copy(offers = s.offers.map { if (it.addon == Addon.MEDIAFUSION) it.copy(copyKey = key) else it })
+        }
+        val listed = FakeSession(request)
+        listed.list = Fixtures.list(request.target, listOf(Fixtures.source(1), joined))
+        SourcePlayback(request, listed, library, ticker, host).start()
+        listed.ready(Fixtures.source(1), startMs = 595_000, resumedNear = true)
+        assertEquals("notice Resumed near ${PlayRules.clock(595_000)}", log.last())
+    }
+
+    @Test
+    fun aResumeOfACopyOfNoReleaseKnownWhoseFileAnotherAddonOffersIsNotSaidToBeGone() {
+        val key = "x|mediafusion|0123456789abcdef|tt0133093"
+        val request = PlayRequest(SourceTarget(Fixtures.film), StartAt.At(600_000), PlayOrigin.CONTINUE_CARD,
+            preferred = LastRelease.ofCopy(Addon.MEDIAFUSION, key, 1L))
+        // MediaFusion's offer isn't listed, but the session knows Torz's row as that file (its size to the byte): listed
+        // late, after the pick, it's only "Resumed near"; offered only not cached, the copy isn't available.
+        val torz = Fixtures.source(3, Addon.TORZ)
+        for ((readiness, note) in listOf(
+            Readiness.PROBABLY_READY to "notice Resumed near ${PlayRules.clock(595_000)}",
+            Readiness.NOT_READY to "notice ${SourcePlayback.COPY_GONE_NOTE}",
+        )) {
+            val row = torz.copy(offers = torz.offers.map { it.copy(readiness = readiness) })
+            val session = FakeSession(request)
+            session.opensLeftBy = { s, o -> s.key == row.key && o.addon == Addon.TORZ }
+            session.list = Fixtures.list(request.target, listOf(Fixtures.source(1), row))
+            SourcePlayback(request, session, library, ticker, host).start()
+            session.ready(Fixtures.source(1), startMs = 595_000, resumedNear = true)
+            assertEquals(note, log.last())
+        }
+    }
+
+    @Test
     fun aResumeOnAnotherCopyWhileTheOneLeftIsListedIsOnlyResumedNear() {
         // The copy left was listed after the pick (a late answer): it isn't said to be unavailable.
         val request = PlayRequest(SourceTarget(Fixtures.film), StartAt.At(600_000), PlayOrigin.TITLE_PAGE,

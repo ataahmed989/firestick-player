@@ -96,8 +96,10 @@ data class Progress(
 data class EpisodePosition(val id: String, val positionMs: Long, val durationMs: Long, val at: Long)
 
 /**
- * The release a film or an episode last played from (design-brief §6.2): [id] is the film's IMDb id or the episode's
- * "tt…:S:E"; [addon] the add-on's name ("TORRENTIO"); info hash + file index (-1: none). Never a link.
+ * The copy a film or an episode last played from (design-brief §6.2): [id] is the film's IMDb id or the episode's
+ * "tt…:S:E"; [addon] the add-on's name ("TORRENTIO"); info hash + file index (-1: none), or, for a copy whose add-on gave
+ * no info hash, its key in [hash] ("x|mediafusion|<print>|tt…:S:E", [app.fireplayer.vod.sources.CopyKey]) with file index
+ * -1: versions before that read no release from it. Never a link.
  */
 data class ReleaseRow(val kind: Kind, val id: String, val addon: String, val hash: String, val fileIdx: Int, val at: Long)
 

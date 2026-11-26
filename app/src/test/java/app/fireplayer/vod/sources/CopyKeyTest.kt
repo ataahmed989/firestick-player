@@ -433,31 +433,39 @@ class CopyKeyTest {
             session.started(ready.source, ready.offer)
             engine.rerank(ep1)
             loop.advance()
-            // Last used through ranks: no release of it is kept.
+            // Last used through ranks: kept as the copy the episode was left on, by its key (no release of it known).
             assertEquals(mfRow.key, session.list!!.lastUsed?.key)
-            assertEquals(ReleaseKey(hk, 0), last?.release)
+            assertNull(last?.release)
+            assertEquals(copyKeyOf(mfRow), last?.copyKey)
+            assertEquals(Addon.MEDIAFUSION, last?.addon)
             return session to ready
         }
-        // Its length shows it isn't the whole episode: the list ranks again with the copy kept before it as Last used.
+        // Its length shows it isn't the whole episode: the copy kept before it is put back, and the list ranks again with
+        // it as Last used.
         val (session, ready) = play()
         session.notWhole(ready.source)
         loop.advance()
+        assertEquals(ReleaseKey(hk, 0), last?.release)
+        assertNull(last?.copyKey)
         assertEquals(light.key, session.list!!.lastUsed?.key)
-        // Its picture again (the same copy retried) doesn't make it Last used either.
+        // Its picture again (the same copy retried) doesn't make it Last used either, nor the copy left.
         session.started(ready.source, ready.offer)
         engine.rerank(ep1)
         loop.advance()
         assertEquals(light.key, session.list!!.lastUsed?.key)
+        assertEquals(ReleaseKey(hk, 0), last?.release)
         // Ended as not the whole episode: the same.
         val (other, again) = play()
         other.failed(again.source, Failure(FailureKind.NOT_WHOLE, Addon.MEDIAFUSION))
         loop.advance()
         assertEquals(light.key, other.list!!.lastUsed?.key)
-        // A copy that is the whole episode stays Last used as the list ranks again.
+        assertEquals(ReleaseKey(hk, 0), last?.release)
+        // A copy that is the whole episode stays Last used as the list ranks again, and is the copy left.
         play()
         engine.rerank(ep1)
         loop.advance()
         assertEquals(mfRow.key, list().lastUsed?.key)
+        assertEquals(copyKeyOf(mfRow), last?.copyKey)
     }
 
     // ---- (E) Rows: only by the same size to the byte ----

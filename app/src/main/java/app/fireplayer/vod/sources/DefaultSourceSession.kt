@@ -32,8 +32,9 @@ import java.util.IdentityHashMap
 
 /**
  * One play of a film or episode, stages 1-4 (design-brief §6.5). Picks the source (on a resume, the very file played
- * last, from its add-on first, whatever the ranking says; a row chosen in Sources; the same kind as the previous
- * episode; else "Best for this TV"), checks its link ([LinkCheck]), and on a failure follows the table
+ * last, from its add-on first, whatever the ranking says: by its release, or a copy of no release known by its key; a
+ * row chosen in Sources; the same kind as the previous episode; else "Best for this TV"), checks its link
+ * ([LinkCheck]), and on a failure follows the table
  * ([failed]): skip the file and its copies in every add-on, refresh an expired link once, decode the sound on the Stick,
  * use the other add-on, or stop and say why. Limits: 3 start tries and 2 automatic switches per film or episode, at
  * least 3 minutes apart; a source not cached is never opened without [fetch], asked once. Main thread.
@@ -78,10 +79,11 @@ internal class DefaultSourceSession(
      */
     private var opened: PlaybackSource? = null
     /**
-     * The file the copy playing started from, kept as the title's last release ([started]), and the release kept before
-     * it: put back when it turns out not to be the whole film ([FailureKind.NOT_WHOLE]).
+     * The copy playing as it was kept as the title's last ([started]: [LastRelease.key], its release or, of no release
+     * known, its copy key), and the one kept before it: put back when it turns out not to be the whole film
+     * ([FailureKind.NOT_WHOLE]).
      */
-    private var releaseFor: ReleaseKey? = null
+    private var keptFor: String? = null
     private var releaseBefore: LastRelease? = null
     /** Copies chosen by hand that turned out not to be the whole film ([notWhole]): never kept as the title's last release. */
     private val notWholeKeys = HashSet<String>()
@@ -253,17 +255,19 @@ internal class DefaultSourceSession(
             kindLost = false
             runCatching { repo.library.forgetReleases(target.title) }
         }
-        // The file that played: a merged row's offer can be another re-upload than the row's first.
-        releaseOf(source, offer)?.takeIf { source.key !in notWholeKeys }?.let { release ->
-            // What was kept before this file (not this file itself), put back if it isn't the whole film ([putBack]).
-            if (release != releaseFor) {
-                releaseFor = release
+        // The copy that played, kept as the one the title was left on in place of what was kept before: its file (a
+        // merged row's offer can be another re-upload than the row's first), or a copy of no release known by its key
+        // ([lastOf]), so Resume and a Continue card play it again, also after a restart.
+        lastOf(source, offer)?.takeIf { source.key !in notWholeKeys }?.let { last ->
+            // What was kept before this copy (not this copy itself), put back if it isn't the whole film ([putBack]).
+            if (last.key != keptFor) {
+                keptFor = last.key
                 releaseBefore = runCatching { repo.library.lastRelease(target.title, target.episode) }.getOrNull()
-                    ?.takeIf { it.release != release }
+                    ?.takeIf { it.key != last.key }
             }
-            runCatching { repo.library.recordRelease(target.title, target.episode, LastRelease(offer.addon, release, repo.wall())) }
+            runCatching { repo.library.recordRelease(target.title, target.episode, last) }
         }
-        // A copy found not to be the whole film is no Last used, as its release isn't kept above ([notWhole]).
+        // A copy found not to be the whole film is no Last used, as it isn't kept above ([notWhole]).
         repo.usedNow(target, source.key, releaseOf(source, offer), copyOf(source, offer)?.takeIf { source.key !in notWholeKeys })
         val now = repo.elapsed()
         watch.reset()
@@ -284,7 +288,6 @@ internal class DefaultSourceSession(
         notWholeKeys += source.key
         // Its first frame came first: what was kept before it is the title's again.
         if (keptAsLast(source)) putBack()
-        notUsed(source)
         repo.rerank(target)
     }
 
@@ -331,6 +334,21 @@ internal class DefaultSourceSession(
     override fun nextPick(): PlaybackSource? = list?.let { if (closed) null else nextOf(it) }
 
     override fun resumeMiss(): String? = resumeMissed
+
+    override fun opensLeft(s: PlaybackSource, o: Offer): Boolean {
+        val p = request.preferred ?: return false
+        if (p.openedBy(s, o)) return true
+        // A copy of no release known: the same file from another add-on, by its size to the byte ([CopyLeft]).
+        return p.copyKey != null && CopyLeft.sameFile(p, s, o, leftBytes ?: return false)
+    }
+
+    /**
+     * The size to the byte of the copy a resume left, a copy of no release known, as a play here measured it
+     * ([CopyLeft.bytes]): read once, and only when its own offer isn't the one played; null for a release.
+     */
+    private val leftBytes: Long? by lazy(LazyThreadSafetyMode.NONE) {
+        CopyLeft.bytes(request.preferred, target.streamId, repo::measuredSize)
+    }
 
     override fun lookUpNext(next: EpisodeRef, onList: (SourceList) -> Unit): Cancel =
         repo.lookUp(SourceTarget(target.title, next), LookupWhy.NEXT_EPISODE, null, onList)
@@ -386,7 +404,6 @@ internal class DefaultSourceSession(
         FailureKind.NOT_WHOLE -> {
             skip(source, hash = false, file = true)
             if (keptAsLast(source)) putBack()
-            notUsed(source)
             repo.rerank(target)
             Step.TryNext
         }
@@ -430,26 +447,21 @@ internal class DefaultSourceSession(
         }
     }
 
-    /** [source] is the copy playing, and its file is the one kept as the title's last release ([started]). */
-    private fun keptAsLast(source: PlaybackSource): Boolean =
-        releaseFor != null && source.key == playing?.key && playingOffer?.let { releaseOf(source, it) } == releaseFor
-
     /**
-     * [source], the copy playing, isn't the whole film: a copy of no release known ([copyOf]; nothing of it is kept in the
-     * library) isn't Last used once the list ranks again either, as [putBack] does for a release.
+     * [source] is the copy playing, and it is the one kept as the title's last ([started]): its file, or a copy of no
+     * release known by its key.
      */
-    private fun notUsed(source: PlaybackSource) {
-        if (source.key != playing?.key) return
-        playingOffer?.let { copyOf(source, it) }?.let { repo.notUsed(target, it) }
-    }
+    private fun keptAsLast(source: PlaybackSource): Boolean =
+        keptFor != null && source.key == playing?.key && playingOffer?.let { lastOf(source, it) }?.key == keptFor
 
     /**
-     * The copy that started last wasn't the whole film: the release kept before it is the title's again (none: it's
-     * forgotten), so a resume goes on from the copy that was playing before.
+     * The copy that started last wasn't the whole film: the one kept before it is the title's again (none: it's
+     * forgotten), so a resume goes on from the copy that was playing before, and the list's Last used is that one once it
+     * ranks again ([DefaultSourcesRepository.rerank]).
      */
     private fun putBack() {
         val before = releaseBefore
-        releaseFor = null
+        keptFor = null
         releaseBefore = null
         runCatching {
             if (before != null) repo.library.recordRelease(target.title, target.episode, before)
@@ -487,6 +499,30 @@ internal class DefaultSourceSession(
 
     /** [o]'s copy's key when no release of it is known ([Offer.copyKey]); null otherwise. */
     private fun copyOf(s: PlaybackSource, o: Offer): String? = if (releaseOf(s, o) == null) o.copyKey else null
+
+    /**
+     * [o] of [s] as the copy a title is left on ([app.fireplayer.vod.PlaybackLibrary.recordRelease]): its own release;
+     * else, an offer whose add-on gave no info hash, by its own key ([Offer.copyKey]): a resume then finds it in its
+     * add-on's answer alone, as a Continue card's fast start asks, and its file from another add-on by its size to the
+     * byte as a play here measured it ([CopyLeft]); also in a row it joined since (another add-on's file of that size).
+     * In a release's row while no play here measured it ([measuredHere]: it joined by what the add-ons say), that release,
+     * as before: the same file then still resumes from another add-on while its own fails. Null when none.
+     */
+    private fun lastOf(s: PlaybackSource, o: Offer): LastRelease? {
+        o.release?.let { return LastRelease(o.addon, it, repo.wall()) }
+        val r = s.release
+        o.copyKey?.takeIf { r == null || measuredHere(it) }?.let { return LastRelease.ofCopy(o.addon, it, repo.wall()) }
+        return r?.let { LastRelease(o.addon, it, repo.wall()) }
+    }
+
+    /**
+     * Whether a play here measured the file of the copy of [copyKey] to the byte ("quality_seen"), read once a play: it
+     * may be measured while it plays, and [lastOf] says the same of it all through ([keptAsLast]). Only for a copy of no
+     * release known in a release's row.
+     */
+    private fun measuredHere(copyKey: String): Boolean = measuredCopies.getOrPut(copyKey) { repo.measuredSize(copyKey) != null }
+
+    private val measuredCopies = HashMap<String, Boolean>(2)
 
     /**
      * The offer [s] was handed out with (tried last, or played: [handedOffer]); for another object of its row, the one
@@ -561,7 +597,8 @@ internal class DefaultSourceSession(
             // The title page's wait ended before every add-on answered: OK was pressed again for the best so far (or
             // an answer was stuck past its limit). What it handed over is played from as it stands, as soon as something
             // in it plays by itself; the add-on still looking joins the list as it answers (Sources, Next source). A resume
-            // first waits for the add-on of the copy left, as a Continue card does: that file plays once it's listed.
+            // first waits for the add-on of the copy left, as a Continue card does: that file plays once it's listed (a
+            // copy of no release known: or its file from another add-on, [findPreferred]).
             waitFor(op, { l ->
                 l.complete || findPreferred(l) != null ||
                     ((preferred == null || l.states[preferred.addon]?.final == true) && l.sources.any { it.automatic && usable(it) })
@@ -620,15 +657,20 @@ internal class DefaultSourceSession(
     private fun blankList() = SourceList(target, Addon.entries.associateWith { AddonState.NotAsked }, emptyList(), null)
 
     /**
-     * The row holding the very file played last (same info hash and file index, any add-on), while that file plays
-     * without asking (cached, not skipped, not one this Stick showed no picture for or found not the whole film); the
-     * ranking doesn't matter.
+     * The row holding the very file played last (same info hash and file index, any add-on; a copy of no release known:
+     * the offer of that very copy key, in its own row or the row it joined since: [LastRelease.openedBy]), while that file
+     * plays without asking (cached, not skipped, not one this Stick showed no picture for or found not the whole film);
+     * the ranking doesn't matter. A copy of no release known whose own offer doesn't (its add-on failing, slow, or listing
+     * it not cached): the row offering its file from another add-on, the same to the byte ([opensLeft]), under the same
+     * rules.
      */
     private fun findPreferred(l: SourceList?): PlaybackSource? {
         val p = request.preferred ?: return null
-        return l?.sources?.firstOrNull { s ->
-            usable(s) && !setAsideHere(s) && s.offers.any { releaseOf(s, it) == p.release && openable(s, it) }
+        val rows = l?.sources ?: return null
+        fun row(opens: (PlaybackSource, Offer) -> Boolean) = rows.firstOrNull { s ->
+            usable(s) && !setAsideHere(s) && s.offers.any { opens(s, it) && openable(s, it) }
         }
+        return row(p::openedBy) ?: if (p.copyKey != null) row(::opensLeft) else null
     }
 
     // ---- Picking ----
@@ -756,9 +798,10 @@ internal class DefaultSourceSession(
             val p = request.preferred
             if (p != null) findPreferred(l)?.let { row ->
                 resumeMissed = null
-                // That very file first, from its add-on first: the timeline left.
+                // That very file first, from its add-on first: the timeline left. A copy of no release known: the offer of
+                // its key, then its file from another add-on ([opensLeft]), never another file of a row it joined first.
                 return row.copy(offers = row.offers.sortedWith(
-                    compareBy({ if (releaseOf(row, it) == p.release) 0 else 1 }, { if (it.addon == p.addon) 0 else 1 }),
+                    compareBy({ if (p.openedBy(row, it)) 0 else if (opensLeft(row, it)) 1 else 2 }, { if (it.addon == p.addon) 0 else 1 }),
                 )) to false
             }
             if (p != null) resumeMissed = preferredMiss(l, p)
@@ -779,14 +822,17 @@ internal class DefaultSourceSession(
      * add-on's name at most).
      */
     private fun preferredMiss(l: SourceList, p: LastRelease): String {
-        val rows = l.sources.filter { s -> s.offers.any { releaseOf(s, it) == p.release } }
+        val rows = l.sources.filter { s -> s.offers.any { opensLeft(s, it) } }
         val s = rows.firstOrNull() ?: return when {
             // A ×N row keeps one offer per add-on: another upload of the same release is offered for it.
-            repo.rowKeyOf(target, p.release) != null -> "its row offers another upload of that release"
+            p.release?.let { repo.rowKeyOf(target, it) } != null -> "its row offers another upload of that release"
+            p.copyKey?.let { repo.rowKeyOf(target, it) } != null -> "its row offers another of ${p.addon.label}'s copies"
             l.states[p.addon]?.final != true -> "not listed yet (${p.addon.label} still looking)"
             else -> "not listed any more"
         }
-        val o = s.offers.first { releaseOf(s, it) == p.release }
+        // Of the offers of that file, one cached says what else kept it from playing.
+        val left = s.offers.filter { opensLeft(s, it) }
+        val o = left.firstOrNull { it.readiness != Readiness.NOT_READY } ?: left.first()
         return when {
             s.measured?.health?.noPicture?.let { it > 0 } == true -> "set aside here: it showed no picture"
             setAsideHere(s) -> "set aside here: it wasn't the whole ${if (episode) "episode" else "film"}"

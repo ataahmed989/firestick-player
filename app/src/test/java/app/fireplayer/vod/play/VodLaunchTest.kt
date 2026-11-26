@@ -60,6 +60,22 @@ class VodLaunchTest {
     }
 
     @Test
+    fun aCopyOfNoReleaseKnownLeftIsWhatContinueAndResumePlayAgain() {
+        // MediaFusion's copy whose link showed no info hash: kept by its key ("x|mediafusion|<print>|tt…:S:E").
+        val ep = EpisodeRef(1, 9)
+        val copy = LastRelease.ofCopy(Addon.MEDIAFUSION, "x|mediafusion|0123456789abcdef|tt1695360:1:9", 1L)
+        repo.recordProgress(Fixtures.show, ep, 600_000, 1_680_000)
+        library.recordRelease(Fixtures.show, ep, copy)
+        val card = VodLaunch.fromContinueCard(Card(Fixtures.show, episode = ep), repo, library)!!
+        assertEquals(copy, card.preferred)
+        assertNull(card.preferred?.release)
+        val resume = VodLaunch.fromTitlePage(SourceTarget(Fixtures.show, ep), StartAt.At(600_000), null, library)
+        assertEquals(copy, resume.preferred)
+        // From the beginning: the ranking's pick, as for a release.
+        assertNull(VodLaunch.fromTitlePage(SourceTarget(Fixtures.show, ep), StartAt.Beginning, null, library).preferred)
+    }
+
+    @Test
     fun aSeriesCardWithoutAnEpisodeHasNoPlay() {
         assertNull(VodLaunch.fromContinueCard(Card(Fixtures.show), repo, library))
     }

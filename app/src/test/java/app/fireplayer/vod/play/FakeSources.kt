@@ -228,6 +228,13 @@ class FakeSession(override val request: PlayRequest) : SourceSession {
     var resumeMissWords: String? = null
     override fun resumeMiss(): String? = resumeMissWords
 
+    /**
+     * The offers that open the copy left, as the test sets them (the engine's same file from another add-on,
+     * [SourceSession.opensLeft]); null: the default, its release or its very key.
+     */
+    var opensLeftBy: ((PlaybackSource, Offer) -> Boolean)? = null
+    override fun opensLeft(s: PlaybackSource, o: Offer): Boolean = opensLeftBy?.invoke(s, o) ?: super.opensLeft(s, o)
+
     override fun close() {
         closed = true
     }
