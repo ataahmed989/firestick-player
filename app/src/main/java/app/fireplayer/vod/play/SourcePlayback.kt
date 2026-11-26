@@ -558,6 +558,12 @@ class SourcePlayback(
      * [s]'s average rate, Mb/s: as a play here measured it when it did ([SourceRank.asPlayedHere]; its row in the list
      * now, which the play playing measures as it goes), else the add-ons'; null when neither knows.
      */
+    /**
+     * The average rate of the source playing or being opened, Mb/s ([rateOf]); null when it isn't known, or there is
+     * none. For the size the film's buffer starts with on a TV with little memory free; main thread.
+     */
+    fun rateMbps(): Double? = current?.let { rateOf(it) }?.takeIf { it > 0.0 }
+
     private fun rateOf(s: PlaybackSource): Double? {
         val key = session.rowKey(s)
         val row = session.list?.sources?.firstOrNull { it.key == key } ?: s
