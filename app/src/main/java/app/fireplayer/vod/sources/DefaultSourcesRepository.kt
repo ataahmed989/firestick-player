@@ -282,6 +282,15 @@ class DefaultSourcesRepository(
         notify(entry)
     }
 
+    /**
+     * [copy] (a copy of no release known, [Offer.copyKey]) wasn't the whole film: it isn't Last used as the list ranks
+     * again ([usedNow]); the release kept before it is, as for a release put back.
+     */
+    internal fun notUsed(target: SourceTarget, copy: String) {
+        val entry = entries[target.key] ?: return
+        if (entry.usedCopy == copy) entry.usedCopy = null
+    }
+
     // ---- Asking ----
 
     private fun dwellMs(why: LookupWhy): Long = when (why) {

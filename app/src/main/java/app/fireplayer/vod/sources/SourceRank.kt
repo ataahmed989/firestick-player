@@ -165,13 +165,15 @@ object SourceRank {
     /**
      * [m], measured of a film's file without an index: a collection's films share that key, so a size (and the rate from
      * it) other than the one an add-on gave to the byte ([SourceFacts.sizeExact]) was another film's, and isn't this
-     * row's ([asPlayedHere] keeps the add-on's).
+     * row's ([asPlayedHere] keeps the add-on's); nor is the HDR its picture played with (HDR10, HDR10+, Dolby Vision and
+     * how this TV played it: [asPlayedHere] and Details keep what the name says).
      */
     private fun ownSize(m: Measured, facts: SourceFacts): Measured {
         val spec = m.spec ?: return m
         val stated = facts.sizeBytes?.takeIf { facts.sizeExact } ?: return m
         if (spec.sizeBytes <= 0 || SourceMerge.sizeClose(spec.sizeBytes, stated)) return m
-        return m.copy(spec = spec.copy(sizeBytes = 0, overallBps = 0))
+        return m.copy(spec = spec.copy(sizeBytes = 0, overallBps = 0, hdr = null, hdr10Plus = false, hdrInfo = null, dvProfile = 0,
+            dvBaseLayer = 0, dvSignal = 0, decoder = MediaSpec.Decoder.UNKNOWN))
     }
 
     /** The viewer's move of a row's file ([RankInput.imaxMove]): its own release's, else a merged offer's. */

@@ -52,14 +52,18 @@ object CopyKey {
 
     private val INVISIBLE = Regex("[︎️‍]")
 
+    /** A unit of time after a count ("3d", "2 months", "5 hrs"). */
+    private const val UNITS = "(?:y|yrs?|years?|mo|months?|w|wks?|weeks?|d|days?|h|hrs?|hours?|m|mins?|minutes?|s|secs?|seconds?)"
+
     private val VOLATILE = listOf(
         // Seeders and peers, by their marks or their words.
         Regex("""(?:👤|🌱|🧲|⬆️?|⬇️?)\s*[\d.,]+\s*[km]?\b"""),
         Regex("""\b(?:seed(?:er)?s?|peers?|leech(?:er)?s?)\s*[:=]?\s*[\d.,]+\s*[km]?\b"""),
         Regex("""\b[\d.,]+\s*[km]?\s*(?:seed(?:er)?s?|peers?|leech(?:er)?s?)\b"""),
-        // Its age: a dated or timed field, or "… ago", or a count of days and the like.
-        Regex("""(?:📅|🕒|🕐|⏱|⌛|🗓)\s*[^\s|·]+(?:\s+ago)?"""),
-        Regex("""\b\d+\s*(?:y|yrs?|years?|mo|months?|w|wks?|weeks?|d|days?|h|hrs?|hours?|m|mins?|minutes?|s|secs?|seconds?)\s+ago\b"""),
+        // Its age: a dated or timed field ("📅 3d", "📅 3 days ago", "📅 2024-05-01"), or "… ago", or a count of days and
+        // the like.
+        Regex("""(?:📅|🕒|🕐|⏱|⌛|🗓)\s*(?:\d+\s*$UNITS\b|[^\s|·]+)(?:\s+ago\b)?"""),
+        Regex("""\b\d+\s*$UNITS\s+ago\b"""),
         Regex("""\b\d+\s*(?:years?|months?|weeks?|days?|hours?|minutes?)\b"""),
         // Cached or not: the add-ons' marks and words.
         Regex("""\[(?:rd|tb|ad|pm|dl|ed|oc|putio)(?:\+|\s*download)?]"""),

@@ -6,6 +6,8 @@ import app.fireplayer.vod.Addon
 import app.fireplayer.vod.AddonSave
 import app.fireplayer.vod.AddonSettings
 import app.fireplayer.vod.EpisodeRef
+import app.fireplayer.vod.Failure
+import app.fireplayer.vod.FailureKind
 import app.fireplayer.vod.Hdr
 import app.fireplayer.vod.Kind
 import app.fireplayer.vod.LastRelease
@@ -20,6 +22,7 @@ import app.fireplayer.vod.ReleaseKey
 import app.fireplayer.vod.SecretUrl
 import app.fireplayer.vod.SoundFormat
 import app.fireplayer.vod.SourceList
+import app.fireplayer.vod.SourceSession
 import app.fireplayer.vod.SourceTarget
 import app.fireplayer.vod.StartAt
 import app.fireplayer.vod.ThisTv
@@ -367,6 +370,11 @@ class CopyKeyTest {
         assertNotEquals(n, keyOf(ep1, mf(null, hdr = "HDR10", extra = words)))
         assertNotEquals(n, keyOf(ep2, mf(null, extra = words)))
         assertEquals(CopyKey.stable("🎨 HDR 📺 WEB\n📦 18.9 GB 👤 12 ⚡️ [RD+] 2 days ago 40 seeders"), CopyKey.stable("🎨 HDR 📺 WEB 📦 18.9 GB 👤 7 ⏳ [RD download] 5 days ago 3 seeders"))
+        // An age in words after its mark, whatever its unit, and a date: nothing of it stays.
+        for (age in listOf("📅 3 days ago", "📅 2 months ago", "📅 1 year ago", "📅 5h", "📅 2024-05-01", "🕒 12 mins ago")) {
+            assertEquals(age, "📺 web 🔗 source", CopyKey.stable("📺 WEB $age 🔗 Source"))
+            assertEquals(age, n, keyOf(ep1, mf(null, extra = "\n$age ⚡ Cached\n🔗 Source | 🧑‍💻 Uploader")))
+        }
         // "3D" and "5.1" are no age or seeders.
         assertTrue(CopyKey.stable("1080p 3D DDP 5.1").contains("3d"))
         assertTrue(CopyKey.stable("1080p 3D DDP 5.1").contains("5.1"))
@@ -404,6 +412,52 @@ class CopyKeyTest {
         val bare = rows(ep1, mfAnswer, tz, measured = mapOf(ReleaseKey(hk, 0).storeKey to played(600_000_000L, 2.9))).fromMf()
         assertNull(bare.measured)
         assertEquals("1080p · WEB · (18.9 GB)", line(bare))
+    }
+
+    // ---- (D2) Last used ----
+
+    @Test
+    fun aCopyOfNoInfoHashThatIsntTheWholeEpisodeIsntLastUsedAsTheListRanksAgain() {
+        // The light Torz copy is the one kept as the episode's last.
+        last = LastRelease(Addon.TORZ, ReleaseKey(hk, 0), now)
+        val before = list()
+        val light = before.sources.holding(hk)
+        val mfRow = before.sources.fromMf()
+        assertEquals(light.key, before.lastUsed?.key)
+        fun play(): Pair<SourceSession, Opened.Ready> {
+            val session = engine.session(PlayRequest(ep1, StartAt.Beginning, PlayOrigin.SOURCES_PANEL, list = before, chosen = mfRow))
+            val got = ArrayList<Opened>()
+            session.open(mfRow) { got += it }
+            loop.advance()
+            val ready = got.last() as Opened.Ready
+            session.started(ready.source, ready.offer)
+            engine.rerank(ep1)
+            loop.advance()
+            // Last used through ranks: no release of it is kept.
+            assertEquals(mfRow.key, session.list!!.lastUsed?.key)
+            assertEquals(ReleaseKey(hk, 0), last?.release)
+            return session to ready
+        }
+        // Its length shows it isn't the whole episode: the list ranks again with the copy kept before it as Last used.
+        val (session, ready) = play()
+        session.notWhole(ready.source)
+        loop.advance()
+        assertEquals(light.key, session.list!!.lastUsed?.key)
+        // Its picture again (the same copy retried) doesn't make it Last used either.
+        session.started(ready.source, ready.offer)
+        engine.rerank(ep1)
+        loop.advance()
+        assertEquals(light.key, session.list!!.lastUsed?.key)
+        // Ended as not the whole episode: the same.
+        val (other, again) = play()
+        other.failed(again.source, Failure(FailureKind.NOT_WHOLE, Addon.MEDIAFUSION))
+        loop.advance()
+        assertEquals(light.key, other.list!!.lastUsed?.key)
+        // A copy that is the whole episode stays Last used as the list ranks again.
+        play()
+        engine.rerank(ep1)
+        loop.advance()
+        assertEquals(mfRow.key, list().lastUsed?.key)
     }
 
     // ---- (E) Rows: only by the same size to the byte ----

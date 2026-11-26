@@ -263,7 +263,8 @@ internal class DefaultSourceSession(
             }
             runCatching { repo.library.recordRelease(target.title, target.episode, LastRelease(offer.addon, release, repo.wall())) }
         }
-        repo.usedNow(target, source.key, releaseOf(source, offer), copyOf(source, offer))
+        // A copy found not to be the whole film is no Last used, as its release isn't kept above ([notWhole]).
+        repo.usedNow(target, source.key, releaseOf(source, offer), copyOf(source, offer)?.takeIf { source.key !in notWholeKeys })
         val now = repo.elapsed()
         watch.reset()
         watch.playing(now)
@@ -283,6 +284,7 @@ internal class DefaultSourceSession(
         notWholeKeys += source.key
         // Its first frame came first: what was kept before it is the title's again.
         if (keptAsLast(source)) putBack()
+        notUsed(source)
         repo.rerank(target)
     }
 
@@ -384,6 +386,7 @@ internal class DefaultSourceSession(
         FailureKind.NOT_WHOLE -> {
             skip(source, hash = false, file = true)
             if (keptAsLast(source)) putBack()
+            notUsed(source)
             repo.rerank(target)
             Step.TryNext
         }
@@ -430,6 +433,15 @@ internal class DefaultSourceSession(
     /** [source] is the copy playing, and its file is the one kept as the title's last release ([started]). */
     private fun keptAsLast(source: PlaybackSource): Boolean =
         releaseFor != null && source.key == playing?.key && playingOffer?.let { releaseOf(source, it) } == releaseFor
+
+    /**
+     * [source], the copy playing, isn't the whole film: a copy of no release known ([copyOf]; nothing of it is kept in the
+     * library) isn't Last used once the list ranks again either, as [putBack] does for a release.
+     */
+    private fun notUsed(source: PlaybackSource) {
+        if (source.key != playing?.key) return
+        playingOffer?.let { copyOf(source, it) }?.let { repo.notUsed(target, it) }
+    }
 
     /**
      * The copy that started last wasn't the whole film: the release kept before it is the title's again (none: it's
