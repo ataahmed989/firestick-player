@@ -8,6 +8,7 @@ import app.fireplayer.vod.Kind
 import app.fireplayer.vod.PlayRequest
 import app.fireplayer.vod.Sources
 import app.fireplayer.vod.TitleDetails
+import app.fireplayer.vod.data.DefaultVodRepository
 import app.fireplayer.vod.data.VodRepositories
 import app.fireplayer.vod.play.VodLaunch
 import java.util.concurrent.CountDownLatch
@@ -26,16 +27,29 @@ object VodContinue {
 
     /** The library's rows, the latest played first; empty when the library can't be read. */
     fun rows(context: Context): List<WatchHistory.Row> = try {
-        VodRepositories.repository(context).library.continueEntries().mapNotNull { LibraryContinue.row(it) }
+        rows(VodRepositories.repository(context))
     } catch (e: Exception) {
         Log.w(TAG, "Couldn't read Films & Shows' Continue Watching: ${e.javaClass.simpleName}")
         emptyList()
     }
 
+    /**
+     * [repo]'s Continue Watching as Glass Home's rows: read from the library each time (never a copy kept), so they are
+     * Home's Continue Watching row as it is now, the same titles in the same order, at the same episode and place.
+     */
+    internal fun rows(repo: DefaultVodRepository): List<WatchHistory.Row> =
+        repo.library.continueEntries().mapNotNull { LibraryContinue.row(it) }
+
     /** Takes a library row's title out of Continue Watching (its resume point stays); false for no such row. */
-    fun remove(context: Context, id: String): Boolean {
+    fun remove(context: Context, id: String): Boolean = remove(VodRepositories.repository(context), id)
+
+    /**
+     * Glass Home's Remove on library row [id]: the title leaves Continue Watching here as Remove on its card does (a
+     * show's row takes the show out, Next Episodes too), until it's played again; FirePlayer's pages and Glass Home are
+     * told (the library's listeners). False for no such row.
+     */
+    internal fun remove(repo: DefaultVodRepository, id: String): Boolean {
         val (_, titleId) = LibraryContinue.parse(id) ?: return false
-        val repo = VodRepositories.repository(context)
         if (!repo.inContinueWatching(titleId)) return false
         repo.removeFromContinueWatching(titleId)
         return true

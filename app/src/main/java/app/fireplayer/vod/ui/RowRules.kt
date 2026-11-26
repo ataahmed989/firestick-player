@@ -80,6 +80,36 @@ internal object RowRules {
         return old.getOrNull(at)?.title?.id == new.getOrNull(at)?.title?.id
     }
 
+    /**
+     * Whether an answer for a row of [source] waits until the viewer leaves the row: one that would move what they're on
+     * ([keepsFocus]). Never a library row's ([isLibrary]): it's what is stored on this TV, shown as it is at once, the
+     * viewer kept on their title ([followTitle]). Held, Home back from a film started from its Continue card (focus
+     * still on that card) kept the row as it was at the film's start, until the viewer left the row.
+     */
+    fun holdsAnswer(source: Source, at: Int, old: List<Card>, oldSeeAll: Boolean, new: List<Card>, newSeeAll: Boolean): Boolean =
+        !isLibrary(source) && !keepsFocus(at, old, oldSeeAll, new, newSeeAll)
+
+    /**
+     * A library row taking [new] (and See all after them when [newSeeAll]) with the viewer on item [at] of [old]: the
+     * item that keeps them on the same title, wherever it is now (back from a film started from its Continue card:
+     * first); on See all, See all while there still is one, else the last card; the title gone, the same place (the last
+     * card at most, as [focusAfter]). -1 when they aren't in the row, or nothing is left.
+     */
+    fun followTitle(at: Int, old: List<Card>, oldSeeAll: Boolean, new: List<Card>, newSeeAll: Boolean): Int {
+        if (at < 0 || new.isEmpty()) return -1
+        if (oldSeeAll && at == old.size) return if (newSeeAll) new.size else new.size - 1
+        val title = old.getOrNull(at)?.title
+        val i = if (title == null) -1 else new.indexOfFirst { it.title.kind == title.kind && it.title.id == title.id }
+        return if (i >= 0) i else at.coerceAtMost(new.size - 1)
+    }
+
+    /**
+     * The item of a library row whose title stays where the viewer is through an answer ([followTitle]): the one focus
+     * is on ([focused]), else the card the row was moved along to ([chosen], the viewer elsewhere on the page); -1 for a
+     * row at its start, which stays there (the latest played first).
+     */
+    fun followFrom(focused: Int, chosen: Int): Int = if (focused >= 0) focused else if (chosen > 0) chosen else -1
+
     /** Where focus goes when a row's cards change under it: -1 stays put, else the item to move to first. */
     fun focusAfter(at: Int, oldSize: Int, oldSeeAll: Boolean, newSize: Int, newSeeAll: Boolean): Int {
         if (at < 0 || newSize == 0) return -1

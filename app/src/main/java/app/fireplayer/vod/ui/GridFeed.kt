@@ -21,7 +21,12 @@ internal class GridFeed(
 ) {
     private val pages = ArrayList<List<Card>?>().apply { add(first) }
     private val cancels = ArrayList<Cancel>()
+    /** A library list asked for again ([reload]): only the latest asking counts. */
+    private var reloads: List<Cancel> = emptyList()
     private var closed = false
+
+    /** A list of the library on this TV ([RowRules.isLibrary]): it's asked for again as it changes ([reload]). */
+    val isLibrary: Boolean = RowRules.isLibrary(spec.source)
 
     /** Waiting for a page's first useful answer. */
     var loading = false
@@ -44,7 +49,7 @@ internal class GridFeed(
         val page = asked++
         while (pages.size <= page) pages += null
         loading = true
-        val library = RowRules.isLibrary(spec.source)
+        val library = isLibrary
         cancels += repo.load(spec, skip = page * PAGE, limit = PAGE) { list, fresh ->
             if (closed) return@load
             if (!RowRules.isFinal(spec.source, list.isEmpty(), fresh)) return@load
@@ -86,10 +91,32 @@ internal class GridFeed(
         if (changed) update()
     }
 
+    /**
+     * A library list as it's stored now (it changed, or the page came back): every page asked for so far is asked for
+     * again and takes its part (the library answers from memory, at once). The latest asking wins; a catalog's grid
+     * isn't asked again (its pages come from the network).
+     */
+    fun reload() {
+        if (closed || !isLibrary || asked == 0) return
+        for (c in reloads) c.cancel()
+        val last = asked - 1
+        reloads = (0..last).map { page ->
+            repo.load(spec, skip = page * PAGE, limit = PAGE) { list, _ ->
+                if (closed || page >= pages.size) return@load
+                pages[page] = list
+                // The library answers in full: a short last page is the end, a full one may have more after it.
+                if (page == last) ended = list.size < PAGE
+                update()
+            }
+        }
+    }
+
     fun close() {
         closed = true
         for (c in cancels) c.cancel()
         cancels.clear()
+        for (c in reloads) c.cancel()
+        reloads = emptyList()
     }
 
     private fun update() {
