@@ -59,6 +59,18 @@ object RowLayouts {
         Page.SHOWS -> "shows"
     }
 
+    /** The page a row's [key] is on ("home.continue", "shows.add.continue.series"); null for a key of no page. */
+    fun pageOf(key: String): Page? = Page.entries.firstOrNull { key.startsWith(prefix(it) + ".") }
+
+    /**
+     * Whether a page with these rows ([entries], on or off) has its caught-up shows' new episodes in its Continue
+     * Watching: it has a Continue Watching row on that takes series, and no Next Episodes row on (switched off, or
+     * none). Never both: with Next Episodes on, those stay there.
+     */
+    fun newInContinue(entries: List<RowEntry>): Boolean =
+        entries.any { e -> e.on && (e.spec.source as? Source.ContinueWatching)?.let { it.kind != Kind.MOVIE } == true } &&
+            entries.none { it.on && it.spec.source is Source.NextEpisodes }
+
     /** The kind a tab page is about; null for Home. */
     fun kindOf(page: Page): Kind? = when (page) {
         Page.HOME -> null
@@ -210,7 +222,7 @@ object RowLayouts {
 
 /**
  * Settings › Rows for the pages: each page's rows as the viewer set them, stored as they change ([RowLayoutStore]) and
- * told to the pages ([addListener]) so they rebuild their rows. Main thread.
+ * told to the pages ([addListener]) so they rebuild their rows. Main thread, but for [newInContinue].
  */
 class RowSettings(private val store: RowLayoutStore, private val newYear: (Kind) -> Int) {
 
@@ -224,6 +236,13 @@ class RowSettings(private val store: RowLayoutStore, private val newYear: (Kind)
 
     /** The rows [page] shows, in order. */
     fun rows(page: Page): List<RowSpec> = entries(page).filter { it.on }.map { it.spec }
+
+    /**
+     * Whether [page]'s Continue Watching has the caught-up shows' new episodes ([RowLayouts.newInContinue]): its Next
+     * Episodes row is off. Any thread: read from the store each time (the viewer's last change is there at once).
+     */
+    fun newInContinue(page: Page): Boolean =
+        RowLayouts.newInContinue(RowLayouts.entries(page, defaults(page), RowLayouts.decode(store.read(page)), newYear))
 
     /** Whether [page] has its default rows (Reset to default has nothing to do). */
     fun isDefault(page: Page): Boolean =

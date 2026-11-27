@@ -16,6 +16,8 @@ import app.fireplayer.vod.PlayRequest
 import app.fireplayer.vod.StartAt
 import app.fireplayer.vod.Sources
 import app.fireplayer.vod.TitleDetails
+import app.fireplayer.vod.WatchedRule
+import app.fireplayer.vod.endReached
 import app.fireplayer.vod.data.VodRepositories
 import app.fireplayer.vod.play.MainTicker
 import app.fireplayer.vod.play.FilmMode
@@ -101,6 +103,7 @@ import app.fireplayer.player.DisplaySwitch
 import app.fireplayer.player.FpsMeter
 import app.fireplayer.player.GraphicsTrim
 import app.fireplayer.player.JumpFrameCheck
+import app.fireplayer.player.JumpLine
 import app.fireplayer.player.LeaveSave
 import app.fireplayer.player.FrameRateMatcher
 import app.fireplayer.player.FreezeWatch
@@ -151,6 +154,7 @@ import app.fireplayer.ui.BarWatch
 import app.fireplayer.ui.CountdownPill
 import app.fireplayer.player.SkipTimes
 import app.fireplayer.player.MkvChapters
+import app.fireplayer.player.MkvJump
 import app.fireplayer.player.Segments
 import app.fireplayer.ui.DimmerWindow
 import app.fireplayer.ui.EpisodesSheet
@@ -479,6 +483,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private var controlsShown = false
     private var moreShown = false
     private var completed = false
+    /** Exit on the end card noted a video another app opened as watched to its end: leaving notes nothing more. */
+    private var endNoted = false
     /** The item playing before the latest switch, so a finished episode's resume point can be cleared. */
     private var playingIndex = 0
     /** Whether the current player was built with libass ("Keep embedded styling" on). */
@@ -1289,7 +1295,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         diag.fillBytes = built.fillBytes
         diag.note = ::diagNote
         p.addAnalyticsListener(diag)
-        p.setVideoFrameMetadataListener(JumpFrameCheck(fpsMeter, ::checkFrameAfterJump))
+        p.setVideoFrameMetadataListener(JumpFrameCheck(fpsMeter, ::firstFrameAfterBreak))
         fpsMeter.reset()
         p.pauseAtEndOfMediaItems = sleepAtEnd
         p.trackSelectionParameters = savedTrackParams ?: defaultTrackParams(p.trackSelectionParameters)
@@ -1334,6 +1340,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         previewGuard.reset()
         // TIME_UNSET starts VOD at the beginning and live at the live edge.
         try {
+            // A film starting part-way in (resumed): the log says where its first picture came against the sound.
+            if (position > 0L) jumpLogArm(position, start = true) else jumpLogAt = 0L
             p.setMediaItems(items, index, position)
             p.prepare()
             launchMark(LaunchLog.PLAYER)
@@ -1655,15 +1663,30 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val entry = entries.getOrNull(p.currentMediaItemIndex) ?: return
         val pos = p.currentPosition
         val dur = p.duration
-        val nearEnd = dur != C.TIME_UNSET && dur - pos < 3 * 60_000
+        val ends = endsOf(entry)
         // From the add-ons: the library keeps it by title and episode (never by link, nor in Glass Home's row yet).
         source?.let {
-            it.record(pos, if (dur == C.TIME_UNSET) 0L else dur, segments?.creditsAt)
+            it.record(pos, if (dur == C.TIME_UNSET) 0L else dur, ends?.creditsAt, ends?.sceneAt)
             return
         }
-        prefs.savePosition(entry.key, if (pos > 30_000 && !nearEnd && !p.isCurrentMediaItemLive) pos else 0L)
-        noteWatched(entry, pos, dur, finished = nearEnd, live = p.isCurrentMediaItemLive)
+        // Exit on the end card noted its end already ([exitAfterCredits]): leaving notes nothing more.
+        if (endNoted) return
+        // Watched to the end: the last 3 minutes, or with its credits (or a scene after them) known, those reached.
+        val finished = dur != C.TIME_UNSET && endReached(pos, dur, ends?.creditsAt, ends?.sceneAt)
+        prefs.savePosition(entry.key, if (pos > 30_000 && !finished && !p.isCurrentMediaItemLive) pos else 0L)
+        noteWatched(entry, pos, dur, finished = finished, live = p.isCurrentMediaItemLive)
     }
+
+    /**
+     * What's known of [entry]'s end for the watched rule ([app.fireplayer.vod.countsAsWatched]): its parts, with where
+     * its credits start and a real scene after them ([Segments.sceneAt]); null when none are known, or the ones kept are
+     * still another's.
+     */
+    private fun endsOf(entry: Entry?): Segments? =
+        segments?.takeIf { entry != null && segmentsFor?.startsWith(entry.key + "|") == true }
+
+    /** [endsOf] the video playing now. */
+    private fun currentEnds(): Segments? = endsOf(entries.getOrNull(player?.currentMediaItemIndex ?: -1))
 
     /**
      * Notes a film or episode for Glass Home's Continue Watching row (see [ContinueWatching]): where it is, how long it
@@ -1757,11 +1780,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // bring the title back. Leaving or moving on notes it, with the time played meanwhile.
         if (dur != C.TIME_UNSET && dur - pos < 3 * 60_000) return
         // The resume point too: behind Home, Fire OS stops FirePlayer outright when memory is short, without onStop.
+        val ends = endsOf(entry)
         source?.let {
             watchNotedAt = SystemClock.elapsedRealtime()
-            it.record(pos, if (dur == C.TIME_UNSET) 0L else dur, segments?.creditsAt)
+            it.record(pos, if (dur == C.TIME_UNSET) 0L else dur, ends?.creditsAt, ends?.sceneAt)
             return
         }
+        // Nor once it's watched to the end by its known credits (or the scene after them), for the same reason.
+        if (dur != C.TIME_UNSET && endReached(pos, dur, ends?.creditsAt, ends?.sceneAt)) return
         if (pos > 30_000 && !p.isCurrentMediaItemLive) prefs.savePosition(entry.key, pos)
         noteWatched(entry, pos, dur, finished = false, live = p.isCurrentMediaItemLive)
     }
@@ -1937,8 +1963,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             }
             completed = true
             if (s != null) {
-                // Watched to the end; the next episode then starts from its own sources, when there is one.
-                player?.duration?.takeIf { it > 0 }?.let { d -> s.record(d, d, segments?.creditsAt) }
+                // Watched to the end, recorded once; the next episode then starts from its own sources, when there is one.
+                val e = currentEnds()
+                player?.duration?.takeIf { it > 0 }?.let { d -> s.recordEnd(d, d, e?.creditsAt, e?.sceneAt) }
                 if (s.ended(prefs.playNextEpisode)) return
             } else {
                 prefs.savePosition(entries.getOrNull(player?.currentMediaItemIndex ?: 0)?.key ?: "", 0L)
@@ -1990,6 +2017,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         // The next episode's preloaded start is playing now: nothing more to load ahead.
         preloadNext(false)
+        // Its first picture isn't that of a jump made near the end of the last one.
+        if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) jumpLogAt = 0L
         val now = player?.currentMediaItemIndex ?: playingIndex
         if (seeking && reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO && now != playingIndex && seekOffsetMs < 0) {
             // The episode ended while a jump back in it was being lined up: make that jump instead of moving on.
@@ -2110,6 +2139,44 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     // Set by a jump the viewer made, used up by the first frame after it.
     private var frameCheckArmed = false
 
+    // The jump (or start part-way in) whose first picture the log's line waits for: when it was made (0: none waits),
+    // where it was to go and where the film went on from.
+    private var jumpLogAt = 0L
+    private var jumpLogTargetMs = 0L
+    private var jumpLogLandedMs = 0L
+    private var jumpLogStart = false
+    // What the film's reader had noted before it ([MkvJump]): a note that's another one by then is this jump's.
+    private var jumpLogNoteBefore: MkvJump.Mark? = null
+
+    /** A jump to [targetMs] is made (or, [start], a film set to start there): its first picture gets a line in the log. */
+    private fun jumpLogArm(targetMs: Long, start: Boolean = false) {
+        jumpLogAt = SystemClock.elapsedRealtime()
+        jumpLogTargetMs = targetMs
+        jumpLogLandedMs = targetMs
+        jumpLogStart = start
+        jumpLogNoteBefore = MkvJump.last
+    }
+
+    /**
+     * The first frame after a break in the frames ([JumpFrameCheck]), handed over to be shown at [shownAt]: the jump's
+     * line for the log when it's that jump's first picture ([JumpLine.own]), then its check.
+     */
+    private fun firstFrameAfterBreak(frameMs: Long, shownAt: Long) {
+        val at = jumpLogAt
+        if (at != 0L) {
+            val waited = shownAt - at
+            if (waited > JUMP_LOG_WINDOW_MS) {
+                // So long after, it's some other break's frame (the next episode's first), not this jump's.
+                jumpLogAt = 0L
+            } else if (JumpLine.own(frameMs, jumpLogLandedMs, shownAt, at)) {
+                jumpLogAt = 0L
+                val key = JumpLine.keyMs(MkvJump.last.takeIf { it !== jumpLogNoteBefore }, jumpLogLandedMs)
+                android.util.Log.i(TAG, JumpLine.text(jumpLogTargetMs, jumpLogLandedMs, frameMs, waited, key, jumpLogStart))
+            }
+        }
+        checkFrameAfterJump(frameMs)
+    }
+
     /**
      * The first frame after a jump came from later than where the film is (the jump landed on an index point that isn't
      * a keyframe; see [JumpFrameCheck]): the picture would hold there while the sound plays up to it. Jumping exactly to
@@ -2138,7 +2205,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // The start's timing, once: from OK (or this screen's start) to this first picture.
         if (!launch.done) {
             launchMark(LaunchLog.FRAME)
-            android.util.Log.i(PlaybackDiag.TAG, launch.line(launchNote))
+            // A first link checked ahead, as the viewer rested on what OK plays: said beside the steps (never a link).
+            val ahead = source?.session?.aheadNote()
+            android.util.Log.i(PlaybackDiag.TAG, launch.line(listOfNotNull(launchNote.ifEmpty { null }, ahead).joinToString(" · ")))
         }
         // The first picture of a new player or video, or after a jump: the glass copies it.
         backdrop?.frameChanged()
@@ -2169,6 +2238,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (reason == Player.DISCONTINUITY_REASON_SEEK) source?.jumped()
         // A jump of FirePlayer's own back into step isn't checked again.
         if (reason == Player.DISCONTINUITY_REASON_SEEK) frameCheckArmed = SystemClock.elapsedRealtime() - lastFrameFixAt > 1_000L
+        // The log's line for this jump, once its first picture shows; where it went on from, when that's a keyframe
+        // near where it was to go.
+        if (reason == Player.DISCONTINUITY_REASON_SEEK) jumpLogArm(newPosition.positionMs)
+        if (reason == Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT && jumpLogAt != 0L) jumpLogLandedMs = newPosition.positionMs
         // A jump while already waiting is a new wait (the state doesn't change), so the percentage starts again.
         if (reason == Player.DISCONTINUITY_REASON_SEEK) {
             restartPostPlayCount(newPosition.positionMs)
@@ -3266,17 +3339,27 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         return null
     }
 
-    /** Exit, after a film's credits: watched to the end, back to where it was opened from. */
+    /**
+     * Exit, after a film's credits: watched to the end, back to where it was opened from. With a known real scene after
+     * the credits still ahead (another source's than the credits', so the card came all the same), it leaves as Back
+     * does: where it is, by the watched rule's first point not watched, so it stays in Continue Watching for the scene.
+     */
     private fun exitAfterCredits() {
         val p = player ?: return
         hidePostPlay()
+        val e = currentEnds()
+        if (WatchedRule.sceneAhead(p.currentPosition, p.duration, e?.creditsAt, e?.sceneAt)) {
+            finishWithResult()
+            return
+        }
         completed = true
-        // From Films & Shows: the library marks it watched (the credits ran).
-        source?.let { s -> p.duration.takeIf { it > 0 }?.let { d -> s.record(d, d, segments?.creditsAt) } }
+        // From Films & Shows: the library marks it watched (the credits ran), once: leaving records nothing after it.
+        source?.let { s -> p.duration.takeIf { it > 0 }?.let { d -> s.recordEnd(d, d, e?.creditsAt, e?.sceneAt) } }
         entries.getOrNull(p.currentMediaItemIndex)?.let {
             prefs.savePosition(it.key, 0L)
             noteWatched(it, p.currentPosition, p.duration, finished = true, live = p.isCurrentMediaItemLive)
         }
+        endNoted = true
         finishWithResult()
     }
 
@@ -3504,7 +3587,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                     takeSegments(found)
                 }
                 if (found != null) android.util.Log.i("FirePlayerSegments", "From ${found.from}: recap ${found.recap}, " +
-                    "intro ${found.intro}, credits ${found.creditsAt}, after ${found.afterCredits}, to end ${found.creditsToEnd}")
+                    "intro ${found.intro}, credits ${found.creditsAt}, after ${found.afterCredits}, to end ${found.creditsToEnd}, " +
+                    "scene ${found.sceneAt}")
             }
         }
     }
@@ -3585,10 +3669,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val p = player ?: return
         val s = source
         if (s != null) {
-            // From Films & Shows: this one counts as watched (the credits began), and the next starts from its own
-            // sources, the same kind as this one's.
+            // From Films & Shows: this one counts as watched (the credits began; moving on is leaving any scene after
+            // them too), recorded once: the save as the next one starts records nothing after it. The next starts from
+            // its own sources, the same kind as this one's.
             hidePostPlay()
-            p.duration.takeIf { it > 0 }?.let { d -> s.record(maxOf(p.currentPosition, segments?.creditsAt ?: 0L), d, segments?.creditsAt) }
+            val e = currentEnds()
+            p.duration.takeIf { it > 0 }?.let { d ->
+                s.recordEnd(maxOf(p.currentPosition, e?.creditsAt ?: 0L, e?.sceneAt ?: 0L).coerceAtMost(d), d, e?.creditsAt, e?.sceneAt)
+            }
             s.ended(playNext = true)
             return
         }
@@ -7879,6 +7967,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         const val FRAME_AHEAD_MAX_MS = 20_000L
         const val FRAME_FIX_GAP_MS = 4_000L
         const val FRAME_CHECK_WINDOW_MS = 8_000L
+        /** A jump's first picture gets its line in the log when it shows within this of the jump. */
+        const val JUMP_LOG_WINDOW_MS = 60_000L
         /** Copies' measurements kept at most; past it they start again. */
         const val MAX_QUALITY_SEEN = 400
         const val SKIP_NOTE_FADE_MS = 250L

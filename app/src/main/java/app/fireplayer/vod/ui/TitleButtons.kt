@@ -38,6 +38,8 @@ class TitleButtons(context: Context, private val t: Tokens, private val listener
     interface Listener {
         fun onButton(which: Which)
         fun onButtonFocused(which: Which)
+        /** Focus left [which] (for anywhere: another button, the rows, the rail). */
+        fun onButtonLeft(which: Which) = Unit
         /** Down from the column's last row. */
         fun onButtonsDown(which: Which)
         /** Right out of the column. */
@@ -94,9 +96,9 @@ class TitleButtons(context: Context, private val t: Tokens, private val listener
         circles.addView(more, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply { leftMargin = gap })
         addView(circles, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply { topMargin = gap })
         for ((which, v) in order) {
-            if (v is Buttons.ActionPill) Tokens.focusEffect(v, Tokens.GROW_PILL, null) { has -> if (has) focused(which) }
+            if (v is Buttons.ActionPill) Tokens.focusEffect(v, Tokens.GROW_PILL, null) { has -> if (has) focused(which) else listener.onButtonLeft(which) }
             else (v.parent as? Buttons.RoundButton)?.let { rb ->
-                Tokens.focusEffect(v, Tokens.GROW_CIRCLE, rb.label) { has -> if (has) focused(which) }
+                Tokens.focusEffect(v, Tokens.GROW_CIRCLE, rb.label) { has -> if (has) focused(which) else listener.onButtonLeft(which) }
             }
             v.setOnKeyListener { _, keyCode, event -> onKey(which, v, keyCode, event) }
         }

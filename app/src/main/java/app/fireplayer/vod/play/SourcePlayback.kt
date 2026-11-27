@@ -169,6 +169,8 @@ class SourcePlayback(
     private var lengthJudged = false
     /** The viewer jumped in the copy playing since its first frame: an end they jumped to is theirs ([PlayRules.copyEnd]). */
     private var copyJumped = false
+    /** The play's end is recorded ([recordEnd]): nothing more is, until a jump lands ([jumped]). */
+    private var endRecorded = false
     /** The copy the viewer chose in a Sources window: it may play though it's shorter than the film ([lengthKnown]). */
     private var chosenKey: String? = request.chosen?.key?.takeIf { request.origin == PlayOrigin.SOURCES_PANEL }
 
@@ -430,11 +432,15 @@ class SourcePlayback(
         checkStalls(now)
     }
 
-    /** A seek, a resume or a rebuilt player: stalls right after it don't count. */
+    /**
+     * A seek, a resume or a rebuilt player: stalls right after it don't count, and an end recorded before it
+     * ([recordEnd]) is no longer where the film is: its place is recorded again.
+     */
     fun jumped() {
         session.stalls.jumped(ticker.now())
         aid.reset()
         if (copyFrameAt != null) copyJumped = true
+        endRecorded = false
     }
 
     /**
@@ -749,14 +755,27 @@ class SourcePlayback(
     // ---- The library and the next episode --------------------------------------------------------------------------
 
     /**
-     * Where playback is (on leaving, and now and then): the resume point, Continue Watching and the watched mark. Never
-     * from a copy that isn't the whole film, nor an end from one a switch started at or past its own end
+     * Where playback is (on leaving, and now and then): the resume point, Continue Watching and the watched mark, by
+     * the watched rule with what's known of this file's end ([creditsAtMs], [sceneAtMs]: [app.fireplayer.vod.countsAsWatched]).
+     * Never from a copy that isn't the whole film, nor an end from one a switch started at or past its own end
      * ([PlayRules.keepsPlace]): the film's own place, kept before, stays.
      */
-    fun record(positionMs: Long, durationMs: Long, creditsAtMs: Long?) {
-        if (!everPlayed || durationMs <= 0 || notWholeNow) return
-        if (!PlayRules.keepsPlace(copyEnd(durationMs), copyStartMs, positionMs, durationMs, creditsAtMs)) return
-        library.recordPlayback(request.target.title, request.target.episode, positionMs, durationMs, creditsAtMs)
+    fun record(positionMs: Long, durationMs: Long, creditsAtMs: Long?, sceneAtMs: Long? = null) {
+        // Its end recorded already ([recordEnd]): what's saved as it goes (leaving, the screen stopping, the next episode
+        // starting) records nothing more. Where it then stands (short of a scene still ahead, say) would undo that end,
+        // leaving it marked watched and back in Continue Watching at once, its kept copy forgotten meanwhile.
+        if (endRecorded || !everPlayed || durationMs <= 0 || notWholeNow) return
+        if (!PlayRules.keepsPlace(copyEnd(durationMs), copyStartMs, positionMs, durationMs, creditsAtMs, sceneAtMs)) return
+        library.recordPlayback(request.target.title, request.target.episode, positionMs, durationMs, creditsAtMs, sceneAtMs)
+    }
+
+    /**
+     * The play's end, recorded once ([record]) as it goes: played to its end, or Exit or Next episode on the end card.
+     * Nothing recorded after it on the way out, unless a jump lands since ([jumped]: where it lands is the place again).
+     */
+    fun recordEnd(positionMs: Long, durationMs: Long, creditsAtMs: Long?, sceneAtMs: Long? = null) {
+        record(positionMs, durationMs, creditsAtMs, sceneAtMs)
+        endRecorded = true
     }
 
     /** Called as it plays: in the last ~4 minutes of an episode, the next one's sources are looked up once. */

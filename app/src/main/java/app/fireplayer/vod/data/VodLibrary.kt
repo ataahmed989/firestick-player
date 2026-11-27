@@ -143,6 +143,14 @@ class MemoryLibraryStore : LibraryStore {
  *
  * What [keptWithCopy] keeps for a film or episode is forgotten with the copy it was left on, as the title leaves
  * Continue Watching ([left]).
+ *
+ * Watched: what the player decided where it stopped ([recordProgress]'s watched mark, by the watched rule,
+ * [app.fireplayer.vod.countsAsWatched]) and the marks set since. A stop in the last 3 minutes with no mark since is held
+ * open ([Position.held]): its known credits (or a scene after them) weren't reached. Nothing else is stored for it.
+ *
+ * A caught-up show's new episode (Next Episodes') is in Continue Watching instead where the page's Next Episodes row is
+ * off ([continueWatching]'s withNew); [newInContinue] says whether any page's is, for the questions asked of the title
+ * alone ([inContinueWatching], [continueCard], Mark unwatched's "was it in Continue Watching").
  */
 class VodLibrary(
     private val store: LibraryStore,
@@ -150,6 +158,7 @@ class VodLibrary(
     private val writer: Executor,
     private val episodesOf: (Title) -> List<Episode>? = { null },
     private val keptWithCopy: KeptWithCopy? = null,
+    private val newInContinue: () -> Boolean = { false },
     private val changed: () -> Unit,
 ) {
     private val lock = Any()
@@ -296,7 +305,8 @@ class VodLibrary(
     fun unwatchEpisodes(episodes: List<Episode>, at: Episode) {
         val list = (episodes + at).distinctBy { it.id }
         val showId = at.showId
-        val wasIn = continueEntry(Kind.SERIES, showId) != null
+        val withNew = newInContinue()
+        val wasIn = continueEntry(Kind.SERIES, showId, withNew) != null
         // The show's episodes as Continue Watching reads them (outside the lock): whether the marks cleared bring it in.
         val lists = state { progress[key(Kind.SERIES, showId)] }?.let { episodesFor(listOf(it)) }.orEmpty()
         val change = state {
@@ -311,7 +321,7 @@ class VodLibrary(
                     val about = isAbout(p, list)
                     // Not in Continue Watching and not about these: left as it is, unless the marks cleared would now
                     // bring the show in (an episode after its record's, of a show done): then kept out as one about them.
-                    if (!wasIn && !about && (p.hidden || entryOf(p, upOf(p, lists, clock())) == null)) return@let null
+                    if (!wasIn && !about && (p.hidden || entryOf(p, upOf(p, lists, clock()), withNew) == null)) return@let null
                     val length = lengthOf(showId, at.ref, at.runtimeMin, p)
                     keepOut(p, wasIn)
                     val moved = p.copy(episode = at.ref, positionMs = 0, durationMs = length, hidden = !wasIn)
@@ -362,13 +372,13 @@ class VodLibrary(
      * carries its progress and caption ("12m left", "S2 E5 · 12m left"; a show gone on to its next episode "S3 E1", with
      * no progress until that one has been played).
      */
-    fun continueWatching(kind: Kind?): List<Card> = continueEntries(kind).map { cardOf(it) }
+    fun continueWatching(kind: Kind?, withNew: Boolean = newInContinue()): List<Card> = continueEntries(kind, withNew).map { cardOf(it) }
 
     /**
      * [kind]/[id]'s Continue Watching card as [continueWatching] has it now; null when it isn't in it. A page changes
      * that one card in place with it (Mark unwatched: back to 0:00), with no reload of its rows.
      */
-    fun continueCard(kind: Kind, id: String): Card? = continueEntry(kind, id)?.let { cardOf(it) }
+    fun continueCard(kind: Kind, id: String): Card? = continueEntry(kind, id, newInContinue())?.let { cardOf(it) }
 
     private fun cardOf(p: Progress) = Card(
         title = p.title,
@@ -384,25 +394,41 @@ class VodLibrary(
      * whose episode is over (finished, or marked watched since) goes on with the next ([UpNext.of]: across seasons, from
      * that episode's own resume point, else its start), is kept as it was while its episodes aren't known here (not
      * once the whole show is marked watched since), and leaves when no episode after it is left to watch, or when the
-     * next aired only after it was over ([nextEpisodes]).
+     * next aired only after it was over ([nextEpisodes]). With [withNew] (the page's Next Episodes row is off), that new
+     * episode is in it instead, from its start, placed by when it came out (its air date) among the others' last plays.
      */
-    fun continueEntries(kind: Kind? = null): List<Progress> {
+    fun continueEntries(kind: Kind? = null, withNew: Boolean = newInContinue()): List<Progress> =
+        continueLists(kind, listOf(withNew)).single()
+
+    /**
+     * [continueEntries] of [kind] once for each of [withNew] (pages whose Next Episodes rows differ), from one reading:
+     * each show's episodes are read once, and every list is of one moment.
+     */
+    fun continueLists(kind: Kind?, withNew: List<Boolean>): List<List<Progress>> {
         val now = clock()
         val open = state { progress.values.filter { !it.hidden && (kind == null || it.title.kind == kind) }.sortedByDescending { it.at } }
         val lists = episodesFor(open)
-        return state { open.mapNotNull { entryOf(it, upOf(it, lists, now)) } }
+        // Sorted again: a new episode's entry is placed by its air date. Only those move (the sort is stable).
+        return state {
+            val ups = open.map { it to upOf(it, lists, now) }
+            withNew.map { w -> ups.mapNotNull { (p, up) -> entryOf(p, up, w) } }
+        }.map { entries -> entries.sortedByDescending { it.at } }
     }
 
-    /** [kind]/[id]'s entry in Continue Watching ([continueEntries]), reading only its own show's episodes; null: not in it. */
-    fun continueEntry(kind: Kind, id: String): Progress? {
+    /**
+     * [kind]/[id]'s entry in Continue Watching ([continueEntries], [withNew] as there), reading only its own show's
+     * episodes; null: not in it.
+     */
+    fun continueEntry(kind: Kind, id: String, withNew: Boolean = newInContinue()): Progress? {
         val now = clock()
         val p = state { progress[key(kind, id)]?.takeIf { !it.hidden } } ?: return null
         val lists = episodesFor(listOf(p))
-        return state { entryOf(p, upOf(p, lists, now)) }
+        return state { entryOf(p, upOf(p, lists, now), withNew) }
     }
 
-    /** Whether [id] is in Continue Watching ([continueEntries]), either kind. */
-    fun inContinueWatching(id: String): Boolean = Kind.entries.any { continueEntry(it, id) != null }
+    /** Whether [id] is in Continue Watching ([continueEntries], [withNew] as there), either kind. */
+    fun inContinueWatching(id: String, withNew: Boolean = newInContinue()): Boolean =
+        Kind.entries.any { continueEntry(it, id, withNew) != null }
 
     /** Takes [id] out of Continue Watching; its resume point stays (and it comes back when played again). */
     fun removeFromContinueWatching(id: String) {
@@ -418,10 +444,15 @@ class VodLibrary(
 
     /**
      * Where playback of [title] stopped (playback, step 3): it goes to the front of Continue Watching, back in it if it
-     * was taken out; a series' [episode] keeps its own position too. A finished position ([Position.finished]) also
-     * marks the film or the episode watched. One call of [changed]. Any thread.
+     * was taken out; a series' [episode] keeps its own position too. [watched] is the decision that marks the film or
+     * the episode watched, in the same write: the player's, by the watched rule ([app.fireplayer.vod.countsAsWatched]);
+     * by default a finished position (the last 3 minutes). A stop in the last 3 minutes not counted as watched gets no
+     * mark, and is held open by that ([Position.held]). One call of [changed]. Any thread.
      */
-    fun recordProgress(title: Title, episode: EpisodeRef?, positionMs: Long, durationMs: Long, watched: Boolean = false) {
+    fun recordProgress(
+        title: Title, episode: EpisodeRef?, positionMs: Long, durationMs: Long,
+        watched: Boolean = Position.inLastMinutes(positionMs.coerceAtLeast(0), durationMs.coerceAtLeast(0)),
+    ) {
         val pos = positionMs.coerceAtLeast(0)
         val dur = durationMs.coerceAtLeast(0)
         val (entry, own, mark) = state {
@@ -433,7 +464,7 @@ class VodLibrary(
             } else {
                 null
             }
-            val mark = if (watched || Position(pos, dur, at).finished) {
+            val mark = if (watched) {
                 val id = own?.id ?: title.id
                 Watched(title.kind, id, stamp(), true).also { this.watched[key(title.kind, id)] = it }
             } else {
@@ -445,7 +476,8 @@ class VodLibrary(
         val change = LibraryStore.Change(watched = listOfNotNull(mark), positions = listOfNotNull(own), progress = listOf(entry))
         writer.execute { runCatching { store.saveAll(change) } }
         changed()
-        // Watched to the end or into the credits: a film leaves Continue Watching, a show at its last episode.
+        // Watched (to the end, or into known credits or the scene after them): a film leaves Continue Watching, a show
+        // at its last episode.
         if (mark != null) forgetIfOut(title.kind, title.id)
     }
 
@@ -501,7 +533,8 @@ class VodLibrary(
     /**
      * Next Episodes: shows played (not taken out of Continue Watching) whose next episode ([UpNext.of]) aired only after
      * their episode was over, a new episode of a show the viewer had caught up on, with that episode; the latest played
-     * first. Continue Watching has the shows that go on with an episode aired before; never both.
+     * first. Continue Watching has the shows that go on with an episode aired before; never both. A page whose Next
+     * Episodes row is off has these in its Continue Watching instead ([continueEntries]' withNew).
      */
     fun nextEpisodes(): List<Pair<Title, Episode>> {
         val now = clock()
@@ -543,7 +576,7 @@ class VodLibrary(
      */
     fun lastPlayed(kind: Kind, id: String): LastPlayed? = state {
         val p = progress[key(kind, id)] ?: return@state null
-        LastPlayed(p.episode, Position(p.positionMs, p.durationMs, p.at), p.hidden, markedSince(p))
+        LastPlayed(p.episode, positionOf(p), p.hidden, markedSince(p))
     }
 
     /**
@@ -551,10 +584,10 @@ class VodLibrary(
      * when it is about that episode. Null when never played.
      */
     fun positionOf(episode: Episode): Position? = state {
-        positions[episode.id]?.let { return@state Position(it.positionMs, it.durationMs, it.at) }
+        positions[episode.id]?.let { return@state positionOf(it) }
         val p = progress[key(Kind.SERIES, episode.showId)] ?: return@state null
         val ref = p.episode ?: return@state null
-        if (ref.season == episode.season && ref.episode == episode.episode) Position(p.positionMs, p.durationMs, p.at) else null
+        if (ref.season == episode.season && ref.episode == episode.episode) positionOf(p) else null
     }
 
     /**
@@ -617,9 +650,29 @@ class VodLibrary(
         return watched.none { (k, w) -> w.at > mark.at && k.startsWith(prefix) }
     }
 
-    /** Show record [p]'s episode is over: finished ([Position.finished]), or marked watched since ([LastPlayed.finished]). */
+    /**
+     * Show record [p]'s episode is over: finished ([Position.finished]), or marked watched since ([LastPlayed.finished]).
+     * A finished stop was marked watched in the same write ([recordProgress]), and one held open isn't finished.
+     */
     private fun isOver(p: Progress): Boolean = p.title.kind == Kind.SERIES && p.episode != null &&
-        (markSince(p) != null || Position(p.positionMs, p.durationMs, p.at).finished)
+        (markSince(p) != null || positionOf(p).finished)
+
+    /** Where record [p] stopped: held open when in the last 3 minutes with no watched mark since ([Position.held]). */
+    private fun positionOf(p: Progress): Position =
+        Position(p.positionMs, p.durationMs, p.at, held = Position.inLastMinutes(p.positionMs, p.durationMs) && markSince(p) == null)
+
+    /**
+     * Where episode position [e] stopped, held as a record is ([positionOf]): no mark since, its own or the whole show's
+     * (one played had aired, so the show's covers it).
+     */
+    private fun positionOf(e: EpisodePosition): Position {
+        val held = Position.inLastMinutes(e.positionMs, e.durationMs) && run {
+            val own = watched[key(Kind.SERIES, e.id)]
+            val show = watched[key(Kind.SERIES, e.id.substringBefore(':'))]
+            listOfNotNull(own, show).maxByOrNull { it.at }?.takeIf { it.watched && it.at >= e.at } == null
+        }
+        return Position(e.positionMs, e.durationMs, e.at, held)
+    }
 
     /**
      * Where record [p] goes on ([UpNext.of]); a show's episode is over ([isOver]) when marked watched since, else when
@@ -631,15 +684,19 @@ class VodLibrary(
         return UpNext.of(ep, true, markSince(p)?.at ?: p.at, lists[p.title.id], now) { e -> episodeMark(e.id, e.released)?.watched == true }
     }
 
-    /** [p] as Continue Watching shows it after [up] ([continueEntries]); null when it isn't there. */
-    private fun entryOf(p: Progress, up: UpNext.Up): Progress? = when (up) {
+    /**
+     * [p] as Continue Watching shows it after [up] ([continueEntries]); null when it isn't there. A new episode ([up]
+     * fresh: Next Episodes') only [withNew], at its air date when that's later than [p]'s last play.
+     */
+    private fun entryOf(p: Progress, up: UpNext.Up, withNew: Boolean): Progress? = when (up) {
         UpNext.Up.Own -> p.takeUnless { markedSince(it) }
         // Kept while its episodes aren't known, unless the whole show was marked watched since: then never in it.
         UpNext.Up.Unknown -> p.takeUnless { overByShowMark(it) }
-        is UpNext.Up.Next -> if (up.fresh) null else {
+        is UpNext.Up.Next -> if (up.fresh && !withNew) null else {
             // From the next episode's own resume point when it has one, else its start: as its card plays it.
-            val own = positions[up.episode.id]?.takeIf { Position(it.positionMs, it.durationMs, it.at).resumable }
-            p.copy(episode = up.episode.ref, positionMs = own?.positionMs ?: 0L, durationMs = own?.durationMs ?: 0L)
+            val own = positions[up.episode.id]?.let { positionOf(it) }?.takeIf { it.resumable }
+            val at = if (up.fresh) maxOf(p.at, up.episode.released ?: p.at) else p.at
+            p.copy(episode = up.episode.ref, positionMs = own?.positionMs ?: 0L, durationMs = own?.durationMs ?: 0L, at = at)
         }
         UpNext.Up.Done -> null
     }

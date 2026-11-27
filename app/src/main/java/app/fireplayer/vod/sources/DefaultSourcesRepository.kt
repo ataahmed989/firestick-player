@@ -15,6 +15,7 @@ import android.os.Process
 import android.os.SystemClock
 import app.fireplayer.player.CopyHealth
 import app.fireplayer.player.CopyLanguage
+import app.fireplayer.player.FilmRoom
 import app.fireplayer.player.MediaSpec
 import app.fireplayer.vod.Addon
 import app.fireplayer.vod.AddonSettings
@@ -96,6 +97,8 @@ class DefaultSourcesRepository(
     private val seasonEpisodes: (app.fireplayer.vod.Title, Int) -> Int? = { _, _ -> null },
     /** The engine's few log lines ([SourceLog]: fingerprints, never a link or a key); Log.i on the device. */
     private val log: (String) -> Unit = { android.util.Log.i(SourceLog.TAG, it) },
+    /** A film's player is up ([app.fireplayer.player.FilmRoom.film]): no link is checked ahead then ([prepare]). */
+    private val filmPlays: () -> Boolean = { false },
 ) : SourcesRepository {
 
     private class Answer(val parsed: ParsedAnswer, val keepUntil: Long)
@@ -145,6 +148,9 @@ class DefaultSourcesRepository(
     /** When FirePlayer last opened a link (it may have added a torrent to the debrid service): the "just added" rule. */
     internal var lastAddAt = Long.MIN_VALUE / 2
 
+    /** The link of the one copy OK would play, checked while the viewer rests on it ([prepare]). */
+    internal val prep = LinkPrep(this, filmPlays, log)
+
     // ---- SourcesRepository ----
 
     override fun cached(target: SourceTarget): SourceList? {
@@ -154,11 +160,23 @@ class DefaultSourcesRepository(
         return listOf(entry)
     }
 
+    /**
+     * Whether [target]'s list is held in memory now, just as it was last shown: some add-on's answer is kept (a title
+     * page's look-up, a play's, one kept from a recent look) and nothing of it has run out. A link is checked ahead only
+     * from such a list ([LinkPrep]): nothing is looked up for it. Read only: a list partly run out isn't held (dropping
+     * that part would rank it again and change what a title page shows, with nothing asking that add-on again).
+     */
+    internal fun holds(target: SourceTarget): Boolean {
+        val entry = entries[target.key] ?: return false
+        return entry.answers.isNotEmpty() && !runOut(entry)
+    }
+
     override fun lookUp(target: SourceTarget, why: LookupWhy, only: Addon?, onList: (SourceList) -> Unit): Cancel {
         val entry = entryFor(target)
         val sub = Sub(why, only, onList)
         entry.subs += sub
-        expire(entry)
+        // A pick for a link checked ahead reads the list as it's held ([holds]), later too: it drops nothing.
+        if (why != LookupWhy.AHEAD) expire(entry)
         onList(listOf(entry))
         val start = Runnable {
             sub.start = null
@@ -179,9 +197,18 @@ class DefaultSourcesRepository(
         }
     }
 
-    override fun session(request: PlayRequest): SourceSession = DefaultSourceSession(request, this)
+    override fun session(request: PlayRequest): SourceSession {
+        // A play begins: it picks for itself; a link checked ahead for it waits to be taken, another title's goes.
+        val session = DefaultSourceSession(request, this)
+        prep.handOver(request.target, session)
+        return session
+    }
+
+    override fun prepare(request: PlayRequest): Cancel = prep.start(request)
 
     override fun forget() {
+        // Links are tied to the connection and the add-ons that made them.
+        prep.drop()
         for (entry in entries.values.toList()) {
             entry.calls.values.toList().forEach { cancelCall(it, notify = false) }
             entry.answers.clear()
@@ -193,7 +220,8 @@ class DefaultSourcesRepository(
             entry.lastUsed = null
             entry.rankedFrom = emptySet()
             entry.version++
-            val live = entry.subs.filterNot { it.cancelled || it.start != null }
+            // A pick for a link checked ahead asks nothing ([LookupWhy.AHEAD]): only the others' look-ups go on.
+            val live = entry.subs.filterNot { it.cancelled || it.start != null || it.why == LookupWhy.AHEAD }
             if (live.isEmpty()) {
                 if (entry.subs.isEmpty()) entries.remove(entry.target.key)
                 continue
@@ -314,6 +342,8 @@ class DefaultSourcesRepository(
     }
 
     private fun ask(entry: Entry, why: LookupWhy, only: Addon?) {
+        // A pick for a link checked ahead follows only the list held ([LinkPrep]): nothing is asked for it.
+        if (why == LookupWhy.AHEAD) return
         expire(entry)
         var changed = false
         for (addon in Addon.entries) {
@@ -475,6 +505,14 @@ class DefaultSourcesRepository(
             (entry.states[addon] as? AddonState.Busy)?.let { if (now >= it.until) entry.states.remove(addon) }
         }
         if (dropped) rebuild(entry)
+    }
+
+    /** Whether [expire] would drop or end anything of [entry] now (read only). */
+    private fun runOut(entry: Entry): Boolean {
+        val now = elapsed()
+        return entry.answers.values.any { now >= it.keepUntil } ||
+            entry.failedAt.any { (addon, at) -> now - at >= FAILED_FINAL_MS && entry.calls[addon] == null } ||
+            entry.states.values.any { it is AddonState.Busy && now >= it.until }
     }
 
     // ---- The list ----
@@ -679,6 +717,7 @@ class DefaultSourcesRepository(
                 lineMbps = { LineRate.of(budgetPrefs, two = viewer.fasterDownloads).current() },
                 preferredMbps = { viewer.preferredMbps.toDouble() },
                 checks = checks,
+                filmPlays = { FilmRoom.film != null },
             )
             engine = made
             // A new plan for this TV (Settings › This TV): the lists kept in memory rank again; and as a title's own

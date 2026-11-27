@@ -14,7 +14,13 @@ import app.fireplayer.subs.SyncMapping
  */
 object SkipRules {
 
-    enum class Part { INTRO, RECAP, OUTRO, PREVIEW }
+    /**
+     * The parts asked for. [PREVIEW] is whatever follows the credits that the buttons and end card go by: SkipDB's
+     * "preview" (a "Next time on…" teaser) or else IntroDB's "post_credits", as always. [SCENE] is IntroDB's
+     * "post_credits" alone (a film's post-credits scene; SkipDB has no such part): the watched rule waits for it
+     * ([Segments.sceneAt]), never for a teaser.
+     */
+    enum class Part { INTRO, RECAP, OUTRO, PREVIEW, SCENE }
 
     /** What a source says about one part: found where, said not to exist, not known, or not trusted for this file. */
     sealed class Pick {
@@ -90,7 +96,7 @@ object SkipRules {
         if (s == null) return Pick.Missing
         if (s.confidence < INTRODB_MIN_CONFIDENCE) return Pick.Rejected("confidence ${s.confidence}")
         when (part) {
-            Part.OUTRO, Part.PREVIEW -> if (!evidence.creditsEndHere) return Pick.Rejected("credits don't end where this file does")
+            Part.OUTRO, Part.PREVIEW, Part.SCENE -> if (!evidence.creditsEndHere) return Pick.Rejected("credits don't end where this file does")
             Part.INTRO, Part.RECAP -> {
                 val signs = listOf(evidence.tmdbAgrees, evidence.creditsEndHere, s.confidence >= INTRODB_SURE).count { it }
                 if (signs < 2) return Pick.Rejected("only $signs sign the times fit this file")
@@ -111,6 +117,15 @@ object SkipRules {
         outro != null && duration > 0 && outro.confidence >= INTRODB_MIN_CONFIDENCE &&
             Math.abs(duration - outro.end) <= OUTRO_ANCHOR_MS
 
+    /**
+     * What there is to go on for IntroDB's post-credits [scene] as a [Part.SCENE] (the watched rule's alone): its
+     * credits ending where this file does ([evidence]), or the scene itself ending there. A film's scene after the
+     * scroll runs to the end, so IntroDB's credits end where it starts, not where the file does (Guardians of the
+     * Galaxy: credits 6852..7210 s, scene 7210..7239 s). The buttons' parts keep their own evidence ([Part.PREVIEW]).
+     */
+    fun sceneEvidence(evidence: Evidence, scene: IntroDbSegment?, duration: Long): Evidence =
+        if (evidence.creditsEndHere || !outroAnchors(scene, duration)) evidence else Evidence(evidence.tmdbAgrees, true)
+
     /** Times that make sense for this part of a file [duration] long; anything else is rejected. */
     fun fits(part: Part, start: Long, end: Long, duration: Long): Pick {
         if (duration <= 0) return Pick.Rejected("no length")
@@ -118,7 +133,7 @@ object SkipRules {
         // Credits (and what follows them) may end as far past this file's end as [outroAnchors] lets them end from it:
         // a file a few seconds shorter than the one they were timed on (1558 s against IntroDB's 1561 s) still has them,
         // cut at its end. Anything else gets the usual few seconds.
-        val slack = if (part == Part.OUTRO || part == Part.PREVIEW) maxOf(END_SLACK_MS, OUTRO_ANCHOR_MS) else END_SLACK_MS
+        val slack = if (part == Part.OUTRO || part == Part.PREVIEW || part == Part.SCENE) maxOf(END_SLACK_MS, OUTRO_ANCHOR_MS) else END_SLACK_MS
         if (end > duration + slack) return Pick.Rejected("ends past the file")
         val e = minOf(end, duration)
         return when (part) {
@@ -133,7 +148,7 @@ object SkipRules {
                 e - start < OUTRO_MIN_MS -> Pick.Rejected("too short")
                 else -> Pick.Found(start, e)
             }
-            Part.PREVIEW -> if (start < duration / 2) Pick.Rejected("not in the second half") else Pick.Found(start, e)
+            Part.PREVIEW, Part.SCENE -> if (start < duration / 2) Pick.Rejected("not in the second half") else Pick.Found(start, e)
         }
     }
 
@@ -179,7 +194,8 @@ object SkipRules {
 
     /**
      * Where the parts are, for the buttons; null when nothing was found. Something after the credits (they end well
-     * before the file does, or a preview follows them) is kept to be watched: no end card, Skip credits instead.
+     * before the file does, or a preview follows them) is kept to be watched: no end card, Skip credits instead. A
+     * post-credits scene ([Part.SCENE]) is also kept as such, for the watched rule ([Segments.sceneAt]).
      */
     fun segments(picks: Map<Part, Pick>, duration: Long, from: String): Segments? {
         fun found(p: Part) = picks[p] as? Pick.Found
@@ -187,6 +203,7 @@ object SkipRules {
         val recap = found(Part.RECAP)
         val outro = found(Part.OUTRO)
         val preview = found(Part.PREVIEW)
+        val scene = found(Part.SCENE)
         var after: Long? = null
         var toEnd = false
         if (outro != null) {
@@ -194,10 +211,11 @@ object SkipRules {
             else if (preview != null && preview.start >= outro.start) after = maxOf(preview.start, outro.start + 1)
             toEnd = after == null && duration - outro.end <= TO_END_MS
         }
-        if (intro == null && recap == null && outro == null) return null
+        // A scene known alone still counts for the watched rule; it shows no button.
+        if (intro == null && recap == null && outro == null && scene == null) return null
         return Segments(
             recap?.let { it.start..it.end }, intro?.let { it.start..it.end },
-            outro?.start, after, from, toEnd,
+            outro?.start, after, from, toEnd, sceneAt = scene?.start,
         )
     }
 }

@@ -141,7 +141,9 @@ object PlayerFactory {
 
     /**
      * Jumps land on a keyframe up to 2 s before the time asked for (never after; 2 s before when there's none in
-     * between), so less video has to be downloaded and decoded before the picture moves.
+     * between), so less video has to be downloaded and decoded before the picture moves. In an MKV the keyframes are
+     * the video track's own, as the file's index lists them ([CueReader]): the film is read from the keyframe, so the
+     * picture starts with the sound, and is decoded on from it only when the jump lands after it.
      */
     val FILM_SEEK = SeekParameters(2_000_000L, 0L)
 

@@ -42,6 +42,12 @@ import java.util.IdentityHashMap
 internal class DefaultSourceSession(
     override val request: PlayRequest,
     private val repo: DefaultSourcesRepository,
+    /**
+     * Only picks, for a link checked ahead ([LinkPrep]: the viewer rests on what OK plays): the copy and its first offer
+     * its play would check are handed here in place of checking (nothing else follows; it only follows the list the
+     * engine holds, [LookupWhy.AHEAD]: nothing is asked, and nothing is kept in the engine). Null for a play.
+     */
+    private val pickOnly: ((PlaybackSource, Offer) -> Unit)? = null,
 ) : SourceSession {
 
     private val target: SourceTarget = request.target
@@ -130,6 +136,19 @@ internal class DefaultSourceSession(
     private val starts = ArrayList<Pair<PlaybackSource, Offer>>()
     private val unknownBy = EnumMap<Addon, MutableSet<String>>(Addon::class.java)
     private val ops = ArrayList<Op>()
+
+    /** This play's first link check asked for a link checked ahead ([LinkPrep.claim]); only that one ever does. */
+    private var aheadAsked = false
+    /** The first link came checked ahead ([LinkPrep]), in plain words for the start's line ([aheadNote]); null: it didn't. */
+    private var aheadWords: String? = null
+
+    /** A copy handed out with a link checked ahead and kept a while ([LinkPrep]), and where it was to start ([near]). */
+    private class Ahead(val source: PlaybackSource, val offer: Offer, val near: Boolean)
+
+    /** The copy whose link was kept ahead, until its first frame or a failure ([failed]). */
+    private var keptAhead: Ahead? = null
+    /** That link turned out refused: the player's refresh checks the same copy afresh ([refresh]). */
+    private var aheadAgain: Ahead? = null
 
     /** One [open] or [fetch]: progress, then one final answer; nothing after [cancel]. */
     private inner class Op(private val onOpened: (Opened) -> Unit) : Cancel {
@@ -230,8 +249,13 @@ internal class DefaultSourceSession(
         val op = Op(onOpened)
         ops += op
         val from = addon ?: offerOf(source)?.addon ?: source.offers.firstOrNull()?.addon
+        val again = aheadAgain?.takeIf { it.source.key == source.key }
+        aheadAgain = null
         when {
             closed -> op.final(Opened.NoneLeft(FailureWords.NONE_READY))
+            // The link kept ahead was refused: the same copy, its offers in the same order, checked now as if none had
+            // been kept (no new look-up, and not the table's one refresh).
+            again != null -> check(op, again.source, OpenWhy.START, again.near, countTry = false)
             from == null -> {
                 skip(source, hash = false)
                 pick(op, OpenWhy.FAILED)
@@ -242,8 +266,11 @@ internal class DefaultSourceSession(
     }
 
     override fun started(source: PlaybackSource, offer: Offer) {
+        // Its film has begun: rests are no longer held back for this play's start ([LinkPrep.handOver]).
+        if (!startedOnce) repo.prep.ended(this)
         startedOnce = true
         firstPick = false
+        keptAhead = null
         playing = source
         playingOffer = offer
         opened = source
@@ -278,6 +305,17 @@ internal class DefaultSourceSession(
     }
 
     override fun failed(source: PlaybackSource, failure: Failure): Step {
+        // A link checked ahead and kept a while ([LinkPrep]) that the player couldn't open before its first frame: it
+        // may have gone stale. Nothing is counted against the copy: its link is checked afresh, once, as if none had been
+        // kept (the player's refresh: [refresh]); anything after that follows the table as ever.
+        keptAhead?.let { a ->
+            keptAhead = null
+            if (!startedOnce && failure.kind in AHEAD_STALE && a.source.key == source.key && offerOf(source) === a.offer) {
+                aheadAgain = a
+                aheadWords = "$aheadWords, refused by then: checked again"
+                return Step.Refresh
+            }
+        }
         tries += Attempt(source, repo.wall(), currentWhy, failure)
         val step = stepFor(source, failure)
         listener?.invoke()
@@ -335,6 +373,8 @@ internal class DefaultSourceSession(
 
     override fun resumeMiss(): String? = resumeMissed
 
+    override fun aheadNote(): String? = aheadWords
+
     override fun opensLeft(s: PlaybackSource, o: Offer): Boolean {
         val p = request.preferred ?: return false
         if (p.openedBy(s, o)) return true
@@ -365,6 +405,7 @@ internal class DefaultSourceSession(
     override fun close() {
         if (closed) return
         closed = true
+        repo.prep.ended(this)
         widening?.let { repo.main.remove(it) }
         widening = null
         listSub?.cancel()
@@ -613,7 +654,7 @@ internal class DefaultSourceSession(
         if (listSub != null && listOnly == only) return
         listSub?.cancel()
         listOnly = only
-        listSub = repo.lookUp(target, LookupWhy.PLAY, only) { l ->
+        listSub = repo.lookUp(target, if (pickOnly != null) LookupWhy.AHEAD else LookupWhy.PLAY, only) { l ->
             list = l
             listener?.invoke()
             for (op in ops.toList()) {
@@ -848,6 +889,11 @@ internal class DefaultSourceSession(
 
     /** No ready source left: ask once whether the debrid service should fetch one (most seeded, a single episode), else say so. */
     private fun askFetchOrNone(op: Op, l: SourceList) {
+        // Picking only (a link checked ahead): nothing to play by itself, and nothing is asked or kept for the play.
+        if (pickOnly != null) {
+            op.final(Opened.NoneLeft(FailureWords.NONE_READY))
+            return
+        }
         if (!accountProblem && target.key !in repo.fetchAsked) {
             val candidates = l.sources.filter {
                 it.readiness == Readiness.NOT_READY && it.group != SourceGroup.CINEMA && !skippedRow(it) &&
@@ -894,6 +940,12 @@ internal class DefaultSourceSession(
             pick(op, OpenWhy.FAILED)
             return
         }
+        // Picking only: the copy and the offer its play would check first, for a link checked ahead ([LinkPrep]).
+        pickOnly?.let { found ->
+            op.cancel()
+            found(source, offers[0])
+            return
+        }
         op.progress(Opened.Checking(source))
         tryOffer(op, source, offers, 0, why, near)
     }
@@ -902,10 +954,26 @@ internal class DefaultSourceSession(
         val offer = offers[i]
         triedOffer[source.key] = offer
         handedOffer[source] = offer
-        val handle = CallHandle()
-        op.handle = handle
         val confirmed = source.measured?.spec != null
         val justAdded = repo.elapsed() - repo.lastAddAt < JUST_ADDED_WINDOW_MS
+        // This play's first check: that very offer's link may have been checked ahead as the viewer rested on what OK
+        // plays ([LinkPrep]), kept (taken now), or still being checked (joined: never sent twice).
+        if (!aheadAsked) {
+            aheadAsked = true
+            val joined = repo.prep.claim(target, offer) { result, began, readyAt ->
+                if (!op.live) return@claim
+                op.handle = null
+                aheadWords = aheadWords(began, readyAt)
+                if (readyAt != null && result is LinkCheck.Result.Ready) keptAhead = Ahead(source, offer, near)
+                checked(op, source, offers, i, why, near, justAdded, result)
+            }
+            if (joined != null) {
+                op.handle = joined
+                return
+            }
+        }
+        val handle = CallHandle()
+        op.handle = handle
         repo.io.execute {
             val result = runCatching { repo.linkCheck.check(offer.addon, offer.link, confirmed, handle) }
                 .getOrElse { LinkCheck.Result.Failed(Failure(FailureKind.UNKNOWN, offer.addon, it.javaClass.simpleName)) }
@@ -919,35 +987,57 @@ internal class DefaultSourceSession(
                 if (!op.live) return@post
                 op.handle = null
                 repo.lastAddAt = repo.elapsed()
-                when (result) {
-                    is LinkCheck.Result.Ready -> {
-                        // Handed to the player: Next source goes on from it now, and never names it again.
-                        opened = source
-                        tried(source, offer)
-                        op.final(Opened.Ready(source, offer, result.link, startMs(near), near))
-                    }
-                    is LinkCheck.Result.Failed -> {
-                        var f = result.failure
-                        if (f.kind == FailureKind.FILE && Notices.isCopyright(f.detail) && justAdded) {
-                            f = f.copy(kind = FailureKind.JUST_ADDED)
-                        }
-                        if (source.key in fetchAgreed && f.kind == FailureKind.NOT_READY) {
-                            tries += Attempt(source, repo.wall(), currentWhy, f)
-                            skip(source, hash = true)
-                            listener?.invoke()
-                            op.final(Opened.Stopped(f, FailureWords.FETCHING))
-                            return@post
-                        }
-                        // Not about the file: the other add-on's link for the same file, once.
-                        if (f.kind in OTHER_OFFER && i + 1 < offers.size) {
-                            if (f.kind == FailureKind.ADDON_DOWN || f.kind == FailureKind.CONFIG) downAddons += offer.addon
-                            tryOffer(op, source, offers, i + 1, why, near)
-                            return@post
-                        }
-                        follow(op, source, why, near, failed(source, f), f)
-                    }
-                }
+                checked(op, source, offers, i, why, near, justAdded, result)
             }
+        }
+    }
+
+    /** [offers]'s [i]th link was checked ([result]): handed to the player, or the failure table. */
+    private fun checked(
+        op: Op, source: PlaybackSource, offers: List<Offer>, i: Int, why: OpenWhy, near: Boolean, justAdded: Boolean,
+        result: LinkCheck.Result,
+    ) {
+        val offer = offers[i]
+        when (result) {
+            is LinkCheck.Result.Ready -> {
+                // Handed to the player: Next source goes on from it now, and never names it again.
+                opened = source
+                tried(source, offer)
+                op.final(Opened.Ready(source, offer, result.link, startMs(near), near))
+            }
+            is LinkCheck.Result.Failed -> {
+                var f = result.failure
+                if (f.kind == FailureKind.FILE && Notices.isCopyright(f.detail) && justAdded) {
+                    f = f.copy(kind = FailureKind.JUST_ADDED)
+                }
+                if (source.key in fetchAgreed && f.kind == FailureKind.NOT_READY) {
+                    tries += Attempt(source, repo.wall(), currentWhy, f)
+                    skip(source, hash = true)
+                    listener?.invoke()
+                    op.final(Opened.Stopped(f, FailureWords.FETCHING))
+                    return
+                }
+                // Not about the file: the other add-on's link for the same file, once.
+                if (f.kind in OTHER_OFFER && i + 1 < offers.size) {
+                    if (f.kind == FailureKind.ADDON_DOWN || f.kind == FailureKind.CONFIG) downAddons += offer.addon
+                    tryOffer(op, source, offers, i + 1, why, near)
+                    return
+                }
+                follow(op, source, why, near, failed(source, f), f)
+            }
+        }
+    }
+
+    /**
+     * The start line's words for a first link checked ahead ([LinkPrep]) whose check began at [began] and, when it was
+     * kept, answered at [readyAt] (elapsedRealtime ms; null: it was joined while being checked), against OK's press.
+     */
+    private fun aheadWords(began: Long, readyAt: Long?): String {
+        val ok = request.pressedAt
+        return when {
+            ok <= 0L -> if (readyAt != null) "link checked ahead" else "link check ahead joined"
+            readyAt != null -> "link checked ahead: ready ${(ok - readyAt).coerceAtLeast(0L)} ms before OK"
+            else -> "link check ahead joined: begun ${(ok - began).coerceAtLeast(0L)} ms before OK"
         }
     }
 
@@ -1029,5 +1119,11 @@ internal class DefaultSourceSession(
         private val OTHER_OFFER = setOf(
             FailureKind.ADDON_DOWN, FailureKind.CONFIG, FailureKind.LINK_EXPIRED, FailureKind.UNKNOWN, FailureKind.SLOW,
         )
+
+        /**
+         * What the player says of a link kept ahead that may only have gone stale ([failed]): refused or gone (HTTP 401,
+         * 403, 404, 410), a page or nothing readable where the film was, or an error of no known kind.
+         */
+        private val AHEAD_STALE = setOf(FailureKind.LINK_EXPIRED, FailureKind.FILE, FailureKind.UNKNOWN)
     }
 }
