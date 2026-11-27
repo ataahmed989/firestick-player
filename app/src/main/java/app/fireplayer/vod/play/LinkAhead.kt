@@ -5,9 +5,10 @@ import app.fireplayer.vod.PlayRequest
 
 /**
  * Resting on what OK would play, a Continue card or a title page's Play: after [REST_MS] on it, its play's link is checked
- * ahead ([app.fireplayer.vod.SourcesRepository.prepare]: the one copy OK would play, when it's cached), so OK starts
- * without waiting for the debrid service. Focus moving on, or the page going, drops it ([leave]). While focus moves
- * only a timer is set: the play isn't worked out, nor anything asked, until the rest is over. Main thread.
+ * ahead ([app.fireplayer.vod.SourcesRepository.prepare]: the one copy OK would play, when it's cached, from the title's
+ * list held in memory already; none is looked up for it), so OK starts without waiting for the debrid service. Focus
+ * moving on, or the page going, drops it ([leave]). While focus moves only a timer is set: the play isn't worked out,
+ * nor anything asked, until the rest is over. Main thread.
  */
 class LinkAhead(private val ticker: Ticker, private val prepare: (PlayRequest) -> Cancel?) {
     private var key: String? = null

@@ -41,6 +41,8 @@ import app.fireplayer.vod.Page
 import app.fireplayer.vod.PlayRequest
 import app.fireplayer.vod.Sources
 import app.fireplayer.vod.SourcesRepository
+import app.fireplayer.vod.sources.LinkPrep
+import app.fireplayer.vod.sources.SourceLog
 import app.fireplayer.vod.play.LinkAhead
 import app.fireplayer.vod.play.MainTicker
 import app.fireplayer.vod.play.VodLaunch
@@ -274,8 +276,15 @@ class VodPage(
     /** A title page covers the page: its own content is hidden (and draws nothing) meanwhile. */
     private var covered = false
 
-    /** Resting on a Continue card: its play's link is checked ahead, so OK starts sooner ([LinkAhead]). */
-    private val ahead = LinkAhead(MainTicker) { request -> sourcesOrNull()?.prepare(request) }
+    /**
+     * Resting on a Continue card: its play's link is checked ahead from its list held, so OK starts sooner ([LinkAhead]).
+     * The engine is never made for it: none made yet (a cold start), no list is held.
+     */
+    private val ahead = LinkAhead(MainTicker) { request ->
+        val engine = Sources.made()
+        if (engine == null) android.util.Log.i(SourceLog.TAG, LinkPrep.NO_LIST)
+        engine?.prepare(request)
+    }
 
     private var shown = false
     private var started = false
@@ -1204,7 +1213,7 @@ class VodPage(
         val ep = card.episode
         ahead.rest(card.title.id + (ep?.let { "|${it.season}:${it.episode}" } ?: "")) {
             val r = repo
-            if (r == null || !resumed || released) null else VodLaunch.fromContinueCard(card, r, sourcesOrNull()?.library)
+            if (r == null || !resumed || released) null else VodLaunch.fromContinueCard(card, r, Sources.made()?.library)
         }
     }
 

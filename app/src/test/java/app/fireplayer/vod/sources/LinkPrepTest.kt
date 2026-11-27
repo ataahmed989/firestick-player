@@ -18,6 +18,7 @@ import app.fireplayer.vod.PlayRequest
 import app.fireplayer.vod.PlaybackLibrary
 import app.fireplayer.vod.ReleaseKey
 import app.fireplayer.vod.SecretUrl
+import app.fireplayer.vod.SourceList
 import app.fireplayer.vod.SourceSession
 import app.fireplayer.vod.SourceTarget
 import app.fireplayer.vod.StartAt
@@ -43,7 +44,8 @@ import java.io.IOException
 import java.util.concurrent.Executor
 
 /**
- * The link of the copy OK would play, checked ahead while the viewer rests on it ([LinkPrep]), with fakes: every add-on
+ * The link of the copy OK would play, checked ahead while the viewer rests on it ([LinkPrep]), only from the title's list
+ * held already (never looked up for it), with fakes: every add-on
  * answer and every link is made up (".invalid" hosts, "FAKEKEY"); the engine's network thread is a queue run by hand, so
  * a check can be caught still under way.
  */
@@ -143,11 +145,14 @@ class LinkPrepTest {
         }
     }
 
-    /** The film's lists in memory (both add-ons answered for an earlier look), as when its card is rested on again. */
-    private fun listKept() {
-        answers()
-        engine.lookUp(filmTarget, LookupWhy.SOURCES, null) { }.also { settle() }.cancel()
-        assertTrue(engine.cached(filmTarget)!!.complete)
+    /**
+     * [target]'s list in memory (its add-ons answered an earlier look: [answers] unless the test set its own), as when its
+     * card is rested on again. Nothing more is asked of them from here.
+     */
+    private fun listKept(target: SourceTarget = filmTarget) {
+        if (answers.isEmpty()) answers()
+        engine.lookUp(target, LookupWhy.SOURCES, null) { }.also { settle() }.cancel()
+        assertTrue(engine.cached(target)!!.complete)
         asked.clear()
     }
 
@@ -189,12 +194,66 @@ class LinkPrepTest {
     }
 
     @Test
-    fun restingOnAContinueCardChecksItsCopysLinkOnceAndOkStartsFromIt() {
+    fun aContinueCardRestedOnAtAColdStartLooksNothingUpAndChecksNothing() {
         answers()
+        val ahead = LinkAhead(ticker) { engine.prepare(it) }
+        ahead.rest("card") { continueCard() }
+        loop.advance(LinkAhead.REST_MS)
+        settle()
+        // No list held for it: no look-up, no pick, no network; said once for the rest.
+        assertTrue(asked.isEmpty())
+        assertTrue(checked.isEmpty())
+        assertFalse(engine.prep.busy)
+        assertNull(engine.cached(filmTarget))
+        ahead.ready()
+        loop.advance(5_000)
+        settle()
+        assertEquals(1, lines.count { it == LinkPrep.NO_LIST })
+        // OK looks it up as ever, and checks the link itself.
+        ahead.pressed()
+        val ready = open(engine.session(continueCard())).last() as Opened.Ready
+        assertEquals(ReleaseKey(H3, 0), ready.source.release)
+        assertEquals(listOf(Addon.MEDIAFUSION), asked.map { it.first })
+        assertEquals(listOf(H3), checked)
+    }
+
+    @Test
+    fun aTitlePageWithItsListLoadedHasItsPlaysLinkCheckedAndOkClaimsIt() {
+        answers()
+        // The page looks its title up for its Sources count; Play, rested on meanwhile, is known once every add-on answered.
+        var shown: SourceList? = null
+        fun play() = shown?.takeIf { it.complete }?.let { PlayRequest(filmTarget, StartAt.Beginning, PlayOrigin.TITLE_PAGE, list = it) }
+        val ahead = LinkAhead(ticker) { engine.prepare(it) }
+        engine.lookUp(filmTarget, LookupWhy.PAGE_SOON, null) { l ->
+            shown = l
+            if (l.complete) ahead.ready()
+        }
+        ahead.rest("play") { play() }
+        loop.advance(LinkAhead.REST_MS)
+        assertTrue(checked.isEmpty())
+        settle()
+        // Its list in: the play's copy is picked from it as it stands, nothing more asked, and its link checked.
+        assertEquals(2, asked.size)
+        val list = shown!!
+        assertEquals(listOf(list.best!!.release!!.infoHash), checked)
+        // OK: the play claims it.
+        ahead.pressed()
+        val session = engine.session(play()!!)
+        val ready = open(session).last() as Opened.Ready
+        assertEquals(list.best!!.key, ready.source.key)
+        assertEquals(1, checked.size)
+        assertEquals(2, asked.size)
+        assertTrue(session.aheadNote()!!.startsWith("link checked ahead"))
+        assertTrue(lines.none { it == LinkPrep.NO_LIST })
+    }
+
+    @Test
+    fun aListKeptFromBeforeHasItsCopysLinkCheckedOnceAndOkStartsFromIt() {
+        listKept()
         engine.prepare(continueCard())
         settle()
-        // Only the copy's own add-on, as an early look-up; that copy's link, checked once.
-        assertEquals(listOf(Addon.MEDIAFUSION), asked.map { it.first })
+        // Nothing asked of the add-ons; that copy's link, checked once.
+        assertTrue(asked.isEmpty())
         assertEquals(listOf(H3), checked)
         assertTrue(lines.any { it.startsWith("ahead: link ready in") })
         loop.advance(5_000)
@@ -206,7 +265,7 @@ class LinkPrepTest {
         assertEquals(600_000L, ready.startMs)
         // Not checked again: the play took the link checked ahead.
         assertEquals(listOf(H3), checked)
-        assertEquals(listOf(Addon.MEDIAFUSION), asked.map { it.first })
+        assertTrue(asked.isEmpty())
         assertEquals("link checked ahead: ready 5000 ms before OK", session.aheadNote())
         // Taken once: a second play checks for itself.
         val again = engine.session(continueCard())
@@ -218,11 +277,42 @@ class LinkPrepTest {
     }
 
     @Test
-    fun okJoinsTheCheckStillUnderWayNeverSendingItTwice() {
-        answers()
+    fun aListPastItsTimeIsNoLongerHeld() {
+        listKept()
+        loop.advance(DefaultSourcesRepository.KEEP_MS)
         engine.prepare(continueCard())
-        // The add-on answered; the link's check is queued, not done.
-        step()
+        settle()
+        assertTrue(asked.isEmpty())
+        assertTrue(checked.isEmpty())
+        assertTrue(lines.contains(LinkPrep.NO_LIST))
+    }
+
+    @Test
+    fun aListHeldThatCantTellAsksNothingAndALookUpUnderWayIsWaitedFor() {
+        answers()
+        // Only Torrentio's answer is held (a look of it alone): the copy left is MediaFusion's, and nobody asks it.
+        engine.lookUp(filmTarget, LookupWhy.SOURCES, Addon.TORRENTIO) { }.also { settle() }.cancel()
+        engine.prepare(continueCard())
+        settle()
+        assertEquals(listOf(Addon.TORRENTIO), asked.map { it.first })
+        assertTrue(checked.isEmpty())
+        assertFalse(engine.prep.busy)
+        // MediaFusion's look-up under way (a page's): a rest waits for its answer, never sending it again.
+        engine.lookUp(filmTarget, LookupWhy.SOURCES, Addon.MEDIAFUSION) { }.cancel()
+        engine.prepare(continueCard())
+        loop.advance()
+        assertTrue(engine.prep.busy)
+        settle()
+        assertEquals(listOf(Addon.TORRENTIO, Addon.MEDIAFUSION), asked.map { it.first })
+        assertEquals(listOf(H3), checked)
+    }
+
+    @Test
+    fun okJoinsTheCheckStillUnderWayNeverSendingItTwice() {
+        listKept()
+        engine.prepare(continueCard())
+        // The link's check is queued, not done.
+        loop.advance()
         assertTrue(checked.isEmpty())
         loop.advance(1_200)
         val session = engine.session(continueCard(pressedAt = loop.now))
@@ -240,9 +330,12 @@ class LinkPrepTest {
 
     @Test
     fun focusMovingOnStopsItAndANewerRestReplacesIt() {
-        answers()
+        listKept()
+        // The other film: only Torrentio lists it.
+        answers[Addon.MEDIAFUSION] = { throw IOException("down") }
+        listKept(SourceTarget(other))
         val rest = engine.prepare(continueCard())
-        step()
+        loop.advance()
         rest.cancel()
         settle()
         // Stopped before it ran: nothing checked, nothing kept.
@@ -252,18 +345,17 @@ class LinkPrepTest {
         engine.prepare(continueCard())
         settle()
         assertEquals(listOf(H3), checked)
-        // The other film: only Torrentio lists it (the film's answers stay kept).
-        answers[Addon.MEDIAFUSION] = { throw IOException("down") }
         engine.prepare(PlayRequest(SourceTarget(other), StartAt.Beginning, PlayOrigin.CONTINUE_CARD))
         settle()
         assertEquals(listOf(H3, H1), checked)
         open(engine.session(continueCard()))
         assertEquals(listOf(H3, H1, H3), checked)
+        assertTrue(asked.isEmpty())
     }
 
     @Test
     fun aKeptLinkGoesAfterTwoMinutes() {
-        answers()
+        listKept()
         engine.prepare(continueCard())
         settle()
         loop.advance(LinkPrep.KEEP_MS)
@@ -274,7 +366,7 @@ class LinkPrepTest {
 
     @Test
     fun nothingIsCheckedAheadWhileAFilmPlays() {
-        answers()
+        listKept()
         filmPlays = true
         engine.prepare(continueCard())
         settle()
@@ -287,6 +379,7 @@ class LinkPrepTest {
     fun onlyACachedCopyNeverOneToFetchAndNothingAskedOrKeptForThePlay() {
         answers[Addon.TORRENTIO] = { answer(torrentio(H1, ready = false)) }
         answers[Addon.MEDIAFUSION] = { answer(mediaFusion(H2, ready = false)) }
+        listKept()
         val fresh = PlayRequest(filmTarget, StartAt.Beginning, PlayOrigin.CONTINUE_CARD)
         engine.prepare(fresh)
         settle()
@@ -302,6 +395,7 @@ class LinkPrepTest {
         // The copy left isn't cached any more: the ranking's pick (cached) is the one checked ahead, as the play picks it.
         answers[Addon.TORRENTIO] = { answer(torrentio(H1)) }
         answers[Addon.MEDIAFUSION] = { answer(mediaFusion(H2), mediaFusion(H3, ready = false, resolution = "1080p")) }
+        listKept()
         engine.prepare(continueCard())
         settle()
         assertEquals(1, checked.size)
@@ -314,7 +408,7 @@ class LinkPrepTest {
 
     @Test
     fun aPlayOfAnotherCopyOrTitleDropsIt() {
-        answers()
+        listKept()
         engine.prepare(continueCard())
         settle()
         // A fresh start of the same film plays the ranking's 4K pick, not the copy left: that one's link goes.
@@ -335,7 +429,7 @@ class LinkPrepTest {
 
     @Test
     fun aNetworkChangeDropsIt() {
-        answers()
+        listKept()
         engine.prepare(continueCard())
         settle()
         assertTrue(engine.prep.busy)
@@ -345,7 +439,7 @@ class LinkPrepTest {
 
     @Test
     fun aCheckAheadThatFailedIsForgottenAndThePlayChecksItself() {
-        answers()
+        listKept()
         hopOnce[H3] = LinkCheck.Answer(503, null, null)
         engine.prepare(continueCard())
         settle()
@@ -357,7 +451,7 @@ class LinkPrepTest {
 
     @Test
     fun aKeptLinkThePlayerCantOpenIsCheckedAfreshOnceUncounted() {
-        answers()
+        listKept()
         engine.prepare(continueCard())
         settle()
         val session = engine.session(continueCard())
@@ -373,7 +467,7 @@ class LinkPrepTest {
         assertEquals(600_000L, fresh.startMs)
         // Checked afresh without asking the add-on again.
         assertEquals(listOf(H3, H3), checked)
-        assertEquals(listOf(Addon.MEDIAFUSION), asked.map { it.first })
+        assertTrue(asked.isEmpty())
         assertTrue(session.aheadNote()!!.endsWith("refused by then: checked again"))
         // From here the table as ever: its one refresh still there, then the next copy.
         assertEquals(Step.Refresh, session.failed(fresh.source, Failure(FailureKind.LINK_EXPIRED, Addon.MEDIAFUSION, "HTTP 403")))
@@ -382,34 +476,14 @@ class LinkPrepTest {
 
     @Test
     fun aJoinedCheckIsAPlaysOwnAndFollowsTheTable() {
-        answers()
+        listKept()
         engine.prepare(continueCard())
-        step()
+        loop.advance()
         val session = engine.session(continueCard())
         val ready = open(session).last() as Opened.Ready
         session.failed(ready.source, Failure(FailureKind.LINK_EXPIRED, Addon.MEDIAFUSION, "HTTP 403"))
         assertEquals(1, session.attempts.size)
     }
-
-    @Test
-    fun aTitlePagesPlayUsesItsListAsItStandsAndAsksNothingMore() {
-        answers()
-        engine.lookUp(filmTarget, LookupWhy.PAGE_SOON, null) { }
-        loop.advance(DefaultSourcesRepository.SOON_DWELL_MS)
-        settle()
-        assertEquals(2, asked.size)
-        val list = engine.cached(filmTarget)!!
-        assertTrue(list.complete)
-        val request = PlayRequest(filmTarget, StartAt.Beginning, PlayOrigin.TITLE_PAGE, list = list)
-        engine.prepare(request)
-        settle()
-        assertEquals(2, asked.size)
-        assertEquals(listOf(list.best!!.release!!.infoHash), checked)
-        val ready = open(engine.session(request)).last() as Opened.Ready
-        assertEquals(list.best!!.key, ready.source.key)
-        assertEquals(1, checked.size)
-    }
-
 
     @Test
     fun okPressedDuringTheRestSendsOnlyThePlaysOwnCheck() {
@@ -489,68 +563,5 @@ class LinkPrepTest {
         }, { true }, { 0L })
         assertTrue(chain.check(Addon.TORRENTIO, link, true, handle) is LinkCheck.Result.Failed)
         assertEquals(1, hops)
-    }
-
-    @Test
-    fun aRestsLookUpThatFailedDoesntKeepOkFromAskingTheCopysAddOnAgain() {
-        answers()
-        val mf = answers.getValue(Addon.MEDIAFUSION)
-        var failOnce = true
-        answers[Addon.MEDIAFUSION] = {
-            if (failOnce) {
-                failOnce = false
-                throw IOException("reset")
-            }
-            mf()
-        }
-        engine.prepare(continueCard())
-        settle()
-        // The rest's pick went on as the play's would (the ranking's pick, Torrentio's): MediaFusion failed for it.
-        assertEquals(listOf(Addon.MEDIAFUSION, Addon.TORRENTIO), asked.map { it.first })
-        assertEquals(listOf(H1), checked)
-        // Another rest on it within the two minutes asks nothing more of it.
-        engine.prepare(continueCard())
-        settle()
-        assertEquals(listOf(Addon.MEDIAFUSION, Addon.TORRENTIO), asked.map { it.first })
-        assertEquals(listOf(H1, H1), checked)
-        // OK half a minute later: the copy's add-on is asked afresh, as it was before links were checked ahead, and the
-        // copy left plays from where it stopped.
-        loop.advance(30_000)
-        val session = engine.session(continueCard(pressedAt = loop.now))
-        val ready = open(session).last() as Opened.Ready
-        assertEquals(listOf(Addon.MEDIAFUSION, Addon.TORRENTIO, Addon.MEDIAFUSION), asked.map { it.first })
-        assertEquals(ReleaseKey(H3, 0), ready.source.release)
-        assertFalse(ready.resumedNear)
-        assertEquals(600_000L, ready.startMs)
-        assertEquals(listOf(H1, H1, H3), checked)
-    }
-
-    @Test
-    fun aLookUpThePlayJoinedThatFailedIsFinalForThePlayAsEver() {
-        answers()
-        answers[Addon.MEDIAFUSION] = { throw IOException("reset") }
-        engine.prepare(continueCard())
-        // OK while the rest's look-up is still on its way: the play joins it.
-        val session = engine.session(continueCard())
-        val got = ArrayList<Opened>()
-        session.open(null, OpenWhy.START) { got += it }
-        settle()
-        // MediaFusion asked once; the play went on with the others, as a play whose add-on failed always did.
-        assertEquals(1, asked.count { it.first == Addon.MEDIAFUSION })
-        val ready = got.last() as Opened.Ready
-        assertEquals(H1, ready.source.release!!.infoHash)
-        assertTrue(ready.resumedNear)
-    }
-
-    @Test
-    fun aRestsLookUpIsAnEarlyOneInMediaFusionsBudget() {
-        val budget = Budget(object : Budget.Store {
-            override fun read(): String? = null
-            override fun write(text: String) = Unit
-        }) { 1_000L }
-        repeat(Budget.MF_EARLY) { budget.asked(Addon.MEDIAFUSION, LookupWhy.AHEAD) }
-        assertFalse(budget.mayAsk(Addon.MEDIAFUSION, LookupWhy.AHEAD))
-        assertFalse(budget.mayAsk(Addon.MEDIAFUSION, LookupWhy.PAGE))
-        assertTrue(budget.mayAsk(Addon.MEDIAFUSION, LookupWhy.PLAY))
     }
 }

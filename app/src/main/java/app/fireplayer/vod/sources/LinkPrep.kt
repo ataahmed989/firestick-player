@@ -1,6 +1,7 @@
 package app.fireplayer.vod.sources
 
 import app.fireplayer.vod.Addon
+import app.fireplayer.vod.AddonState
 import app.fireplayer.vod.Cancel
 import app.fireplayer.vod.Failure
 import app.fireplayer.vod.FailureKind
@@ -19,8 +20,12 @@ import app.fireplayer.vod.SourceTarget
  * [app.fireplayer.vod.play.LinkAhead]), so the play starts from it rather than waiting for the debrid service's answer,
  * which is most of a slow start (on the TV: "link +4462ms · … · frame +9286ms" beside "link +312ms · … · frame +4254ms").
  *
- * - Only the copy the play itself would pick, found as its session finds it ([DefaultSourceSession] picking only: the
- *   copy a resume left, else the ranking's pick), and only its first offer, the one the play checks first.
+ * - Only from the title's list held in memory already ([DefaultSourcesRepository.holds]: a title page's look-up, one
+ *   kept from a recent look): nothing is ever looked up for it, so a rest costs no list's reading and ranking (on the
+ *   TV a Continue card's look-up at a cold start was 66 MB more for a while). With no list held, nothing at all.
+ * - Only the copy the play itself would pick from that list, found as its session finds it ([DefaultSourceSession]
+ *   picking only: the copy a resume left, else the ranking's pick), and only its first offer, the one the play checks
+ *   first. A list that can't tell it with nothing more on its way for it (an add-on not asked) leaves it there.
  * - Only when that offer is cached ([Readiness.PROBABLY_READY]): nothing checked ahead has the debrid service fetch.
  * - One at a time (a newer rest drops the one before), never while a film plays ([filmPlays]), none of another title
  *   once a play has begun ([handOver]), and none at all while a play handed over is still starting ([starting]): its own
@@ -68,7 +73,10 @@ internal class LinkPrep(
     /** Whether a pick or a check ahead is under way, or a link is kept (for tests). */
     val busy: Boolean get() = picking != null || job != null
 
-    /** The viewer rests on what OK would play, [request]: its copy is picked as its play would, then its link checked. */
+    /**
+     * The viewer rests on what OK would play, [request]: its copy is picked from the list held as its play would, then
+     * its link checked.
+     */
     fun start(request: PlayRequest): Cancel {
         // A play is starting: nothing beside its own check (and what it may still take from a rest stays for it).
         if (playStarting()) {
@@ -77,13 +85,19 @@ internal class LinkPrep(
         }
         drop()
         if (runCatching { filmPlays() }.getOrDefault(true)) return Cancel {}
-        val mine = run
         val target = request.target
+        if (!repo.holds(target)) {
+            log(NO_LIST)
+            return Cancel {}
+        }
+        val mine = run
         val pick = DefaultSourceSession(request, repo, pickOnly = { s, o -> if (run == mine) picked(target, s, o) })
         picking = pick
-        // Nothing OK would play by itself (none cached, none listed): nothing is checked ahead.
+        // Nothing OK would play by itself (none cached, none listed), or the list can't tell yet with nothing more on its
+        // way for it (only others' look-ups ever fill it): nothing is checked ahead.
         val op = pick.open(null, OpenWhy.START) { o ->
-            if (run == mine && picking === pick && o !is Opened.Looking && o !is Opened.Checking) endPick()
+            val waits = o is Opened.Checking || (o is Opened.Looking && o.list.states.values.any { it is AddonState.Asking })
+            if (run == mine && picking === pick && !waits) endPick()
         }
         if (picking === pick) pickOp = op else op.cancel()
         return Cancel { if (run == mine) drop() }
@@ -216,6 +230,9 @@ internal class LinkPrep(
     }
 
     companion object {
+        /** The log's line for a rest with no list held for its title: nothing looked up, picked or checked. */
+        const val NO_LIST = "ahead: no list held: nothing checked ahead"
+
         /**
          * How long a link checked ahead is kept for OK, ms: briefly, as agreed. The debrid services' links live for hours
          * (FirePlayer plays a whole film from one and reopens it on a stall), so a kept one is fresh when it's used.

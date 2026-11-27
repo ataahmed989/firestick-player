@@ -7,7 +7,7 @@ import app.fireplayer.vod.LookupWhy
  * How many stream lists FirePlayer asks for (design-brief §6.4, r3_prefetch §2.6), over a rolling hour of wall-clock
  * time, kept in a small store so a restart doesn't reset it:
  * - MediaFusion (ElfHosted allows 100 per home connection, refilling 1 a minute): at most [MF_EARLY] early look-ups
- *   (a title page's, or one for a link checked ahead: [LookupWhy.AHEAD]) an hour; no automatic look-up once FirePlayer has sent [MF_ALL] in the hour, counting the user's;
+ *   (a title page's) an hour; no automatic look-up once FirePlayer has sent [MF_ALL] in the hour, counting the user's;
  *   after "busy" (🐢 or HTTP 429) no early look-up for 10 minutes and none at all for 2.
  * - Torrentio and StremThru Torz: at most [TIO_AUTO] automatic look-ups an hour each (a guard against bugs); after
  *   HTTP 429 none for 2 minutes.
@@ -37,7 +37,7 @@ class Budget(private val store: Store, private val clock: () -> Long) {
         prune(now)
         if (now < (skipUntil[addon] ?: 0L)) return false
         if (!why.automatic) return true
-        val early = early(why)
+        val early = why == LookupWhy.PAGE || why == LookupWhy.PAGE_SOON
         return when (addon) {
             Addon.MEDIAFUSION -> {
                 if (early && now < (noEarlyUntil[addon] ?: 0L)) return false
@@ -55,12 +55,9 @@ class Budget(private val store: Store, private val clock: () -> Long) {
     fun asked(addon: Addon, why: LookupWhy) {
         val now = clock()
         prune(now)
-        sent += Sent(addon, now, early(why), why.automatic)
+        sent += Sent(addon, now, why == LookupWhy.PAGE || why == LookupWhy.PAGE_SOON, why.automatic)
         save()
     }
-
-    /** An early look-up: a title page's, or one for a link checked ahead as the viewer rests on what OK plays. */
-    private fun early(why: LookupWhy): Boolean = why == LookupWhy.PAGE || why == LookupWhy.PAGE_SOON || why == LookupWhy.AHEAD
 
     /** [addon] said it is busy (🐢 or HTTP 429). */
     fun busy(addon: Addon) {

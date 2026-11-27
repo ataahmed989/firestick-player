@@ -443,7 +443,7 @@ enum class LookupWhy(val automatic: Boolean) {
     SOURCES(false),
     /**
      * The viewer rests on what OK would play (a Continue card, a title page's Play) and its link is checked ahead
-     * ([SourcesRepository.prepare]): now (the rest was the wait), within MediaFusion's early budget as a page's is.
+     * ([SourcesRepository.prepare]): it follows only the list held for the title, and nothing is ever asked for it.
      */
     AHEAD(true),
 }
@@ -451,7 +451,7 @@ enum class LookupWhy(val automatic: Boolean) {
 /**
  * The sources engine. One per process ([Sources.get]). Lists are kept in memory only (10 min, 6 titles; an empty
  * answer 60 s) and dropped on a network change, an add-on change or a debrid account stop. A link is opened ahead of
- * Play only for the one copy OK would play, cached, while the viewer rests on it ([prepare]).
+ * Play only for the one copy OK would play, cached, while the viewer rests on it, from a list held already ([prepare]).
  */
 interface SourcesRepository {
     val addons: AddonSettings
@@ -487,11 +487,12 @@ interface SourcesRepository {
     fun moveImax(target: SourceTarget, source: PlaybackSource, imax: Boolean) = Unit
 
     /**
-     * The viewer rests on what OK would play, [request] (a Continue card's, a title page's Play): the one copy its play
-     * would pick has its link checked now when that copy is cached (never one the debrid service would have to fetch),
-     * so OK starts from it ([app.fireplayer.vod.sources.LinkPrep]). One at a time, never while a film plays, kept in
-     * memory briefly and never stored. Cancelling (focus moved on, the page went) drops it unless a play took it. Main
-     * thread.
+     * The viewer rests on what OK would play, [request] (a Continue card's, a title page's Play): when the title's list
+     * is held in memory already (a title page's look-up, one kept from a recent look), the one copy its play would pick
+     * from it has its link checked now when that copy is cached (never one the debrid service would have to fetch), so
+     * OK starts from it ([app.fireplayer.vod.sources.LinkPrep]). Nothing is ever looked up for it: with no list held,
+     * nothing happens. One at a time, never while a film plays, kept in memory briefly and never stored. Cancelling
+     * (focus moved on, the page went) drops it unless a play took it. Main thread.
      */
     fun prepare(request: PlayRequest): Cancel = Cancel {}
 }
@@ -1084,6 +1085,9 @@ object Sources {
 
     fun get(context: Context): SourcesRepository =
         instance ?: synchronized(this) { instance ?: app.fireplayer.vod.sources.DefaultSourcesRepository.create(context.applicationContext).also { instance = it } }
+
+    /** The engine when something made it already, else null: never made for this (a rest on a card holds no list then). */
+    fun made(): SourcesRepository? = instance
 }
 
 /** Knows no add-ons: every look-up is complete and empty, and a play stops with "No add-ons yet". */

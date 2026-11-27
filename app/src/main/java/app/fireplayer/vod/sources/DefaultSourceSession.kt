@@ -44,8 +44,8 @@ internal class DefaultSourceSession(
     private val repo: DefaultSourcesRepository,
     /**
      * Only picks, for a link checked ahead ([LinkPrep]: the viewer rests on what OK plays): the copy and its first offer
-     * its play would check are handed here in place of checking (nothing else follows; its look-ups are
-     * [LookupWhy.AHEAD]'s, and nothing is kept in the engine). Null for a play.
+     * its play would check are handed here in place of checking (nothing else follows; it only follows the list the
+     * engine holds, [LookupWhy.AHEAD]: nothing is asked, and nothing is kept in the engine). Null for a play.
      */
     private val pickOnly: ((PlaybackSource, Offer) -> Unit)? = null,
 ) : SourceSession {
