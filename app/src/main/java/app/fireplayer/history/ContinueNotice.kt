@@ -4,7 +4,7 @@ import app.fireplayer.vod.VodRepository
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Glass Home's word that Continue Watching may have changed ([ContinueProvider]'s list, [ContinueWatching.ITEMS], which
+ * Glass Home's word that Continue Watching may have changed ([ContinueProvider]'s lists, [ContinueWatching.ITEMS], which
  * covers each title's own address too): one notice per burst of library changes. The first change of a burst posts
  * the notice ([post]: on the main thread, after whatever is queued there); the changes made before it goes out ride
  * on it, so Glass Home asks once. A change after it starts the next. Nothing else is done here: Glass Home asks for

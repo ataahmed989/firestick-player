@@ -4,6 +4,7 @@ import app.fireplayer.vod.Card
 import app.fireplayer.vod.EpisodeRef
 import app.fireplayer.vod.TitleDetails
 import app.fireplayer.vod.Kind
+import app.fireplayer.vod.Page
 import app.fireplayer.vod.RowSpec
 import app.fireplayer.vod.RowStyle
 import app.fireplayer.vod.Source
@@ -17,6 +18,7 @@ import app.fireplayer.vod.data.Fixtures
 import app.fireplayer.vod.data.JsonCache
 import app.fireplayer.vod.data.MemoryIdStore
 import app.fireplayer.vod.data.MemoryLibraryStore
+import app.fireplayer.vod.data.PageRows
 import app.fireplayer.vod.sources.RecordedLibrary
 import app.fireplayer.vod.ui.RowRules
 import org.junit.After
@@ -57,6 +59,8 @@ class ContinueSyncTest {
 
     private val http = FakeHttp().apply { answers[Cinemeta.metaUrl(Kind.SERIES, bb.id)] = Fixtures.text("cinemeta_meta_series.json") }
     private val continueSpec = RowSpec("home.continue", "Continue Watching", RowStyle.WIDE, Source.ContinueWatching(null), continueRow = true)
+    private val moviesSpec = PageRows.rows(Page.MOVIES, 2009).single { it.key == "movies.continue" }
+    private val showsSpec = PageRows.rows(Page.SHOWS, 2009).single { it.key == "shows.continue" }
 
     /** FirePlayer's main thread: what's posted to it (the library's listeners, the notice) waits for [runMain]. */
     private val mainQueue = ArrayList<Runnable>()
@@ -100,20 +104,25 @@ class ContinueSyncTest {
     }
 
     /**
-     * FirePlayer Home's Continue Watching row as its page loads and shows it (VodPage: one more than shown asked for,
-     * [RowRules.shown]), or with [all] every card its source has (its See all): each card's row id, episode and minutes
-     * left.
+     * FirePlayer Home's Continue Watching row (or [spec]'s: the Movies or TV Shows page's) as its page loads and shows
+     * it (VodPage: one more than shown asked for, [RowRules.shown]), or with [all] every card its source has (its See
+     * all): each card's row id, episode and minutes left.
      */
-    private fun firePlayer(all: Boolean = false): List<String> {
+    private fun firePlayer(all: Boolean = false, spec: RowSpec = continueSpec): List<String> {
         var got: List<Card> = emptyList()
-        repo.load(continueSpec, 0, if (all) 100 else RowRules.ROW_CARDS + 1) { cards, _ -> got = cards }
+        repo.load(spec, 0, if (all) 100 else RowRules.ROW_CARDS + 1) { cards, _ -> got = cards }
         runMain()
         val shown = if (all) got else RowRules.shown(got)
         return shown.map { c -> line(LibraryContinue.idOf(c.title.kind, c.title.id), c.episode, minutesIn(c.caption)) }
     }
 
     /** Glass Home's row: the provider's rows in their order, with Glass Home's own time left. */
-    private fun glassHome(): List<String> = VodContinue.rows(repo).map { r ->
+    private fun glassHome(): List<String> = glassHome(VodContinue.rows(repo))
+
+    /** Glass Home's list [name] of the three the provider answers items?lists with ([VodContinue.lists]). */
+    private fun glassHome(name: String): List<String> = glassHome(VodContinue.lists(repo).single { it.first == name }.second)
+
+    private fun glassHome(rows: List<WatchHistory.Row>): List<String> = rows.map { r ->
         val ep = if (r.kind == WatchHistory.Kind.EPISODE) EpisodeRef(r.season, r.episode) else null
         line(r.id, ep, if (r.durationMs > 0) glassMinutes(r.positionMs, r.durationMs) else null)
     }
@@ -127,9 +136,9 @@ class ContinueSyncTest {
         return (m.groupValues[1].toLongOrNull() ?: 0L) * 60 + (m.groupValues[2].toLongOrNull() ?: 0L)
     }
 
-    /** Glass Home's minutes left (its ContinueWatching.Item.timeLeft): to the nearest minute, at least one. */
+    /** Glass Home's minutes left (its ContinueWatching.Item.timeLeft): to the nearest minute (half up), at least one. */
     private fun glassMinutes(positionMs: Long, durationMs: Long): Long =
-        maxOf(1L, Math.round(maxOf(0L, durationMs - maxOf(0L, positionMs)) / 60000.0))
+        maxOf(1L, (maxOf(0L, durationMs - maxOf(0L, positionMs)) + 30_000L) / 60_000L)
 
     /** After FirePlayer's main thread has run: both rows the same, and Glass Home told [told] more times. */
     private fun assertSame(what: String, told: Int = 1): List<String> {
@@ -401,6 +410,64 @@ class ContinueSyncTest {
             assertTrue(r.id, repo.library.continueEntry(kind, titleId) != null)
             assertEquals(r.id, kind == Kind.SERIES, r.hasEpisodes)
         }
+    }
+
+    /** After FirePlayer's main thread has run: Glass Home's three lists FirePlayer's three rows, told [told] more times. */
+    private fun assertLists(what: String, told: Int = 1): Map<String, List<String>> {
+        val before = notices
+        runMain()
+        assertEquals("$what: Glass Home told", told, notices - before)
+        assertEquals(listOf("home", "movies", "shows"), VodContinue.lists(repo).map { it.first })
+        // Home's list is what items alone answers (the Glass Homes on the TVs now), and Home's row.
+        assertEquals("$what: Home's", firePlayer(), glassHome("home"))
+        assertEquals("$what: as items answers", glassHome(), glassHome("home"))
+        assertEquals("$what: Movies'", firePlayer(spec = moviesSpec), glassHome("movies"))
+        assertEquals("$what: TV Shows'", firePlayer(spec = showsSpec), glassHome("shows"))
+        return listOf("home", "movies", "shows").associateWith { glassHome(it) }
+    }
+
+    /**
+     * Glass Home's Movies and TV Shows tabs (items?lists): the Movies page's and the TV Shows page's Continue Watching
+     * rows, card for card (their first 15, in their order, at the same episode and time left), beside Home's row, which
+     * stays what items alone answers. A change only a tab's row shows is told too, and a Remove in a tab is one here.
+     */
+    @Test
+    fun glassHomesTabsAreTheMoviesAndTvShowsPagesRows() {
+        val films = (1..17).map { i -> Title("tt91000%02d".format(i), Kind.MOVIE, "Film $i", year = "2001", tmdbId = 6000 + i) }
+        val shows = (1..17).map { i -> Title("tt92000%02d".format(i), Kind.SERIES, "Show $i", year = "2002", tmdbId = 7000 + i) }
+        for (i in films.indices) {
+            play(films[i], (10L + i) * min, 120 * min)
+            play(shows[i], (5L + i) * min, 45 * min, EpisodeRef(1, i + 1))
+        }
+        repo.setWatched(films[16], true)
+        var lists = assertLists("17 films (the last marked watched) and 17 shows played in turn")
+        val home = lists.getValue("home")
+        // Home's 15: the newest shows and films together; each page's: its kind's newest 15, older ones Home hasn't.
+        assertEquals(RowRules.ROW_CARDS, home.size)
+        assertEquals("${id(shows[16])} S1E17 24", home[0])
+        assertEquals("${id(films[15])} film 95", home[2])
+        assertEquals((15 downTo 1).map { "${id(films[it])} film ${110 - it}" }, lists["movies"])
+        assertEquals((16 downTo 2).map { "${id(shows[it])} S1E${it + 1} ${40 - it}" }, lists["shows"])
+        assertFalse(home.any { it.startsWith(id(films[1])) || it.startsWith(id(shows[2])) })
+
+        // Taken out of the TV Shows tab (a show Home's row hasn't): told, gone from it, the next one in; Home's as it was.
+        assertTrue(VodContinue.remove(repo, id(shows[3])))
+        lists = assertLists("a show removed in Glass Home's TV Shows tab")
+        assertEquals(home, lists["home"])
+        assertEquals((16 downTo 1).filter { it != 3 }.map { id(shows[it]) }, lists.getValue("shows").map { it.substringBefore(' ') })
+
+        // Marked watched here (a film only the Movies page's row shows): told, out of the Movies tab.
+        repo.setWatched(films[2], true)
+        lists = assertLists("a film marked watched")
+        assertEquals(home, lists["home"])
+        assertEquals((15 downTo 0).filter { it != 2 }.map { id(films[it]) }, lists.getValue("movies").map { it.substringBefore(' ') })
+
+        // Played again: first in Home's row and its page's.
+        play(films[0], 30 * min, 120 * min)
+        lists = assertLists("an old film played again")
+        assertEquals("${id(films[0])} film 90", lists.getValue("home").first())
+        assertEquals("${id(films[0])} film 90", lists.getValue("movies").first())
+        assertEquals(home.dropLast(1), lists.getValue("home").drop(1))
     }
 
     /**
