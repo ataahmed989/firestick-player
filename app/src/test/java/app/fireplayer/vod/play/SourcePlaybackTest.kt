@@ -612,6 +612,18 @@ class SourcePlaybackTest {
         p.firstFrame()
         p.record(6_600_000, 7_200_000, 6_500_000)
         assertEquals(listOf<Any?>(Fixtures.film.id, null, 6_600_000L, 7_200_000L, 6_500_000L), library.recorded.single())
+        assertEquals(listOf<Long?>(null), library.scenes)
+    }
+
+    @Test
+    fun theSceneAfterTheCreditsGoesToTheLibraryWithTheCredits() {
+        val (p, s) = play()
+        s.ready(Fixtures.source(1))
+        p.firstFrame()
+        // The watched rule's knowledge of the end, as the player has it (Segments.creditsAt and sceneAt).
+        p.record(7_100_000, 7_200_000, 6_500_000, 7_150_000)
+        assertEquals(listOf<Any?>(Fixtures.film.id, null, 7_100_000L, 7_200_000L, 6_500_000L), library.recorded.single())
+        assertEquals(listOf<Long?>(7_150_000L), library.scenes)
     }
 
     @Test

@@ -5,6 +5,7 @@ import android.util.Log
 import app.fireplayer.vod.Card
 import app.fireplayer.vod.Episode
 import app.fireplayer.vod.Kind
+import app.fireplayer.vod.Page
 import app.fireplayer.vod.PlayRequest
 import app.fireplayer.vod.Sources
 import app.fireplayer.vod.TitleDetails
@@ -87,28 +88,40 @@ object VodContinue {
     /**
      * Glass Home's row: FirePlayer Home's Continue Watching row as it is now, and nothing else (not the videos other
      * apps opened here: their history stays, unlisted). Made as Home's row is: the library's Continue Watching for films
-     * and series (Source.ContinueWatching(null), [app.fireplayer.vod.data.VodLibrary.continueEntries]: taken out, marked
-     * watched, a show gone on to its next episode), the cards that row shows of it ([RowRules.shown]: the first 15). The
-     * same titles in the same order, at the same episode and place; read from the library each time, never a copy kept.
+     * and series (Source.ContinueWatching(null), [app.fireplayer.vod.data.VodLibrary.continueEntries]: taken out,
+     * marked watched, a show gone on to its next episode, a caught-up show's new episode while Home's Next Episodes row
+     * is off), the cards that row shows of it ([RowRules.shown]: the first 15). The same titles in the same order, at
+     * the same episode and place; read from the library each time, never a copy kept.
      */
-    internal fun rows(repo: DefaultVodRepository): List<WatchHistory.Row> = shown(repo.library.continueEntries(null))
+    internal fun rows(repo: DefaultVodRepository): List<WatchHistory.Row> =
+        shown(repo.library.continueEntries(null, withNew = repo.newInContinue(Page.HOME)))
 
     /**
      * Glass Home's three lists ([ContinueProvider]'s items?lists), by name: Home's row ([rows]), then the Movies page's
      * and the TV Shows page's Continue Watching rows (movies.continue, shows.continue), each made as its row is: the
-     * library's Continue Watching of that kind (Source.ContinueWatching(Kind.MOVIE), (Kind.SERIES)), the cards the row
-     * shows of it ([RowRules.shown]). All three from one reading of the library's Continue Watching, so each show's
-     * episodes are read once, at one moment: a kind's entries in it are continueEntries(kind)'s, in the same order (each
-     * is worked out from its own record and its own show's episodes alone).
+     * library's Continue Watching of that kind (Source.ContinueWatching(Kind.MOVIE), (Kind.SERIES)), with the
+     * caught-up shows' new episodes where that page's Next Episodes row is off ([DefaultVodRepository.newInContinue]),
+     * the cards the row shows of it ([RowRules.shown]). Read from the library each time.
      */
-    internal fun lists(repo: DefaultVodRepository): List<Pair<String, List<WatchHistory.Row>>> = lists(repo.library)
+    internal fun lists(repo: DefaultVodRepository): List<Pair<String, List<WatchHistory.Row>>> =
+        lists(repo.library, homeNew = repo.newInContinue(Page.HOME), showsNew = repo.newInContinue(Page.SHOWS))
 
-    internal fun lists(library: VodLibrary): List<Pair<String, List<WatchHistory.Row>>> {
-        val all = library.continueEntries(null)
+    /**
+     * [lists] from [library]: Home's with the caught-up shows' new episodes when [homeNew], the TV Shows page's when
+     * [showsNew]. All three from one reading of the library's Continue Watching ([VodLibrary.continueLists]), so each
+     * show's episodes are read once, at one moment, whether the two pages' Next Episodes rows agree or not: a kind's
+     * entries in it are continueEntries(kind)'s, in the same order (each is worked out from its own record and its own
+     * show's episodes alone). Films have no new episodes: the Movies list is Home's films either way.
+     */
+    internal fun lists(library: VodLibrary, homeNew: Boolean, showsNew: Boolean): List<Pair<String, List<WatchHistory.Row>>> {
+        val withNew = listOf(homeNew, showsNew).distinct()
+        val read = library.continueLists(null, withNew)
+        val home = read[withNew.indexOf(homeNew)]
+        val shows = read[withNew.indexOf(showsNew)]
         return listOf(
-            HOME to shown(all),
-            MOVIES to shown(all.filter { it.title.kind == Kind.MOVIE }),
-            SHOWS to shown(all.filter { it.title.kind == Kind.SERIES }),
+            HOME to shown(home),
+            MOVIES to shown(home.filter { it.title.kind == Kind.MOVIE }),
+            SHOWS to shown(shows.filter { it.title.kind == Kind.SERIES }),
         )
     }
 

@@ -15,13 +15,15 @@ import app.fireplayer.titles.TitleService
  * cards in the same order, at most 15 ([VodContinue.rows], [VodContinue.items]); the videos other apps opened here ([ContinueWatching]) are
  * kept but not listed. Asked with "?lists" (newer Glass Homes: their Movies and TV Shows tabs too), it answers in one
  * go Home's row, then the Movies page's, then the TV Shows page's ([VodContinue.lists]), each row with a "list" column
- * naming its list ("home", "movies", "shows"; a title can be in two). An older FirePlayer answers it as it answers
- * items, without that column, which is how Glass Home tells. The notice on items covers them all. It removes a title
- * from it (…/items/ID). For a show it lists every episode (…/items/ID/episodes, see [ShowEpisodes]): that read blocks
- * and may ask the provider and TMDB, so Glass Home makes it off its main thread. An id of another app's video that
- * Glass Home still has from before (earlier versions listed them) is still answered: its episodes, its Remove, and its
- * play ([ContinueWatching.ACTION_RESUME]). Only Glass Home and FirePlayer itself are answered; anyone else gets nothing,
- * without an error. The rows say what each title is and how far along; never a login, nor where a title plays from.
+ * naming its list ("home", "movies", "shows"; a title can be in two). Each is its page's row as that page has it: with
+ * the caught-up shows' new episodes where the page's Next Episodes row is off. An older FirePlayer answers it as it
+ * answers items, without that column, which is how Glass Home tells. The notice on items covers them all (a page's Next
+ * Episodes row switched on or off too). It removes a title from it (…/items/ID). For a show it lists every episode
+ * (…/items/ID/episodes, see [ShowEpisodes]): that read blocks and may ask the provider and TMDB, so Glass Home makes it
+ * off its main thread. An id of another app's video that Glass Home still has from before (earlier versions listed
+ * them) is still answered: its episodes, its Remove, and its play ([ContinueWatching.ACTION_RESUME]). Only Glass Home
+ * and FirePlayer itself are answered; anyone else gets nothing, without an error. The rows say what each title is and
+ * how far along; never a login, nor where a title plays from.
  */
 class ContinueProvider : ContentProvider() {
 

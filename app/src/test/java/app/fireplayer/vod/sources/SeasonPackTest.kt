@@ -596,7 +596,7 @@ class SeasonPackTest {
             recorded += release
             last = release
         }
-        override fun recordPlayback(title: Title, episode: EpisodeRef?, positionMs: Long, durationMs: Long, creditsAtMs: Long?) = Unit
+        override fun recordPlayback(title: Title, episode: EpisodeRef?, positionMs: Long, durationMs: Long, creditsAtMs: Long?, sceneAtMs: Long?) = Unit
     }
 
     private val tv = object : ThisTv {

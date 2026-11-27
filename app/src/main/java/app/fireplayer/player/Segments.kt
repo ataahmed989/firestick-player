@@ -15,6 +15,12 @@ import java.net.URL
  * credits run to the end. [creditsToEnd]: it is known that the credits run to the very end, so nothing (no scene
  * after them) would be missed by leaving there. [from] says where it came from: "chapters" (the file's own, exact),
  * "skipdb" or "introdb".
+ *
+ * [sceneAt]: where a real scene after (or within) the credits starts, when that is known: a film's post-credits scene
+ * (IntroDB's "post_credits"; SkipDB has none), or a chapter after the credits not named as a preview. Never a preview
+ * of the next episode (SkipDB's "preview", a "Preview" chapter), and not merely something after the credits of a kind
+ * not known. It is what the watched rule waits for ([app.fireplayer.vod.countsAsWatched]); the buttons and the end card
+ * go by [afterCredits] as before.
  */
 class Segments(
     val recap: LongRange?,
@@ -25,6 +31,7 @@ class Segments(
     val creditsToEnd: Boolean = false,
     /** The credits' times are the file's own (its chapters), not a database's matched by length. */
     val creditsFromFile: Boolean = false,
+    val sceneAt: Long? = null,
 ) {
     /** The button to show at [position], and where it jumps to, or null. */
     fun skip(position: Long): Skip? {
@@ -52,12 +59,13 @@ class Segments(
      */
     val autoAt: Long? get() = exitAt?.takeIf { creditsFromFile }
 
-    /** These, with what [other] knows and this doesn't. */
+    /** These, with what [other] knows and this doesn't. What follows the credits comes with the credits' times. */
     fun or(other: Segments?): Segments = if (other == null) this else Segments(
         recap ?: other.recap, intro ?: other.intro,
         creditsAt ?: other.creditsAt, if (creditsAt != null) afterCredits else other.afterCredits, from,
         if (creditsAt != null) creditsToEnd else other.creditsToEnd,
         if (creditsAt != null) creditsFromFile else other.creditsFromFile,
+        if (creditsAt != null) sceneAt else other.sceneAt,
     )
 
     companion object {
@@ -77,6 +85,8 @@ object MkvChapters {
     private val INTRO = Regex("""^\s*(intro|opening|opening (credits|titles|theme)|title sequence|main titles|op)\b""", RegexOption.IGNORE_CASE)
     private val RECAP = Regex("""^\s*(recap|previously)\b""", RegexOption.IGNORE_CASE)
     private val CREDITS = Regex("""^\s*(credits|end credits|ending( credits)?|closing( credits)?|end titles|outro|ed)\b""", RegexOption.IGNORE_CASE)
+    // A preview of the next episode, never a scene to wait for (anime's "Preview" / "Yokoku" after the ED).
+    private val PREVIEW = Regex("""\b(preview|next\s+(episode|ep|time|week)|coming\s+(up|next|soon)|trailer|teaser|yokoku)\b|予告""", RegexOption.IGNORE_CASE)
 
     class Chapter(val startMs: Long, val endMs: Long?, val name: String)
 
@@ -105,13 +115,19 @@ object MkvChapters {
         val creditsEnd = if (c < 0) null else end(c)
         // A chapter after the credits that isn't more credits, and long enough to be something.
         val after = creditsEnd?.takeIf { durationMs - it > AFTER_MIN_MS }
+        // A real scene there: the first chapter after the credits not named as a preview, long enough to be one.
+        val scene = if (after == null) null else (c + 1 until sorted.size).firstOrNull { i ->
+            sorted[i].startMs < durationMs && !PREVIEW.containsMatchIn(sorted[i].name) && end(i) - sorted[i].startMs >= SCENE_MIN_MS
+        }?.let { sorted[it].startMs }
         if (recap == null && intro == null && creditsAt == null) return null
         return Segments(recap, intro, creditsAt, after, "chapters", creditsEnd != null && durationMs - creditsEnd <= TO_END_MS,
-            creditsFromFile = creditsAt != null)
+            creditsFromFile = creditsAt != null, sceneAt = scene)
     }
 
     private const val AFTER_MIN_MS = 15_000L
     private const val TO_END_MS = 5_000L
+    // A scene after the credits runs at least this long (a stinger can be short; a logo isn't one).
+    private const val SCENE_MIN_MS = 10_000L
 
     private fun read(uri: Uri, headers: Map<String, String>): List<Chapter>? {
         val head = get(uri, headers, null, HEAD_BYTES) ?: return null

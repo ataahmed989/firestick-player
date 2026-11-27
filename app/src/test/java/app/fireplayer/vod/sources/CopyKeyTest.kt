@@ -164,7 +164,7 @@ class CopyKeyTest {
             override fun recordRelease(title: Title, episode: EpisodeRef?, release: LastRelease) {
                 last = release
             }
-            override fun recordPlayback(title: Title, episode: EpisodeRef?, positionMs: Long, durationMs: Long, creditsAtMs: Long?) = Unit
+            override fun recordPlayback(title: Title, episode: EpisodeRef?, positionMs: Long, durationMs: Long, creditsAtMs: Long?, sceneAtMs: Long?) = Unit
         },
         http = StreamsHttp { base, _, _, _ ->
             val addon = if (base.host == "mf.invalid") Addon.MEDIAFUSION else Addon.TORZ

@@ -112,6 +112,8 @@ object Fixtures {
 class FakeLibrary : PlaybackLibrary {
     val releases = HashMap<String, LastRelease>()
     val recorded = ArrayList<List<Any?>>()
+    /** The scene after the credits each record was made with ([recorded]'s, in order). */
+    val scenes = ArrayList<Long?>()
 
     private fun key(title: Title, episode: EpisodeRef?) = SourceTarget(title, episode).key
 
@@ -121,8 +123,9 @@ class FakeLibrary : PlaybackLibrary {
         releases[key(title, episode)] = release
     }
 
-    override fun recordPlayback(title: Title, episode: EpisodeRef?, positionMs: Long, durationMs: Long, creditsAtMs: Long?) {
+    override fun recordPlayback(title: Title, episode: EpisodeRef?, positionMs: Long, durationMs: Long, creditsAtMs: Long?, sceneAtMs: Long?) {
         recorded += listOf(title.id, episode, positionMs, durationMs, creditsAtMs)
+        scenes += sceneAtMs
     }
 }
 

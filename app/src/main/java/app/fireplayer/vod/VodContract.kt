@@ -364,17 +364,23 @@ data class TitleDetails(
 /**
  * Where playback of a film or an episode stopped, [at] epoch ms. Written by the player ([VodRepository.recordProgress],
  * step 3). FirePlayer 1.0's rules: a position past 30 s and not in the last 3 minutes resumes ([resumable]); the last 3
- * minutes count as the end ([finished]).
+ * minutes count as the end ([finished]), unless [held].
+ *
+ * [held]: stopped in the last 3 minutes without counting as watched, because the film or episode has known credits (or
+ * a real scene after them) it hadn't reached ([countsAsWatched]): it isn't over, and resumes there. Nothing new is
+ * stored for it: the library knows it as a stop in the last 3 minutes with no watched mark since. Every version marks a
+ * stop it counts as watched in the same write, and every earlier one counted the last 3 minutes, so no record of theirs
+ * reads as held, and an earlier version reading a held one sees what it always did (a finished position).
  */
-data class Position(val positionMs: Long, val durationMs: Long, val at: Long) {
+data class Position(val positionMs: Long, val durationMs: Long, val at: Long, val held: Boolean = false) {
     /** How far along, 0..1 (the progress bars); null when the length isn't known. */
     val fraction: Float? get() = if (durationMs <= 0) null else (positionMs.toFloat() / durationMs).coerceIn(0f, 1f)
 
     /** What's left, for "42m left"; null when the length isn't known. */
     val leftMs: Long? get() = if (durationMs <= 0) null else (durationMs - positionMs).coerceAtLeast(0)
 
-    /** In the last 3 minutes: watched to the end. */
-    val finished: Boolean get() = durationMs > 0 && durationMs - positionMs <= END_MS
+    /** In the last 3 minutes and not [held]: watched to the end. */
+    val finished: Boolean get() = !held && inLastMinutes(positionMs, durationMs)
 
     /** Resume and Play from beginning are offered: past 30 s and not [finished]. */
     val resumable: Boolean get() = positionMs > START_MS && !finished
@@ -382,6 +388,9 @@ data class Position(val positionMs: Long, val durationMs: Long, val at: Long) {
     companion object {
         const val START_MS = 30_000L
         const val END_MS = 3 * 60_000L
+
+        /** [positionMs] of a known [durationMs] is in its last 3 minutes ([END_MS]). */
+        fun inLastMinutes(positionMs: Long, durationMs: Long): Boolean = durationMs > 0 && durationMs - positionMs <= END_MS
     }
 }
 
@@ -581,6 +590,8 @@ interface VodRepository {
     /**
      * [title]'s Continue Watching card as its row would load it now; null when it isn't in Continue Watching. A row
      * changes that one card in place with it (Mark unwatched: back to 0:00), with no reload. Main thread, from memory.
+     * A caught-up show's new episode counts as in it while some page's Continue Watching takes those (its Next
+     * Episodes row switched off: [app.fireplayer.vod.data.RowSettings.newInContinue]).
      */
     fun continueCard(title: Title): Card?
 
@@ -668,8 +679,9 @@ interface VodRepository {
     fun markUnwatchedUpTo(details: TitleDetails, upTo: Episode)
 
     /**
-     * Whether [id] is in Continue Watching now: played, not taken out and not marked watched since. The (⋯) window
-     * offers "Remove from Continue Watching" only then.
+     * Whether [id] is in Continue Watching now: played, not taken out and not marked watched since (a caught-up show's
+     * new episode too while some page's Continue Watching takes those, as [continueCard]). The (⋯) window offers
+     * "Remove from Continue Watching" only then.
      */
     fun inContinueWatching(id: String): Boolean
 
@@ -694,7 +706,8 @@ interface VodRepository {
      * Where playback stopped, from the player (step 3; nothing calls it in step 2). Any thread. [title] goes to the
      * front of Continue Watching (back in it if it was taken out) with a new [LastPlayed]; for a series [episode]'s own
      * [positionOf] is kept too. A [Position.finished] position also marks the film or the episode watched, so the ✓
-     * marks and Play agree. Listeners are called.
+     * marks and Play agree (the player's own records go by the watched rule instead: [PlaybackLibrary.recordPlayback]).
+     * Listeners are called.
      */
     fun recordProgress(title: Title, episode: EpisodeRef?, positionMs: Long, durationMs: Long)
 }

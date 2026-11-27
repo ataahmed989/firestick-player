@@ -494,9 +494,13 @@ class ContinueSyncTest {
             library.recordProgress(films[i], null, 10 * min, 100 * min)
         }
         reads.clear()
-        val lists = VodContinue.lists(library).toMap()
+        val lists = VodContinue.lists(library, homeNew = false, showsNew = false).toMap()
         assertEquals("each show's episodes read once", shows.associate { it.id to 1 }, reads)
-        assertEquals(listOf("home", "movies", "shows"), VodContinue.lists(library).map { it.first })
+        // Home's and the TV Shows page's Next Episodes rows set differently: still one reading.
+        reads.clear()
+        assertEquals(lists, VodContinue.lists(library, homeNew = true, showsNew = false).toMap())
+        assertEquals("each show's episodes read once, the pages' rows differing", shows.associate { it.id to 1 }, reads)
+        assertEquals(listOf("home", "movies", "shows"), VodContinue.lists(library, homeNew = false, showsNew = true).map { it.first })
         fun page(kind: Kind?) = RowRules.shown(library.continueEntries(kind)).mapNotNull { LibraryContinue.row(it) }
         assertEquals(page(null), lists["home"])
         assertEquals(page(Kind.MOVIE), lists["movies"])

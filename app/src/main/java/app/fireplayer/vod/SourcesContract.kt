@@ -990,17 +990,69 @@ interface PlaybackLibrary {
 
     /**
      * Where playback stopped, as [VodRepository.recordProgress]; also marks the film or episode watched when
-     * [countsAsWatched].
+     * [countsAsWatched] by what's known of this file's end: where its credits start ([creditsAtMs]) and where a real
+     * scene after them starts ([sceneAtMs]); null: not known.
      */
-    fun recordPlayback(title: Title, episode: EpisodeRef?, positionMs: Long, durationMs: Long, creditsAtMs: Long?)
+    fun recordPlayback(title: Title, episode: EpisodeRef?, positionMs: Long, durationMs: Long, creditsAtMs: Long?, sceneAtMs: Long? = null)
 }
 
-/** Watched (§6.2): past 90 %, or into the credits when they're known, or the last 3 minutes ([Position.finished]). */
-fun countsAsWatched(positionMs: Long, durationMs: Long, creditsAtMs: Long?): Boolean {
+/**
+ * Watched (§6.2), decided where playback stopped ([positionMs] of [durationMs]) by what's known of the end of this very
+ * file ([app.fireplayer.player.Segments]):
+ * - a real scene after the credits ([sceneAtMs]: a film's post-credits scene; never a preview of the next episode): only
+ *   from [WatchedRule.HEAD_START_MS] before it on, or at the very end ([WatchedRule.VERY_END_MS]); 90 % and the last 3
+ *   minutes don't count.
+ * - the credits' start ([creditsAtMs]) and no such scene: only from [WatchedRule.HEAD_START_MS] before it on, or at the
+ *   very end; 90 % and the last 3 minutes don't count.
+ * - neither: past 90 %, or the last 3 minutes ([Position.END_MS]), or the very end.
+ * A time outside the file's second half isn't trusted ([WatchedRule.endAt]). The decision is stored with the record (its
+ * watched mark), so it reads the same everywhere and after a restart ([Position.held]).
+ */
+fun countsAsWatched(positionMs: Long, durationMs: Long, creditsAtMs: Long?, sceneAtMs: Long? = null): Boolean {
     if (durationMs <= 0) return false
+    if (durationMs - positionMs <= WatchedRule.VERY_END_MS) return true
+    val end = WatchedRule.endAt(durationMs, creditsAtMs, sceneAtMs)
+    if (end != null) return positionMs >= end - WatchedRule.HEAD_START_MS
     if (positionMs * 10 >= durationMs * 9) return true
-    if (creditsAtMs != null && creditsAtMs > 0 && positionMs >= creditsAtMs) return true
     return durationMs - positionMs <= Position.END_MS
+}
+
+/**
+ * Watched to the end, for a video another app opened here (its resume point, and Glass Home's row of them): with its
+ * credits' start or a scene after them known, as [countsAsWatched]; without, the last 3 minutes, as always for these
+ * (no 90 %).
+ */
+fun endReached(positionMs: Long, durationMs: Long, creditsAtMs: Long?, sceneAtMs: Long?): Boolean {
+    if (WatchedRule.endAt(durationMs, creditsAtMs, sceneAtMs) != null) return countsAsWatched(positionMs, durationMs, creditsAtMs, sceneAtMs)
+    return durationMs - positionMs < Position.END_MS
+}
+
+/** The numbers of the watched rule ([countsAsWatched]). */
+object WatchedRule {
+    /** Watched from this long before a known credits' start or scene after them (the viewer's "2 to 5 seconds"). */
+    const val HEAD_START_MS = 3_000L
+
+    /** This close to the file's end is its very end: watched whatever is known of the credits. */
+    const val VERY_END_MS = 5_000L
+
+    /**
+     * Where watching to the end is reached in a file [durationMs] long: a real scene after the credits ([sceneAtMs])
+     * when known, else the credits' start ([creditsAtMs]); null when neither is known. Only a time in the file's second
+     * half counts (credits and what follows them are there; [app.fireplayer.player.SkipRules.fits] keeps only those).
+     */
+    fun endAt(durationMs: Long, creditsAtMs: Long?, sceneAtMs: Long?): Long? =
+        trusted(durationMs, sceneAtMs) ?: trusted(durationMs, creditsAtMs)
+
+    /**
+     * A known real scene after the credits ([sceneAtMs], as [endAt] trusts it) that [positionMs] hasn't reached by the
+     * rule ([countsAsWatched]): the end card's Exit then leaves the title where it is, in Continue Watching for the
+     * scene, instead of at its end, watched (the first point of the rule). False with no such scene known.
+     */
+    fun sceneAhead(positionMs: Long, durationMs: Long, creditsAtMs: Long?, sceneAtMs: Long?): Boolean =
+        trusted(durationMs, sceneAtMs) != null && !countsAsWatched(positionMs, durationMs, creditsAtMs, sceneAtMs)
+
+    /** [t] when it lies in the second half of a file [durationMs] long ([endAt]); else null. */
+    private fun trusted(durationMs: Long, t: Long?): Long? = t?.takeIf { durationMs > 0 && it >= durationMs / 2 && it < durationMs }
 }
 
 // ---- The engine's door ----------------------------------------------------------------------------------------------
@@ -1041,8 +1093,9 @@ private class StubSources(private val app: Context) : SourcesRepository {
     override val library = object : PlaybackLibrary {
         override fun lastRelease(title: Title, episode: EpisodeRef?): LastRelease? = null
         override fun recordRelease(title: Title, episode: EpisodeRef?, release: LastRelease) = Unit
-        override fun recordPlayback(title: Title, episode: EpisodeRef?, positionMs: Long, durationMs: Long, creditsAtMs: Long?) =
-            VodRepositories.get(app).recordProgress(title, episode, positionMs, durationMs)
+        override fun recordPlayback(
+            title: Title, episode: EpisodeRef?, positionMs: Long, durationMs: Long, creditsAtMs: Long?, sceneAtMs: Long?,
+        ) = VodRepositories.get(app).recordProgress(title, episode, positionMs, durationMs)
     }
 
     private fun empty(target: SourceTarget) =
