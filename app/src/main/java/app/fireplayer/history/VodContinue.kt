@@ -5,6 +5,7 @@ import android.util.Log
 import app.fireplayer.vod.Card
 import app.fireplayer.vod.Episode
 import app.fireplayer.vod.Kind
+import app.fireplayer.vod.Page
 import app.fireplayer.vod.PlayRequest
 import app.fireplayer.vod.Sources
 import app.fireplayer.vod.TitleDetails
@@ -43,10 +44,14 @@ object VodContinue {
 
     /**
      * [repo]'s Continue Watching as Glass Home's rows: read from the library each time (never a copy kept), so they are
-     * Home's Continue Watching row as it is now, the same titles in the same order, at the same episode and place.
+     * Home's Continue Watching row as it is now, the same titles in the same order, at the same episode and place; with
+     * the caught-up shows' new episodes when Home's Next Episodes row is off, as there ([homeWithNew]).
      */
     internal fun rows(repo: DefaultVodRepository): List<WatchHistory.Row> =
-        repo.library.continueEntries().mapNotNull { LibraryContinue.row(it) }
+        repo.library.continueEntries(withNew = homeWithNew(repo)).mapNotNull { LibraryContinue.row(it) }
+
+    /** Home's Continue Watching has the caught-up shows' new episodes (its Next Episodes row is off): Glass Home's too. */
+    private fun homeWithNew(repo: DefaultVodRepository): Boolean = repo.newInContinue(Page.HOME)
 
     /** Takes a library row's title out of Continue Watching (its resume point stays); false for no such row. */
     fun remove(context: Context, id: String): Boolean = remove(VodRepositories.repository(context), id)
@@ -70,7 +75,7 @@ object VodContinue {
     fun request(context: Context, id: String?, episodeId: String? = null): PlayRequest? {
         val (kind, titleId) = LibraryContinue.parse(id) ?: return null
         val repo = VodRepositories.repository(context)
-        val entry = repo.library.continueEntry(kind, titleId) ?: return null
+        val entry = repo.library.continueEntry(kind, titleId, homeWithNew(repo)) ?: return null
         val episode = if (episodeId == null) entry.episode else {
             if (kind != Kind.SERIES) return null
             LibraryContinue.parseEpisodeId(episodeId) ?: return null
@@ -93,7 +98,7 @@ object VodContinue {
             val (kind, titleId) = LibraryContinue.parse(id) ?: return emptyList()
             if (kind != Kind.SERIES) return emptyList()
             val repo = VodRepositories.repository(context)
-            val entry = repo.library.continueEntry(kind, titleId) ?: return emptyList()
+            val entry = repo.library.continueEntry(kind, titleId, homeWithNew(repo)) ?: return emptyList()
             val got = CountDownLatch(1)
             var details: TitleDetails? = null
             val cancel = repo.details(entry.title) { d, _ ->

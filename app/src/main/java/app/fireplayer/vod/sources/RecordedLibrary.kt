@@ -13,7 +13,7 @@ import app.fireplayer.vod.data.VodLibrary
 
 /**
  * What playback records, into the library on this TV ([VodLibrary], vod.db): where it stopped (Continue Watching and
- * resume points keyed by title and episode), watched past 90 % or into the credits ([countsAsWatched]), and the copy
+ * resume points keyed by title and episode), watched by the watched rule ([countsAsWatched]), and the copy
  * last played from (info hash + file index + add-on, never a link). Any thread; listeners are called on change.
  *
  * A copy of no release known (its add-on gave no info hash) is kept by its [CopyKey] in the row's hash column, with file
@@ -49,8 +49,16 @@ class RecordedLibrary(private val library: VodLibrary) : PlaybackLibrary {
 
     override fun forgetRelease(title: Title, episode: EpisodeRef?) = library.forgetRelease(title.kind, idOf(title, episode))
 
-    override fun recordPlayback(title: Title, episode: EpisodeRef?, positionMs: Long, durationMs: Long, creditsAtMs: Long?) {
-        library.recordProgress(title, episode, positionMs, durationMs, watched = countsAsWatched(positionMs, durationMs, creditsAtMs))
+    /**
+     * The watched rule's decision ([countsAsWatched]) is made here, with what's known of the file's end, and kept as the
+     * record's watched mark: a stop it doesn't count (before known credits, or a scene after them) gets none, so the
+     * library holds it open even in the last 3 minutes ([app.fireplayer.vod.Position.held]), after a restart too.
+     */
+    override fun recordPlayback(
+        title: Title, episode: EpisodeRef?, positionMs: Long, durationMs: Long, creditsAtMs: Long?, sceneAtMs: Long?,
+    ) {
+        val watched = countsAsWatched(positionMs, durationMs, creditsAtMs, sceneAtMs)
+        library.recordProgress(title, episode, positionMs, durationMs, watched = watched)
     }
 
     companion object {

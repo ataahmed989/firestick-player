@@ -78,12 +78,16 @@ class DefaultVodRepository(
 
     /**
      * The library; also for later steps (playback records where it stopped with [VodLibrary.recordProgress]). A show's
-     * place in Continue Watching follows its stored episodes ([showEpisodes]).
+     * place in Continue Watching follows its stored episodes ([showEpisodes]); a caught-up show's new episode is in it
+     * on a page whose Next Episodes row is off ([newInContinue]; any page's, for questions about a title alone).
      */
-    val library = VodLibrary(libraryStore, clock, io, { showEpisodes(it) }, keptWithCopy) { libraryChanged() }
+    val library = VodLibrary(libraryStore, clock, io, { showEpisodes(it) }, keptWithCopy, { anyNewInContinue() }) { libraryChanged() }
 
-    /** Settings › Rows: each page's rows as the viewer set them (main thread). */
-    val rowSettings = RowSettings(rowStore) { newYear(it) }
+    /** Settings › Rows: each page's rows as the viewer set them (main thread); a change is also [rowsChanged]'s. */
+    val rowSettings = RowSettings(rowStore) { newYear(it) }.also { it.addListener { rowsChanged() } }
+
+    /** Each page's [newInContinue] when Settings › Rows last changed ([rowsChanged]); null before that. */
+    @Volatile private var newInContinueSeen: List<Boolean>? = null
 
     private val ids = IdMap(idStore, clock, io)
     private val pages = Lru<String, Stored<Cinemeta.Page>>(PAGES_KEPT)
@@ -127,7 +131,11 @@ class DefaultVodRepository(
         when (val s = row.source) {
             is Source.Catalog -> catalogCards(resolve(s), skip, limit, req) { titles, fresh -> sink(titles.map { Card(it) }, fresh) }
             is Source.Trending -> s.kind?.let { trendingCards(it, skip, limit, req, sink) } ?: trendingBoth(skip, limit, req, sink)
-            is Source.ContinueWatching -> local(req, skip, limit, sink) { library.continueWatching(s.kind) }
+            is Source.ContinueWatching -> {
+                // With the caught-up shows' new episodes where the row's page has its Next Episodes row off.
+                val withNew = RowLayouts.pageOf(row.key)?.let { newInContinue(it) } ?: false
+                local(req, skip, limit, sink) { library.continueWatching(s.kind, withNew) }
+            }
             Source.MyList -> local(req, skip, limit, sink) { library.myList().map { Card(it) } }
             is Source.MyListOf -> local(req, skip, limit, sink) { library.myList().filter { it.kind == s.kind }.map { Card(it) } }
             is Source.Search -> searchCards(s, skip, limit, req, sink)
@@ -251,6 +259,28 @@ class DefaultVodRepository(
     override fun libraryVersion(): Long = libraryVersion.get()
 
     override fun continueCard(title: Title): Card? = library.continueCard(title.kind, title.id)
+
+    /**
+     * Whether [page]'s Continue Watching has the caught-up shows' new episodes, from their start: its Next Episodes row
+     * is off ([RowSettings.newInContinue]); with it on they're there instead, never both. Glass Home's row is Home's.
+     * Any thread.
+     */
+    fun newInContinue(page: Page): Boolean = rowSettings.newInContinue(page)
+
+    /** Some page's Continue Watching has the new episodes ([newInContinue]): the title's place in it, page aside. */
+    private fun anyNewInContinue(): Boolean = Page.entries.any { newInContinue(it) }
+
+    /**
+     * Settings › Rows changed: when a page's Next Episodes row went on or off ([newInContinue] changed), the library's
+     * listeners are told, so the pages' Continue Watching rows and Glass Home's row (Home's) take or give back the new
+     * episodes at once. Main thread.
+     */
+    private fun rowsChanged() {
+        val now = Page.entries.map { newInContinue(it) }
+        val seen = newInContinueSeen
+        newInContinueSeen = now
+        if (seen != now) libraryChanged()
+    }
 
     // ---- Title page (step 2) ----
 

@@ -486,9 +486,11 @@ object PlayRules {
      * at or past its own end (its place is only its end, held there). A place mid-way is kept from the start, as before,
      * and so is a jump to the credits right after the first frame.
      */
-    fun keepsPlace(end: CopyEnd, startMs: Long, positionMs: Long, durationMs: Long, creditsAtMs: Long?): Boolean = when (end) {
+    fun keepsPlace(
+        end: CopyEnd, startMs: Long, positionMs: Long, durationMs: Long, creditsAtMs: Long?, sceneAtMs: Long? = null,
+    ): Boolean = when (end) {
         CopyEnd.END -> true
-        CopyEnd.BARELY_PLAYED -> startMs < durationMs || !app.fireplayer.vod.countsAsWatched(positionMs, durationMs, creditsAtMs)
+        CopyEnd.BARELY_PLAYED -> startMs < durationMs || !app.fireplayer.vod.countsAsWatched(positionMs, durationMs, creditsAtMs, sceneAtMs)
         CopyEnd.SHORT -> false
     }
 

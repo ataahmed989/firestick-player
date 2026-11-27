@@ -285,7 +285,7 @@ class AddonChecksTest {
             library = object : PlaybackLibrary {
                 override fun lastRelease(title: Title, episode: EpisodeRef?): LastRelease? = null
                 override fun recordRelease(title: Title, episode: EpisodeRef?, release: LastRelease) = Unit
-                override fun recordPlayback(title: Title, episode: EpisodeRef?, positionMs: Long, durationMs: Long, creditsAtMs: Long?) = Unit
+                override fun recordPlayback(title: Title, episode: EpisodeRef?, positionMs: Long, durationMs: Long, creditsAtMs: Long?, sceneAtMs: Long?) = Unit
             },
             http = StreamsHttp { _, _, _, _ -> answer() },
             linkCheck = LinkCheck({ _, _, _ -> LinkCheck.Answer(302, "https://cdn.invalid/f.mkv", null) }, { true }, { loop.now }),

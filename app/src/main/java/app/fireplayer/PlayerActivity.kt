@@ -16,6 +16,7 @@ import app.fireplayer.vod.PlayRequest
 import app.fireplayer.vod.StartAt
 import app.fireplayer.vod.Sources
 import app.fireplayer.vod.TitleDetails
+import app.fireplayer.vod.endReached
 import app.fireplayer.vod.data.VodRepositories
 import app.fireplayer.vod.play.MainTicker
 import app.fireplayer.vod.play.FilmMode
@@ -1651,15 +1652,28 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val entry = entries.getOrNull(p.currentMediaItemIndex) ?: return
         val pos = p.currentPosition
         val dur = p.duration
-        val nearEnd = dur != C.TIME_UNSET && dur - pos < 3 * 60_000
+        val ends = endsOf(entry)
         // From the add-ons: the library keeps it by title and episode (never by link, nor in Glass Home's row yet).
         source?.let {
-            it.record(pos, if (dur == C.TIME_UNSET) 0L else dur, segments?.creditsAt)
+            it.record(pos, if (dur == C.TIME_UNSET) 0L else dur, ends?.creditsAt, ends?.sceneAt)
             return
         }
-        prefs.savePosition(entry.key, if (pos > 30_000 && !nearEnd && !p.isCurrentMediaItemLive) pos else 0L)
-        noteWatched(entry, pos, dur, finished = nearEnd, live = p.isCurrentMediaItemLive)
+        // Watched to the end: the last 3 minutes, or with its credits (or a scene after them) known, those reached.
+        val finished = dur != C.TIME_UNSET && endReached(pos, dur, ends?.creditsAt, ends?.sceneAt)
+        prefs.savePosition(entry.key, if (pos > 30_000 && !finished && !p.isCurrentMediaItemLive) pos else 0L)
+        noteWatched(entry, pos, dur, finished = finished, live = p.isCurrentMediaItemLive)
     }
+
+    /**
+     * What's known of [entry]'s end for the watched rule ([app.fireplayer.vod.countsAsWatched]): its parts, with where
+     * its credits start and a real scene after them ([Segments.sceneAt]); null when none are known, or the ones kept are
+     * still another's.
+     */
+    private fun endsOf(entry: Entry?): Segments? =
+        segments?.takeIf { entry != null && segmentsFor?.startsWith(entry.key + "|") == true }
+
+    /** [endsOf] the video playing now. */
+    private fun currentEnds(): Segments? = endsOf(entries.getOrNull(player?.currentMediaItemIndex ?: -1))
 
     /**
      * Notes a film or episode for Glass Home's Continue Watching row (see [ContinueWatching]): where it is, how long it
@@ -1753,11 +1767,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // bring the title back. Leaving or moving on notes it, with the time played meanwhile.
         if (dur != C.TIME_UNSET && dur - pos < 3 * 60_000) return
         // The resume point too: behind Home, Fire OS stops FirePlayer outright when memory is short, without onStop.
+        val ends = endsOf(entry)
         source?.let {
             watchNotedAt = SystemClock.elapsedRealtime()
-            it.record(pos, if (dur == C.TIME_UNSET) 0L else dur, segments?.creditsAt)
+            it.record(pos, if (dur == C.TIME_UNSET) 0L else dur, ends?.creditsAt, ends?.sceneAt)
             return
         }
+        // Nor once it's watched to the end by its known credits (or the scene after them), for the same reason.
+        if (dur != C.TIME_UNSET && endReached(pos, dur, ends?.creditsAt, ends?.sceneAt)) return
         if (pos > 30_000 && !p.isCurrentMediaItemLive) prefs.savePosition(entry.key, pos)
         noteWatched(entry, pos, dur, finished = false, live = p.isCurrentMediaItemLive)
     }
@@ -1933,7 +1950,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             completed = true
             if (s != null) {
                 // Watched to the end; the next episode then starts from its own sources, when there is one.
-                player?.duration?.takeIf { it > 0 }?.let { d -> s.record(d, d, segments?.creditsAt) }
+                val e = currentEnds()
+                player?.duration?.takeIf { it > 0 }?.let { d -> s.record(d, d, e?.creditsAt, e?.sceneAt) }
                 if (s.ended(prefs.playNextEpisode)) return
             } else {
                 prefs.savePosition(entries.getOrNull(player?.currentMediaItemIndex ?: 0)?.key ?: "", 0L)
@@ -3267,7 +3285,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         hidePostPlay()
         completed = true
         // From Films & Shows: the library marks it watched (the credits ran).
-        source?.let { s -> p.duration.takeIf { it > 0 }?.let { d -> s.record(d, d, segments?.creditsAt) } }
+        source?.let { s ->
+            val e = currentEnds()
+            p.duration.takeIf { it > 0 }?.let { d -> s.record(d, d, e?.creditsAt, e?.sceneAt) }
+        }
         entries.getOrNull(p.currentMediaItemIndex)?.let {
             prefs.savePosition(it.key, 0L)
             noteWatched(it, p.currentPosition, p.duration, finished = true, live = p.isCurrentMediaItemLive)
@@ -3499,7 +3520,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
                     takeSegments(found)
                 }
                 if (found != null) android.util.Log.i("FirePlayerSegments", "From ${found.from}: recap ${found.recap}, " +
-                    "intro ${found.intro}, credits ${found.creditsAt}, after ${found.afterCredits}, to end ${found.creditsToEnd}")
+                    "intro ${found.intro}, credits ${found.creditsAt}, after ${found.afterCredits}, to end ${found.creditsToEnd}, " +
+                    "scene ${found.sceneAt}")
             }
         }
     }
@@ -3580,10 +3602,13 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val p = player ?: return
         val s = source
         if (s != null) {
-            // From Films & Shows: this one counts as watched (the credits began), and the next starts from its own
-            // sources, the same kind as this one's.
+            // From Films & Shows: this one counts as watched (the credits began; moving on is leaving any scene after
+            // them too), and the next starts from its own sources, the same kind as this one's.
             hidePostPlay()
-            p.duration.takeIf { it > 0 }?.let { d -> s.record(maxOf(p.currentPosition, segments?.creditsAt ?: 0L), d, segments?.creditsAt) }
+            val e = currentEnds()
+            p.duration.takeIf { it > 0 }?.let { d ->
+                s.record(maxOf(p.currentPosition, e?.creditsAt ?: 0L, e?.sceneAt ?: 0L), d, e?.creditsAt, e?.sceneAt)
+            }
             s.ended(playNext = true)
             return
         }

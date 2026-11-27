@@ -51,12 +51,20 @@ object SkipTimes {
         var from = "skipdb"
         // IntroDB only for what SkipDB left open (unknown, or not fitting this file).
         val open = listOf(Part.INTRO, Part.RECAP, Part.OUTRO).any { SkipRules.open(skipDb[it]) }
+        val movie = if (what.isEmpty()) "&is_movie=true" else ""
         if (open) {
-            val movie = if (what.isEmpty()) "&is_movie=true" else ""
             val intro = get(context, "$INTRODB?imdb_id=$imdbId$what$movie")
                 ?.let { runCatching { introDbPicks(JSONObject(it), durationMs, SkipRules.runtimeAgrees(tmdbMinutes, durationMs)) }.getOrNull() }
             picks = SkipRules.combine(skipDb, intro)
             if (intro != null && Part.values().any { skipDb[it] !== picks[it] }) from = if (skipDb.values.any { it is Pick.Found }) "skipdb+introdb" else "introdb"
+        } else {
+            // SkipDB knows no post-credits scene: IntroDB's, for the watched rule alone (nothing else is taken from it
+            // here), when its answer is on disk already (asked ahead as a play from Films & Shows began, [warm]).
+            // Nothing more is asked of the network for it.
+            get(context, "$INTRODB?imdb_id=$imdbId$what$movie", ask = false)
+                ?.let { runCatching { introDbPicks(JSONObject(it), durationMs, SkipRules.runtimeAgrees(tmdbMinutes, durationMs)) }.getOrNull() }
+                ?.get(Part.SCENE)?.takeIf { it is Pick.Found }
+                ?.let { picks = picks + (Part.SCENE to it) }
         }
         // What's still open, from the databases' times taken on the downloaded subtitles' version and put on this
         // file's timeline through the offsets auto sync confirmed (a file with an ad or bumper the databases' hasn't).
@@ -131,7 +139,8 @@ object SkipTimes {
         }
     }
 
-    private fun skipDbPicks(o: JSONObject, duration: Long, onSubtitles: Boolean = false): Map<Part, Pick> {
+    /** SkipDB's answer [o] for a file [duration] long, part by part (it has no post-credits scene: [Part.SCENE] is missing). */
+    internal fun skipDbPicks(o: JSONObject, duration: Long, onSubtitles: Boolean = false): Map<Part, Pick> {
         val all = o.optJSONObject("segments") ?: return emptyMap()
         return Part.values().associateWith { part ->
             val s = all.optJSONObject(part.name.lowercase())?.let {
@@ -144,22 +153,29 @@ object SkipTimes {
         }
     }
 
-    private fun introDbPicks(o: JSONObject, duration: Long, tmdbAgrees: Boolean): Map<Part, Pick> {
+    /** IntroDB's answer [o] for a file [duration] long, part by part. */
+    internal fun introDbPicks(o: JSONObject, duration: Long, tmdbAgrees: Boolean): Map<Part, Pick> {
         fun seg(name: String) = o.optJSONObject(name)?.let {
             SkipRules.IntroDbSegment(it.optLong("start_ms", -1), it.optLong("end_ms", -1), it.optDouble("confidence", 0.0))
         }
         val evidence = SkipRules.Evidence(tmdbAgrees, SkipRules.outroAnchors(seg("outro"), duration))
+        val scene = seg("post_credits")
         return mapOf(
             Part.INTRO to SkipRules.introDb(Part.INTRO, seg("intro"), o.optBoolean("no_intro"), evidence, duration),
             Part.RECAP to SkipRules.introDb(Part.RECAP, seg("recap"), o.optBoolean("no_recap"), evidence, duration),
             Part.OUTRO to SkipRules.introDb(Part.OUTRO, seg("outro"), o.optBoolean("no_outro"), evidence, duration),
-            // A film's scene after the credits: something to stay for.
-            Part.PREVIEW to SkipRules.introDb(Part.PREVIEW, seg("post_credits"), false, evidence, duration),
+            // A film's scene after the credits: something to stay for (the buttons' PREVIEW, as always), and a real
+            // scene for the watched rule (SCENE: IntroDB's alone, never SkipDB's teaser).
+            Part.PREVIEW to SkipRules.introDb(Part.PREVIEW, scene, false, evidence, duration),
+            Part.SCENE to SkipRules.introDb(Part.SCENE, scene, false, SkipRules.sceneEvidence(evidence, scene, duration), duration),
         )
     }
 
-    /** The answer's text, from disk when it's fresh; null on no answer. The same address asked twice goes out once. */
-    private fun get(context: Context, url: String): String? {
+    /**
+     * The answer's text, from disk when it's fresh; null on no answer. The same address asked twice goes out once.
+     * Without [ask], only what's on disk: nothing is asked.
+     */
+    private fun get(context: Context, url: String, ask: Boolean = true): String? {
         val dir = File(context.cacheDir, "skiptimes").apply { mkdirs() }
         val file = File(dir, "${url.hashCode().toUInt()}.json")
         if (file.exists()) {
@@ -169,7 +185,7 @@ object SkipTimes {
             val kept = if (text != null && "start_ms" in text) KEPT_MS else MISS_KEPT_MS
             if (text != null && age < kept) return text.ifEmpty { null }
         }
-        if (System.currentTimeMillis() < quietUntil) return null
+        if (!ask || System.currentTimeMillis() < quietUntil) return null
         val task = FutureTask { fetch(url) }
         val running = asking.putIfAbsent(url, task)
         val answer = if (running != null) runCatching { running.get() }.getOrNull() else {

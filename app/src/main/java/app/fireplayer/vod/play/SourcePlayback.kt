@@ -749,14 +749,15 @@ class SourcePlayback(
     // ---- The library and the next episode --------------------------------------------------------------------------
 
     /**
-     * Where playback is (on leaving, and now and then): the resume point, Continue Watching and the watched mark. Never
-     * from a copy that isn't the whole film, nor an end from one a switch started at or past its own end
+     * Where playback is (on leaving, and now and then): the resume point, Continue Watching and the watched mark, by
+     * the watched rule with what's known of this file's end ([creditsAtMs], [sceneAtMs]: [app.fireplayer.vod.countsAsWatched]).
+     * Never from a copy that isn't the whole film, nor an end from one a switch started at or past its own end
      * ([PlayRules.keepsPlace]): the film's own place, kept before, stays.
      */
-    fun record(positionMs: Long, durationMs: Long, creditsAtMs: Long?) {
+    fun record(positionMs: Long, durationMs: Long, creditsAtMs: Long?, sceneAtMs: Long? = null) {
         if (!everPlayed || durationMs <= 0 || notWholeNow) return
-        if (!PlayRules.keepsPlace(copyEnd(durationMs), copyStartMs, positionMs, durationMs, creditsAtMs)) return
-        library.recordPlayback(request.target.title, request.target.episode, positionMs, durationMs, creditsAtMs)
+        if (!PlayRules.keepsPlace(copyEnd(durationMs), copyStartMs, positionMs, durationMs, creditsAtMs, sceneAtMs)) return
+        library.recordPlayback(request.target.title, request.target.episode, positionMs, durationMs, creditsAtMs, sceneAtMs)
     }
 
     /** Called as it plays: in the last ~4 minutes of an episode, the next one's sources are looked up once. */

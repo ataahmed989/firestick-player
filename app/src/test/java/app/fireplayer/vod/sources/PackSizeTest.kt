@@ -173,7 +173,7 @@ class PackSizeTest {
         override fun recordRelease(title: Title, episode: EpisodeRef?, release: LastRelease) {
             last = release
         }
-        override fun recordPlayback(title: Title, episode: EpisodeRef?, positionMs: Long, durationMs: Long, creditsAtMs: Long?) = Unit
+        override fun recordPlayback(title: Title, episode: EpisodeRef?, positionMs: Long, durationMs: Long, creditsAtMs: Long?, sceneAtMs: Long?) = Unit
     }
     private val tv = object : ThisTv {
         override fun capabilities(): TvCapabilities? = null
