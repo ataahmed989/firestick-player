@@ -307,8 +307,19 @@ data class TitleDetails(
      * otherwise: Emmys and BAFTAs never make a callout.
      */
     val oscars: String? = null,
-    /** Cinemeta's countries as written ("United States, Canada"), for Details. */
+    /** Cinemeta's countries as written ("United States, Canada"), else TMDB's, for Details. */
     val country: String? = null,
+    /**
+     * Each [cast] member's portrait (a TMDB address), in [cast]'s order, null for one without; empty when the cast is
+     * Cinemeta's or TMDB has no portraits. For Details.
+     */
+    val castPictures: List<String?> = emptyList(),
+    /** The language it was made in, in English ("English", "Korean"), from TMDB; null when unknown. For Details. */
+    val language: String? = null,
+    /** A show's networks ("Hulu"), from TMDB; empty for a film. For Details. */
+    val networks: List<String> = emptyList(),
+    /** A film's studios (TMDB's production companies, the first few); empty for a show. For Details. */
+    val studios: List<String> = emptyList(),
     /**
      * Its place in this week's Top 10 (1..10) for "#4 in Top 10 this week"; null without a key or outside it. Looked up
      * each time the details are passed on, never stored with them.

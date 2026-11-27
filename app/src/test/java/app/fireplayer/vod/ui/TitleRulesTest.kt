@@ -4,14 +4,12 @@ import app.fireplayer.vod.Callout
 import app.fireplayer.vod.Day
 import app.fireplayer.vod.Episode
 import app.fireplayer.vod.EpisodeRef
-import app.fireplayer.vod.From
 import app.fireplayer.vod.Kind
 import app.fireplayer.vod.LastPlayed
 import app.fireplayer.vod.PlayAction
 import app.fireplayer.vod.PlayTarget
 import app.fireplayer.vod.Position
 import app.fireplayer.vod.Season
-import app.fireplayer.vod.Sourced
 import app.fireplayer.vod.Title
 import app.fireplayer.vod.TitleDetails
 import app.fireplayer.vod.data.Callouts
@@ -314,28 +312,7 @@ class TitleRulesTest {
         assertEquals(0, TitleRules.focusIndex(s1.episodes, s2.episodes[0]))
     }
 
-    // ---- Details ----
-
-    @Test
-    fun detailsFactsAndWhereTheyCameFrom() {
-        val d = TitleFixtures.details("cinemeta_meta_film.json", "PG-13").copy(story = Sourced("Story.", From.TMDB))
-        val facts = TitleRules.detailsFacts(d).toMap()
-        assertEquals("2024", facts["Year"])
-        assertEquals("Mar 1, 2024", facts["Released"])
-        assertEquals("2h 47m", facts["Length"])
-        assertEquals("PG-13", facts["Rated"])
-        assertEquals("Action, Adventure, Drama", facts["Genres"])
-        assertEquals("★ 8.4", facts["IMDb"])
-        assertEquals("Won 2 Oscars. 126 wins & 375 nominations total", facts["Awards"])
-        val notes = TitleRules.sourceNotes(d)
-        assertTrue(notes.contains("Story from TMDB"))
-        assertTrue(notes.contains("Cast from Cinemeta"))
-        assertTrue(notes.contains("Age rating from TMDB"))
-        val korra = TitleRules.detailsFacts(TitleFixtures.details("cinemeta_meta_show_ended_specials.json")).toMap()
-        assertEquals("4", korra["Seasons"])
-        assertEquals("Ended", korra["Status"])
-        assertEquals("23m", korra["Episodes"])
-    }
+    // ---- Details: DetailsWindowRulesTest ----
 
     // ---- The D-pad map ----
 

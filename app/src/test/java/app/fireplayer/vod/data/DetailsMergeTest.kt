@@ -190,4 +190,46 @@ class DetailsMergeTest {
         assertEquals("2026-11-18", Dates.isoDay(NOW))
         assertEquals(2026, Dates.yearOf(NOW))
     }
+
+    @Test
+    fun detailsWindowsPartsAreTmdbsWhenItHasThem() {
+        val film = details("cinemeta_meta_film.json", Kind.MOVIE, "tmdb_movie_details_appended.json")
+        assertEquals("https://image.tmdb.org/t/p/w185/fixture_c1.jpg", film.castPictures[0])
+        assertNull(film.castPictures[2])
+        assertEquals(film.cast!!.value.size, film.castPictures.size)
+        assertEquals("English", film.language)
+        assertEquals(listOf("Legendary Pictures"), film.studios)
+        assertTrue(film.networks.isEmpty())
+        // Cinemeta's countries first.
+        assertTrue(film.country!!.startsWith("United States, Canada"))
+        val show = details("cinemeta_meta_show_ended_specials.json", Kind.SERIES, "tmdb_tv_details_appended.json")
+        assertEquals(listOf("Nickelodeon"), show.networks)
+        assertTrue(show.studios.isEmpty())
+        assertTrue(show.castPictures.isEmpty())
+        // Without TMDB: none of them, nothing made up.
+        val alone = details("cinemeta_meta_film.json", Kind.MOVIE)
+        assertTrue(alone.castPictures.isEmpty())
+        assertNull(alone.language)
+        assertTrue(alone.studios.isEmpty())
+        // A meta without countries takes TMDB's, named as Cinemeta names them.
+        val meta = TitlePageFixtures.meta("cinemeta_meta_film.json", Kind.MOVIE).copy(country = null)
+        val asked = Title(meta.title.id, Kind.MOVIE, meta.title.name)
+        val fromTmdb = DetailsMerge.compose(asked, meta, TitlePageFixtures.tmdb("tmdb_movie_details_appended.json", Kind.MOVIE), null, null)
+        assertEquals("United States", fromTmdb.country)
+        // Portraits only beside TMDB's own cast: with Cinemeta's names, none.
+        val noTmdbCast = TitlePageFixtures.tmdb("tmdb_movie_details_appended.json", Kind.MOVIE).copy(cast = emptyList())
+        assertTrue(DetailsMerge.compose(asked, meta, noTmdbCast, null, null).castPictures.isEmpty())
+    }
+
+    @Test
+    fun languagesAreNamedInEnglish() {
+        assertEquals("English", DetailsMerge.languageName("en"))
+        assertEquals("Korean", DetailsMerge.languageName("KO"))
+        assertEquals("Cantonese", DetailsMerge.languageName("cn"))
+        assertNull(DetailsMerge.languageName("xx"))
+        assertNull(DetailsMerge.languageName("zz"))
+        assertNull(DetailsMerge.languageName(""))
+        assertNull(DetailsMerge.languageName("e1"))
+        assertNull(DetailsMerge.languageName(null))
+    }
 }

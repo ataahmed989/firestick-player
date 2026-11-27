@@ -156,6 +156,7 @@ import app.fireplayer.player.SkipTimes
 import app.fireplayer.player.MkvChapters
 import app.fireplayer.player.MkvJump
 import app.fireplayer.player.Segments
+import app.fireplayer.ui.DetailsLook
 import app.fireplayer.ui.DimmerWindow
 import app.fireplayer.ui.EpisodesSheet
 import app.fireplayer.ui.FireDialog
@@ -7101,18 +7102,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     /**
-     * Show or film details, laid out like Fix match: the cover with the name and a line of facts beside it, then the
-     * rating, TMDB's score and the source in two columns, the story, and for a show this episode as a card.
+     * Show or film details, laid out like Fix match: the cover with the name (its parental-rating badge beside it) and a
+     * line of facts beside it, then TMDB's or IMDb's score and the source in two columns, the story, and for a show this
+     * episode as a card. Its title, badge, lines, columns and story share the title page's Details window's look
+     * ([DetailsLook]).
      */
     private fun SidePanel.details(a: Tmdb.About, ep: ShowGuide.Ep?, source: String?) {
         val d = resources.displayMetrics.density
         fun dp(v: Int) = (v * d).toInt()
-        fun text(value: CharSequence, sp: Float, color: Int, font: Int, top: Int = 0) = TextView(this@PlayerActivity).apply {
-            text = value
-            setTextColor(ContextCompat.getColor(this@PlayerActivity, color))
-            setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, sp)
-            typeface = androidx.core.content.res.ResourcesCompat.getFont(this@PlayerActivity, font)
-            setLineSpacing(2f * d, 1f)
+        fun below(view: TextView, top: Int) = view.apply {
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
                 .apply { topMargin = dp(top) }
         }
@@ -7121,41 +7119,37 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             if (a.seasons > 0) "TV show" else "Film",
             a.runtime.takeIf { it > 0 }?.let { if (it >= 60) "${it / 60}h ${it % 60}m" else "${it}m" },
             a.seasons.takeIf { it > 0 }?.let { if (it == 1) "1 season" else "$it seasons" },
-        ).joinToString(" · ")
+        ).joinToString(DetailsLook.SEP)
         val side = LinearLayout(this@PlayerActivity).apply {
             orientation = LinearLayout.VERTICAL
-            addView(text(a.name, 17f, R.color.text, R.font.figtree_700))
-            if (facts.isNotEmpty()) addView(text(facts, 12f, R.color.text_muted, R.font.figtree_500, top = 3))
-            if (a.genres.isNotEmpty()) addView(text(a.genres.joinToString(", "), 12f, R.color.text_muted, R.font.figtree_500, top = 1))
-            if (a.tagline.isNotEmpty()) addView(text(a.tagline, 12f, R.color.text, R.font.figtree_500, top = 8))
+            // The name with the age rating's badge after it, as the Details window's title.
+            addView(below(TextView(this@PlayerActivity).apply {
+                DetailsLook.styleTitle(this)
+                text = DetailsLook.titled(this@PlayerActivity, a.name, a.ageRating)
+            }, 0))
+            if (facts.isNotEmpty()) addView(below(DetailsLook.line(this@PlayerActivity, facts), 3))
+            if (a.genres.isNotEmpty()) addView(below(DetailsLook.line(this@PlayerActivity, a.genres.joinToString(", ")), 1))
+            if (a.tagline.isNotEmpty()) addView(below(DetailsLook.line(this@PlayerActivity, a.tagline).apply {
+                setTextColor(ContextCompat.getColor(this@PlayerActivity, R.color.text))
+            }, 8))
         }
         view(LinearLayout(this@PlayerActivity).apply {
             orientation = LinearLayout.HORIZONTAL
             addView(cover(a.poster, 84, 126, 8).apply { contentDescription = a.name }, LinearLayout.LayoutParams(dp(84), dp(126)))
             addView(side, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(14) })
         }, top = 2, bottom = 8)
-        // The age rating as a small outlined badge, as before.
-        val rated = a.ageRating.takeIf { it.isNotEmpty() }?.let { r ->
-            LinearLayout(this@PlayerActivity).apply {
-                addView(text(r, 11f, R.color.text, R.font.figtree_700).apply {
-                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-                    setPadding(dp(6), dp(1), dp(6), dp(1))
-                    background = android.graphics.drawable.GradientDrawable().apply {
-                        cornerRadius = 4 * d
-                        setStroke(dp(1).coerceAtLeast(1), 0x99FFFFFF.toInt())
-                    }
-                    contentDescription = "Rated $r"
-                })
-            }
+        // The score and the source: a muted label and its value, in columns as the Details window's facts.
+        val rows = listOfNotNull(
+            a.rating.takeIf { it > 0 }?.let { a.ratingFrom to String.format(Locale.ROOT, "★ %.1f", it) },
+            source?.let { "Source" to it },
+        )
+        if (rows.isNotEmpty()) {
+            view(DetailsLook.facts(this@PlayerActivity, rows, DetailsLook.labelWidth(this@PlayerActivity, rows.map { it.first }), valueLines = 2),
+                top = 2, bottom = 6)
         }
-        facts(listOfNotNull(
-            rated?.let { "Rated" to it },
-            a.rating.takeIf { it > 0 }?.let { a.ratingFrom to fact(String.format(Locale.ROOT, "★ %.1f", it)) },
-            source?.let { "Source" to fact(it) },
-        ))
         // Kept to what fits the window, so it opens at its top with the episode's card below selected (Up and Down on
         // the card glide the window when a larger font makes it longer).
-        if (a.overview.isNotEmpty()) view(text(a.overview, 13f, R.color.text, R.font.figtree_500).apply {
+        if (a.overview.isNotEmpty()) view(DetailsLook.body(this@PlayerActivity, a.overview).apply {
             maxLines = if (ep != null) 4 else 12
             ellipsize = android.text.TextUtils.TruncateAt.END
         }, top = 2, bottom = 6)
@@ -7177,19 +7171,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         panel.openSub("Episode details") {
             episodeDetails(ep, backdrop)
             scrollsWithArrows()
+            // A slim bar and "↕ Scroll" while the story goes on past the window, as in the Details window.
+            scrollHint()
         }
     }
 
     private fun SidePanel.episodeDetails(ep: ShowGuide.Ep, backdrop: String?) {
         val d = resources.displayMetrics.density
         fun dp(v: Int) = (v * d).toInt()
-        fun text(value: CharSequence, sp: Float, color: Int, font: Int) = TextView(this@PlayerActivity).apply {
-            text = value
-            setTextColor(ContextCompat.getColor(this@PlayerActivity, color))
-            setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, sp)
-            typeface = androidx.core.content.res.ResourcesCompat.getFont(this@PlayerActivity, font)
-            setLineSpacing(2f * d, 1f)
-        }
         (ep.image ?: backdrop)?.let { url ->
             // 16:9 across the window, whatever its width; its corners as the cover's in Show details.
             val picture = object : androidx.appcompat.widget.AppCompatImageView(this@PlayerActivity) {
@@ -7210,14 +7199,18 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             setSpan(android.text.style.ForegroundColorSpan(ContextCompat.getColor(this@PlayerActivity, R.color.badge_on)), 0, length, 0)
             if (ep.name.isNotEmpty()) append(" · ").append(ep.name)
         }
-        view(text(heading, 17f, R.color.text, R.font.figtree_700), top = 0, bottom = 0)
+        // In the Details windows' title, line and story type ([DetailsLook]).
+        view(TextView(this@PlayerActivity).apply {
+            DetailsLook.styleTitle(this)
+            text = heading
+        }, top = 0, bottom = 0)
         val facts = listOfNotNull(
             prettyDate(ep.airDate),
             ep.runtimeMin.takeIf { it > 0 }?.let { if (it >= 60) "${it / 60}h ${it % 60}m" else "${it}m" },
             ep.rating.takeIf { it > 0 }?.let { String.format(Locale.ROOT, "★ %.1f", it) },
-        ).joinToString(" · ")
-        if (facts.isNotEmpty()) view(text(facts, 12f, R.color.text_muted, R.font.figtree_500), top = 3, bottom = 0)
-        if (ep.overview.isNotEmpty()) view(text(ep.overview, 13f, R.color.text, R.font.figtree_500), top = 10, bottom = 6)
+        ).joinToString(DetailsLook.SEP)
+        if (facts.isNotEmpty()) view(DetailsLook.line(this@PlayerActivity, facts), top = 3, bottom = 0)
+        if (ep.overview.isNotEmpty()) view(DetailsLook.body(this@PlayerActivity, ep.overview), top = 10, bottom = 6)
         else message("No summary for this episode yet.")
     }
 
