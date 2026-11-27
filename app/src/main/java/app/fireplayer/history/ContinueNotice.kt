@@ -1,5 +1,6 @@
 package app.fireplayer.history
 
+import app.fireplayer.vod.VodRepository
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -21,5 +22,14 @@ class ContinueNotice(private val post: (Runnable) -> Unit, private val notify: (
     /** The library changed. */
     fun changed() {
         if (pending.compareAndSet(false, true)) post(send)
+    }
+
+    companion object {
+        /**
+         * Glass Home told of every change of [repo]'s library ([VodRepository.addLibraryListener]: on FirePlayer's main
+         * thread), once per burst: [post] puts the notice on that thread after the changes queued there, [notify] tells.
+         */
+        fun attach(repo: VodRepository, post: (Runnable) -> Unit, notify: () -> Unit): ContinueNotice =
+            ContinueNotice(post, notify).also { notice -> repo.addLibraryListener { notice.changed() } }
     }
 }

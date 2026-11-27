@@ -906,7 +906,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         seekPreview.release()
         notice = false
         retryPending = false
-        savePosition()
+        // Left with Back (or the film's end): finishWithResult saved already, with the player stopped since. Saved again,
+        // the library wrote the same place a second time and Glass Home was told twice.
+        if (leftAt == 0L) savePosition()
         source?.pause()
         // Before the player goes, so no copy is taken of a film being taken down.
         backdrop?.stop()

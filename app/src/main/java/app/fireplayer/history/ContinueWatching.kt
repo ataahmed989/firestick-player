@@ -20,6 +20,7 @@ import app.fireplayer.player.ShowGuide
 import app.fireplayer.player.TitleInfo
 import app.fireplayer.subs.Tmdb
 import app.fireplayer.titles.TitleBook
+import app.fireplayer.vod.Title
 import app.fireplayer.history.WatchHistory.Companion.matched
 import java.io.File
 import java.security.SecureRandom
@@ -31,6 +32,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * FirePlayer's side of Glass Home's Continue Watching row. The player notes what it plays ([watched]); Glass Home reads
@@ -112,6 +114,8 @@ object ContinueWatching {
     private val lister = ThreadPoolExecutor(2, 2, 30, TimeUnit.SECONDS, ArrayBlockingQueue(LIST_QUEUE)) { r ->
         Thread(r, "ContinueEpisodes").apply { isDaemon = true }
     }.apply { allowCoreThreadTimeOut(true) }
+    /** Copies being taken away on [worker] ([removeCopies]): [rows] waits for them. */
+    private val removing = AtomicInteger()
     // The asks still running, by row and episode, so asking again waits on the same one.
     private val asks = HashMap<String, Future<ShowGuide?>>()
     // Asking TMDB can take a while (a timeout, without a network): on a thread of its own, so what was watched is kept
@@ -155,6 +159,8 @@ object ContinueWatching {
      */
     fun rows(context: Context): List<WatchHistory.Row> {
         val app = context.applicationContext
+        // A title just taken out of Films & Shows' Continue Watching: its copies here are gone first ([removeCopies]).
+        if (removing.get() > 0) awaitNotes()
         FixReset.runOnce(app)
         val rows = synchronized(lock) { current(app).rows() }
         lookUp(app, rows)
@@ -193,6 +199,37 @@ object ContinueWatching {
             h.renumber(of).also { if (it) save(app, h) }
         }
         if (changed) app.contentResolver.notifyChange(ITEMS, null)
+    }
+
+    /**
+     * [titles] were taken out of Films & Shows' Continue Watching (Remove on a card or a title page, or Glass Home's on
+     * the library's card) or marked watched there: their copies other apps opened here go too, as Glass Home's Remove
+     * takes every copy of a title, so its row never shows one in the title's place ([LibraryContinue.copiesOf]). On
+     * [worker], in order with what the player notes; called before Glass Home hears of the library's change, and [rows]
+     * waits for it, so Glass Home's ask on that notice has them gone. That notice tells Glass Home: nothing more here.
+     */
+    fun removeCopies(context: Context, titles: List<Title>) {
+        if (titles.isEmpty()) return
+        val app = context.applicationContext
+        removing.incrementAndGet()
+        try {
+            worker.execute {
+                try {
+                    synchronized(lock) {
+                        val h = current(app)
+                        val gone = LibraryContinue.copiesOf(titles, h.all.map { it.row() })
+                        for (id in gone) h.remove(id)
+                        if (gone.isNotEmpty()) save(app, h)
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Couldn't take the title's other copies away: ${e.javaClass.simpleName}")
+                } finally {
+                    removing.decrementAndGet()
+                }
+            }
+        } catch (e: Exception) {
+            removing.decrementAndGet()
+        }
     }
 
     /** Removes one row; false when there's no such row. */

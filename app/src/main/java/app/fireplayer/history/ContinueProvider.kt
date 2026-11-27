@@ -57,8 +57,9 @@ class ContinueProvider : ContentProvider() {
             Log.w(TAG, "Couldn't read the watch history: ${e.javaClass.simpleName}")
             emptyList()
         }
-        // Films & Shows' own Continue Watching (the VOD library) with them, the latest watched first.
-        val rows = LibraryContinue.merge(VodContinue.rows(context), others)
+        // Films & Shows' own Continue Watching (the VOD library) with them, the latest watched first; a title of the
+        // library's is its card alone, as on FirePlayer's Home (LibraryContinue.merge).
+        val rows = VodContinue.rows(context, others)
         for (r in rows) {
             val values = mapOf(
                 "id" to r.id,

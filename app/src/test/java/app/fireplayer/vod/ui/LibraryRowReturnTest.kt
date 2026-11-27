@@ -1,14 +1,17 @@
 package app.fireplayer.vod.ui
 
 import app.fireplayer.vod.Card
+import app.fireplayer.vod.EpisodeRef
 import app.fireplayer.vod.Kind
 import app.fireplayer.vod.RowSpec
 import app.fireplayer.vod.RowStyle
 import app.fireplayer.vod.Source
 import app.fireplayer.vod.Title
+import app.fireplayer.vod.data.Cinemeta
 import app.fireplayer.vod.data.DefaultVodRepository
 import app.fireplayer.vod.data.DefaultVodRepositoryTest.FakeHttp
 import app.fireplayer.vod.data.DefaultVodRepositoryTest.FakeTmdb
+import app.fireplayer.vod.data.Fixtures
 import app.fireplayer.vod.data.JsonCache
 import app.fireplayer.vod.data.MemoryIdStore
 import app.fireplayer.vod.data.MemoryLibraryStore
@@ -16,6 +19,7 @@ import app.fireplayer.vod.sources.RecordedLibrary
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -32,8 +36,9 @@ class LibraryRowReturnTest {
     private var now = 1_760_000_000_000L
     private val direct = Executor { it.run() }
     private val dir: File = Files.createTempDirectory("vodreturn").toFile()
+    private val http = FakeHttp()
     private val repo = DefaultVodRepository(
-        http = FakeHttp(),
+        http = http,
         tmdb = FakeTmdb(),
         tmdbKey = { "" },
         cache = JsonCache(File(dir, "vod")) { now },
@@ -47,6 +52,7 @@ class LibraryRowReturnTest {
     )
     private val recorded = RecordedLibrary(repo.library)
     private val godfather = Title("tt0068646", Kind.MOVIE, "The Godfather")
+    private val bb = Title("tt0903747", Kind.SERIES, "Breaking Bad")
     private val continueSpec = RowSpec("continue", "Continue Watching", RowStyle.WIDE, Source.ContinueWatching(null), continueRow = true)
 
     @After
@@ -107,6 +113,46 @@ class LibraryRowReturnTest {
         val last = row()
         assertEquals(godfather.id, last.first().title.id)
         assertFalse(RowRules.holdsAnswer(continueSpec.source, 0, back, false, last, false))
+    }
+
+    /**
+     * Seen in review: Up from the Continue card "Breaking Bad · S1 E1 · 10m left" to the banner's Watch now, which plays
+     * S1 E1 to its end; back on Watch now, the row reads S1 E2 at once, but the banner kept the old card (its line
+     * "S1 E1 · 10m left", and Watch now played S1 E1 again from its start) until it turned. The banner following a title
+     * of the row now takes the row's card for it; with the title gone from the row (removed in Glass Home meanwhile), it
+     * goes back to its feed.
+     */
+    @Test
+    fun theBannerFollowingAContinueTitleTakesItsNewCard() {
+        http.answers[Cinemeta.metaUrl(Kind.SERIES, bb.id)] = Fixtures.text("cinemeta_meta_series.json")
+        repo.details(bb) { _, _ -> }
+        play(godfather, 9_005_000L, 10_528_000L)
+        now += 60_000L
+        recorded.recordPlayback(bb, EpisodeRef(1, 1), 37 * 60_000L, 47 * 60_000L, creditsAtMs = null)
+        val banner = row().first()
+        assertEquals(bb.id, banner.title.id)
+        assertEquals(1, banner.episode?.episode)
+        assertTrue(banner.caption.orEmpty().contains("10m left"))
+
+        // Watch now: S1 E1 played to its end. The row goes on with S1 E2; the banner's card is the row's now.
+        now += 60_000L
+        recorded.recordPlayback(bb, EpisodeRef(1, 1), 46 * 60_000L, 47 * 60_000L, creditsAtMs = null)
+        val back = row()
+        val card = RowRules.refollow(banner, back)
+        assertEquals(back.first(), card)
+        assertEquals(1, card?.episode?.season)
+        assertEquals(2, card?.episode?.episode)
+        assertFalse(card?.caption.orEmpty().contains("10m left"))
+
+        // A film the banner follows: its new time left.
+        val film = back.first { it.title.id == godfather.id }
+        play(godfather, 9_429_000L, 10_528_000L)
+        assertEquals("18m left", RowRules.refollow(film, row())?.caption)
+
+        // Taken out in Glass Home while FirePlayer was away: no card for it, the banner goes back to its feed.
+        repo.removeFromContinueWatching(bb.id)
+        assertNull(RowRules.refollow(banner, row()))
+        assertNull(RowRules.refollow(banner, emptyList()))
     }
 
     @Test

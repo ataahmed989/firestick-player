@@ -25,13 +25,21 @@ object VodContinue {
     /** The longest Glass Home's Episodes window waits for a show's details (stored ones come at once). */
     private const val DETAILS_WAIT_S = 8L
 
-    /** The library's rows, the latest played first; empty when the library can't be read. */
-    fun rows(context: Context): List<WatchHistory.Row> = try {
-        rows(VodRepositories.repository(context))
+    /**
+     * Glass Home's whole row: the library's rows with [others] (the videos other apps opened here), the latest played
+     * first, a library title's copies among [others] left out ([LibraryContinue.merge]); just [others] when the library
+     * can't be read.
+     */
+    fun rows(context: Context, others: List<WatchHistory.Row>): List<WatchHistory.Row> = try {
+        rows(VodRepositories.repository(context), others)
     } catch (e: Exception) {
         Log.w(TAG, "Couldn't read Films & Shows' Continue Watching: ${e.javaClass.simpleName}")
-        emptyList()
+        others
     }
+
+    /** [repo]'s rows ([rows]) with [others]: what Glass Home's row is made from ([ContinueProvider]). */
+    internal fun rows(repo: DefaultVodRepository, others: List<WatchHistory.Row>): List<WatchHistory.Row> =
+        LibraryContinue.merge(rows(repo), others, if (others.isEmpty()) emptyList() else repo.library.played())
 
     /**
      * [repo]'s Continue Watching as Glass Home's rows: read from the library each time (never a copy kept), so they are

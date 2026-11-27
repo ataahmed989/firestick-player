@@ -51,11 +51,12 @@ object VodRepositories {
             rowStore = PrefsRowStore(Settings.of(app)),
             // The sound and subtitles last chosen for a film or episode go when its copy left does.
             keptWithCopy = KeptTracks.of(app),
+            // A title taken out of Continue Watching here or marked watched: its copies other apps opened go with it.
+            continueGone = { ContinueWatching.removeCopies(app, it) },
         ).also { repo ->
             // Glass Home's Continue Watching row shows the library's too (history/ContinueProvider): it's told of every
             // change (a play's saves, a Remove here or there, a mark, a film or episode finished), once per burst.
-            val notice = ContinueNotice({ handler.post(it) }) { app.contentResolver.notifyChange(ContinueWatching.ITEMS, null) }
-            repo.addLibraryListener { notice.changed() }
+            ContinueNotice.attach(repo, { handler.post(it) }) { app.contentResolver.notifyChange(ContinueWatching.ITEMS, null) }
         }
     }
 

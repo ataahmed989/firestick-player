@@ -1630,6 +1630,7 @@ class VodPage(
         if (same) return
         if (cards.isEmpty()) {
             hideRow(row)
+            refollowHeader(row, cards)
             checkEmpty()
             // A row above answering empty: focus asked for may go to one below it now.
             takePendingFocus()
@@ -1665,12 +1666,27 @@ class VodPage(
         // In the Continue row, a card taken away: the header follows the card now chosen.
         val at = row.focusedIndex()
         if (row.spec.continueRow && at >= 0) row.cards.getOrNull(at)?.takeIf { followsContinue(row) }?.let { header.follow(it) } ?: header.unfollow()
+        refollowHeader(row, cards)
         if (myList && at >= 0) row.cards.getOrNull(at)?.let { followCard(it) }
         // My List: the facts its titles lack asked for ahead, so its banner shows them whole when one is chosen.
         if (myList) header.askFacts(cards.map { it.title })
         checkEmpty()
         updateImages()
         takePendingFocus()
+    }
+
+    /**
+     * The Continue row read again with focus out of it, the banner following one of its titles (focus went Up to Watch
+     * now, which played it, and is back there): the banner takes that title's new card ([RowRules.refollow]: the next
+     * episode once one is over, the new time left), so its line and Watch now are the row's; the title gone from the
+     * row (removed in Glass Home meanwhile), the banner goes back to its feed. Not while a title page or the small window
+     * opened from the row is up: focus comes back to the row from those, and the banner follows the card it lands on.
+     */
+    private fun refollowHeader(row: TitleRow, cards: List<Card>) {
+        if (!row.spec.continueRow || myList || row.focusedIndex() >= 0 || openFrom(row)) return
+        val followed = header.followed ?: return
+        val card = RowRules.refollow(followed, cards)
+        if (card == null) header.unfollow() else header.refollow(card)
     }
 
     private fun showGenres(row: TitleRow, names: List<String>) {

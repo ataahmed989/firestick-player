@@ -110,6 +110,13 @@ internal object RowRules {
      */
     fun followFrom(focused: Int, chosen: Int): Int = if (focused >= 0) focused else if (chosen > 0) chosen else -1
 
+    /**
+     * The card of [cards] (the Continue row read again) for the title the banner follows ([followed]), at its new
+     * episode and time left; null when that title has left the row (the banner then goes back to its feed).
+     */
+    fun refollow(followed: Card, cards: List<Card>): Card? =
+        cards.firstOrNull { it.title.kind == followed.title.kind && it.title.id == followed.title.id }
+
     /** Where focus goes when a row's cards change under it: -1 stays put, else the item to move to first. */
     fun focusAfter(at: Int, oldSize: Int, oldSeeAll: Boolean, newSize: Int, newSeeAll: Boolean): Int {
         if (at < 0 || newSize == 0) return -1

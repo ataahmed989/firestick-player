@@ -158,6 +158,13 @@ class VodLibrary(
     private val progress = HashMap<String, Progress>()
     private val positions = HashMap<String, EpisodePosition>()
     private val releases = HashMap<String, ReleaseRow>()
+    /**
+     * Records Mark unwatched kept out of Continue Watching (hidden, at 0:00) while the app runs ([unwatch],
+     * [unwatchEpisodes]): only those come back in on Mark watched ([setWatched], [setEpisodesWatched]). A record taken
+     * out with Remove (hidden too, maybe at 0:00) stays out until it's played again. In memory only, nothing stored
+     * changes: after a restart a record kept out stays out until played, as one taken out.
+     */
+    private val keptOut = HashSet<String>()
     private val saved = FutureTask { runCatching { store.load() }.getOrNull() }
     @Volatile private var ready = false
     private var lastStamp = Long.MIN_VALUE
@@ -218,9 +225,9 @@ class VodLibrary(
             val k = key(title.kind, title.id)
             if (title.kind != Kind.SERIES && this.watched[k]?.watched == true) return
             val mark = Watched(title.kind, title.id, stamp(), true).also { this.watched[k] = it }
-            // A show's record Mark unwatched kept out at 0:00: back, over now ([unwatch] undone).
-            val record = progress[k]?.takeIf { title.kind == Kind.SERIES && it.hidden && it.positionMs == 0L }
-                ?.copy(hidden = false)?.also { progress[k] = it }
+            // A show's record Mark unwatched kept out at 0:00: back, over now ([unwatch] undone). Not one taken out.
+            val record = progress[k]?.takeIf { title.kind == Kind.SERIES && it.hidden && it.positionMs == 0L && k in keptOut }
+                ?.copy(hidden = false)?.also { progress[k] = it; keptOut -= k }
             mark to record
         }
         val change = record?.let { LibraryStore.Change(watched = listOf(mark), progress = listOf(it)) }
@@ -268,6 +275,7 @@ class VodLibrary(
                 progress[key(title.kind, title.id)]?.let { p ->
                     val ep = if (show) first?.ref ?: EpisodeMarks.FIRST else p.episode
                     val length = if (show && ep != null) lengthOf(title.id, ep, first?.runtimeMin, p) else p.durationMs
+                    keepOut(p, wasIn)
                     p.copy(episode = ep, positionMs = 0, durationMs = length, hidden = !wasIn).takeIf { it != p }
                 },
             )
@@ -305,6 +313,7 @@ class VodLibrary(
                     // bring the show in (an episode after its record's, of a show done): then kept out as one about them.
                     if (!wasIn && !about && (p.hidden || entryOf(p, upOf(p, lists, clock())) == null)) return@let null
                     val length = lengthOf(showId, at.ref, at.runtimeMin, p)
+                    keepOut(p, wasIn)
                     val moved = p.copy(episode = at.ref, positionMs = 0, durationMs = length, hidden = !wasIn)
                     if (moved == p) return@let null
                     // Its own mark, newer than any of the show's: the record never reads as watched since.
@@ -336,10 +345,11 @@ class VodLibrary(
                 .filter { episodeMark(it.id, it.released)?.watched != true }
                 .map { Watched(Kind.SERIES, it.id, at, true).also { w -> this.watched[key(Kind.SERIES, it.id)] = w } }
             if (marks.isEmpty()) return
-            // A record Mark unwatched kept out at 0:00 of one of these: back, over now ([unwatchEpisodes] undone).
+            // A record Mark unwatched kept out at 0:00 of one of these: back, over now ([unwatchEpisodes] undone). Not
+            // one taken out with Remove: that comes back only when played.
             val record = episodes.firstOrNull()?.let { progress[key(Kind.SERIES, it.showId)] }
-                ?.takeIf { it.hidden && it.positionMs == 0L && isAbout(it, episodes) }
-                ?.copy(hidden = false)?.also { progress[key(Kind.SERIES, it.title.id)] = it }
+                ?.takeIf { it.hidden && it.positionMs == 0L && isAbout(it, episodes) && key(Kind.SERIES, it.title.id) in keptOut }
+                ?.copy(hidden = false)?.also { key(Kind.SERIES, it.title.id).let { k -> progress[k] = it; keptOut -= k } }
             LibraryStore.Change(watched = marks, progress = listOfNotNull(record))
         }
         writer.execute { runCatching { store.saveAll(change) } }
@@ -394,14 +404,18 @@ class VodLibrary(
     /** Whether [id] is in Continue Watching ([continueEntries]), either kind. */
     fun inContinueWatching(id: String): Boolean = Kind.entries.any { continueEntry(it, id) != null }
 
-    /** Takes [id] out of Continue Watching; its resume point stays (and it comes back when played again). */
-    fun removeFromContinueWatching(id: String) {
+    /**
+     * Takes [id] out of Continue Watching; its resume point stays (and it comes back when played again). [gone] hears of
+     * the titles taken out before anyone is told of the change (their copies in Glass Home's row go with them).
+     */
+    fun removeFromContinueWatching(id: String, gone: (List<Title>) -> Unit = {}) {
         val entries = state {
             Kind.entries.mapNotNull { k -> progress[key(k, id)]?.takeIf { !it.hidden } }
-                .map { it.copy(hidden = true).also { p -> progress[key(p.title.kind, p.title.id)] = p } }
+                .map { it.copy(hidden = true).also { p -> key(p.title.kind, p.title.id).let { k -> progress[k] = p; keptOut -= k } } }
         }
         if (entries.isEmpty()) return
         writer.execute { entries.forEach { runCatching { store.saveProgress(it) } } }
+        runCatching { gone(entries.map { it.title }) }
         changed()
         entries.forEach { left(it.title.kind, it.title.id) }
     }
@@ -416,7 +430,7 @@ class VodLibrary(
         val dur = durationMs.coerceAtLeast(0)
         val (entry, own, mark) = state {
             val at = stamp()
-            val entry = Progress(title, episode, pos, dur, at).also { progress[key(title.kind, title.id)] = it }
+            val entry = Progress(title, episode, pos, dur, at).also { key(title.kind, title.id).let { k -> progress[k] = it; keptOut -= k } }
             val own = if (title.kind == Kind.SERIES && episode != null) {
                 EpisodePosition(Episode.idOf(title.id, episode.season, episode.episode), pos, dur, at)
                     .also { positions[it.id] = it }
@@ -523,6 +537,9 @@ class VodLibrary(
 
     /** The resume point of [title], also when it was taken out of Continue Watching. */
     fun progressOf(kind: Kind, id: String): Progress? = state { progress[key(kind, id)] }
+
+    /** Every title's record (in Continue Watching, taken out of it, or done), each with when it was last played. */
+    fun played(): List<Progress> = state { progress.values.toList() }
 
     /**
      * [kind]/[id]'s Continue Watching record, with whether the film (or the series' episode) was marked watched after
@@ -649,6 +666,16 @@ class VodLibrary(
         val r = p.episode
         if (r != null && r.season == ref.season && r.episode == ref.episode && p.durationMs > 0) return p.durationMs
         return ((runtimeMin ?: 0) * 60_000L).takeIf { it > Position.END_MS } ?: 0L
+    }
+
+    /**
+     * Mark unwatched on [p]'s title, which was in Continue Watching ([wasIn]: it stays in, visible) or not (hidden: kept
+     * out). Kept out only when it was out on its own (done, or kept out already), not taken out with Remove ([keptOut]).
+     * Under the lock.
+     */
+    private fun keepOut(p: Progress, wasIn: Boolean) {
+        val k = key(p.title.kind, p.title.id)
+        if (!wasIn && (!p.hidden || k in keptOut)) keptOut += k else keptOut -= k
     }
 
     /** Show record [p] is about one of [episodes]. */
