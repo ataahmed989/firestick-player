@@ -1,6 +1,7 @@
 package app.fireplayer.history
 
 import app.fireplayer.vod.Card
+import app.fireplayer.vod.Episode
 import app.fireplayer.vod.EpisodeRef
 import app.fireplayer.vod.TitleDetails
 import app.fireplayer.vod.Kind
@@ -19,6 +20,7 @@ import app.fireplayer.vod.data.JsonCache
 import app.fireplayer.vod.data.MemoryIdStore
 import app.fireplayer.vod.data.MemoryLibraryStore
 import app.fireplayer.vod.data.PageRows
+import app.fireplayer.vod.data.VodLibrary
 import app.fireplayer.vod.sources.RecordedLibrary
 import app.fireplayer.vod.ui.RowRules
 import org.junit.After
@@ -468,6 +470,92 @@ class ContinueSyncTest {
         assertEquals("${id(films[0])} film 90", lists.getValue("home").first())
         assertEquals("${id(films[0])} film 90", lists.getValue("movies").first())
         assertEquals(home.dropLast(1), lists.getValue("home").drop(1))
+    }
+
+    /**
+     * Glass Home's three lists come from one reading of the library's Continue Watching: a show gone on to its next
+     * episode has its episodes read once per answer, not once per list (seen in review: three readings, each a read from
+     * disk once more such shows were played than the details kept in memory), and each kind's list is still its page's,
+     * continueEntries(kind) as the row shows it.
+     */
+    @Test
+    fun glassHomesListsReadEachShowsEpisodesOnce() {
+        val reads = HashMap<String, Int>()
+        fun episodes(show: Title) = (1..3).map { e ->
+            Episode(Episode.idOf(show.id, 1, e), 1, e, "E$e", released = now - 400 * day + e * day)
+        }
+        val library = VodLibrary(MemoryLibraryStore(), { now }, direct, { t -> reads[t.id] = (reads[t.id] ?: 0) + 1; episodes(t) }) {}
+        val shows = (1..8).map { i -> Title("tt93000%02d".format(i), Kind.SERIES, "Show $i", year = "2002", tmdbId = 8000 + i) }
+        val films = (1..8).map { i -> Title("tt94000%02d".format(i), Kind.MOVIE, "Film $i", year = "2001", tmdbId = 9000 + i) }
+        for (i in shows.indices) {
+            now += min
+            library.recordProgress(shows[i], EpisodeRef(1, 1), 44 * min, 45 * min)   // over: on to E2
+            now += min
+            library.recordProgress(films[i], null, 10 * min, 100 * min)
+        }
+        reads.clear()
+        val lists = VodContinue.lists(library).toMap()
+        assertEquals("each show's episodes read once", shows.associate { it.id to 1 }, reads)
+        assertEquals(listOf("home", "movies", "shows"), VodContinue.lists(library).map { it.first })
+        fun page(kind: Kind?) = RowRules.shown(library.continueEntries(kind)).mapNotNull { LibraryContinue.row(it) }
+        assertEquals(page(null), lists["home"])
+        assertEquals(page(Kind.MOVIE), lists["movies"])
+        assertEquals(page(Kind.SERIES), lists["shows"])
+        assertEquals(shows.reversed().map { id(it) }, lists.getValue("shows").map { it.id })
+        assertTrue(lists.getValue("shows").all { it.season == 1 && it.episode == 2 && it.positionMs == 0L })
+        assertEquals(films.reversed().map { id(it) }, lists.getValue("movies").map { it.id })
+    }
+
+    /**
+     * The provider's items answer as Glass Home reads it ([VodContinue.items], what [ContinueProvider] answers): items
+     * alone has the columns the Glass Homes on the TVs read, and nothing more, and is Home's row; asked with ?lists
+     * ([VodContinue.LISTS]), the same columns and "list" after them, naming each row's list: Home's rows, then the Movies
+     * page's, then the TV Shows page's. A newer Glass Home that found no "list" column would take the tabs from Home's.
+     */
+    @Test
+    fun theProvidersAnswerIsWhatGlassHomeReads() {
+        val films = (1..9).map { i -> Title("tt95000%02d".format(i), Kind.MOVIE, "Film $i", year = "2001", tmdbId = 6100 + i) }
+        val shows = (1..9).map { i -> Title("tt96000%02d".format(i), Kind.SERIES, "Show $i", year = "2002", tmdbId = 7100 + i) }
+        for (i in films.indices) {
+            play(films[i], (10L + i) * min, 120 * min)
+            play(shows[i], (5L + i) * min, 45 * min, EpisodeRef(2, i + 1))
+        }
+        runMain()
+        val columns = listOf(
+            "id", "kind", "title", "year", "season", "episode", "episode_title", "tmdb_id", "position_ms", "duration_ms",
+            "last_watched", "source", "has_episodes",
+        )
+        assertEquals("lists", VodContinue.LISTS)
+        assertEquals(columns, VodContinue.columns(false).toList())
+        assertEquals(columns + "list", VodContinue.columns(true).toList())
+
+        // items alone: Home's row, card for card, in the columns the Glass Homes on the TVs read
+        val plain = VodContinue.items(repo, false, VodContinue.columns(false))
+        assertEquals(firePlayer().map { it.substringBefore(' ') }, plain.map { it[0] })
+        assertTrue(plain.all { it.size == columns.size })
+        val last = films.last()
+        assertEquals(
+            listOf<Any?>(id(shows.last()), "episode", "Show 9", 2002, 2, 9, null, 7109, 13 * min, 45 * min, now, null, 1),
+            plain[0].toList(),
+        )
+        assertEquals(
+            listOf<Any?>(id(last), "movie", "Film 9", 2001, 0, 0, null, 6109, 18 * min, 120 * min, now - min, null, 0),
+            plain[1].toList(),
+        )
+
+        // items?lists: the same rows with their list, Home's, then the Movies page's, then the TV Shows page's
+        val all = VodContinue.items(repo, true, VodContinue.columns(true))
+        val list = columns.size
+        assertEquals(
+            List(plain.size) { "home" } + List(films.size) { "movies" } + List(shows.size) { "shows" },
+            all.map { it[list] },
+        )
+        assertEquals(plain.map { it.toList() }, all.filter { it[list] == "home" }.map { it.toList().dropLast(1) })
+        assertEquals(firePlayer(spec = moviesSpec).map { it.substringBefore(' ') }, all.filter { it[list] == "movies" }.map { it[0] })
+        assertEquals(firePlayer(spec = showsSpec).map { it.substringBefore(' ') }, all.filter { it[list] == "shows" }.map { it[0] })
+
+        // Asked for some columns (a projection): those, in its order
+        assertEquals(listOf<Any?>("home", id(shows.last())), VodContinue.items(repo, true, arrayOf("list", "id"))[0].toList())
     }
 
     /**
