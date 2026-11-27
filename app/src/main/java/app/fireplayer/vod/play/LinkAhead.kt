@@ -37,6 +37,20 @@ class LinkAhead(private val ticker: Ticker, private val prepare: (PlayRequest) -
         if (rested && prep == null) ask()
     }
 
+    /**
+     * OK was pressed: a play begins. The rest is over at once (its timer stopped, nothing more asked for it, so its link
+     * is never checked beside the play's own check), and what was checked ahead stays for that play to take: the play
+     * claims it, or the engine drops it (another copy or title, the network, after two minutes). Focus moving on or the
+     * page going no longer drops it; the same key again changes nothing until focus has moved on ([leave]).
+     */
+    fun pressed() {
+        timer?.cancel()
+        timer = null
+        prep = null
+        make = null
+        rested = false
+    }
+
     /** Focus moved on, or the page went: the rest ends, and what was checked ahead is dropped (unless a play took it). */
     fun leave() {
         timer?.cancel()

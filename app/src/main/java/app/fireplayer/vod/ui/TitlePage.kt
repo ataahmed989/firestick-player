@@ -568,6 +568,9 @@ class TitlePage(
      * waits, the best so far plays. [fromButtons] when pressed on Play (its pill counts), else an episode card.
      */
     private fun play(tgt: SourceTarget, start: StartAt, fromButtons: Boolean) {
+        // OK ends the rest on Play at once (a link checked ahead stays for this play): never a second check beside the
+        // play's own, whether its add-ons have answered by now or answer during its wait.
+        ahead.pressed()
         val w = wait
         if (w == null) {
             host.showNotice(NO_SOURCES)
@@ -618,9 +621,16 @@ class TitlePage(
     }
 
     /** Back on the page: a wait in progress ends (true); nothing else happens then. */
-    fun cancelWait(): Boolean = wait?.cancel() == true
+    fun cancelWait(): Boolean {
+        if (wait?.cancel() != true) return false
+        // No play began: resting on Play is a rest again.
+        ahead.leave()
+        if (!paused && !released && buttons.focusedButton() == TitleButtons.Which.PLAY) restOnPlay()
+        return true
+    }
 
     private fun hand(request: PlayRequest) {
+        ahead.pressed()
         handedOff = request.target
         host.play(request)
     }

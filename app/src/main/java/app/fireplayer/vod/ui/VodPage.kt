@@ -1183,7 +1183,10 @@ class VodPage(
     private fun playContinue(card: Card, from: Origin) {
         val r = repo ?: return
         val request = VodLaunch.fromContinueCard(card, r, sourcesOrNull()?.library)
-        if (request == null) openTitle(card, from, soon = true) else host.play(request)
+        if (request == null) return openTitle(card, from, soon = true)
+        // OK ends the rest at once (a link checked ahead stays for this play): never a second check beside the play's.
+        ahead.pressed()
+        host.play(request)
     }
 
     /** The sources engine, or null where it can't be had. */

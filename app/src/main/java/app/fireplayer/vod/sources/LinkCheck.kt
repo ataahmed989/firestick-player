@@ -44,6 +44,9 @@ class LinkCheck(private val hop: Hop, private val online: () -> Boolean, private
         var url = link.reveal()
         val home = host(url)
         repeat(MAX_HOPS) {
+            // Stopped (the play or the rest it was for went) while it waited for a thread, or between hops: nothing more
+            // is sent. A connection not yet made isn't stopped by a disconnect, so this is asked before each one.
+            if (cancel.cancelled) return Result.Failed(Failure(FailureKind.UNKNOWN, addon, "stopped"))
             val left = LIMIT_MS - (elapsed() - start)
             if (left <= 0) return timedOut(addon, confirmedReady)
             val answer = try {
@@ -115,6 +118,8 @@ class LinkCheck(private val hop: Hop, private val online: () -> Boolean, private
             val conn = URL(url).openConnection() as HttpURLConnection
             cancel.attach(conn)
             try {
+                // Stopped as it was made: a disconnect before connecting doesn't stop the request, so none is sent.
+                if (cancel.cancelled) throw IOException("stopped")
                 conn.instanceFollowRedirects = false
                 conn.connectTimeout = timeoutMs.coerceAtMost(10_000)
                 conn.readTimeout = timeoutMs

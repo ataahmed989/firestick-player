@@ -105,6 +105,8 @@ class DefaultSourcesRepository(
 
     private inner class Call(val entry: Entry, val addon: Addon, val automatic: Boolean, val why: LookupWhy) {
         var user = !automatic
+        /** Only look-ups for a link checked ahead wait for it ([LookupWhy.AHEAD]): its failure is final only for those. */
+        var aheadOnly = why == LookupWhy.AHEAD
         var cancelled = false
         val handle = CallHandle()
         var deadline: Runnable? = null
@@ -119,6 +121,11 @@ class DefaultSourcesRepository(
         val answers = EnumMap<Addon, Answer>(Addon::class.java)
         val states = EnumMap<Addon, AddonState>(Addon::class.java)
         val failedAt = EnumMap<Addon, Long>(Addon::class.java)
+        /**
+         * The add-ons of [failedAt] whose failure came from a look-up for a link checked ahead ([LookupWhy.AHEAD]): final
+         * only for those; any other look-up (a play's OK above all) asks afresh, as it would had nothing been checked ahead.
+         */
+        val failedAhead: EnumSet<Addon> = EnumSet.noneOf(Addon::class.java)
         val calls = EnumMap<Addon, Call>(Addon::class.java)
         /** The add-ons in the order they answered, so rows keep their keys as answers join. */
         val order = ArrayList<Addon>()
@@ -187,8 +194,9 @@ class DefaultSourcesRepository(
 
     override fun session(request: PlayRequest): SourceSession {
         // A play begins: it picks for itself; a link checked ahead for it waits to be taken, another title's goes.
-        prep.handOver(request.target)
-        return DefaultSourceSession(request, this)
+        val session = DefaultSourceSession(request, this)
+        prep.handOver(request.target, session)
+        return session
     }
 
     override fun prepare(request: PlayRequest): Cancel = prep.start(request)
@@ -201,6 +209,7 @@ class DefaultSourcesRepository(
             entry.answers.clear()
             entry.states.clear()
             entry.failedAt.clear()
+            entry.failedAhead.clear()
             entry.order.clear()
             entry.ranked = emptyList()
             entry.best = null
@@ -340,9 +349,15 @@ class DefaultSourcesRepository(
             }
             if (entry.answers.containsKey(addon)) continue
             val state = entry.states[addon]
-            if (state is AddonState.Failed || state is AddonState.Busy) continue
+            if (state is AddonState.Busy) continue
+            if (state is AddonState.Failed) {
+                // Failed for a rest's look-up ahead only: any other asks afresh (a late call of it is let go first).
+                if (why == LookupWhy.AHEAD || addon !in entry.failedAhead) continue
+                entry.calls[addon]?.let { cancelCall(it, notify = false) }
+            }
             entry.calls[addon]?.let { call ->
                 if (!why.automatic) call.user = true
+                if (why != LookupWhy.AHEAD) call.aheadOnly = false
                 continue
             }
             if (!budget.mayAsk(addon, why)) {
@@ -367,14 +382,14 @@ class DefaultSourcesRepository(
         val call = Call(entry, addon, why.automatic, why)
         entry.states[addon] = AddonState.Asking(since, since + addon.answerLimitMs)
         entry.failedAt.remove(addon)
+        entry.failedAhead.remove(addon)
         entry.calls[addon] = call
         if (why.automatic) automaticCalls[addon] = call
         budget.asked(addon, why)
         val deadline = Runnable {
             call.deadline = null
             if (entry.calls[addon] === call && entry.states[addon] is AddonState.Asking) {
-                entry.states[addon] = AddonState.Failed("didn't answer in ${addon.answerLimitMs / 1000} s")
-                entry.failedAt[addon] = elapsed()
+                failed(entry, addon, call.aheadOnly, "didn't answer in ${addon.answerLimitMs / 1000} s")
                 notify(entry)
             }
         }
@@ -412,14 +427,12 @@ class DefaultSourcesRepository(
                 if (e is StreamsHttp.Busy) {
                     busy(entry, addon)
                 } else {
-                    entry.states[addon] = AddonState.Failed(why(e))
-                    entry.failedAt[addon] = now
+                    failed(entry, addon, call.aheadOnly, why(e))
                 }
             }
             parsed.busy -> busy(entry, addon)
             parsed.streams.isEmpty() && parsed.notice != null -> {
-                entry.states[addon] = AddonState.Failed(FailureWords.addonFailed(addon, parsed.notice).substringAfter(" · "))
-                entry.failedAt[addon] = now
+                failed(entry, addon, call.aheadOnly, FailureWords.addonFailed(addon, parsed.notice).substringAfter(" · "))
             }
             else -> {
                 val keep = when {
@@ -430,6 +443,7 @@ class DefaultSourcesRepository(
                 entry.answers[addon] = Answer(parsed, now + keep)
                 entry.states[addon] = AddonState.Answered(parsed.streams.size)
                 entry.failedAt.remove(addon)
+                entry.failedAhead.remove(addon)
                 entry.order.remove(addon)
                 entry.order += addon
                 rebuild(entry)
@@ -437,6 +451,16 @@ class DefaultSourcesRepository(
             }
         }
         notify(entry)
+    }
+
+    /**
+     * [addon] failed for [entry]: final for [FAILED_FINAL_MS], for look-ups ahead only when only they waited for it
+     * ([aheadOnly]: [Entry.failedAhead]).
+     */
+    private fun failed(entry: Entry, addon: Addon, aheadOnly: Boolean, words: String) {
+        entry.states[addon] = AddonState.Failed(words)
+        entry.failedAt[addon] = elapsed()
+        if (aheadOnly) entry.failedAhead += addon else entry.failedAhead -= addon
     }
 
     private fun busy(entry: Entry, addon: Addon) {
@@ -483,6 +507,7 @@ class DefaultSourcesRepository(
             entry.failedAt[addon]?.let { at ->
                 if (now - at >= FAILED_FINAL_MS && entry.calls[addon] == null) {
                     entry.failedAt.remove(addon)
+                    entry.failedAhead.remove(addon)
                     entry.states.remove(addon)
                 }
             }

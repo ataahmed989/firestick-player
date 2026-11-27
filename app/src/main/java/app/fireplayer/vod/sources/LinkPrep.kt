@@ -11,6 +11,7 @@ import app.fireplayer.vod.PlayRequest
 import app.fireplayer.vod.PlaybackSource
 import app.fireplayer.vod.Readiness
 import app.fireplayer.vod.SecretUrl
+import app.fireplayer.vod.SourceSession
 import app.fireplayer.vod.SourceTarget
 
 /**
@@ -21,8 +22,9 @@ import app.fireplayer.vod.SourceTarget
  * - Only the copy the play itself would pick, found as its session finds it ([DefaultSourceSession] picking only: the
  *   copy a resume left, else the ranking's pick), and only its first offer, the one the play checks first.
  * - Only when that offer is cached ([Readiness.PROBABLY_READY]): nothing checked ahead has the debrid service fetch.
- * - One at a time (a newer rest drops the one before), never while a film plays ([filmPlays]), and none of another title
- *   once a play has begun ([handOver]).
+ * - One at a time (a newer rest drops the one before), never while a film plays ([filmPlays]), none of another title
+ *   once a play has begun ([handOver]), and none at all while a play handed over is still starting ([starting]): its own
+ *   check is the only one sent then.
  *
  * A link checked is kept [KEEP_MS] in memory, never stored or logged: far within a debrid link's life (a film plays from
  * one link for hours, its stalls reopening that same link). It goes when focus moves on ([drop], through the rest's
@@ -55,12 +57,24 @@ internal class LinkPrep(
     private var expiry: Runnable? = null
     /** Bumped by every rest and every drop: a rest's Cancel acts only while it is still the one under way. */
     private var run = 0
+    /**
+     * The play handed over last ([handOver]) while it starts: until its film has begun or it ends ([ended]), at most
+     * [STARTING_MS], nothing new is checked ahead (OK pressed late in a rest: the page's rest may still end before the
+     * page goes, and its check would be a second one of the same link beside the play's).
+     */
+    private var starting: SourceSession? = null
+    private var startingAt = 0L
 
     /** Whether a pick or a check ahead is under way, or a link is kept (for tests). */
     val busy: Boolean get() = picking != null || job != null
 
     /** The viewer rests on what OK would play, [request]: its copy is picked as its play would, then its link checked. */
     fun start(request: PlayRequest): Cancel {
+        // A play is starting: nothing beside its own check (and what it may still take from a rest stays for it).
+        if (playStarting()) {
+            log("ahead: a play is starting: nothing more is checked ahead")
+            return Cancel {}
+        }
         drop()
         if (runCatching { filmPlays() }.getOrDefault(true)) return Cancel {}
         val mine = run
@@ -103,10 +117,27 @@ internal class LinkPrep(
         return CallHandle()
     }
 
-    /** A play of [target] begins: a pick still under way is left to it; a link of another title is dropped. */
-    fun handOver(target: SourceTarget) {
+    /**
+     * A play of [target] begins ([session]): a pick still under way is left to it; a link of another title is dropped;
+     * nothing new is checked ahead until it has begun its film or ended ([ended]).
+     */
+    fun handOver(target: SourceTarget, session: SourceSession) {
+        starting = session
+        startingAt = repo.elapsed()
         endPick()
         if (job?.target?.key?.let { it != target.key } == true) drop()
+    }
+
+    /** [session]'s film began, or it ended: no longer a play starting ([starting]). */
+    fun ended(session: SourceSession) {
+        if (starting === session) starting = null
+    }
+
+    private fun playStarting(): Boolean {
+        if (starting == null) return false
+        if (repo.elapsed() - startingAt < STARTING_MS) return true
+        starting = null
+        return false
     }
 
     /** Focus moved on, a newer rest, the network or the add-ons changed: everything ahead stops, unless a play took it. */
@@ -141,6 +172,8 @@ internal class LinkPrep(
         val confirmed = s.measured?.spec != null
         log("ahead: checking the link of the copy OK plays (${o.addon.label}, cached)")
         repo.io.execute {
+            // Stopped while it waited for a thread (focus moved on): nothing is sent.
+            if (j.handle.cancelled) return@execute
             val result = runCatching { repo.linkCheck.check(o.addon, o.link, confirmed, j.handle) }
                 .getOrElse { LinkCheck.Result.Failed(Failure(FailureKind.UNKNOWN, o.addon, it.javaClass.simpleName)) }
             repo.main.post { done(j, result) }
@@ -188,5 +221,11 @@ internal class LinkPrep(
          * (FirePlayer plays a whole film from one and reopens it on a stall), so a kept one is fresh when it's used.
          */
         const val KEEP_MS = 2 * 60_000L
+
+        /**
+         * At most how long a play handed over counts as starting ([starting]), ms: far beyond the page going once the
+         * player is up (a second or so on a Stick), only so a play that never says it ended can't stop rests for good.
+         */
+        const val STARTING_MS = 30_000L
     }
 }

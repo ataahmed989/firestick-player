@@ -266,6 +266,8 @@ internal class DefaultSourceSession(
     }
 
     override fun started(source: PlaybackSource, offer: Offer) {
+        // Its film has begun: rests are no longer held back for this play's start ([LinkPrep.handOver]).
+        if (!startedOnce) repo.prep.ended(this)
         startedOnce = true
         firstPick = false
         keptAhead = null
@@ -403,6 +405,7 @@ internal class DefaultSourceSession(
     override fun close() {
         if (closed) return
         closed = true
+        repo.prep.ended(this)
         widening?.let { repo.main.remove(it) }
         widening = null
         listSub?.cancel()

@@ -73,6 +73,38 @@ class LinkAheadTest {
     }
 
     @Test
+    fun okPressedDuringTheRestStopsItSoNothingIsAskedBesideThePlay() {
+        ahead.rest("a") { make() }
+        ticker.advance(400)
+        ahead.pressed()
+        // The rest would have been over 600 ms later: nothing is asked then, nor when the page tells focus again.
+        ticker.advance(1_000)
+        ahead.rest("a") { make() }
+        ahead.ready()
+        ticker.advance(5_000)
+        assertTrue(prepared.isEmpty())
+        assertEquals(0, made)
+        assertEquals(0, ticker.pending)
+        // Focus moving on and resting elsewhere later is a rest as ever.
+        ahead.leave()
+        ahead.rest("a") { make() }
+        ticker.advance(1_000)
+        assertEquals(1, prepared.size)
+    }
+
+    @Test
+    fun okPressedAfterTheRestLeavesWhatWasCheckedForThePlay() {
+        ahead.rest("a") { make() }
+        ticker.advance(1_000)
+        assertEquals(1, prepared.size)
+        ahead.pressed()
+        // The page going as the player comes up doesn't drop it: the play takes it (or the engine drops it itself).
+        ahead.leave()
+        assertEquals(0, dropped)
+        assertEquals(1, prepared.size)
+    }
+
+    @Test
     fun anotherCardDropsTheOneBefore() {
         ahead.rest("a") { make() }
         ticker.advance(1_000)
