@@ -86,25 +86,30 @@ class FilmMemoryTest {
 
     // ---- Squeezing it while the TV is short of memory
 
-    @Test fun squeezeStepsAreThreeQuartersThenHalf() {
+    @Test fun squeezeStepsAreEighthsDownToHalf() {
         val budget = (128 * mib).toInt()
         assertEquals(budget, FilmMemory.capFor(budget, 0))
-        assertEquals((96 * mib).toInt(), FilmMemory.capFor(budget, 1))
-        assertEquals((64 * mib).toInt(), FilmMemory.capFor(budget, 2))
+        assertEquals((112 * mib).toInt(), FilmMemory.capFor(budget, 1))
+        // Three quarters and half, the two steps of a TV with memory to spare.
+        assertEquals((96 * mib).toInt(), FilmMemory.capFor(budget, 2))
+        assertEquals((80 * mib).toInt(), FilmMemory.capFor(budget, 3))
+        assertEquals((64 * mib).toInt(), FilmMemory.capFor(budget, 4))
         // Anything past the last step is the last step.
         assertEquals((64 * mib).toInt(), FilmMemory.capFor(budget, 5))
+        assertEquals(budget, FilmMemory.capFor(budget, -1))
     }
 
     @Test fun squeezedNeverBelow48MiB() {
         val budget = (64 * mib).toInt()
-        assertEquals(FilmMemory.FLOOR_BYTES, FilmMemory.capFor(budget, 1))
+        assertEquals((56 * mib).toInt(), FilmMemory.capFor(budget, 1))
         assertEquals(FilmMemory.FLOOR_BYTES, FilmMemory.capFor(budget, 2))
-        assertEquals(FilmMemory.FLOOR_BYTES, FilmMemory.capFor(FilmMemory.FLOOR_BYTES, 2))
+        assertEquals(FilmMemory.FLOOR_BYTES, FilmMemory.capFor(budget, 4))
+        assertEquals(FilmMemory.FLOOR_BYTES, FilmMemory.capFor(FilmMemory.FLOOR_BYTES, 4))
     }
 
     @Test fun aSqueezedBufferStillLoadsWhenLittleIsAhead() {
         val budget = (128 * mib).toInt()
-        val cap = FilmMemory.capFor(budget, 2)
+        val cap = FilmMemory.capFor(budget, 4)
         assertEquals(cap, FilmMemory.fillLimit(cap, budget, FilmMemory.MIN_AHEAD_US))
         assertEquals(cap, FilmMemory.fillLimit(cap, budget, 60_000_000L))
         // What's kept behind can't shrink while playing: under 5 s ahead, the whole budget may be used.
@@ -116,23 +121,26 @@ class FilmMemoryTest {
 
     // ---- When to squeeze, and when to give it back
 
-    @Test fun lowMemoryOnceIsStepOne() {
+    // A TV with memory to spare (2.6 GiB and more), as ever: a quarter back, then half. [MemoryPressure.step] counts
+    // eighths: 2 and 4.
+
+    @Test fun lowMemoryOnceIsAQuarterBack() {
         val p = MemoryPressure()
         assertFalse(p.checked(low = false, nowMs = 0))
         assertTrue(p.checked(low = true, nowMs = 10_000))
-        assertEquals(1, p.step)
+        assertEquals(2, p.step)
     }
 
-    @Test fun stillLowHalfAMinuteLaterIsStepTwo() {
+    @Test fun stillLowHalfAMinuteLaterIsHalfBack() {
         val p = MemoryPressure()
         assertTrue(p.checked(true, 0))
         assertFalse(p.checked(true, 10_000))
         assertFalse(p.checked(true, 20_000))
-        assertEquals(1, p.step)
+        assertEquals(2, p.step)
         assertTrue(p.checked(true, 30_000))
-        assertEquals(2, p.step)
+        assertEquals(4, p.step)
         assertFalse(p.checked(true, 40_000))
-        assertEquals(2, p.step)
+        assertEquals(4, p.step)
     }
 
     @Test fun aBreakInTheLowReadingsStartsTheHalfMinuteAgain() {
@@ -141,20 +149,20 @@ class FilmMemoryTest {
         p.checked(false, 10_000)
         p.checked(true, 20_000)
         p.checked(true, 40_000)
-        assertEquals(1, p.step)
-        p.checked(true, 50_000)
         assertEquals(2, p.step)
+        p.checked(true, 50_000)
+        assertEquals(4, p.step)
     }
 
     @Test fun trimRequestsGoStraightToTheirStep() {
         val p = MemoryPressure()
         assertTrue(p.trimAsked(1, 0))
-        assertEquals(1, p.step)
-        assertTrue(p.trimAsked(2, 1_000))
         assertEquals(2, p.step)
+        assertTrue(p.trimAsked(2, 1_000))
+        assertEquals(4, p.step)
         // A milder request never gives memory back.
         assertFalse(p.trimAsked(1, 2_000))
-        assertEquals(2, p.step)
+        assertEquals(4, p.step)
     }
 
     @Test fun stepsBackUpOneStepEveryTwoMinutesWithoutPressure() {
@@ -165,14 +173,16 @@ class FilmMemoryTest {
             assertFalse(p.checked(false, t))
             t += 10_000L
         }
-        assertEquals(2, p.step)
+        assertEquals(4, p.step)
         assertTrue(p.checked(false, 120_000))
-        assertEquals(1, p.step)
+        assertEquals(2, p.step)
         assertFalse(p.checked(false, 230_000))
         assertTrue(p.checked(false, 240_000))
         assertEquals(0, p.step)
         assertFalse(p.checked(false, 600_000))
         assertEquals(0, p.step)
+        // And its buffer never grows by this clock: it is its TV's size, or stays what free memory made it.
+        assertFalse(p.mayGrow(600_000))
     }
 
     @Test fun pressureAgainRestartsTheTwoMinutes() {
@@ -221,11 +231,14 @@ class FilmMemoryTest {
         val extra = (16 * mib).toInt()
         // Buffer and spans together squeezed as the 128 MiB buffer alone was: 128, 96, 64 in all.
         assertEquals(budget, FilmMemory.capFor(budget, 0, extra))
-        assertEquals((80 * mib).toInt(), FilmMemory.capFor(budget, 1, extra))
-        assertEquals(FilmMemory.FLOOR_BYTES, FilmMemory.capFor(budget, 2, extra))
+        assertEquals((80 * mib).toInt(), FilmMemory.capFor(budget, 2, extra))
+        assertEquals(FilmMemory.FLOOR_BYTES, FilmMemory.capFor(budget, 4, extra))
+        // An eighth at a time: 112, 96, 80, 64 in all.
+        assertEquals((96 * mib).toInt(), FilmMemory.capFor(budget, 1, extra))
+        assertEquals((64 * mib).toInt(), FilmMemory.capFor(budget, 3, extra))
         // Without long spans: as ever.
-        assertEquals((96 * mib).toInt(), FilmMemory.capFor((128 * mib).toInt(), 1))
-        assertEquals((64 * mib).toInt(), FilmMemory.capFor((128 * mib).toInt(), 2))
+        assertEquals((96 * mib).toInt(), FilmMemory.capFor((128 * mib).toInt(), 2))
+        assertEquals((64 * mib).toInt(), FilmMemory.capFor((128 * mib).toInt(), 4))
     }
 
     @Test fun whatFitsInAStallIsWorkedOutFromTheBytesWithoutWhatsKeptBehind() {
