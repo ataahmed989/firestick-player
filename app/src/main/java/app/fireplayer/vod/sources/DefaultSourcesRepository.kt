@@ -15,6 +15,7 @@ import android.os.Process
 import android.os.SystemClock
 import app.fireplayer.player.CopyHealth
 import app.fireplayer.player.CopyLanguage
+import app.fireplayer.player.FilmRoom
 import app.fireplayer.player.MediaSpec
 import app.fireplayer.vod.Addon
 import app.fireplayer.vod.AddonSettings
@@ -96,6 +97,8 @@ class DefaultSourcesRepository(
     private val seasonEpisodes: (app.fireplayer.vod.Title, Int) -> Int? = { _, _ -> null },
     /** The engine's few log lines ([SourceLog]: fingerprints, never a link or a key); Log.i on the device. */
     private val log: (String) -> Unit = { android.util.Log.i(SourceLog.TAG, it) },
+    /** A film's player is up ([app.fireplayer.player.FilmRoom.film]): no link is checked ahead then ([prepare]). */
+    private val filmPlays: () -> Boolean = { false },
 ) : SourcesRepository {
 
     private class Answer(val parsed: ParsedAnswer, val keepUntil: Long)
@@ -145,6 +148,9 @@ class DefaultSourcesRepository(
     /** When FirePlayer last opened a link (it may have added a torrent to the debrid service): the "just added" rule. */
     internal var lastAddAt = Long.MIN_VALUE / 2
 
+    /** The link of the one copy OK would play, checked while the viewer rests on it ([prepare]). */
+    internal val prep = LinkPrep(this, filmPlays, log)
+
     // ---- SourcesRepository ----
 
     override fun cached(target: SourceTarget): SourceList? {
@@ -179,9 +185,17 @@ class DefaultSourcesRepository(
         }
     }
 
-    override fun session(request: PlayRequest): SourceSession = DefaultSourceSession(request, this)
+    override fun session(request: PlayRequest): SourceSession {
+        // A play begins: it picks for itself; a link checked ahead for it waits to be taken, another title's goes.
+        prep.handOver(request.target)
+        return DefaultSourceSession(request, this)
+    }
+
+    override fun prepare(request: PlayRequest): Cancel = prep.start(request)
 
     override fun forget() {
+        // Links are tied to the connection and the add-ons that made them.
+        prep.drop()
         for (entry in entries.values.toList()) {
             entry.calls.values.toList().forEach { cancelCall(it, notify = false) }
             entry.answers.clear()
@@ -679,6 +693,7 @@ class DefaultSourcesRepository(
                 lineMbps = { LineRate.of(budgetPrefs, two = viewer.fasterDownloads).current() },
                 preferredMbps = { viewer.preferredMbps.toDouble() },
                 checks = checks,
+                filmPlays = { FilmRoom.film != null },
             )
             engine = made
             // A new plan for this TV (Settings › This TV): the lists kept in memory rank again; and as a title's own

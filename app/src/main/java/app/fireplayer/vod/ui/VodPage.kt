@@ -40,6 +40,9 @@ import app.fireplayer.vod.Kind
 import app.fireplayer.vod.Page
 import app.fireplayer.vod.PlayRequest
 import app.fireplayer.vod.Sources
+import app.fireplayer.vod.SourcesRepository
+import app.fireplayer.vod.play.LinkAhead
+import app.fireplayer.vod.play.MainTicker
 import app.fireplayer.vod.play.VodLaunch
 import app.fireplayer.vod.RowSpec
 import app.fireplayer.vod.RowStyle
@@ -270,6 +273,9 @@ class VodPage(
     private var origin: Origin? = null
     /** A title page covers the page: its own content is hidden (and draws nothing) meanwhile. */
     private var covered = false
+
+    /** Resting on a Continue card: its play's link is checked ahead, so OK starts sooner ([LinkAhead]). */
+    private val ahead = LinkAhead(MainTicker) { request -> sourcesOrNull()?.prepare(request) }
 
     private var shown = false
     private var started = false
@@ -600,6 +606,8 @@ class VodPage(
     private fun pause() {
         // Out of sight, Home's top right is where it was heading, at once.
         finishTopRight()
+        // Nothing is checked ahead for a page out of sight (a play taken from it already goes on).
+        ahead.leave()
         if (!resumed) return
         resumed = false
         repo?.removeLibraryListener(libraryListener)
@@ -842,12 +850,15 @@ class VodPage(
         pageSpring.glideTo(targetFor(row))
         val card = if (row.isSeeAll(index)) null else row.cards.getOrNull(index)
         if (card != null && (myList || followsContinue(row))) followCard(card) else if (!myList) header.unfollow()
+        // A Continue card plays at OK: resting on it a moment has its link checked ahead.
+        if (card != null && row.spec.continueRow && resumed) restOn(card) else ahead.leave()
         updateHeaderPause()
         updateImages()
         if (RowRules.nearEnd(index, row.cards.size)) loadMore(row)
     }
 
     override fun onRowLeft(row: TitleRow): Boolean {
+        ahead.leave()
         // Something else took focus (the settings window) from a card being moved: it's put down there.
         if (carryRow === row) dropCarry()
         // Into a title page opened from it: the card stays grown, the row as it was, until the viewer comes back.
@@ -1171,13 +1182,27 @@ class VodPage(
      */
     private fun playContinue(card: Card, from: Origin) {
         val r = repo ?: return
-        val library = try {
-            Sources.get(ctx).library
-        } catch (e: RuntimeException) {
-            null
-        }
-        val request = VodLaunch.fromContinueCard(card, r, library)
+        val request = VodLaunch.fromContinueCard(card, r, sourcesOrNull()?.library)
         if (request == null) openTitle(card, from, soon = true) else host.play(request)
+    }
+
+    /** The sources engine, or null where it can't be had. */
+    private fun sourcesOrNull(): SourcesRepository? = try {
+        Sources.get(ctx)
+    } catch (e: RuntimeException) {
+        null
+    }
+
+    /**
+     * Focus is on Continue card [card]: after a moment's rest the play its OK would start (as [playContinue] makes it)
+     * has its link checked ahead ([LinkAhead]); none for a series card naming no episode with nothing to go on with.
+     */
+    private fun restOn(card: Card) {
+        val ep = card.episode
+        ahead.rest(card.title.id + (ep?.let { "|${it.season}:${it.episode}" } ?: "")) {
+            val r = repo
+            if (r == null || !resumed || released) null else VodLaunch.fromContinueCard(card, r, sourcesOrNull()?.library)
+        }
     }
 
     private fun openTitle(card: Card, from: Origin, soon: Boolean = false) {

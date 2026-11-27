@@ -27,6 +27,7 @@ import app.fireplayer.vod.SourcesRepository
 import app.fireplayer.vod.StartAt
 import app.fireplayer.vod.LookupWhy
 import app.fireplayer.vod.EpisodeRef
+import app.fireplayer.vod.play.LinkAhead
 import app.fireplayer.vod.play.MainTicker
 import app.fireplayer.vod.play.PlayOutcomes
 import app.fireplayer.vod.play.PlayRules
@@ -205,6 +206,8 @@ class TitlePage(
     private var handedOff: SourceTarget? = null
     private var sourcesPanel: SourcesPanel? = null
     private var panelLookup: Cancel? = null
+    /** Resting on Play (Resume): its play's link is checked ahead once its add-ons have answered ([LinkAhead]). */
+    private val ahead = LinkAhead(MainTicker) { request -> sources?.prepare(request) }
 
     init {
         val wrap = ViewGroup.LayoutParams.WRAP_CONTENT
@@ -510,6 +513,8 @@ class TitlePage(
         dwellKey = key
         shownList = null
         buttons.setSourcesLabel(PlayRules.sourcesLabel(null))
+        // Play now starts something else (or nothing): a rest on it is for that.
+        if (buttons.focusedButton() == TitleButtons.Which.PLAY) restOnPlay() else ahead.leave()
         if (tgt == null) return
         dwell = s.lookUp(tgt, PlayRules.pageLookup(resumable, soon)) { list -> onSources(tgt, list) }
     }
@@ -519,6 +524,25 @@ class TitlePage(
         shownList = list
         buttons.setSourcesLabel(PlayRules.sourcesLabel(list))
         showSourceLine()
+        // Every add-on answered: what Play would start is known, for a rest on it that's over.
+        if (list.complete) ahead.ready()
+    }
+
+    /**
+     * Focus is on Play: after a moment's rest, the play it would hand over has its link checked ahead ([LinkAhead]), once
+     * the add-ons have all answered (as Play's own wait has them).
+     */
+    private fun restOnPlay() {
+        val tgt = playTargetNow() ?: return ahead.leave()
+        ahead.rest(tgt.key) { aheadRequest() }
+    }
+
+    /** What Play would hand over now, as after its wait ([PlayWait]); null while the add-ons are still answering. */
+    private fun aheadRequest(): PlayRequest? {
+        if (paused || released) return null
+        val tgt = playTargetNow() ?: return null
+        val list = shownList?.takeIf { it.complete && tgt.key == dwellKey } ?: return null
+        return VodLaunch.fromTitlePage(tgt, currentStart(), list, sources?.library)
     }
 
     /** The source line: the strip while Play waits, why the last play stopped, else which source Play would start. */
@@ -527,6 +551,7 @@ class TitlePage(
     }
 
     private fun stopSources() {
+        ahead.leave()
         dwell?.cancel()
         dwell = null
         dwellKey = null
@@ -984,6 +1009,11 @@ class TitlePage(
     override fun onButtonFocused(which: TitleButtons.Which) {
         part = Part.BUTTONS
         offTheRows()
+        if (which == TitleButtons.Which.PLAY && !paused && !released) restOnPlay() else ahead.leave()
+    }
+
+    override fun onButtonLeft(which: TitleButtons.Which) {
+        if (which == TitleButtons.Which.PLAY) ahead.leave()
     }
 
     /** Focus is on the column or the dropdown: the header says the title's own words, the page is at its top. */

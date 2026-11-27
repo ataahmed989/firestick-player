@@ -441,12 +441,17 @@ enum class LookupWhy(val automatic: Boolean) {
     PLAY(false),
     /** The Sources button or panel: now, never blocked by a budget. */
     SOURCES(false),
+    /**
+     * The viewer rests on what OK would play (a Continue card, a title page's Play) and its link is checked ahead
+     * ([SourcesRepository.prepare]): now (the rest was the wait), within MediaFusion's early budget as a page's is.
+     */
+    AHEAD(true),
 }
 
 /**
  * The sources engine. One per process ([Sources.get]). Lists are kept in memory only (10 min, 6 titles; an empty
- * answer 60 s) and dropped on a network change, an add-on change or a debrid account stop. Links are never
- * opened ahead of Play.
+ * answer 60 s) and dropped on a network change, an add-on change or a debrid account stop. A link is opened ahead of
+ * Play only for the one copy OK would play, cached, while the viewer rests on it ([prepare]).
  */
 interface SourcesRepository {
     val addons: AddonSettings
@@ -480,6 +485,15 @@ interface SourcesRepository {
      * kept for that film's file, and its list ranks again at once.
      */
     fun moveImax(target: SourceTarget, source: PlaybackSource, imax: Boolean) = Unit
+
+    /**
+     * The viewer rests on what OK would play, [request] (a Continue card's, a title page's Play): the one copy its play
+     * would pick has its link checked now when that copy is cached (never one the debrid service would have to fetch),
+     * so OK starts from it ([app.fireplayer.vod.sources.LinkPrep]). One at a time, never while a film plays, kept in
+     * memory briefly and never stored. Cancelling (focus moved on, the page went) drops it unless a play took it. Main
+     * thread.
+     */
+    fun prepare(request: PlayRequest): Cancel = Cancel {}
 }
 
 // ---- Handing a play to the player ----------------------------------------------------------------------------------
@@ -850,6 +864,13 @@ interface SourceSession {
      * measured it: [app.fireplayer.vod.sources.CopyLeft]). False when there's none.
      */
     fun opensLeft(s: PlaybackSource, o: Offer): Boolean = request.preferred?.openedBy(s, o) == true
+
+    /**
+     * How this play's first link came when it was checked ahead as the viewer rested on OK's copy
+     * ([SourcesRepository.prepare]), in plain words for the start's line in the log ("link checked ahead: ready 2400 ms
+     * before OK"); null when the play checked it itself. Never a link.
+     */
+    fun aheadNote(): String? = null
 
     /** The next episode's sources, once, in the last ~4 minutes ([LookupWhy.NEXT_EPISODE]); same-kind first. */
     fun lookUpNext(next: EpisodeRef, onList: (SourceList) -> Unit): Cancel
