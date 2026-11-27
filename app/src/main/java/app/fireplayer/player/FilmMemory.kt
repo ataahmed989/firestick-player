@@ -37,6 +37,13 @@ enum class RamTier(
      */
     val short: Boolean get() = this != LARGE
 
+    /**
+     * A Fire TV Stick's memory or less (under 1.8 GiB): where a film's buffer starts by what's free over Fire OS's low
+     * mark, grows back with calm, and is squeezed an eighth at a time ([FilmMemory.plan], [MemoryPressure]). It was
+     * measured on the Sticks only: a TV sold as "2 GB" keeps the rules it had, like the bigger ones.
+     */
+    val tight: Boolean get() = this == TINY || this == SMALL
+
     /** How long after the last skip the preview's player is kept, in case skipping starts again. */
     val previewHoldMs: Long get() = if (short) 3_000L else 15_000L
 
@@ -69,6 +76,12 @@ enum class RamTier(
  * down never starts with less ([FilmMemory.floorBytes]; 0: not held down), which is [aheadFloorUs] of this film
  * ahead when its rate is known. [startBy] says which of them set the size. [leanDownload]: so little was free that
  * the download keeps to short spans and narrow sockets ([FilmMemory.longSpansFit], [FilmSockets.lowMemory]).
+ *
+ * [everBytes] is what this start got before a Stick's buffer went by Fire OS's low mark (the rule of 1.0.366, which
+ * every other TV still has: all but [FilmMemory.RESERVE_BYTES] of what's free). The buffer is never bigger than that
+ * at its start, keeps behind what that size keeps, and holds no more than that while it's short of the seconds it
+ * needs ahead ([FilmMemory.fillLimit]); only growing with calm takes it past. The budget itself wherever the two
+ * rules agree.
  */
 data class FilmBufferPlan(
     val tier: RamTier,
@@ -84,6 +97,7 @@ data class FilmBufferPlan(
     val aheadFloorUs: Long = 0L,
     val startBy: StartBy = StartBy.TIER,
     val leanDownload: Boolean = byFreeMemory,
+    val everBytes: Int = budgetBytes,
 ) {
     /** What set the size a film's buffer starts with. */
     enum class StartBy {
@@ -95,6 +109,8 @@ data class FilmBufferPlan(
         FLOOR,
         /** Enough of this film ahead to ride out a dip in the connection ([FilmMemory.aheadFloorUs]). */
         AHEAD,
+        /** As much as it ever started with: those seconds of this film would take more ([FilmBufferPlan.everBytes]). */
+        EVER,
         /** The memory of the player it takes the place of. */
         KEPT,
     }
@@ -132,14 +148,14 @@ object FilmMemory {
     /**
      * What is left free for everything but the film's buffer when the buffer is sized by the memory free at its start:
      * the decoder's own frames (5 to 8 frames of 4K 10-bit, 121 to 198 MB measured on a Fire TV Stick 4K Max) and room
-     * for the rest of the TV. The rule of TVs with 2.6 GiB and more; the smaller ones leave more ([startReserve]).
+     * for the rest of the TV. The rule of every TV but a Fire TV Stick, which leaves more ([startReserve]).
      */
     const val RESERVE_BYTES = 260L shl 20
     /** Sized by free memory, the buffer still gets this much (it steps down further only under pressure, [capFor]). */
     const val FREE_FLOOR_BYTES = 64 shl 20
 
-    // ---- The start on a TV short of memory ([RamTier.short]): what a 4K film takes besides its buffer, and what
-    // Fire OS needs left over. Measured on the Fire TV Sticks (1.7 GB), FirePlayer 1.0.366:
+    // ---- The start on a Fire TV Stick ([RamTier.tight]): what a 4K film takes besides its buffer, and what Fire OS
+    // needs left over. Measured on the Fire TV Sticks (1.7 GB), FirePlayer 1.0.366:
     // - 397 MiB free, a 112 MiB buffer and 16 MiB of long spans: Fire OS's low-memory killer 3.7 s after the start,
     //   about 15 processes killed in 30 s, swap at 0 kB and thrashing, 97 frames lost or shown late in 105 s.
     // - 540 MiB free, the same buffer: one background app killed, the buffer squeezed to 48 MiB, 4 frames dropped.
@@ -176,8 +192,9 @@ object FilmMemory {
      * measured. What was measured is the 5 s a squeezed buffer keeps ([MIN_AHEAD_US]): it held on both Sticks without a
      * stall (a 58 Mb/s film on 83 to 92 Mb/s, a 35 to 40 Mb/s one) and is the least seen to hold, while a 69 Mb/s film
      * on 65 to 82 Mb/s stalled every 6 to 16 s with it. A start isn't under pressure yet, so it keeps over that least:
-     * a second where the line has room, three where it's thin. Three more seconds of the Stick's 58 Mb/s film make its
-     * buffer 72 MiB, still under the 80 MiB the same Stick was back at four minutes later, with no trouble seen after.
+     * a second where the line has room, three where it's thin. Eight seconds of the Stick's 58 Mb/s film and the
+     * 24 MiB it keeps behind are 80 MiB: the size the same Stick was back at four minutes later, with one frame lost in
+     * the five minutes around it.
      */
     const val ROOMY_AHEAD_US = 6_000_000L
     const val THIN_AHEAD_US = 8_000_000L
@@ -204,18 +221,24 @@ object FilmMemory {
         if (fillRate != null && fillRate >= ROOMY_LINE) ROOMY_AHEAD_US else THIN_AHEAD_US
 
     /**
+     * [aheadFloorUs] for a film of [rateMbps] on a line measured to bring [lineMbps]; the longer of the two when either
+     * isn't known (0 or less).
+     */
+    fun aheadFloorFor(rateMbps: Double, lineMbps: Double): Long =
+        aheadFloorUs(if (rateMbps > 0.0 && lineMbps > 0.0) (lineMbps / rateMbps).toFloat() else null)
+
+    /**
      * The least a buffer held down by free memory starts with for a film of [rateMbps] (its size over its length; 0 or
      * less: not known) on a line measured to bring [lineMbps] (0 or less: not measured): [aheadFloorUs] of it ahead and
      * what's kept behind ([backBufferMs] of it, up to [backCapBytes]; 0: no limit), in whole MiB. 0 when the film's rate
      * isn't known: [FREE_FLOOR_BYTES] is the floor then, and the same length ahead is kept as the film loads
-     * ([fillLimit]). A 58 Mb/s film on an 83 Mb/s line with 4 s behind up to 16 MiB: 8 s ahead, 72 MiB.
+     * ([fillLimit]). A 58 Mb/s film on an 83 Mb/s line with 6 s behind up to 24 MiB: 8 s ahead, 80 MiB.
      */
     fun floorBytes(rateMbps: Double, lineMbps: Double, backBufferMs: Int, backCapBytes: Long): Int {
         if (rateMbps <= 0.0 || rateMbps.isNaN() || rateMbps.isInfinite()) return 0
         val perSecond = rateMbps * 1_000_000.0 / 8.0
         val behind = (perSecond * backBufferMs / 1000.0).let { if (backCapBytes > 0L) minOf(it, backCapBytes.toDouble()) else it }
-        val aheadUs = aheadFloorUs(if (lineMbps > 0.0) (lineMbps / rateMbps).toFloat() else null)
-        val bytes = perSecond * aheadUs / 1_000_000.0 + behind
+        val bytes = perSecond * aheadFloorFor(rateMbps, lineMbps) / 1_000_000.0 + behind
         val mib = 1L shl 20
         return (((bytes.toLong() + mib - 1) / mib) * mib).coerceAtMost(CEILING_BYTES.toLong()).toInt()
     }
@@ -228,17 +251,21 @@ object FilmMemory {
      *
      * [freeBytes] is the memory the TV has free as the film starts (ActivityManager's availMem; 0 or less: not known).
      * The tier says what the TV can spare at best, the free memory what it can spare now.
-     * - A TV of 2.6 GiB and more: the buffer never takes more of it than leaves [RESERVE_BYTES], down to
+     * - As ever, and on every TV but a Stick: the buffer never takes more of it than leaves [RESERVE_BYTES], down to
      *   [FREE_FLOOR_BYTES] (seen: a 260 MB buffer and up to 198 MB of decoder frames on a 1.7 GB Stick, with 76 kB of
-     *   swap left). As ever; nothing else here applies to it.
-     * - A TV short of memory ([RamTier.short]): it never takes more than leaves [startReserve], which counts Fire OS's
-     *   low mark too ([lowMarkBytes]: MemoryInfo.threshold; 0: not said). With that much free and more, the buffer is
+     *   swap left). Nothing else here applies to those TVs.
+     * - A Fire TV Stick ([RamTier.tight]): it never takes more than leaves [startReserve], which counts Fire OS's low
+     *   mark too ([lowMarkBytes]: MemoryInfo.threshold; 0: not said). With that much free and more, the buffer is
      *   the tier's, as ever. With less it starts smaller and grows back with calm ([grown]): never under
      *   [FREE_FLOOR_BYTES], nor under what keeps enough of this film ahead ([floorBytes], from [rateMbps] and
-     *   [lineMbps]; 0: not known).
+     *   [lineMbps]; 0: not known), and never over what the first rule gives ([FilmBufferPlan.everBytes]): with so
+     *   little free that the first rule already held it down (under 388 MiB on a Stick), a heavy film starts with
+     *   what it always did, not with more.
      *
-     * The download (long spans, the sockets' windows) goes by the first rule on every TV, as before
-     * ([FilmBufferPlan.leanDownload]): what the connection is measured to bring doesn't move with the buffer's start.
+     * Two things go by the first rule on every TV, as before. The download (long spans, the sockets' windows:
+     * [FilmBufferPlan.leanDownload]), so what the connection is measured to bring doesn't move with the buffer's
+     * start. And what's kept behind where the film plays, so going back a little plays from memory exactly where it
+     * did, from the film's first minute to its last.
      *
      * [keepBytes] is the budget of the player this one takes the place of, in the same moment (the same film in a
      * rebuilt player, another source in a new one; 0: none). That player's buffer has just been let go of, and
@@ -262,41 +289,35 @@ object FilmMemory {
         val everFree = if (freeBytes > 0L) minOf(byTier, (freeBytes - RESERVE_BYTES).coerceAtLeast(least)) else byTier
         val asEver = maxOf(everFree, kept)
         val lean = asEver < byTier
-        if (!tier.short || freeBytes <= 0L) {
+        if (!tier.tight || freeBytes <= 0L) {
             val by = when {
                 asEver >= byTier -> FilmBufferPlan.StartBy.TIER
                 kept > everFree -> FilmBufferPlan.StartBy.KEPT
                 everFree > least -> FilmBufferPlan.StartBy.FREE
                 else -> FilmBufferPlan.StartBy.FLOOR
             }
-            return planOf(tier, asEver, byTier, lean, by)
+            return planOf(tier, asEver, byTier, asEver, lean, by)
         }
         val mark = lowMark(lowMarkBytes)
         val reserve = startReserve(lowMarkBytes)
         val byFree = minOf(byTier, (freeBytes - reserve).coerceAtLeast(least))
-        if (maxOf(byFree, kept) >= byTier) return planOf(tier, byTier, byTier, lean, FilmBufferPlan.StartBy.TIER, reserve, mark)
-        // Held down: what's kept behind goes by the size it comes to, and the floor by what's kept behind (at most
-        // one round for each tier).
-        var budget = maxOf(byFree, kept)
-        var by = when {
+        val start = maxOf(byFree, kept)
+        if (start >= byTier) return planOf(tier, byTier, byTier, asEver, lean, FilmBufferPlan.StartBy.TIER, reserve, mark)
+        // Held down. What this film needs ahead, with what's kept behind (as ever: by the first rule's size), is its
+        // floor, as far as the first rule's size goes.
+        val back = fitting(asEver)
+        val forFilm = floorBytes(rateMbps, lineMbps, minOf(tier.backBufferMs, back.backBufferMs), backCap(tier, back)).toLong()
+        val aheadUs = if (forFilm > 0L) aheadFloorFor(rateMbps, lineMbps) else 0L
+        val floor = if (forFilm > 0L) maxOf(least, minOf(forFilm, asEver)) else least
+        val budget = maxOf(start, floor)
+        val by = when {
+            budget >= byTier -> FilmBufferPlan.StartBy.TIER
+            floor > start -> if (forFilm > asEver) FilmBufferPlan.StartBy.EVER else FilmBufferPlan.StartBy.AHEAD
             kept > byFree -> FilmBufferPlan.StartBy.KEPT
             byFree > least -> FilmBufferPlan.StartBy.FREE
             else -> FilmBufferPlan.StartBy.FLOOR
         }
-        var floor = least
-        var aheadUs = 0L
-        for (round in RamTier.entries) {
-            val fits = fitting(budget)
-            val forFilm = floorBytes(rateMbps, lineMbps, minOf(tier.backBufferMs, fits.backBufferMs), backCap(tier, fits)).toLong()
-            if (forFilm <= 0L) break
-            aheadUs = aheadFloorUs(if (lineMbps > 0.0) (lineMbps / rateMbps).toFloat() else null)
-            val next = minOf(byTier, forFilm)
-            floor = maxOf(least, next)
-            if (next <= budget) break
-            budget = next
-            by = if (next >= byTier) FilmBufferPlan.StartBy.TIER else FilmBufferPlan.StartBy.AHEAD
-        }
-        return planOf(tier, budget, byTier, lean, by, reserve, mark, floor.toInt(), aheadUs)
+        return planOf(tier, budget, byTier, asEver, lean, by, reserve, mark, floor.toInt(), aheadUs)
     }
 
     /** The tier whose budget [budgetBytes] fits: what's kept behind goes by it. */
@@ -307,11 +328,12 @@ object FilmMemory {
     private fun backCap(tier: RamTier, fits: RamTier): Long =
         listOf(tier.backCapMiB, fits.backCapMiB).filter { it > 0 }.minOrNull()?.let { it.toLong() shl 20 } ?: 0L
 
+    // [ever] is the size by the rule every TV had ([FilmBufferPlan.everBytes]): what's kept behind goes by it.
     private fun planOf(
-        tier: RamTier, budget: Long, byTier: Long, lean: Boolean, by: FilmBufferPlan.StartBy,
+        tier: RamTier, budget: Long, byTier: Long, ever: Long, lean: Boolean, by: FilmBufferPlan.StartBy,
         reserve: Long = RESERVE_BYTES, mark: Long = 0L, floor: Int = 0, aheadUs: Long = 0L,
     ): FilmBufferPlan {
-        val fits = fitting(budget)
+        val fits = fitting(ever)
         val held = budget < byTier
         return FilmBufferPlan(
             tier, budget.toInt(), minOf(tier.backBufferMs, fits.backBufferMs),
@@ -324,6 +346,7 @@ object FilmMemory {
             aheadFloorUs = if (held) aheadUs else 0L,
             startBy = by,
             leanDownload = lean,
+            everBytes = maxOf(ever, budget).toInt(),
         )
     }
 
@@ -424,7 +447,8 @@ object FilmMemory {
      * [plan], with the second request's long spans holding [extraBytes] more than its usual segments: the film's buffer
      * gives that up (its budget, and the most it can be raised to), so the two hold no more memory together than
      * before. What's kept behind stays as planned. Never under [FLOOR_BYTES], and a buffer held down by free memory
-     * never under its floor ([FilmBufferPlan.floorBytes]): the spans aren't counted in what's loaded ahead.
+     * never under its floor ([FilmBufferPlan.floorBytes]): the spans aren't counted in what's loaded ahead. What it
+     * got by the rule every TV had ([FilmBufferPlan.everBytes]) gives them up as well.
      */
     fun withSecondRequest(plan: FilmBufferPlan, extraBytes: Long): FilmBufferPlan {
         if (extraBytes <= 0L) return plan
@@ -438,6 +462,7 @@ object FilmMemory {
             spanExtraBytes = extra,
             byFreeMemory = plan.byFreeMemory && budget < tier,
             floorBytes = floor,
+            everBytes = (plan.everBytes - extra).coerceAtLeast(budget),
         )
     }
 
@@ -461,19 +486,49 @@ object FilmMemory {
 
     /**
      * How full the buffer may get before loading stops, with [aheadUs] loaded ahead: [capBytes], but
-     * - with less than [MIN_AHEAD_US] ahead, all the TV spares at best ([tierBytes], and never less than
-     *   [budgetBytes]), squeezed or not;
+     * - with less than [MIN_AHEAD_US] ahead, all it had before it was squeezed or started small ([mostBytes], and never
+     *   less than [budgetBytes]);
      * - not squeezed ([capBytes] is the budget), with less than [floorUs] ahead, the same: a buffer started small for
      *   want of free memory still holds that much of a heavy film ([aheadFloorUs]).
-     * So a size under the tier's only limits what is held beyond those seconds. On a TV whose buffer is the tier's
-     * ([tierBytes] is [budgetBytes], as it is by default), this is the budget while less than [MIN_AHEAD_US] is ahead
-     * and [capBytes] otherwise, as ever.
+     * So a start smaller than it ever was only limits what is held beyond those seconds, and never holds more than it
+     * ever did: [mostBytes] is [FilmBufferPlan.everBytes]. Wherever the buffer is what it ever was ([mostBytes] is
+     * [budgetBytes], as it is by default), this is the budget while less than [MIN_AHEAD_US] is ahead and [capBytes]
+     * otherwise, as ever.
+     *
+     * The wait before a film starts or plays on after a jump goes by this size too ([roomUs], [waitUs]): never more
+     * than it ever was, so that wait is never longer than it was.
      */
-    fun fillLimit(capBytes: Int, budgetBytes: Int, aheadUs: Long, tierBytes: Int = budgetBytes, floorUs: Long = MIN_AHEAD_US): Int = when {
-        aheadUs < MIN_AHEAD_US -> maxOf(capBytes, budgetBytes, tierBytes)
-        capBytes >= budgetBytes && aheadUs < floorUs -> maxOf(capBytes, tierBytes)
+    fun fillLimit(capBytes: Int, budgetBytes: Int, aheadUs: Long, mostBytes: Int = budgetBytes, floorUs: Long = MIN_AHEAD_US): Int = when {
+        aheadUs < MIN_AHEAD_US -> maxOf(capBytes, budgetBytes, mostBytes)
+        capBytes >= budgetBytes && aheadUs < floorUs -> maxOf(capBytes, mostBytes)
         else -> capBytes
     }
+
+    /**
+     * While a film plays, it's moved to another of its provider's servers only with this much loaded ahead, in µs, to
+     * cover the reconnect (some servers refuse one for a moment): [MOVE_COVER_US], as ever. A buffer started small
+     * ([heldDown]) of which less than that fits ([fullUs] ahead when it was last full; 0: not known) could never move
+     * while playing, and a server fallen under the film's rate would run it dry first: it moves with all but
+     * [MOVE_MARGIN_US] of what fits, never with less than [MOVE_COVER_LEAST_US] (the 10 s within which a refused
+     * reconnect counts as the move's own, [ServerSwitch]). A 30 Mb/s film in a 64 MiB start, 11.9 s of it: 10 s.
+     */
+    fun moveCoverUs(fullUs: Long, heldDown: Boolean): Long =
+        if (!heldDown || fullUs <= 0L) MOVE_COVER_US else minOf(MOVE_COVER_US, maxOf(MOVE_COVER_LEAST_US, fullUs - MOVE_MARGIN_US))
+
+    const val MOVE_COVER_US = 15_000_000L
+    const val MOVE_COVER_LEAST_US = 10_000_000L
+    const val MOVE_MARGIN_US = 2_000_000L
+
+    /**
+     * The budget of a buffer started small when another copy starts in the same player (Sources, Next source), at
+     * [rateMbps] on a line measured to bring [lineMbps] (0: not known): what a start with this copy would have got for
+     * its seconds ahead ([floorBytes], with [backBufferMs] behind up to [backCapBytes]), never over [everBytes] nor
+     * under [budgetBytes]. [budgetBytes] when the buffer isn't held under what it ever was, or the rate isn't known
+     * (the seconds are then kept as the copy loads, [fillLimit]).
+     */
+    fun budgetForCopy(budgetBytes: Int, everBytes: Int, rateMbps: Double, lineMbps: Double, backBufferMs: Int, backCapBytes: Long): Int =
+        if (budgetBytes >= everBytes) budgetBytes
+        else minOf(floorBytes(rateMbps, lineMbps, backBufferMs, backCapBytes), everBytes).coerceAtLeast(budgetBytes)
 
     /** Less film than this loaded says too little about how much of it fits. */
     const val ROOM_MIN_US = 1_000_000L
@@ -555,8 +610,8 @@ object FilmMemory {
      * always was: "Film buffer: SMALL memory, 600 MiB free, 112 MiB, 6 s kept behind up to 24 MiB, 16 MiB given to the
      * second request's long spans". Held down on a TV short of memory, with why and what it grows to:
      * "Film buffer: SMALL memory, 397 MiB free (Fire OS calls it low under 144 MiB, swap 0 of 819 MiB free), film about
-     * 58 Mb/s on a connection bringing 83: starts at 72 MiB, for 8 s of it ahead (free memory leaves no more: 440 MiB
-     * are left for the decoder and Fire OS), up to 112 MiB once memory has been quiet, 4 s kept behind up to 16 MiB, ...".
+     * 58 Mb/s on a connection bringing 83: starts at 80 MiB, for 8 s of it ahead (free memory leaves no more: 440 MiB
+     * are left for the decoder and Fire OS), up to 112 MiB once memory has been quiet, 6 s kept behind up to 24 MiB, ...".
      */
     fun startWords(plan: FilmBufferPlan, freeBytes: Long, rateMbps: Double, lineMbps: Double, swap: () -> String? = ::swapNow): String {
         val budget = plan.budgetBytes
@@ -574,6 +629,8 @@ object FilmMemory {
             line.append(
                 when (plan.startBy) {
                     FilmBufferPlan.StartBy.AHEAD -> ", for " + plan.aheadFloorUs / 1_000_000L + " s of it ahead (free memory leaves no more: $left)"
+                    FilmBufferPlan.StartBy.EVER -> ", as much as it ever started with when so little was free (" +
+                        plan.aheadFloorUs / 1_000_000L + " s of it ahead would take more)"
                     FilmBufferPlan.StartBy.FLOOR -> ", the least a film starts with (free memory leaves no more: $left)"
                     FilmBufferPlan.StartBy.KEPT -> ", the memory of the player before it"
                     else -> ", what's free once $left"
@@ -612,20 +669,23 @@ object FilmMemory {
  * How far the film's buffer is squeezed for the TV's memory, and when it may grow. [step] counts the eighths of the
  * buffer given back, 0 to [FilmMemory.STEPS] (half; see [FilmMemory.capFor]). Times are elapsedRealtime.
  *
- * As ever, on a TV with memory to spare (not [fine]): Fire OS asking the app to trim (onTrimMemory) goes straight to
- * what it calls for, a quarter back when memory runs low and half when it's critical; its "memory is low", read every
+ * As ever, on every TV but a Stick (not [fine]): Fire OS asking the app to trim (onTrimMemory) goes straight to what
+ * it calls for, a quarter back when memory runs low and half when it's critical; its "memory is low", read every
  * 10 s, means a quarter, and half when still low [escalateMs] later. After [recoverMs] without either, a quarter
  * comes back, and the other after the same again.
  *
- * On a TV short of memory ([fine]: [RamTier.short]) the same signals move it an eighth at a time:
+ * On a Fire TV Stick ([fine]: [RamTier.tight]) the same signals lead to the same places, an eighth at a time:
  * - Down: an eighth for "running low" or a low reading, a quarter for "critical". Signals within [gapMs] of the first
  *   are one event (Fire OS sends several in the same second) and count as the strongest of them; one [gapMs] or more
- *   after it steps further. So a low reading that lasts reaches half at the same 30 s as before, by way of every
- *   eighth, and one "critical" takes a quarter, not half at once. Seen on both Sticks in the first seconds of a film:
- *   straight to half, 48 MiB. A buffer gives memory back only as fast as the film plays (7 MiB a second at 58 Mb/s),
- *   so half at once meant no loading at all for 9 s and then a film left with the 5 s it never goes under, for the
- *   minutes until the steps back; nothing in that says the giving back itself cost frames (it frees what the film
- *   has played past once a second, and has Android collect it at most once in 10 s, off the playing threads).
+ *   after it steps further, but never past what that signal ever called for: a quarter in all for "running low" and
+ *   for a low reading, half only for "critical" and for a low reading [escalateMs] old. So signals that come and go
+ *   (Fire OS closing apps one after another, free memory sitting at its mark) stop at a quarter, as they always did,
+ *   a low reading that lasts is at three eighths after the same 30 s and at half 10 s on, and one "critical" takes a
+ *   quarter, not half at once. Seen on both Sticks in the first seconds of a film: straight to half, 48 MiB. A buffer
+ *   gives memory back only as fast as the film plays (7 MiB a second at 58 Mb/s), so half at once meant no loading
+ *   at all for 9 s and then a film left with the 5 s it never goes under, for the minutes until the steps back;
+ *   nothing in that says the giving back itself cost frames (it frees what the film has played past once a second,
+ *   and has Android collect it at most once in 10 s, off the playing threads).
  * - Up: the first eighth after [recoverMs] without a signal (the worst seen on a Stick ran 105 s from a film's start;
  *   two minutes outlast it), each further one after [nextMs] more, any signal starting the two minutes again.
  * - A buffer started below its TV's size for want of free memory grows on by the same clock ([mayGrow], [grew]):
@@ -656,7 +716,7 @@ class MemoryPressure(
     /** Fire OS asked the app to trim, calling for [wanted] (1 running low, 2 critical). True when the step changed. */
     fun trimAsked(wanted: Int, nowMs: Long): Boolean {
         pressed(nowMs)
-        return if (fine) down(wanted.coerceIn(1, 2), nowMs) else raise(wanted * QUARTER)
+        return if (fine) down(wanted.coerceIn(1, 2), nowMs, if (wanted >= 2) FilmMemory.STEPS else QUARTER) else raise(wanted * QUARTER)
     }
 
     /** The 10 s check: [low] is whether Fire OS says memory is low now. True when the step changed. */
@@ -664,7 +724,8 @@ class MemoryPressure(
         if (low) {
             if (lowSince < 0) lowSince = nowMs
             pressed(nowMs)
-            return if (fine) down(1, nowMs) else raise(if (nowMs - lowSince >= escalateMs) FilmMemory.STEPS else QUARTER)
+            val most = if (nowMs - lowSince >= escalateMs) FilmMemory.STEPS else QUARTER
+            return if (fine) down(1, nowMs, most) else raise(most)
         }
         lowSince = -1L
         if (step == 0) return false
@@ -681,8 +742,8 @@ class MemoryPressure(
     }
 
     /**
-     * Whether a buffer started below its TV's size may take a step up at [nowMs] ([FilmMemory.grown]): only on a TV
-     * short of memory, with nothing squeezed and no low reading, [recoverMs] after the film's start and the last
+     * Whether a buffer started below its TV's size may take a step up at [nowMs] ([FilmMemory.grown]): only on a
+     * Stick, with nothing squeezed and no low reading, [recoverMs] after the film's start and the last
      * signal, or [nextMs] after the last step up when that came since both.
      */
     fun mayGrow(nowMs: Long): Boolean {
@@ -702,13 +763,13 @@ class MemoryPressure(
     }
 
     // A signal for [eighths] more: on top of the step its event began at, so the signals of one event add up to the
-    // strongest of them, not to their sum.
-    private fun down(eighths: Int, nowMs: Long): Boolean {
+    // strongest of them, not to their sum. Never past [most], what this kind of signal ever called for.
+    private fun down(eighths: Int, nowMs: Long, most: Int): Boolean {
         if (eventAt < 0L || nowMs - eventAt >= gapMs) {
             eventAt = nowMs
             eventFrom = step
         }
-        return raise(eventFrom + eighths)
+        return raise(minOf(eventFrom + eighths, most))
     }
 
     private fun raise(wanted: Int): Boolean {

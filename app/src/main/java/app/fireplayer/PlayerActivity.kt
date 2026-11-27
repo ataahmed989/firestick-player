@@ -302,9 +302,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private var builtPlayer: PlayerFactory.Built? = null
     /**
      * How far the film's buffer is squeezed for the TV's memory, and when it may grow; kept across new players (see
-     * checkMemory). An eighth at a time on a TV short of memory, as ever on the others.
+     * checkMemory). An eighth at a time on a Fire TV Stick, as ever on the others.
      */
-    private val memoryPressure by lazy { MemoryPressure(fine = FilmMemory.tier(this).short) }
+    private val memoryPressure by lazy { MemoryPressure(fine = FilmMemory.tier(this).tight) }
 
     // Views
     private lateinit var root: ViewGroup
@@ -1225,12 +1225,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // "Faster downloads", as set when this film or source starts; null is one request, as ever.
         val twoRanges = if (prefs.fasterDownloads) TwoRanges() else null
         filmRanges = twoRanges
-        // On a TV short of memory, how small the buffer may start with little free goes by the copy's own rate and
-        // what this connection was measured to bring (FilmMemory.plan). Only read there, and only for that.
-        val copyMbps = if (FilmMemory.tier(this).short) source?.rateMbps() ?: 0.0 else 0.0
-        val lineMbps = if (copyMbps > 0.0) {
-            app.fireplayer.vod.sources.LineRate.of(sourcePrefs, two = prefs.fasterDownloads).current() ?: 0.0
-        } else 0.0
+        // On a Fire TV Stick, how small the buffer may start with little free goes by the copy's own rate and what
+        // this connection was measured to bring (FilmMemory.plan). Only read there, and only for that.
+        val copyMbps = copyMbpsForBuffer()
+        val lineMbps = lineMbpsForBuffer(copyMbps)
         val built = PlayerFactory.build(
             context = this,
             delays = delays,
@@ -3010,6 +3008,36 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     /** What the film's buffer held when its memory was last collected for a squeeze, or when it was squeezed (bytes). */
     private var heldAtCollect = 0L
+    /**
+     * The average rate of the source playing or being opened, in Mb/s, for the size its buffer starts with on a Fire TV
+     * Stick ([FilmMemory.plan]); 0 on every other TV (never read there), and when it isn't known.
+     */
+    private fun copyMbpsForBuffer(): Double = if (FilmMemory.tier(this).tight) source?.rateMbps() ?: 0.0 else 0.0
+
+    /** What this connection was measured to bring lately, in Mb/s, for a copy of [copyMbps]; 0 when not asked or not known. */
+    private fun lineMbpsForBuffer(copyMbps: Double): Double =
+        if (copyMbps > 0.0) app.fireplayer.vod.sources.LineRate.of(sourcePrefs, two = prefs.fasterDownloads).current() ?: 0.0 else 0.0
+
+    /**
+     * Another copy starts in the player that is there ([playInstead]): a buffer started small on a Fire TV Stick goes
+     * by this copy's rate from here, not the first one's ([PlayerFactory.Built.forCopy]). [known]: the copy is the
+     * source being opened, whose rate the add-ons or an earlier play may know; a copy from the film's own list isn't.
+     */
+    private fun bufferForCopy(known: Boolean) {
+        val built = builtPlayer ?: return
+        // At its TV's size (every start with enough free, every other TV): nothing to change, nothing read.
+        if (built.growNeedBytes() <= 0L) return
+        val copyMbps = if (known) copyMbpsForBuffer() else 0.0
+        val lineMbps = lineMbpsForBuffer(copyMbps)
+        val bytes = built.forCopy(copyMbps, lineMbps)
+        if (bytes > 0) {
+            android.util.Log.i(TAG, "Another copy, about ${Math.round(copyMbps)} Mb/s" +
+                (if (lineMbps > 0.0) " on a connection bringing ${Math.round(lineMbps)}" else "") +
+                ": the film's buffer is ${bytes shr 20} MiB from now, for " +
+                "${FilmMemory.aheadFloorFor(copyMbps, lineMbps) / 1_000_000L} s of it ahead (of ${built.mostBytes shr 20})")
+        }
+    }
+
     /** How far [squeezeFilmBuffer] last found the buffer squeezed, to tell a step down from a step back. */
     private var squeezeTold = 0
     /** The log has said what a buffer waiting to grow waits for; said again only after it grew or a new player. */
@@ -3057,7 +3085,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     /**
      * Fire OS asking the app in front to use less memory: the film's buffer gives a quarter back when memory is running
-     * low, and half when it's critical (an eighth and a quarter on a TV short of memory, where it goes a step at a
+     * low, and half when it's critical (an eighth and a quarter on a Fire TV Stick, where it goes a step at a
      * time), until two minutes go by without it (see [checkMemory], [MemoryPressure]). A paused film is let
      * go of instead when it's critical ([sleepFilm]), and a screen with no film loaded trims what it keeps when the
      * app is no longer in front ([trimWithoutFilm]).
@@ -6503,6 +6531,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private fun playCopy(copy: Copies.Copy) {
         val p = player ?: return
         val current = entries.getOrNull(p.currentMediaItemIndex) ?: return
+        bufferForCopy(known = false)
         playInstead(copy.uri, current.rawTitle, null, p.currentPosition)
     }
 
@@ -6719,6 +6748,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             bufferingInfo.visibility = View.GONE
             val p = player
             if (switching && p != null && entries.isNotEmpty()) {
+                bufferForCopy(known = true)
                 playInstead(uri, vodRawTitle(request), vodKey(request, ready), startMs)
                 return
             }
