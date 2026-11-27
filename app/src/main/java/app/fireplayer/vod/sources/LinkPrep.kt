@@ -20,9 +20,10 @@ import app.fireplayer.vod.SourceTarget
  * [app.fireplayer.vod.play.LinkAhead]), so the play starts from it rather than waiting for the debrid service's answer,
  * which is most of a slow start (on the TV: "link +4462ms · … · frame +9286ms" beside "link +312ms · … · frame +4254ms").
  *
- * - Only from the title's list held in memory already ([DefaultSourcesRepository.holds]: a title page's look-up, one
- *   kept from a recent look): nothing is ever looked up for it, so a rest costs no list's reading and ranking (on the
- *   TV a Continue card's look-up at a cold start was 66 MB more for a while). With no list held, nothing at all.
+ * - Only from the title's list held in memory already, as last shown ([DefaultSourcesRepository.holds]: a title page's
+ *   look-up, one kept from a recent look): nothing is ever looked up for it, so a rest costs no list's reading and
+ *   ranking (on the TV a Continue card's look-up at a cold start was 66 MB more for a while), and it changes nothing of
+ *   the list a page shows. With no list held, or one partly run out, nothing at all.
  * - Only the copy the play itself would pick from that list, found as its session finds it ([DefaultSourceSession]
  *   picking only: the copy a resume left, else the ranking's pick), and only its first offer, the one the play checks
  *   first. A list that can't tell it with nothing more on its way for it (an add-on not asked) leaves it there.

@@ -1,6 +1,7 @@
 package app.fireplayer.vod.sources
 
 import app.fireplayer.vod.Addon
+import app.fireplayer.vod.AddonState
 import app.fireplayer.vod.Cancel
 import app.fireplayer.vod.AddonSave
 import app.fireplayer.vod.AddonSettings
@@ -285,6 +286,58 @@ class LinkPrepTest {
         assertTrue(asked.isEmpty())
         assertTrue(checked.isEmpty())
         assertTrue(lines.contains(LinkPrep.NO_LIST))
+    }
+
+    @Test
+    fun aRestOnAListPartlyRunOutChangesNothingThePageShows() {
+        // The title page's look: MediaFusion lists nothing (kept 60 s), Torrentio its copy (kept 10 min).
+        answers[Addon.TORRENTIO] = { answer(torrentio(H1)) }
+        answers[Addon.MEDIAFUSION] = { answer() }
+        val shown = ArrayList<SourceList>()
+        engine.lookUp(filmTarget, LookupWhy.PAGE_SOON, null) { shown += it }
+        loop.advance(DefaultSourcesRepository.SOON_DWELL_MS)
+        settle()
+        val page = shown.last()
+        assertTrue(page.complete)
+        val told = shown.size
+        // Focus back on Play after more than a minute: MediaFusion's empty answer ran out meanwhile.
+        loop.advance(DefaultSourcesRepository.EMPTY_KEEP_MS)
+        val play = PlayRequest(filmTarget, StartAt.Beginning, PlayOrigin.TITLE_PAGE, list = page)
+        engine.prepare(play)
+        settle()
+        // Not held as the page shows it: nothing dropped or ranked again (the page is told nothing new), asked or checked.
+        assertEquals(told, shown.size)
+        assertEquals(1, lines.count { it == LinkPrep.NO_LIST })
+        assertEquals(2, asked.size)
+        assertTrue(checked.isEmpty())
+        assertFalse(engine.prep.busy)
+        // OK asks MediaFusion again, as ever, and plays Torrentio's copy.
+        val ready = open(engine.session(play)).last() as Opened.Ready
+        assertEquals(H1, ready.source.release!!.infoHash)
+        assertEquals(listOf(Addon.TORRENTIO, Addon.MEDIAFUSION, Addon.MEDIAFUSION), asked.map { it.first })
+        assertTrue(shown.last().complete)
+    }
+
+    @Test
+    fun aPickWaitingForAnAnswerDropsNothingThatRunsOutMeanwhile() {
+        answers()
+        // Torrentio's answer, kept from a look of it alone; a second before it runs out the page asks MediaFusion.
+        engine.lookUp(filmTarget, LookupWhy.SOURCES, Addon.TORRENTIO) { }.also { settle() }.cancel()
+        loop.advance(DefaultSourcesRepository.KEEP_MS - 1_000)
+        val shown = ArrayList<SourceList>()
+        engine.lookUp(filmTarget, LookupWhy.SOURCES, null) { shown += it }
+        loop.advance()
+        // The rest's pick waits for MediaFusion's answer (the copy left is its own), asking nothing.
+        engine.prepare(continueCard())
+        loop.advance(2_000)
+        assertTrue(engine.prep.busy)
+        // It answers once Torrentio's answer has run out, without the copy left: the pick reads on, dropping nothing.
+        answers[Addon.MEDIAFUSION] = { answer(mediaFusion(H2)) }
+        settle()
+        assertEquals(listOf(Addon.TORRENTIO, Addon.MEDIAFUSION), asked.map { it.first })
+        assertTrue(shown.last().complete)
+        assertTrue(shown.last().states[Addon.TORRENTIO] is AddonState.Answered)
+        assertEquals(1, checked.size)
     }
 
     @Test

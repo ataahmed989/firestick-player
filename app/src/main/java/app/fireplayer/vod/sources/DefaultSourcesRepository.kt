@@ -161,20 +161,22 @@ class DefaultSourcesRepository(
     }
 
     /**
-     * Whether [target]'s list is held in memory now: some add-on's answer is kept (a title page's look-up, a play's, one
-     * kept from a recent look). A link is checked ahead only from such a list ([LinkPrep]): nothing is looked up for it.
+     * Whether [target]'s list is held in memory now, just as it was last shown: some add-on's answer is kept (a title
+     * page's look-up, a play's, one kept from a recent look) and nothing of it has run out. A link is checked ahead only
+     * from such a list ([LinkPrep]): nothing is looked up for it. Read only: a list partly run out isn't held (dropping
+     * that part would rank it again and change what a title page shows, with nothing asking that add-on again).
      */
     internal fun holds(target: SourceTarget): Boolean {
         val entry = entries[target.key] ?: return false
-        expire(entry)
-        return entry.answers.isNotEmpty()
+        return entry.answers.isNotEmpty() && !runOut(entry)
     }
 
     override fun lookUp(target: SourceTarget, why: LookupWhy, only: Addon?, onList: (SourceList) -> Unit): Cancel {
         val entry = entryFor(target)
         val sub = Sub(why, only, onList)
         entry.subs += sub
-        expire(entry)
+        // A pick for a link checked ahead reads the list as it's held ([holds]), later too: it drops nothing.
+        if (why != LookupWhy.AHEAD) expire(entry)
         onList(listOf(entry))
         val start = Runnable {
             sub.start = null
@@ -503,6 +505,14 @@ class DefaultSourcesRepository(
             (entry.states[addon] as? AddonState.Busy)?.let { if (now >= it.until) entry.states.remove(addon) }
         }
         if (dropped) rebuild(entry)
+    }
+
+    /** Whether [expire] would drop or end anything of [entry] now (read only). */
+    private fun runOut(entry: Entry): Boolean {
+        val now = elapsed()
+        return entry.answers.values.any { now >= it.keepUntil } ||
+            entry.failedAt.any { (addon, at) -> now - at >= FAILED_FINAL_MS && entry.calls[addon] == null } ||
+            entry.states.values.any { it is AddonState.Busy && now >= it.until }
     }
 
     // ---- The list ----
