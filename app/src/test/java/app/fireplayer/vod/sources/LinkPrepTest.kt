@@ -80,7 +80,7 @@ class LinkPrepTest {
         override fun recordRelease(title: Title, episode: EpisodeRef?, release: LastRelease) = Unit
         override fun forgetReleases(title: Title) = Unit
         override fun forgetRelease(title: Title, episode: EpisodeRef?) = Unit
-        override fun recordPlayback(title: Title, episode: EpisodeRef?, positionMs: Long, durationMs: Long, creditsAtMs: Long?) = Unit
+        override fun recordPlayback(title: Title, episode: EpisodeRef?, positionMs: Long, durationMs: Long, creditsAtMs: Long?, sceneAtMs: Long?) = Unit
     }
 
     private val tv = object : ThisTv {
