@@ -97,6 +97,38 @@ class SyncPlanTest {
         assertTrue(SyncPlan.isDue(now = 25 * h, lastSuccess = 0, intervalMs = 24 * h, lastTried = 25 * h - SyncPlan.RETRY_AFTER_MS))
     }
 
+    @Test fun `a source that keeps failing waits longer each time, never past its own interval`() {
+        val h = 3_600_000L
+        val half = SyncPlan.RETRY_AFTER_MS
+        // Never failed (or it worked since) and one failure: half an hour, as before.
+        assertEquals(half, SyncPlan.retryAfterMs(0, 24 * h))
+        assertEquals(half, SyncPlan.retryAfterMs(1, 24 * h))
+        // Then 1 h, 2 h, 4 h ... up to the EPG's (or playlist's) update interval.
+        assertEquals(2 * half, SyncPlan.retryAfterMs(2, 24 * h))
+        assertEquals(4 * half, SyncPlan.retryAfterMs(3, 24 * h))
+        assertEquals(24 * h, SyncPlan.retryAfterMs(7, 24 * h))
+        assertEquals(24 * h, SyncPlan.retryAfterMs(1000, 24 * h))
+        assertEquals(6 * h, SyncPlan.retryAfterMs(20, 6 * h))
+        // An interval shorter than half an hour still waits half an hour after a failure.
+        assertEquals(half, SyncPlan.retryAfterMs(5, 60_000L))
+    }
+
+    @Test fun `an EPG that failed at the last start isn't downloaded again at this one`() {
+        val h = 3_600_000L
+        val start = 100 * h
+        // It failed 3 times in a row, the last 90 minutes ago: it waits 2 hours from then.
+        assertFalse(SyncPlan.isDue(now = start, lastSuccess = 0, intervalMs = 24 * h, lastTried = start - 90 * 60_000L, failures = 3))
+        assertTrue(SyncPlan.isDue(now = start, lastSuccess = 0, intervalMs = 24 * h, lastTried = start - 2 * h, failures = 3))
+        // Once it has worked, its interval alone decides.
+        assertFalse(SyncPlan.isDue(now = start, lastSuccess = start - h, intervalMs = 24 * h, lastTried = 0, failures = 0))
+        assertTrue(SyncPlan.isDue(now = start, lastSuccess = start - 24 * h, intervalMs = 24 * h, lastTried = 0, failures = 0))
+    }
+
+    @Test fun `a last try in the future (the clock was put back) holds nothing back`() {
+        val h = 3_600_000L
+        assertTrue(SyncPlan.isDue(now = 30 * h, lastSuccess = 0, intervalMs = 24 * h, lastTried = 40 * h, failures = 5))
+    }
+
     @Test fun `an empty download never empties what was stored`() {
         assertFalse(SyncPlan.mayReplaceChannels(0, 120))
         assertTrue(SyncPlan.mayReplaceChannels(0, 0))

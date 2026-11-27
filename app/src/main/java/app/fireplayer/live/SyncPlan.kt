@@ -107,10 +107,29 @@ object SyncPlan {
 
     /**
      * Whether an automatic update is due: never done, or [lastSuccess] older than [intervalMs]; and not tried (and
-     * failed) within [RETRY_AFTER_MS], so a broken source isn't asked again at every return to the app.
+     * failed) lately ([retryAfterMs], after [failures] failed tries in a row), so a broken source isn't asked again at
+     * every start of or return to the app. A last try that seems to be in the future (the TV's clock was put back) holds
+     * nothing back.
      */
-    fun isDue(now: Long, lastSuccess: Long, intervalMs: Long, lastTried: Long): Boolean =
-        now - lastSuccess >= intervalMs && now - lastTried >= RETRY_AFTER_MS
+    fun isDue(now: Long, lastSuccess: Long, intervalMs: Long, lastTried: Long, failures: Int = 1): Boolean {
+        val sinceTried = now - lastTried
+        return now - lastSuccess >= intervalMs && (sinceTried < 0 || sinceTried >= retryAfterMs(failures, intervalMs))
+    }
+
+    /**
+     * How long after a failed automatic try the next one waits, with [failures] failed tries in a row: [RETRY_AFTER_MS]
+     * after one, twice that after two, and so on, but never longer than the source's own update [intervalMs]. An EPG the
+     * server keeps sending broken is then downloaded a few times a day at most, not at every start of the app; the
+     * viewer's own Update always goes at once.
+     */
+    fun retryAfterMs(failures: Int, intervalMs: Long): Long {
+        if (failures <= 1) return RETRY_AFTER_MS
+        val grown = RETRY_AFTER_MS shl (failures - 1).coerceAtMost(MAX_DOUBLINGS)
+        return grown.coerceAtMost(maxOf(intervalMs, RETRY_AFTER_MS))
+    }
+
+    /** Past this many doublings the wait is longer than any update interval anyway (30 min x 2^8 = 128 h). */
+    private const val MAX_DOUBLINGS = 8
 
     // ---- What a download may replace --------------------------------------------------------------------------------
 

@@ -2,6 +2,7 @@ package app.fireplayer.live
 
 import android.app.Application
 import android.content.Context
+import android.content.SharedPreferences
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
@@ -15,7 +16,6 @@ import java.io.BufferedInputStream
 import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.zip.GZIPInputStream
 
@@ -51,8 +51,12 @@ class LiveSync private constructor(context: Context) {
         onQuiet = { updateDue() },
         notice = { text -> for (l in listeners.toList()) l.onUpdateNotice(text) },
     )
-    /** When an automatic update last tried each playlist ("p:id") and EPG ("e:id"), so a failing one isn't asked at every turn. */
-    private val tried = ConcurrentHashMap<String, Long>()
+    /**
+     * When an update last tried each playlist ("p:id") and EPG ("e:id"), and how many tries in a row failed, so a
+     * failing one isn't asked again at every turn ([SyncPlan.isDue]). Kept with the Live TV settings so it holds across
+     * starts of the app too: an EPG that couldn't be read was downloaded again at every start. Read on the update thread.
+     */
+    private val tries by lazy { Tries(app.getSharedPreferences(LivePrefs.FILE, Context.MODE_PRIVATE)) }
 
     val busy: Boolean get() = running.get() > 0
 
@@ -89,7 +93,7 @@ class LiveSync private constructor(context: Context) {
      * while something from the same provider plays (they wait, [SyncGuard]).
      */
     fun updateDue(now: Long = System.currentTimeMillis()) = submit(Trigger.AUTO, epgOnly = false) {
-        val due = db.playlists().filter { SyncPlan.isDue(now, it.lastSync, it.updateHours.coerceAtLeast(1) * HOUR_MS, tried["p:" + it.id] ?: 0L) }
+        val due = db.playlists().filter { isDue(now, "p:" + it.id, it.lastSync, it.updateHours.coerceAtLeast(1) * HOUR_MS) }
         val synced = due.filter { p -> syncChannels(p).also { notify(p.id) } }
         // The due playlists' EPGs, plus every EPG when a due playlist has none of its own (it borrows theirs), plus
         // any EPG older than the EPG update interval (Live FirePlayer Settings) whether or not its playlist is due.
@@ -100,7 +104,7 @@ class LiveSync private constructor(context: Context) {
         val epgSeen = db.epgStatuses().associate { it.source to it.lastSync }
         // EPGs follow their own interval (Live FirePlayer Settings): one never loaded, or older than the interval, is
         // read again; a due playlist without an EPG of its own still has the others read for it.
-        val sources = all.filter { epgUrl(it) != null && (needFallback || SyncPlan.isDue(now, epgSeen[it.id] ?: 0L, epgEvery, tried["e:" + it.id] ?: 0L)) }
+        val sources = all.filter { epgUrl(it) != null && (needFallback || isDue(now, "e:" + it.id, epgSeen[it.id] ?: 0L, epgEvery)) }
         // Past programmes are cleared at most every few hours (it scans every listing).
         if (now - lastPrune >= PRUNE_EVERY_MS) {
             db.pruneProgrammes(now - PAST_KEEP_MS)
@@ -110,6 +114,9 @@ class LiveSync private constructor(context: Context) {
     }
 
     @Volatile private var lastPrune = 0L
+
+    private fun isDue(now: Long, key: String, lastSuccess: Long, intervalMs: Long) =
+        SyncPlan.isDue(now, lastSuccess, intervalMs, tries.lastTried(key), tries.failures(key))
 
     fun updateEpg(playlistId: String? = null) = submit(Trigger.MANUAL, epgOnly = true) {
         val list = if (playlistId == null) db.playlists() else listOfNotNull(db.playlist(playlistId))
@@ -153,14 +160,16 @@ class LiveSync private constructor(context: Context) {
             guard.refusal?.let { onRefused?.invoke(it) }
             return false
         }
-        tried[key] = System.currentTimeMillis()
+        tries.trying(key, System.currentTimeMillis())
         return true
     }
 
     // ---- Channels ----------------------------------------------------------------------------------------------
 
     /** True when the playlist was read and stored. */
-    private fun syncChannels(p: Playlist): Boolean {
+    private fun syncChannels(p: Playlist): Boolean = readChannels(p).also { if (it) tries.succeeded("p:" + p.id) }
+
+    private fun readChannels(p: Playlist): Boolean {
         val now = System.currentTimeMillis()
         if (!cleared(p, p.url, "p:" + p.id) { db.setPlaylistStatus(p.id, it, syncedAt = null) }) return false
         try {
@@ -268,6 +277,7 @@ class LiveSync private constructor(context: Context) {
                     }
                 }
                 Log.i(TAG, "EPG for \"${p.name}\": $count programmes for ${wanted.size} ids from ${counted.count / 1024} KB in ${SystemClock.elapsedRealtime() - t0} ms")
+                tries.succeeded("e:" + p.id)
             } finally {
                 conn.first.disconnect()
             }
@@ -300,6 +310,33 @@ class LiveSync private constructor(context: Context) {
     }
 }
 
+
+/**
+ * [LiveSync]'s tries by source ("p:id" a playlist, "e:id" its EPG): when one last went out, and how many in a row
+ * failed. Stored beside the Live TV settings under keys of their own, which earlier versions never read. Only ever used
+ * on the update thread, which writes them itself (commit): nothing is left waiting for the main thread to finish when a
+ * screen closes or a film starts.
+ */
+private class Tries(private val sp: SharedPreferences) {
+    fun lastTried(key: String): Long = sp.getLong(TRIED + key, 0L)
+
+    fun failures(key: String): Int = sp.getInt(FAILED + key, 0)
+
+    /** A request goes out for [key]: it counts as failed until [succeeded] says otherwise (the app may stop meanwhile). */
+    fun trying(key: String, now: Long) {
+        sp.edit().putLong(TRIED + key, now).putInt(FAILED + key, failures(key) + 1).commit()
+    }
+
+    /** It worked: nothing is held back for it any more (its own update interval decides). */
+    fun succeeded(key: String) {
+        if (sp.contains(FAILED + key) || sp.contains(TRIED + key)) sp.edit().remove(FAILED + key).remove(TRIED + key).commit()
+    }
+
+    private companion object {
+        const val TRIED = "sync_tried:"
+        const val FAILED = "sync_failed:"
+    }
+}
 
 /** Xtream Codes calls for one playlist, by its server address and login. */
 class XtreamApi(private val p: Playlist) {
