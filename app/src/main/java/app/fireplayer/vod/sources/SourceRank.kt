@@ -173,7 +173,7 @@ object SourceRank {
         val stated = facts.sizeBytes?.takeIf { facts.sizeExact } ?: return m
         if (spec.sizeBytes <= 0 || SourceMerge.sizeClose(spec.sizeBytes, stated)) return m
         return m.copy(spec = spec.copy(sizeBytes = 0, overallBps = 0, hdr = null, hdr10Plus = false, hdrInfo = null, dvProfile = 0,
-            dvBaseLayer = 0, dvSignal = 0, decoder = MediaSpec.Decoder.UNKNOWN))
+            dvBaseLayer = 0, dvSignal = 0, decoder = MediaSpec.Decoder.UNKNOWN, hdr10PlusHeld = 0))
     }
 
     /** The viewer's move of a row's file ([RankInput.imaxMove]): its own release's, else a merged offer's. */
@@ -496,7 +496,9 @@ object SourceRank {
      * [facts] as this TV played the file, by what FirePlayer [measured] when it played here: a Dolby Vision file played
      * on a plain decoder (as its HDR10 base layer, or Media3's own way back to HEVC) is its base layer here, not Dolby
      * Vision: HLG or SDR where the file's record said so ([MediaSpec.dvSignal]: 8.4, 8.2), else HDR10; its profile is
-     * filled in from the play; HDR10+ seen in the picture is added; a name that said no HDR takes the HDR the file played
+     * filled in from the play; HDR10+ seen in the picture is added, and HDR10+ the play kept from the TV for a reason of
+     * the file's own ([MediaSpec.hdr10PlusHeld]: added to a Dolby Vision file, broken, or not on every frame) is the
+     * HDR10 inside, whatever its name says; a name that said no HDR takes the HDR the file played
      * with ([playedHdr]: a WEB copy whose name leaves out its HDR10). The file's size and average rate as the play
      * measured them replace the add-ons' (a season pack's total, or its share, isn't the episode's file: the pack's total
      * stays beside it when it is known to be one, [SourceMerge.packBeside]). Otherwise [facts] as the add-ons have them.
@@ -524,7 +526,12 @@ object SourceRank {
                 else -> f
             }
         }
-        if (spec.hdr10Plus && Hdr.HDR10_PLUS !in f.hdr) f = f.copy(hdr = f.hdr + Hdr.HDR10_PLUS)
+        f = when {
+            // HDR10+ this TV isn't given for a reason of the file's own: the HDR10 inside is what plays here.
+            spec.hdr10PlusHeld != 0 -> if (Hdr.HDR10_PLUS in f.hdr) f.copy(hdr = f.hdr - Hdr.HDR10_PLUS + Hdr.HDR10) else f
+            spec.hdr10Plus && Hdr.HDR10_PLUS !in f.hdr -> f.copy(hdr = f.hdr + Hdr.HDR10_PLUS)
+            else -> f
+        }
         return f
     }
 

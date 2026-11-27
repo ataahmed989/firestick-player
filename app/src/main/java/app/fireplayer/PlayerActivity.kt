@@ -1233,7 +1233,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             backdrop?.suspended = false
         }
         val vsync = VsyncFix(this)
-        val hdr10Plus = Hdr10PlusGate(this)
+        val hdr10Plus = Hdr10PlusGate(this) { prefs.hdr10PlusReaches }
         // "Faster downloads", as set when this film or source starts; null is one request, as ever.
         val twoRanges = if (prefs.fasterDownloads) TwoRanges() else null
         filmRanges = twoRanges
@@ -6027,7 +6027,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val rates = embeddedCues.source(link)?.rates
         // Dolby Vision profile 7 that this TV plays as its HDR10 base layer is described, and kept, as HDR10.
         val base = MediaSpec.of(video, audio, DvBaseLayer.playedAsBase(video?.sampleMimeType, video?.codecs, DvBaseLayer.tvPlaysBase),
-            app.fireplayer.player.PlayFacts.decoderMime, app.fireplayer.player.PlayFacts.hdr10PlusSeen)
+            app.fireplayer.player.PlayFacts.decoderMime, app.fireplayer.player.PlayFacts.hdr10PlusSeen,
+            app.fireplayer.player.PlayFacts.hdr10PlusHeld)
         val w = p.videoSize.width.takeIf { it > 0 } ?: base.width
         val h = p.videoSize.height.takeIf { it > 0 } ?: base.height
         val videoBps = rates?.bps(video?.id) ?: 0L
@@ -6087,7 +6088,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         ).joinToString(" · ").ifEmpty { null }?.let { pairs += "Frame" to fact(it) }
         // On a TV that reports no HDR the Fire TV turns HDR into SDR, and HDR10+ reaches the TV only where Settings › This
         // TV says so: said, so the row doesn't claim what isn't seen.
-        pairs += "Range" to fact(spec.rangeLine(hdrScreen(), prefs.hdr10PlusReaches && hdr10PlusGate?.mask == false))
+        pairs += "Range" to fact(spec.rangeLine(hdrScreen(), prefs.hdr10PlusReaches && hdr10PlusGate?.mask == false &&
+            !app.fireplayer.player.PlayFacts.hdr10PlusKept))
         // The picture's own rate; while it's measured, the file's average stands in, said as such.
         pairs += "Data" to fact(
             if (spec.videoBps > 0) "${MediaSpec.mbps(spec.videoBps)} · " +

@@ -3,6 +3,7 @@ package app.fireplayer.vod.sources
 import app.fireplayer.player.CopyHealth
 import app.fireplayer.player.CopyLanguage
 import app.fireplayer.player.DvBaseLayer
+import app.fireplayer.player.Hdr10PlusWatch
 import app.fireplayer.player.MediaSpec
 import app.fireplayer.vod.Addon
 import app.fireplayer.vod.Hdr
@@ -280,6 +281,54 @@ class RankRulesTest {
         val blind = src("blind", hash = SourceFixtures.H1, size = 60_000_000_000L)
         val noInfo = played(MediaSpec(hdrInfo = false))
         assertEquals(listOf("hdrRemux", "blind"), keys(listOf(blind, hdrRemux), input(measured = { if (it.contains(SourceFixtures.H1)) noInfo else null })))
+    }
+
+    @Test
+    fun aCopyWhoseHdr10PlusAPlayKeptFromTheTvIsHdr10FromThenOn() {
+        // Avatar's 64.5 GB encode: Dolby Vision profile 8 with HDR10+ added, on a TV without Dolby Vision that reports
+        // HDR10+ (and Settings › This TV says it reaches it). By its name it's the HDR10+ picture inside, so it is Best
+        // ahead of an HDR10 copy as good, and level with a film's own HDR10+ copy listed after it.
+        val hybrid = src("hybrid", hdr = setOf(Hdr.DOLBY_VISION, Hdr.HDR10_PLUS), dvProfile = 8, origin = "BluRay", hash = SourceFixtures.H1)
+        val native = src("native", hdr = setOf(Hdr.HDR10_PLUS), origin = "BluRay", hash = SourceFixtures.H2)
+        val hdr10 = src("hdr10", origin = "BluRay")
+        val rows = listOf(hybrid, hdr10, native)
+        assertEquals(listOf("hybrid", "native", "hdr10"), keys(rows))
+        assertEquals("4K · HDR10+ · Encode · 50.0 GB", PlayRules.mainLine(SourceRank.rank(rows, input()).first(), plan = q60r.copy(hdr10PlusReaches = true)))
+        // It played: the HEVC decoder was given the file, and its HDR10+ was kept from the TV (the picture went black
+        // again and again with it), which the play keeps with the copy.
+        fun onHevc(held: Int, plus: Boolean = true) = played(MediaSpec(hdr = "Dolby Vision", dvProfile = 8, decoder = MediaSpec.Decoder.PLAIN,
+            dvSignal = DvBaseLayer.SIGNAL_HDR10, hdr10Plus = plus, hdrInfo = true, hdr10PlusHeld = held))
+        fun after(m: Measured, native: Measured? = null) = input(measured = { k ->
+            if (k.contains(SourceFixtures.H1)) m else if (k.contains(SourceFixtures.H2)) native else null
+        })
+        for (why in listOf(Hdr10PlusWatch.HYBRID, Hdr10PlusWatch.MALFORMED, Hdr10PlusWatch.GAPS)) {
+            val held = after(onHevc(why))
+            val ranked = SourceRank.rank(rows, held)
+            val row = ranked.first { it.key == "hybrid" }
+            // The HDR10 inside is what this TV shows of it: ranked, named and explained as HDR10.
+            assertEquals(setOf(Hdr.HDR10), SourceRank.shownHdr(SourceRank.asPlayedHere(row.facts, row.measured), held.plan))
+            assertEquals("4K · HDR10 · Encode · 50.0 GB", PlayRules.mainLine(row, plan = held.plan))
+            assertEquals("HDR10 (HDR10+ in the file, not used: ${MediaSpec.heldWords(why)})",
+                SourcesModel.details(row, held.plan) { "" }.toMap()["This TV shows"])
+            // The film's own HDR10+ copy is Best now, for its HDR10+; the copy that played is no longer ahead for it.
+            assertEquals(listOf("native", "hybrid", "hdr10"), ranked.map { it.key })
+            assertEquals(RankStep.DYNAMIC_HDR, SourceRank.why(ranked, held)?.step)
+        }
+        // A film's own HDR10+ copy that played with it stays HDR10+, and first.
+        val both = after(onHevc(Hdr10PlusWatch.HYBRID), played(MediaSpec(hdr = "HDR10", decoder = MediaSpec.Decoder.PLAIN, hdr10Plus = true, hdrInfo = true)))
+        val ranked = SourceRank.rank(rows, both)
+        assertEquals("native", ranked.first().key)
+        assertEquals("4K · HDR10+ · Encode · 50.0 GB", PlayRules.mainLine(ranked.first(), plan = both.plan))
+        // Played with nothing held (its HDR10+ went to the TV): HDR10+ as before.
+        assertEquals("4K · HDR10+ · Encode · 50.0 GB",
+            PlayRules.mainLine(SourceRank.rank(rows, after(onHevc(0))).first { it.key == "hybrid" }, plan = q60r.copy(hdr10PlusReaches = true)))
+        // Where HDR10+ doesn't reach the TV anyway, the word says what was done with it, and nothing is ranked on it.
+        val off = input(measured = { k -> if (k.contains(SourceFixtures.H1)) onHevc(Hdr10PlusWatch.HYBRID) else null }, plus = false)
+        val offRow = SourceRank.rank(rows, off).first { it.key == "hybrid" }
+        assertEquals("HDR10 (HDR10+ in the file, not used: added to a Dolby Vision file)",
+            SourcesModel.details(offRow, off.plan) { "" }.toMap()["This TV shows"])
+        assertEquals("HDR10 (HDR10+ in the file)",
+            SourcesModel.details(SourceRank.rank(rows, off).first { it.key == "native" }, off.plan) { "" }.toMap()["This TV shows"])
     }
 
     @Test

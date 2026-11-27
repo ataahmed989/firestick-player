@@ -68,39 +68,58 @@ object Hdr10PlusMask {
      * decoder). Stops at the first picture (VCL) NAL unit, so the picture data, and a suffix SEI or Dolby Vision's RPU
      * after it, are never read. The position and limit stay as they were. Returns how many messages were masked.
      */
-    fun mask(buffer: ByteBuffer): Int = if (buffer.isReadOnly) 0 else scan(buffer, write = true)
+    fun mask(buffer: ByteBuffer, values: Hdr10PlusValues? = null): Int =
+        if (buffer.isReadOnly) 0 else scan(buffer, write = true, values).coerceAtLeast(0)
 
     /**
      * How many HDR10+ messages the prefix SEI of the access unit in [buffer] carries, read as [mask] reads it, with
-     * nothing changed: whether the film has HDR10+ ([PlayFacts.hdr10PlusSeen]) on a TV it isn't masked for.
+     * nothing changed: whether the film has HDR10+ ([PlayFacts.hdr10PlusSeen]) on a TV it isn't masked for. Both read
+     * the last such message's numbers into [values] when given ([Hdr10PlusValues]).
      */
-    fun count(buffer: ByteBuffer): Int = scan(buffer, write = false)
+    fun count(buffer: ByteBuffer, values: Hdr10PlusValues? = null): Int = scan(buffer, write = false, values).coerceAtLeast(0)
 
-    private fun scan(buffer: ByteBuffer, write: Boolean): Int {
+    /**
+     * One sample as a frame, for [Hdr10PlusWatch]: [mask] ([write]) or [count], or [NO_PICTURE] when no picture (VCL) NAL
+     * unit was met in it, so it isn't a frame as this reads them (cut short, empty, not Annex B) and says nothing of
+     * whether the film's frames come with HDR10+ or without. A read-only buffer is only counted.
+     */
+    fun frame(buffer: ByteBuffer, write: Boolean, values: Hdr10PlusValues? = null): Int =
+        scan(buffer, write && !buffer.isReadOnly, values)
+
+    /** [frame]'s answer for a sample without picture data. */
+    const val NO_PICTURE = -1
+
+    /** How many HDR10+ messages were met (and masked, with [write]) before the first picture NAL unit; [NO_PICTURE] without one. */
+    private fun scan(buffer: ByteBuffer, write: Boolean, values: Hdr10PlusValues?): Int {
         val limit = buffer.limit()
         var search = buffer.position()
-        if (limit - search < 4) return 0
+        if (limit - search < 4) return NO_PICTURE
         var masked = 0
+        var picture = false
         while (search < limit) {
             val nal = startCode(buffer, search, limit)
             // The NAL unit header's first byte follows the three bytes 00 00 01.
             if (nal + 3 >= limit) break
             val type = (buffer.get(nal + 3).toInt() and 0x7E) shr 1
-            if (type <= LAST_VCL) break
+            if (type <= LAST_VCL) {
+                picture = true
+                break
+            }
             if (type == PREFIX_SEI) {
                 // Its messages start after the two-byte header and end where the next NAL unit starts.
                 val end = startCode(buffer, nal + 5, limit)
-                masked += maskMessages(buffer, nal + 5, end, write)
+                masked += maskMessages(buffer, nal + 5, end, write, values)
                 search = end
             } else {
                 search = nal + 3
             }
         }
-        return masked
+        // Messages met without a picture after them are still told of: a sample cut short was masked all the same.
+        return if (picture || masked > 0) masked else NO_PICTURE
     }
 
     /** Masks ([write]) or counts the HDR10+ messages of one prefix SEI NAL unit, whose messages lie from [from] to [end]. */
-    private fun maskMessages(buffer: ByteBuffer, from: Int, end: Int, write: Boolean): Int {
+    private fun maskMessages(buffer: ByteBuffer, from: Int, end: Int, write: Boolean, values: Hdr10PlusValues?): Int {
         var at = from
         // Zero bytes just read, carried across the whole NAL unit: 00 00 03 is an emulation-prevention byte, which the
         // encoder put in so the data can't look like a start code, and which isn't part of the message.
@@ -150,6 +169,7 @@ object Hdr10PlusMask {
             }
             if (!sizeRead) break
             if (typeAt >= 0 && isHdr10Plus(buffer, at, end, zeros, payloadSize)) {
+                values?.take(buffer, at, end, zeros, payloadSize)
                 if (write) buffer.put(typeAt, MASKED_TYPE.toByte())
                 masked++
             }
