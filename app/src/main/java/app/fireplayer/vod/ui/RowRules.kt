@@ -112,9 +112,14 @@ internal object RowRules {
 
     /**
      * The card of [cards] (the Continue row read again) for the title the banner follows ([followed]), at its new
-     * episode and time left; null when that title has left the row (the banner then goes back to its feed).
+     * episode and time left; else its card in another Continue row on the page ([others]: a Home with an added
+     * "Continue Watching · Series" beside its own, which a film the banner follows was never in); null when no Continue
+     * row has the title any more (the banner then goes back to its feed).
      */
-    fun refollow(followed: Card, cards: List<Card>): Card? =
+    fun refollow(followed: Card, cards: List<Card>, others: List<List<Card>> = emptyList()): Card? =
+        cardOf(followed, cards) ?: others.firstNotNullOfOrNull { cardOf(followed, it) }
+
+    private fun cardOf(followed: Card, cards: List<Card>): Card? =
         cards.firstOrNull { it.title.kind == followed.title.kind && it.title.id == followed.title.id }
 
     /** Where focus goes when a row's cards change under it: -1 stays put, else the item to move to first. */

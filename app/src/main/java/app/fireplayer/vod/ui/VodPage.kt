@@ -1679,13 +1679,16 @@ class VodPage(
      * The Continue row read again with focus out of it, the banner following one of its titles (focus went Up to Watch
      * now, which played it, and is back there): the banner takes that title's new card ([RowRules.refollow]: the next
      * episode once one is over, the new time left), so its line and Watch now are the row's; the title gone from the
-     * row (removed in Glass Home meanwhile), the banner goes back to its feed. Not while a title page or the small window
-     * opened from the row is up: focus comes back to the row from those, and the banner follows the card it lands on.
+     * row (removed in Glass Home meanwhile), the banner goes back to its feed, unless another Continue row on the page
+     * still has it (a film followed from Home's own row while an added "Continue Watching · Series" row changes). Not
+     * while a title page or the small window opened from the row is up: focus comes back to the row from those, and
+     * the banner follows the card it lands on.
      */
     private fun refollowHeader(row: TitleRow, cards: List<Card>) {
         if (!row.spec.continueRow || myList || row.focusedIndex() >= 0 || openFrom(row)) return
         val followed = header.followed ?: return
-        val card = RowRules.refollow(followed, cards)
+        val others = rows.filter { it !== row && it.spec.continueRow && it.visibility == View.VISIBLE }.map { it.cards }
+        val card = RowRules.refollow(followed, cards, others)
         if (card == null) header.unfollow() else header.refollow(card)
     }
 
