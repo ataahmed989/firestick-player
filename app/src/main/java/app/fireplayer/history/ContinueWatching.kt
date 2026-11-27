@@ -20,7 +20,6 @@ import app.fireplayer.player.ShowGuide
 import app.fireplayer.player.TitleInfo
 import app.fireplayer.subs.Tmdb
 import app.fireplayer.titles.TitleBook
-import app.fireplayer.vod.Title
 import app.fireplayer.history.WatchHistory.Companion.matched
 import java.io.File
 import java.security.SecureRandom
@@ -184,28 +183,6 @@ object ContinueWatching {
             h.renumber(of).also { if (it) save(app, h) }
         }
         if (changed) app.contentResolver.notifyChange(ITEMS, null)
-    }
-
-    /**
-     * [titles] were taken out of Films & Shows' Continue Watching (Remove on a card or a title page, or Glass Home's on
-     * the library's card) or marked watched there: their copies other apps opened here go too, as Glass Home's Remove
-     * took every copy of a title ([LibraryContinue.copiesOf]). On [worker], in order with what the player notes.
-     */
-    fun removeCopies(context: Context, titles: List<Title>) {
-        if (titles.isEmpty()) return
-        val app = context.applicationContext
-        worker.execute {
-            try {
-                synchronized(lock) {
-                    val h = current(app)
-                    val gone = LibraryContinue.copiesOf(titles, h.all.map { it.row() })
-                    for (id in gone) h.remove(id)
-                    if (gone.isNotEmpty()) save(app, h)
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Couldn't take the title's other copies away: ${e.javaClass.simpleName}")
-            }
-        }
     }
 
     /** Removes one row; false when there's no such row. */

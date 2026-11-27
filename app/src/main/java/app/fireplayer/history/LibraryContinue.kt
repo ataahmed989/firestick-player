@@ -3,9 +3,7 @@ package app.fireplayer.history
 import app.fireplayer.vod.Episode
 import app.fireplayer.vod.EpisodeRef
 import app.fireplayer.vod.Kind
-import app.fireplayer.vod.Title
 import app.fireplayer.vod.data.Progress
-import java.util.Locale
 
 /**
  * Films & Shows' Continue Watching (the VOD library, vod.db) as the rows of Glass Home's Continue Watching
@@ -63,37 +61,6 @@ object LibraryContinue {
             // Its show's episodes come from the title's details (Cinemeta), as on its title page.
             hasEpisodes = show,
         )
-    }
-
-    /**
-     * The ids of the rows of [others] that are copies of [titles] (taken out of Continue Watching here, or marked
-     * watched): they go with them, as Glass Home's Remove takes every copy of a title.
-     */
-    fun copiesOf(titles: List<Title>, others: List<WatchHistory.Row>): List<String> {
-        if (titles.isEmpty()) return emptyList()
-        val gone = titles.map { Same.of(it) }
-        return others.filter { o -> Same.of(o).let { t -> gone.any { it.same(t) } } }.map { it.id }
-    }
-
-    /**
-     * A title as Glass Home tells copies apart (its titleKey): its kind, and its TMDB id, else its name (letters and
-     * digits, lower case) and year. Two are one title when both have a TMDB id and it's the same, or, one without, when
-     * their names and years are.
-     */
-    private class Same(val show: Boolean, val tmdbId: Int, val name: String, val year: Int) {
-        fun same(o: Same): Boolean = show == o.show &&
-            if (tmdbId > 0 && o.tmdbId > 0) tmdbId == o.tmdbId else name.isNotEmpty() && name == o.name && year == o.year
-
-        companion object {
-            private val NOT_NAME = Regex("[^\\p{L}\\p{N}]")
-
-            fun of(r: WatchHistory.Row) = Same(r.kind == WatchHistory.Kind.EPISODE, r.tmdbId, nameOf(r.title), r.year)
-
-            fun of(t: Title) =
-                Same(t.kind == Kind.SERIES, t.tmdbId ?: 0, nameOf(t.name), t.year?.take(4)?.toIntOrNull() ?: 0)
-
-            private fun nameOf(name: String?): String = name.orEmpty().lowercase(Locale.ROOT).replace(NOT_NAME, "")
-        }
     }
 
     fun episodeId(season: Int, episode: Int): String = "$season:$episode"
