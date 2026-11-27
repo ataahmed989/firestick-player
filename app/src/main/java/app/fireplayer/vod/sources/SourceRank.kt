@@ -28,8 +28,6 @@ class RankInput(
     val measured: (String) -> Measured?,
     val runtimeMin: Int?,
     val episode: Boolean,
-    /** This TV's connection, steady ([LineRate.current]), in Mb/s; null when nothing was measured lately. */
-    val lineMbps: Double? = null,
     /** Settings › This TV › IMAX first: always ([app.fireplayer.vod.ThisTv.imaxAlways]). */
     val imaxAlways: Boolean = false,
     /** The viewer's subtitle language ("en"): a copy known to carry it gets a small plus; null for none. */
@@ -41,7 +39,12 @@ class RankInput(
      * IMAX, false to 4K; null when never moved.
      */
     val imaxMove: (String) -> Boolean? = { null },
-    /** Settings › Playback › Preferred bitrate, Mb/s ([SourceRank.PREFERRED_MBPS] unless the viewer changed it). */
+    /**
+     * Settings › Playback › Preferred bitrate, Mb/s ([SourceRank.PREFERRED_MBPS] unless the viewer changed it): the rate
+     * ranking aims at, as it is. What earlier films were measured to arrive at ([LineRate]) isn't weighed here: a file's
+     * own speed shows while it plays, where a copy that can't keep up is answered by Ask / Switch / Keep
+     * ([app.fireplayer.vod.play.FilmSupply]).
+     */
     val preferredMbps: Double = SourceRank.PREFERRED_MBPS.toDouble(),
     /**
      * The episode ranked for (null: a film, or not said): what was measured of a file whose index isn't known is kept
@@ -56,33 +59,30 @@ class RankInput(
  *
  * 1. Plays here: likely, or played here (the same: a short test play doesn't decide Best), then unknown or one that
  *    lost frames here lately ([stuttered]), then "likely not" ([fit]: showed no picture here, buffered here lately,
- *    Dolby Vision this TV can't show, over the data limit, faster than the connection, taller than the TV).
+ *    Dolby Vision this TV can't show, over the data limit, taller than the TV).
  * 2. Cached (played here smoothly, or the debrid service probably has it), then unknown, then not cached.
  * 3. Not known to lack both the film's own language and the viewer's.
- * 4. Room on the connection ([LineRate.room], steady figure; only once one was measured).
- * 5. Height ([shownHeight]: a copy starved of data for its frame, [CopyRank.starved], counts just under the class
- *    below). 6. The HDR this TV shows ([shownHdr]: Dolby Vision by what this TV does with each profile).
- * 7. Rate: nearest the viewer's preferred bitrate first ([rateKey]; what the connection keeps, when that is less), the
+ * 4. Height ([shownHeight]: a copy starved of data for its frame, [CopyRank.starved], counts just under the class
+ *    below). 5. The HDR this TV shows ([shownHdr]: Dolby Vision by what this TV does with each profile).
+ * 6. Rate: nearest the viewer's preferred bitrate first ([rateKey]; the bitrate as set, never lowered by what earlier
+ *    films arrived at: one file's server says nothing of another's), the
  *    higher side counting a little less, nearly equal distances tied; an unknown rate after those near it, and after
  *    every copy that played well here at a rate measured here; an episode's copy whose only size was its season pack's
  *    (or may be), with no estimate of its share, after every copy of a known rate ([keysOf]). A share estimated
  *    ([SourceFacts.sizeEstimated]) ranks as a stated size, here and in fit and size.
- * 8. Source kind (Remux, BluRay encode, WEB-DL, WEBRip, HDTV), then bit depth (10-bit taken for HDR and 4K HEVC).
- * 9. HDR10+ where it reaches the TV ([TvPlan.hdr10PlusReaches]; Dolby Vision on a Dolby Vision TV); a picture that
+ * 7. Source kind (Remux, BluRay encode, WEB-DL, WEBRip, HDTV), then bit depth (10-bit taken for HDR and 4K HEVC).
+ * 8. HDR10+ where it reaches the TV ([TvPlan.hdr10PlusReaches]; Dolby Vision on a Dolby Vision TV); a picture that
  *    played here without HDR10's brightness data last.
- * 10. IMAX (films only: the name says IMAX or IMX, or the viewer moved it there, [isImaxCopy]); first of all with
+ * 9. IMAX (films only: the name says IMAX or IMX, or the viewer moved it there, [isImaxCopy]); first of all with
  *    [RankInput.imaxAlways].
- * 11. The film's own language just above the viewer's dub ([language]), subtitles in the viewer's language a little
+ * 10. The film's own language just above the viewer's dub ([language]), subtitles in the viewer's language a little
  *    more; of equal quality the best of each sit side by side ([pairLanguages]).
- * 12. Sound as heard: capped at what the TV or receiver takes as it is ([sound]). 13. Played smoothly here.
- * 14. Size. 15. Seeders. Then the add-ons' order.
+ * 11. Sound as heard: capped at what the TV or receiver takes as it is ([sound]). 12. Played smoothly here.
+ * 13. Size. 14. Seeders. Then the add-ons' order.
  *
  * Pure.
  */
 object SourceRank {
-
-    /** With no connection measured, above this average a row says "High data rate". */
-    const val HIGH_MBPS = 60.0
 
     /** Settings › Playback › Preferred bitrate: its default, ends and step, Mb/s. */
     const val PREFERRED_MBPS = 60
@@ -102,11 +102,20 @@ object SourceRank {
     /** [v], a stored preferred bitrate, within its ends. */
     fun preferredMbps(v: Int): Int = v.coerceIn(PREFERRED_MIN, PREFERRED_MAX)
 
-    /** "Buffered here before" stops counting this long after the copy last played here... */
+    /**
+     * "Buffered here before" stops counting this long after the copy last played here (or sooner, once later plays of
+     * it went smoothly: [app.fireplayer.player.CopyHealth.buffers]). Another file arriving quickly doesn't clear it.
+     */
     const val TROUBLE_KEEP_MS = 7L * 24 * 60 * 60 * 1000
 
-    /** ...or once the connection brings this many times its average (a stall-free evening for it). */
-    const val TROUBLE_LINE = 1.33
+    /**
+     * A record kept before plays were dated (2026-11-24 00:00 UTC, when the date was added) counts as last played then:
+     * it stops counting [TROUBLE_KEEP_MS] after, unless the copy is played again (which dates it).
+     */
+    const val DATED_SINCE = 1_795_478_400_000L
+
+    /** When [h] last played here, for how old its record is: an undated one ([CopyHealth.at] 0) at [DATED_SINCE]. */
+    private fun lastPlayed(h: app.fireplayer.player.CopyHealth): Long = h.at.takeIf { it > 0 } ?: DATED_SINCE
 
     const val DV7_WORDS = "Dolby Vision 7: may not play here"
     const val NEEDS_DV = "Needs a Dolby Vision TV"
@@ -114,7 +123,6 @@ object SourceRank {
     const val NO_PICTURE = "Showed no picture here"
     const val NOT_WHOLE = "Shorter than the film here"
     const val NOT_WHOLE_EPISODE = "Shorter than the episode here"
-    const val CLOSE_TO_LINE = "Close to your connection"
     const val HIGH_RATE = "High data rate"
 
     /** A copy that wasn't the whole film here ([app.fireplayer.player.CopyHealth.notWhole]), in a [film]'s words or an episode's. */
@@ -128,7 +136,7 @@ object SourceRank {
     fun rank(sources: List<PlaybackSource>, input: RankInput): List<PlaybackSource> {
         val rows = withoutSd(sources).map { s ->
             val measured = measuredOf(s, input)
-            val (fit, warning) = fit(asPlayedHere(s.facts, measured), input.plan, measured, input.lineMbps, input.now, input.episode)
+            val (fit, warning) = fit(asPlayedHere(s.facts, measured), input.plan, measured, input.now, input.episode)
             val moved = if (input.episode) null else movedOf(s, input)
             s.copy(fit = fit, warning = warning, measured = measured, imaxMove = moved)
         }
@@ -173,7 +181,7 @@ object SourceRank {
         val stated = facts.sizeBytes?.takeIf { facts.sizeExact } ?: return m
         if (spec.sizeBytes <= 0 || SourceMerge.sizeClose(spec.sizeBytes, stated)) return m
         return m.copy(spec = spec.copy(sizeBytes = 0, overallBps = 0, hdr = null, hdr10Plus = false, hdrInfo = null, dvProfile = 0,
-            dvBaseLayer = 0, dvSignal = 0, decoder = MediaSpec.Decoder.UNKNOWN))
+            dvBaseLayer = 0, dvSignal = 0, decoder = MediaSpec.Decoder.UNKNOWN, hdr10PlusHeld = 0))
     }
 
     /** The viewer's move of a row's file ([RankInput.imaxMove]): its own release's, else a merged offer's. */
@@ -234,7 +242,7 @@ object SourceRank {
         val spec = s.measured?.spec
         val plan = input.plan
         val stutters = stuttered(s.measured, input.now)
-        val playedWell = spec != null && !stutters && !troubled(s.measured, f.avgMbps, input.lineMbps, input.now)
+        val playedWell = spec != null && !stutters && !troubled(s.measured, input.now)
         val hdr = hdrRank(f, plan)
         val known = knownLanguages(f.languages, spec?.audioLangs)
         val level = language(f.languages, spec?.audioLangs, input.wanted)
@@ -254,7 +262,6 @@ object SourceRank {
             else -> 0
         }
         v[RankStep.LANGUAGE_KNOWN.ordinal] = if (level == 0) 0 else 1
-        v[RankStep.ROOM.ordinal] = if (LineRate.room(f.avgMbps, input.lineMbps, f.origin == REMUX)) 1 else 0
         val shown = shownHeight(f, spec, input)
         v[RankStep.HEIGHT.ordinal] = shown.toLong()
         v[RankStep.HDR.ordinal] = hdr.toLong()
@@ -325,7 +332,7 @@ object SourceRank {
 
     /**
      * What put [ranked]'s Best first, and what it beat: a copy with a better picture that an earlier step put after it
-     * (not cached, no room on the connection…), else the first copy after it that lost on resolution, HDR, source, IMAX
+     * (not cached, buffered here…), else the first copy after it that lost on resolution, HDR, source, IMAX
      * or language. Copies that differ from it only in sound, size or seeders aren't named, nor one beaten on the
      * preferred bitrate ([RankStep.RATE]) or that lost frames here ([stuttered]): those stay the ranking's own business.
      * Null without a Best.
@@ -376,12 +383,6 @@ object SourceRank {
             RankStep.PLAYS -> b.warning ?: if (b.fit == TvFit.UNKNOWN) "resolution not stated" else "more than this TV shows"
             RankStep.CACHED -> if (b.readiness == Readiness.NOT_READY) "not cached yet" else "may not be cached"
             RankStep.LANGUAGE_KNOWN -> "no " + input.wanted.joinToString(" or ") { CopyLanguage.name(it) } + " sound"
-            RankStep.ROOM -> {
-                val avg = f.avgMbps?.let { Math.round(it) }
-                val line = input.lineMbps?.let { Math.round(it) }
-                if (avg != null && line != null) "≈$avg Mb/s needs more room than your ≈$line Mb/s connection"
-                else "needs more room on your connection"
-            }
             // A starved copy ([shownHeight]) of the Best's own resolution or more.
             RankStep.HEIGHT -> if ((b.facts.height ?: 0) >= (best.facts.height ?: 0)) "less picture data" else "lower resolution"
             RankStep.HDR -> {
@@ -418,12 +419,12 @@ object SourceRank {
     // ---- Plays here ----
 
     /**
-     * Whether [facts] likely play well under [plan], and at most one warning for the row. [lineMbps] is this
-     * connection's steady figure ([LineRate.current]; null: nothing measured), [now] for how old a stall is; [episode]
-     * for the words of a copy that wasn't the whole episode here.
+     * Whether [facts] likely play well under [plan], and at most one warning for the row. [now] for how old a stall is;
+     * [episode] for the words of a copy that wasn't the whole episode here. What earlier films arrived at isn't weighed:
+     * only this copy's own record, the TV, and the viewer's data limit ([TvPlan.maxMbps]).
      */
     fun fit(
-        facts: SourceFacts, plan: TvPlan, measured: Measured?, lineMbps: Double? = null, now: Long = 0L, episode: Boolean = false,
+        facts: SourceFacts, plan: TvPlan, measured: Measured?, now: Long = 0L, episode: Boolean = false,
     ): Pair<TvFit, String?> {
         val avg = facts.avgMbps
         val cap = plan.maxMbps
@@ -434,36 +435,27 @@ object SourceRank {
             // It wasn't the whole film here (another video of its torrent, or it ended at once): never picked by itself.
             (measured?.health?.notWhole ?: 0) > 0 -> TvFit.LIKELY_NOT to notWholeWords(!episode)
             // Frames lost aren't "buffered": a copy that only lost frames goes down a little instead ([stuttered]).
-            measured?.health?.buffers == true && troubled(measured, avg, lineMbps, now) -> TvFit.LIKELY_NOT to BUFFERED
+            measured?.health?.buffers == true && troubled(measured, now) -> TvFit.LIKELY_NOT to BUFFERED
             dv != null -> TvFit.LIKELY_NOT to dv
             cap != null && avg != null && avg > cap -> TvFit.LIKELY_NOT to "Over your $cap Mb/s limit"
-            // Measured on this TV, not guessed: what this connection keeps bringing.
-            LineRate.tooFast(avg, lineMbps) ->
-                TvFit.LIKELY_NOT to "Needs ${Math.round(avg ?: 0.0)} Mb/s · this connection brought ${Math.round(lineMbps ?: 0.0)}"
             facts.height != null && facts.height > plan.topHeight -> TvFit.LIKELY_NOT to null
-            measured?.spec != null -> TvFit.MEASURED_OK to rate(facts, lineMbps)
-            facts.height == null -> TvFit.UNKNOWN to rate(facts, lineMbps)
-            else -> TvFit.LIKELY to rate(facts, lineMbps)
+            measured?.spec != null -> TvFit.MEASURED_OK to null
+            facts.height == null -> TvFit.UNKNOWN to null
+            else -> TvFit.LIKELY to null
         }
-    }
-
-    /** With a connection measured: "Close to your connection" when it leaves no room; without, the old 60 Mb/s note. */
-    private fun rate(f: SourceFacts, lineMbps: Double?): String? {
-        val avg = f.avgMbps ?: return null
-        if (lineMbps != null && lineMbps > 0.0) return if (LineRate.room(avg, lineMbps, f.origin == REMUX)) null else CLOSE_TO_LINE
-        return if (avg > HIGH_MBPS) HIGH_RATE else null
     }
 
     /**
      * Whether a copy counts as one that buffered or dropped frames here ([app.fireplayer.player.CopyHealth.troubled]):
-     * not once it last played [TROUBLE_KEEP_MS] ago or more, nor, for buffering, once the connection ([lineMbps])
-     * brings [TROUBLE_LINE] times its average. A record with no date is judged by the connection only.
+     * not once it last played [TROUBLE_KEEP_MS] ago or more, nor once later plays of it went smoothly enough
+     * ([app.fireplayer.player.CopyHealth.buffers], [app.fireplayer.player.CopyHealth.choppy]). Its own record only:
+     * another file arriving quickly says nothing of this one's server. A record kept before plays were dated counts as
+     * played at [DATED_SINCE].
      */
-    fun troubled(measured: Measured?, avgMbps: Double?, lineMbps: Double?, now: Long): Boolean {
+    fun troubled(measured: Measured?, now: Long): Boolean {
         val h = measured?.health ?: return false
         if (!h.troubled) return false
-        if (now > 0 && h.at > 0 && now - h.at >= TROUBLE_KEEP_MS) return false
-        if (!h.choppy && avgMbps != null && lineMbps != null && lineMbps >= avgMbps * TROUBLE_LINE) return false
+        if (now > 0 && now - lastPlayed(h) >= TROUBLE_KEEP_MS) return false
         return true
     }
 
@@ -479,7 +471,7 @@ object SourceRank {
         val h = measured?.health ?: return false
         val late = h.watchedMs >= STUTTER_AFTER_MS && h.lateFrames > 0 &&
             h.lateFrames * app.fireplayer.player.CopyHealth.LOST_SHARE > h.lateFrames + h.renderedFrames
-        return (late || h.choppy) && (now <= 0 || h.at <= 0 || now - h.at < TROUBLE_KEEP_MS)
+        return (late || h.choppy) && (now <= 0 || now - lastPlayed(h) < TROUBLE_KEEP_MS)
     }
 
     /** Why this TV can't show a Dolby Vision copy as it is ([DV7_WORDS], [NEEDS_DV]); null when it can, or it isn't one. */
@@ -496,7 +488,9 @@ object SourceRank {
      * [facts] as this TV played the file, by what FirePlayer [measured] when it played here: a Dolby Vision file played
      * on a plain decoder (as its HDR10 base layer, or Media3's own way back to HEVC) is its base layer here, not Dolby
      * Vision: HLG or SDR where the file's record said so ([MediaSpec.dvSignal]: 8.4, 8.2), else HDR10; its profile is
-     * filled in from the play; HDR10+ seen in the picture is added; a name that said no HDR takes the HDR the file played
+     * filled in from the play; HDR10+ seen in the picture is added, and HDR10+ the play kept from the TV for a reason of
+     * the file's own ([MediaSpec.hdr10PlusHeld]: added to a Dolby Vision file, broken, or not on every frame) is the
+     * HDR10 inside, whatever its name says; a name that said no HDR takes the HDR the file played
      * with ([playedHdr]: a WEB copy whose name leaves out its HDR10). The file's size and average rate as the play
      * measured them replace the add-ons' (a season pack's total, or its share, isn't the episode's file: the pack's total
      * stays beside it when it is known to be one, [SourceMerge.packBeside]). Otherwise [facts] as the add-ons have them.
@@ -524,7 +518,12 @@ object SourceRank {
                 else -> f
             }
         }
-        if (spec.hdr10Plus && Hdr.HDR10_PLUS !in f.hdr) f = f.copy(hdr = f.hdr + Hdr.HDR10_PLUS)
+        f = when {
+            // HDR10+ this TV isn't given for a reason of the file's own: the HDR10 inside is what plays here.
+            spec.hdr10PlusHeld != 0 -> if (Hdr.HDR10_PLUS in f.hdr) f.copy(hdr = f.hdr - Hdr.HDR10_PLUS + Hdr.HDR10) else f
+            spec.hdr10Plus && Hdr.HDR10_PLUS !in f.hdr -> f.copy(hdr = f.hdr + Hdr.HDR10_PLUS)
+            else -> f
+        }
         return f
     }
 
@@ -673,11 +672,8 @@ object SourceRank {
                 it * 8.0 / ((input.runtimeMin ?: if (input.episode) EPISODE_MIN else FILM_MIN) * 60.0) / 1_000_000.0
             }
 
-    /** The rate aimed at: the viewer's preferred bitrate, or what the connection keeps with room ([LineRate.ROOM]) if less. */
-    private fun target(input: RankInput): Double {
-        val line = input.lineMbps?.takeIf { it > 0.0 } ?: return input.preferredMbps
-        return minOf(input.preferredMbps, line / LineRate.ROOM)
-    }
+    /** The rate aimed at: the viewer's preferred bitrate, as set ([RankInput.preferredMbps]). */
+    private fun target(input: RankInput): Double = input.preferredMbps
 
     /**
      * How near [mbps] is to the [target], higher first: bands of [NEAR_SHARE] of it (2 Mb/s at 60), a Mb/s above it

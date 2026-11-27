@@ -150,10 +150,11 @@ class Prefs(context: Context) {
 
     /**
      * "Faster downloads": a film is read with up to two requests at a time
-     * ([app.fireplayer.player.TwoRanges]). Off unless the viewer turns it on; read as each film's player is built.
+     * ([app.fireplayer.player.TwoRanges]). On unless the viewer turns it off (a server that won't take two is read with
+     * one by itself); read as each film's player is built.
      */
     var fasterDownloads: Boolean
-        get() = sp.getBoolean("faster_downloads", false)
+        get() = fasterDownloadsIn(sp)
         set(v) = sp.edit().putBoolean("faster_downloads", v).apply()
 
     /**
@@ -175,12 +176,14 @@ class Prefs(context: Context) {
         set(v) = sp.edit().putBoolean(IMAX_FIRST_KEY, v).apply()
 
     /**
-     * Settings › This TV › HDR10+ reaches this TV: the TV was seen to show HDR10+ from FirePlayer, so Best prefers
-     * HDR10+ copies and Picture & sound says HDR10+. Off (the default): on the user's Sticks it never reached the TV
-     * (the TV gets the HDR10 inside), so HDR10+ is only a fact of the file.
+     * Settings › This TV › HDR10+ reaches this TV: On (the default) follows what the TV reports: where it reports HDR10+,
+     * a film's own HDR10+ goes to it, Best prefers HDR10+ copies and Picture & sound says HDR10+. Off only when the viewer
+     * turns it off: HDR10+ is then kept from the decoder ([app.fireplayer.player.Hdr10PlusGate]) and the TV gets the
+     * HDR10 inside. HDR10+ added to a Dolby Vision file, broken, or not on every frame is kept from it either way
+     * ([app.fireplayer.player.Hdr10PlusWatch]).
      */
     val hdr10PlusReaches: Boolean
-        get() = sp.getBoolean(HDR10_PLUS_KEY, false)
+        get() = hdr10PlusReachesIn(sp)
 
     /**
      * "Keep embedded styling": ASS/SSA is drawn with libass (positions, fonts, effects) and other
@@ -395,6 +398,15 @@ class Prefs(context: Context) {
 
         /** [hdr10PlusReaches], set in Settings › This TV ([app.fireplayer.vod.sources.ThisTvReader]). */
         const val HDR10_PLUS_KEY = "hdr10_plus_reaches"
+        /** [hdr10PlusReaches] until the viewer turns it off: what the TV reports is followed. */
+        const val DEFAULT_HDR10_PLUS = true
+
+        /** [hdr10PlusReaches] as kept in [settings]: On unless the viewer turned it off (no settings file: On). */
+        fun hdr10PlusReachesIn(settings: SharedPreferences?): Boolean =
+            settings?.getBoolean(HDR10_PLUS_KEY, DEFAULT_HDR10_PLUS) ?: DEFAULT_HDR10_PLUS
+
+        /** [fasterDownloads] as kept in [settings]: On unless the viewer turned it off. */
+        fun fasterDownloadsIn(settings: SharedPreferences): Boolean = settings.getBoolean("faster_downloads", true)
         private const val PREVIEWS_OFF_ONCE = "seek_previews_off_once"
 
         /**

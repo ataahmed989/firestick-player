@@ -149,7 +149,7 @@ class ThisTvReader(
         onChanged?.invoke()
     }
 
-    override fun hdr10PlusReaches(): Boolean = settings?.getBoolean(Prefs.HDR10_PLUS_KEY, false) == true
+    override fun hdr10PlusReaches(): Boolean = Prefs.hdr10PlusReachesIn(settings)
 
     override fun setHdr10PlusReaches(on: Boolean) {
         val s = settings ?: return
