@@ -1493,7 +1493,7 @@ class VodPage(
         // An empty cached answer: the fresh one follows (a library row's answer is always final).
         if (!RowRules.isFinal(row.spec.source, cards.isEmpty(), fresh)) return
         row.answered = true
-        val shownCards = cards.take(ROW_CARDS)
+        val shownCards = RowRules.shown(cards)
         val seeAll = RowRules.seeAll(row.spec.source, cards.size) || (cards.isNotEmpty() && Studios.seeAll(row.spec) != null)
         if (RowRules.pages(row.spec.source)) {
             // Loaded again with the viewer further along: the longer list stays while it starts the same.
