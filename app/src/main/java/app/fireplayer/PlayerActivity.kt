@@ -7157,14 +7157,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             header("This episode")
             // Selected like any row; OK opens the episode's own window with its whole story (the card keeps its start).
             cardRow(episodeCard(ep.image, ep.label, ep.name,
-                listOfNotNull(prettyDate(ep.airDate), ep.runtimeMin.takeIf { it > 0 }?.let { "${it}m" }).joinToString(" · "),
+                listOfNotNull(prettyDate(ep.airDate), ep.runtimeMin.takeIf { it > 0 }?.let { "${it}m" }).joinToString(DetailsLook.SEP),
                 ep.overview, selectable = true), top = 2, bottom = 4) { openEpisodeDetails(ep, a.backdrop) }
         }
     }
 
     /**
      * Episode details, over Show details (Back comes back to its card), in the same look: the episode's picture (the
-     * show's backdrop when it has none), "S2 · E10 · Name", when it aired, its length and score where known, and its whole
+     * show's backdrop when it has none), "S2 • E10 • Name", when it aired, its length and score where known, and its whole
      * story, never cut short. A story longer than the window is read on with Up and Down.
      */
     private fun openEpisodeDetails(ep: ShowGuide.Ep, backdrop: String?) {
@@ -7197,7 +7197,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         val heading = android.text.SpannableStringBuilder(ep.numbers).apply {
             setSpan(android.text.style.ForegroundColorSpan(ContextCompat.getColor(this@PlayerActivity, R.color.badge_on)), 0, length, 0)
-            if (ep.name.isNotEmpty()) append(" · ").append(ep.name)
+            if (ep.name.isNotEmpty()) append(DetailsLook.SEP).append(ep.name)
         }
         // In the Details windows' title, line and story type ([DetailsLook]).
         view(TextView(this@PlayerActivity).apply {

@@ -96,6 +96,7 @@ internal fun SidePanel.titleDetails(d: TitleDetails) {
         body.addView(DetailsLook.facts(c, facts, labelWidth), params())
     }
     if (production.isNotEmpty()) {
+        // As wide as the pinned hairline and the foot's: from the body's words to the slim bar's room.
         if (body.childCount > 0) body.addView(DetailsLook.hairline(c), params(top = SECTION_GAP_DP, height = DetailsLook.hairlinePx(c)))
         section("Production")
         body.addView(DetailsLook.facts(c, production, labelWidth), params())

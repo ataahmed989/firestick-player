@@ -119,19 +119,20 @@ class SidePanel(private val activity: Activity) {
     private var hint = false
 
     /**
-     * [view] stays under the window's title while its list scrolls (a title's year and length, a hairline). Given again
-     * each time the window is drawn; other windows have none.
+     * [view] stays under the window's title while its list scrolls (a title's year and length, a hairline), for a window
+     * read with the arrows ([scrollHint]). Given again each time the window is drawn; other windows have none.
      */
     fun pinned(view: View) {
         val box = pinnedBox ?: LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
             val panel = root as ViewGroup
-            // In line with the title's words.
+            // In line with the title's words at the start and with the list's at the end, short of the slim bar's room
+            // ([scrollHint]): a hairline here spans the same as one in the list and the foot's.
             panel.addView(this, panel.indexOfChild(title) + 1, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
             ).apply {
                 marginStart = rows.dp(TITLE_INSET_DP)
-                marginEnd = rows.dp(TITLE_INSET_DP)
+                marginEnd = rows.dp(BAR_ROOM_DP)
             })
         }.also { pinnedBox = it }
         box.addView(view)
@@ -156,14 +157,22 @@ class SidePanel(private val activity: Activity) {
         scroll.slimBar = true
     }
 
-    /** "↕ Scroll", centred under a hairline. */
+    /**
+     * "↕ Scroll", centred under a hairline. The hairline spans what the pinned one and a hairline in the list do: from
+     * the title's words to the slim bar's room.
+     */
     private fun scrollFoot(): View = LinearLayout(activity).apply {
         orientation = LinearLayout.VERTICAL
         visibility = View.GONE
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
             topMargin = rows.dp(6)
         }
-        addView(DetailsLook.hairline(activity))
+        addView(DetailsLook.hairline(activity).apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, DetailsLook.hairlinePx(activity)).apply {
+                marginStart = rows.dp(TITLE_INSET_DP)
+                marginEnd = rows.dp(BAR_ROOM_DP)
+            }
+        })
         addView(LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER

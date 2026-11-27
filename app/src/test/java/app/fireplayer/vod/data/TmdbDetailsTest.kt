@@ -114,12 +114,24 @@ class TmdbDetailsTest {
         // The names stay a plain list, as every version stored them; Details' parts are keys of their own.
         assertEquals("Timothée Chalamet", stored.getJSONArray("cast").getString(0))
         assertEquals("", stored.getJSONArray("castPics").getString(2))
-        // Details stored before these parts were kept read as before, with none of them.
+        // Stored in this form, marked so: current, nothing to fetch again for it.
+        assertEquals(TmdbDetails.FORMAT, stored.getInt("v"))
+        assertTrue(TmdbDetails.current(TmdbDetails.read(stored)))
+        // Details stored before these parts were kept (no "v") read as before, with none of them, and count as due for
+        // a fetch when a title page opens.
         val old = JSONObject(stored.toString()).apply {
-            remove("castPics"); remove("networks"); remove("studios"); remove("countries")
+            remove("v"); remove("castPics"); remove("networks"); remove("studios"); remove("countries")
         }
         val read = TmdbDetails.read(old)!!
-        assertEquals(e.copy(castPictures = emptyList(), networks = emptyList(), studios = emptyList(), countries = emptyList()), read)
+        assertEquals(e.copy(castPictures = emptyList(), networks = emptyList(), studios = emptyList(), countries = emptyList(), format = 1), read)
+        assertFalse(TmdbDetails.current(read))
+        // Everything else in them is still there for the page meanwhile.
+        assertEquals("PG-13", read.ageRating)
+        assertEquals(e.cast, read.cast)
+        // "TMDB has no such title" (a stored null) is never due early.
+        assertTrue(TmdbDetails.current(null))
+        // Written again as read, an old one keeps its own mark: it isn't passed off as current.
+        assertFalse(TmdbDetails.current(TmdbDetails.read(TmdbDetails.write(read))))
         // Portraits that don't pair up with the names (a damaged entry) are left out, never shown beside the wrong name.
         val damaged = JSONObject(stored.toString()).apply { put("castPics", org.json.JSONArray(listOf("/a.jpg"))) }
         assertTrue(TmdbDetails.read(damaged)!!.castPictures.isEmpty())

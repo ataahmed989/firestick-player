@@ -289,7 +289,7 @@ class DefaultVodRepository(
             val now = clock()
             // A More Like This stand-in has no meta to ask for (the page resolves it first; TMDB's id still works).
             val metaFresh = !title.hasImdbId || (meta != null && meta.isFresh(now))
-            val tmdbSettled = !key || now < tmdbPausedUntil || (extras != null && extras.isFresh(now))
+            val tmdbSettled = !key || now < tmdbPausedUntil || (extras != null && extras.isFreshForPage(now))
             val job = DetailsJob(title, background, req, onDetails)
             job.start(meta?.value, extras?.value, metaPending = !metaFresh, tmdbPending = !tmdbSettled)
             if (!metaFresh) {
@@ -657,10 +657,17 @@ class DefaultVodRepository(
         }
     }
 
+    /**
+     * Stored TMDB details a title page takes as they are: fresh, and stored in the current form ([TmdbDetails.current]).
+     * Details stored before Details' parts were kept are fetched again once when a title page opens (one request, as
+     * the daily refresh); every other use takes them as they are.
+     */
+    private fun Stored<TmdbDetails.Extras?>.isFreshForPage(now: Long) = isFresh(now) && TmdbDetails.current(value)
+
     /** TMDB's details for a [details] request: stored when still fresh, else fetched; null when neither. */
     private fun tmdbFor(kind: Kind, tmdbId: Int, req: Req): TmdbDetails.Extras? {
         val stored = storedExtras(kind, tmdbId)
-        if (stored != null && stored.isFresh(clock())) return stored.value
+        if (stored != null && stored.isFreshForPage(clock())) return stored.value
         if (req.cancelled) return null
         return (fetchExtras(kind, tmdbId) ?: stored)?.value
     }

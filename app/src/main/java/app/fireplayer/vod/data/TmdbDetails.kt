@@ -24,6 +24,12 @@ object TmdbDetails {
     const val CAST_KEPT = 15
     /** Networks (a show's) or studios (a film's) kept for Details. */
     const val MAKERS_KEPT = 3
+    /**
+     * The stored form's version, kept in it as "v": 2 since Details' portraits, networks, studios and countries are kept.
+     * Details stored before (no "v") still read, without those parts, and count as due for a fetch when a title page
+     * opens ([current]).
+     */
+    const val FORMAT = 2
 
     /** The parts appended to the one details call. */
     fun append(kind: Kind): String =
@@ -85,7 +91,15 @@ object TmdbDetails {
         val networks: List<String> = emptyList(),
         val studios: List<String> = emptyList(),
         val countries: List<String> = emptyList(),
+        /** The stored form it was read from ([FORMAT] for an answer just parsed; 1 for one stored before "v" was kept). */
+        val format: Int = FORMAT,
     )
+
+    /**
+     * Whether stored details hold everything a title page shows: none (TMDB had no such title) or ones stored in this
+     * [FORMAT]. Older ones are still shown, and fetched again once (the stored copy kept should the fetch fail).
+     */
+    fun current(e: Extras?): Boolean = e == null || e.format >= FORMAT
 
     /** A details answer (with [append]'s parts) as [Extras]; null without an id. */
     fun parse(text: String, kind: Kind): Extras? {
@@ -158,6 +172,7 @@ object TmdbDetails {
     // ---- The trimmed form kept on disk ----
 
     fun write(e: Extras): JSONObject = JSONObject().apply {
+        put("v", e.format)
         put("id", e.tmdbId)
         put("type", e.kind.type)
         e.imdbId?.let { put("imdb", it) }
@@ -207,6 +222,7 @@ object TmdbDetails {
             networks = o.optJSONArray("networks").texts(),
             studios = o.optJSONArray("studios").texts(),
             countries = o.optJSONArray("countries").texts(),
+            format = o.optInt("v", 1),
         )
     }
 
