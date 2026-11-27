@@ -505,18 +505,39 @@ object FilmMemory {
     }
 
     /**
+     * What the buffer fills to in a stall at squeeze [step]: [capBytes], the budget's ([capFor]), wherever the budget
+     * is what it ever was ([everBytes], [FilmBufferPlan.everBytes]). A budget started under it fills to what that size
+     * fills to at the same squeeze, as 1.0.366's buffer did: what fits there is what the wait after a stall goes by
+     * ([StallCushion.waitUs]), and a held-down buffer playing on with what its small start holds (half the cushion, on
+     * a Stick's 58 Mb/s film after the second stall) stalled twice as often on a line that can't keep up. Never more
+     * than it ever was: it comes back down as the film plays on ([fillLimit]).
+     */
+    fun stallFillBytes(capBytes: Int, budgetBytes: Int, everBytes: Int, step: Int, extraBytes: Int = 0): Int =
+        if (budgetBytes >= everBytes) capBytes else maxOf(capBytes, capFor(everBytes, step, extraBytes))
+
+    /**
+     * How full the buffer may get in a stall with [aheadUs] loaded ahead: 1.0.366's rule ([fillLimit]) at what it ever
+     * was ([everBytes]), filling to [stallFillBytes]. Never less than [fillLimit] gives at the same moment, so a stall
+     * never ends sooner or loads less than it would have; the same wherever the budget is what it ever was.
+     */
+    fun stallLimit(stallFillBytes: Int, budgetBytes: Int, everBytes: Int, aheadUs: Long): Int =
+        fillLimit(stallFillBytes, maxOf(budgetBytes, everBytes), aheadUs)
+
+    /**
      * While a film plays, it's moved to another of its provider's servers only with this much loaded ahead, in µs, to
      * cover the reconnect (some servers refuse one for a moment): [MOVE_COVER_US], as ever. A buffer started small
      * ([heldDown]) of which less than that fits ([fullUs] ahead when it was last full; 0: not known) could never move
      * while playing, and a server fallen under the film's rate would run it dry first: it moves with all but
-     * [MOVE_MARGIN_US] of what fits, never with less than [MOVE_COVER_LEAST_US] (the 10 s within which a refused
-     * reconnect counts as the move's own, [ServerSwitch]). A 30 Mb/s film in a 64 MiB start, 11.9 s of it: 10 s.
+     * [MOVE_MARGIN_US] of what fits, never with less than [MIN_AHEAD_US]. A 30 Mb/s film in a 64 MiB start, 11.9 s of
+     * it: 9.9 s. A 38 Mb/s one, of which the start keeps 8 s and a little more: 6.8 s, where a floor of 10 s (the
+     * time within which a refused reconnect counts as the move's own, [ServerSwitch]) was more than ever fits, so it
+     * ran dry and stalled before it moved. A reconnect refused for longer than what's ahead may still stall; without
+     * the move the film runs dry all the same.
      */
     fun moveCoverUs(fullUs: Long, heldDown: Boolean): Long =
-        if (!heldDown || fullUs <= 0L) MOVE_COVER_US else minOf(MOVE_COVER_US, maxOf(MOVE_COVER_LEAST_US, fullUs - MOVE_MARGIN_US))
+        if (!heldDown || fullUs <= 0L) MOVE_COVER_US else (fullUs - MOVE_MARGIN_US).coerceIn(MIN_AHEAD_US, MOVE_COVER_US)
 
     const val MOVE_COVER_US = 15_000_000L
-    const val MOVE_COVER_LEAST_US = 10_000_000L
     const val MOVE_MARGIN_US = 2_000_000L
 
     /**

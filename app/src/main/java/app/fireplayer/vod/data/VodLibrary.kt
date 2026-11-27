@@ -420,18 +420,14 @@ class VodLibrary(
     fun inContinueWatching(id: String, withNew: Boolean = newInContinue()): Boolean =
         Kind.entries.any { continueEntry(it, id, withNew) != null }
 
-    /**
-     * Takes [id] out of Continue Watching; its resume point stays (and it comes back when played again). [gone] hears of
-     * the titles taken out before anyone is told of the change (their copies in Glass Home's row go with them).
-     */
-    fun removeFromContinueWatching(id: String, gone: (List<Title>) -> Unit = {}) {
+    /** Takes [id] out of Continue Watching; its resume point stays (and it comes back when played again). */
+    fun removeFromContinueWatching(id: String) {
         val entries = state {
             Kind.entries.mapNotNull { k -> progress[key(k, id)]?.takeIf { !it.hidden } }
                 .map { it.copy(hidden = true).also { p -> key(p.title.kind, p.title.id).let { k -> progress[k] = p; keptOut -= k } } }
         }
         if (entries.isEmpty()) return
         writer.execute { entries.forEach { runCatching { store.saveProgress(it) } } }
-        runCatching { gone(entries.map { it.title }) }
         changed()
         entries.forEach { left(it.title.kind, it.title.id) }
     }

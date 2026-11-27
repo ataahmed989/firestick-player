@@ -155,6 +155,39 @@ class LibraryRowReturnTest {
         assertNull(RowRules.refollow(banner, emptyList()))
     }
 
+    /**
+     * Found in review: Home with its own Continue row and an added "Continue Watching · Series" (Settings › Rows). The
+     * banner follows The Godfather from Home's row (focus went Up to Watch now, which played it). Breaking Bad is then
+     * taken out in Glass Home: the Series row reads again without it, and the banner let go of The Godfather, which was
+     * never in that row, though Home's row still has it.
+     */
+    @Test
+    fun anotherContinueRowChangingKeepsTheTitleTheBannerFollows() {
+        http.answers[Cinemeta.metaUrl(Kind.SERIES, bb.id)] = Fixtures.text("cinemeta_meta_series.json")
+        repo.details(bb) { _, _ -> }
+        now += 60_000L
+        recorded.recordPlayback(bb, EpisodeRef(1, 1), 37 * 60_000L, 47 * 60_000L, creditsAtMs = null)
+        play(godfather, 9_005_000L, 10_528_000L)
+        val seriesSpec = RowSpec("home.added.continue.series", "Continue Watching · Series", RowStyle.WIDE,
+            Source.ContinueWatching(Kind.SERIES), continueRow = true)
+        val banner = row().first()
+        assertEquals(godfather.id, banner.title.id)
+        assertEquals(bb.id, row(seriesSpec).single().title.id)
+
+        repo.removeFromContinueWatching(bb.id)
+        val home = row()
+        val series = row(seriesSpec)
+        assertTrue(series.isEmpty())
+        // The Series row alone has no card for it; Home's row still has it, so the banner stays on it.
+        assertNull(RowRules.refollow(banner, series))
+        assertEquals(home.first(), RowRules.refollow(banner, series, listOf(home)))
+        // In the row that changed, that row's card first.
+        assertEquals(home.first(), RowRules.refollow(banner, home, listOf(series)))
+        // Gone from every Continue row: back to the feed.
+        repo.removeFromContinueWatching(godfather.id)
+        assertNull(RowRules.refollow(banner, row(seriesSpec), listOf(row())))
+    }
+
     @Test
     fun noLibraryRowHoldsItsAnswerButOtherRowsStillDo() {
         val old = cards("a", "b", "c")

@@ -94,7 +94,7 @@ class NewEpisodesInContinueTest {
 
     private fun line(c: Card) = c.title.name + (c.episode?.let { " S${it.season}E${it.episode}" } ?: "") + (c.caption?.let { " ($it)" } ?: "")
 
-    private fun glassHome(): List<String> = VodContinue.rows(repo, emptyList()).map { r ->
+    private fun glassHome(): List<String> = VodContinue.rows(repo).map { r ->
         r.title + (if (r.kind == WatchHistory.Kind.EPISODE) " S${r.season}E${r.episode}" else "")
     }
 
@@ -135,7 +135,7 @@ class NewEpisodesInContinueTest {
         assertEquals(listOf("Pulp Fiction (1h 44m left)", "Breaking Bad S2E1 (S2 E1)", "The Godfather (1h 35m left)"), home.map { line(it) })
         assertNull(home[1].progress)
         assertEquals(listOf("Pulp Fiction", "Breaking Bad S2E1", "The Godfather"), glassHome())
-        val row = VodContinue.rows(repo, emptyList())[1]
+        val row = VodContinue.rows(repo)[1]
         assertEquals(s2e1Aired, row.lastWatched)
         assertEquals(0L, row.positionMs)
         // TV Shows keeps its Next Episodes row on: there it's in Next Episodes, not in its Continue Watching. Never both.

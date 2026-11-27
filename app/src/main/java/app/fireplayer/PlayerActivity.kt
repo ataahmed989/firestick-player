@@ -102,6 +102,7 @@ import app.fireplayer.player.DisplaySwitch
 import app.fireplayer.player.FpsMeter
 import app.fireplayer.player.GraphicsTrim
 import app.fireplayer.player.JumpFrameCheck
+import app.fireplayer.player.LeaveSave
 import app.fireplayer.player.FrameRateMatcher
 import app.fireplayer.player.FreezeWatch
 import app.fireplayer.player.PictureWatch
@@ -601,6 +602,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private fun launchMark(step: String) = launch.mark(step, SystemClock.elapsedRealtime())
     /** When Back (or the film's end) began closing this screen; 0 when it isn't closing. For the "leave" line in the log. */
     private var leftAt = 0L
+    /** Whether onStop saves the place again after leaving saved it (only when a jump landed since). */
+    private val leaveSave = LeaveSave()
     /** The receiver refused this play's sound: decoded on the Stick for the rest of it. */
     private var soundOnDevice = false
     // When the player last went off screen without closing (the TV slept, the screensaver, Home while paused).
@@ -911,8 +914,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         notice = false
         retryPending = false
         // Left with Back (or the film's end): finishWithResult saved already, with the player stopped since. Saved again,
-        // the library wrote the same place a second time and Glass Home was told twice.
-        if (leftAt == 0L) savePosition()
+        // the library wrote the same place a second time and Glass Home was told twice. A jump lined up as Home was
+        // pressed lands only now (commitSeek above), or by its timer since: that place is saved (LeaveSave).
+        if (leaveSave.saveOnStop()) savePosition()
         source?.pause()
         // Before the player goes, so no copy is taken of a film being taken down.
         backdrop?.stop()
@@ -1819,6 +1823,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             duration?.let { result.putExtra("extra_duration", it) }
         }
         savePosition()
+        leaveSave.left()
         // Silence at once, and the film let go of: its decoders and what was loaded ahead are freed now, on the
         // player's own thread, while the TV changes back to its usual refresh rate (the screen blank anyway). Paused
         // instead, all of that came with the release a second later, in the middle of the app's first moments back
@@ -4557,6 +4562,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         } else {
             p?.seekTo(target)
         }
+        // Landing after leaving saved (Home or the sleep timer mid-jump): onStop saves this place.
+        if (p != null) leaveSave.moved()
         seeking = false
         updateOverlay()
         updateProgress()
