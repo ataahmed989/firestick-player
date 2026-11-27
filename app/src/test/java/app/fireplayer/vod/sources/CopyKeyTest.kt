@@ -186,7 +186,6 @@ class CopyKeyTest {
         elapsed = { loop.now },
         wall = { now },
         online = { true },
-        lineMbps = { 122.0 },
         seasonEpisodes = { title, season -> if (title.id == show.id && season == 1) 10 else null },
         log = { logged += it },
     )

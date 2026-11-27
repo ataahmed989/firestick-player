@@ -4,8 +4,10 @@ import android.content.SharedPreferences
 import java.util.Locale
 
 /**
- * What this TV's connection was measured to bring a film lately, kept so "Best for this TV" and Next source stop
- * picking files it can't keep up with (see [SourceRank.fit]: such a row says why).
+ * What this TV's connection was measured to bring a film lately, kept for sizing the film buffer
+ * ([app.fireplayer.player.FilmMemory]). "Best for this TV" ([SourceRank]) doesn't weigh it: each file arrives as fast as
+ * its own server sends it, and a copy that can't keep up while it plays is answered by Ask / Switch / Keep
+ * ([app.fireplayer.vod.play.FilmSupply], which uses the playing file's own reading and [tooFast]).
  *
  * Only a measurement goes in, never a guess: [seen] is told every film's sustained arrival once it's measured over
  * enough seconds, whatever was answered about its stalls, and [short] the same when a film stalled past the limit. The
@@ -13,9 +15,7 @@ import java.util.Locale
  * debrid service's servers may have changed). A reading within [MOVED] of the newest is the same sitting's until the
  * newest is [REFRESH_MS] old, then it is a reading of its own: so the last readings are the last sittings', and an
  * evening's low one goes once three others came after it. The figure used ([current]) is the lowest of them, a steady
- * one: it moves only when that lowest is [MOVED] or more away from it, so Best doesn't flip between evenings. A file
- * needing more than [SHORT_SHARE] of it counts as "likely not" for this TV, and one that doesn't leave it room ([room])
- * ranks after those that do; the viewer can still pick any in Sources.
+ * one: it moves only when that lowest is [MOVED] or more away from it.
  *
  * One line of text in a preference ("72.4|1700000000000;80.1|1699990000000;=72.4": newest first, then the figure used;
  * an older version's readings without it read as they are, and it skips the figure); no links, no titles. Any thread

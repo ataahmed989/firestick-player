@@ -62,9 +62,10 @@ class PlaySavesTest {
         // A record that kept a measured picture shape (field 25, and its looks after the date) still reads, its date
         // too; nothing of the shape is written now.
         val fields = MediaSpec.encode(spec).split('|')
-        assertEquals(28, fields.size)
+        assertEquals(29, fields.size)
         assertEquals("", fields[25])
         assertEquals("0", fields[27])
+        assertEquals("0", fields[28])
         val shaped = (fields.take(25) + "1.9" + fields[26] + "1.900@20000;1.900@80000").joinToString("|")
         assertEquals(spec, MediaSpec.decode(shaped))
         // A later play adds to an earlier one: HDR10+ once seen stays, the newest date counts.
@@ -118,5 +119,47 @@ class PlaySavesTest {
         // A later play that didn't read it keeps it; one that did, its own.
         assertEquals(DvBaseLayer.SIGNAL_HLG, MediaSpec.merged(spec, spec.copy(dvSignal = 0)).dvSignal)
         assertEquals(DvBaseLayer.SIGNAL_HDR10, MediaSpec.merged(spec, spec.copy(dvSignal = DvBaseLayer.SIGNAL_HDR10)).dvSignal)
+    }
+
+    @Test
+    fun whyACopysHdr10PlusIsntUsedIsKeptWithItAndReadsBothWays() {
+        val dv8 = Format.Builder().setSampleMimeType(MimeTypes.VIDEO_DOLBY_VISION).setCodecs("dvhe.08.06").setWidth(3840).setHeight(2076).build()
+        // What the play found goes with the copy only with HDR10+ seen, and only for a reason of the file's own.
+        val held = MediaSpec.of(dv8, null, decoderMime = MimeTypes.VIDEO_H265, hdr10Plus = true, hdr10PlusHeld = Hdr10PlusWatch.HYBRID)
+        assertEquals(Hdr10PlusWatch.HYBRID, held.hdr10PlusHeld)
+        assertEquals(0, MediaSpec.of(dv8, null, decoderMime = MimeTypes.VIDEO_H265, hdr10Plus = false, hdr10PlusHeld = Hdr10PlusWatch.HYBRID).hdr10PlusHeld)
+        for (tvs in listOf(Hdr10PlusWatch.PASS, Hdr10PlusWatch.TV, Hdr10PlusWatch.SETTING)) {
+            assertEquals(0, MediaSpec.of(dv8, null, decoderMime = MimeTypes.VIDEO_H265, hdr10Plus = true, hdr10PlusHeld = tvs).hdr10PlusHeld)
+        }
+        // Kept as field 28, after everything an earlier version reads.
+        val spec = held.copy(measuredSecs = 100, playedAt = 1_764_000_000_000L)
+        val text = MediaSpec.encode(spec)
+        assertEquals("3", text.split('|')[28])
+        assertEquals(spec, MediaSpec.decode(text))
+        // 1.0.370's record (28 fields) reads as nothing held; and 1.0.370 reads this one by its first 28, as it wrote them.
+        val older = text.split('|').take(28).joinToString("|")
+        assertEquals(spec.copy(hdr10PlusHeld = 0), MediaSpec.decode(older))
+        assertEquals(MediaSpec.encode(spec.copy(hdr10PlusHeld = 0)).split('|').take(28), text.split('|').take(28))
+        // A number this version doesn't know (a later one's) reads as nothing held.
+        assertEquals(0, MediaSpec.decode("$older|9")!!.hdr10PlusHeld)
+        // The numbers kept never change.
+        assertEquals(listOf(3, 4, 5), listOf(Hdr10PlusWatch.HYBRID, Hdr10PlusWatch.MALFORMED, Hdr10PlusWatch.GAPS))
+        // Later plays: what one found stays through a short play that saw no HDR10+ at all...
+        val short = spec.copy(hdr10Plus = false, hdr10PlusHeld = 0, measuredSecs = 5)
+        assertEquals(Hdr10PlusWatch.HYBRID, MediaSpec.merged(spec, short).hdr10PlusHeld)
+        // ...broken or missing messages, a fact of the file, through a play that didn't look (the TV took no HDR10+)...
+        val gaps = spec.copy(hdr = "HDR10", dvProfile = 0, hdr10PlusHeld = Hdr10PlusWatch.GAPS)
+        assertEquals(Hdr10PlusWatch.GAPS, MediaSpec.merged(gaps, gaps.copy(hdr10PlusHeld = 0)).hdr10PlusHeld)
+        // ...the newest finding counts...
+        assertEquals(Hdr10PlusWatch.MALFORMED, MediaSpec.merged(spec, spec.copy(hdr10PlusHeld = Hdr10PlusWatch.MALFORMED)).hdr10PlusHeld)
+        // ...a play that saw its HDR10+ and no longer held it as a Dolby Vision file's lets it go...
+        assertEquals(0, MediaSpec.merged(spec, spec.copy(hdr10PlusHeld = 0)).hdr10PlusHeld)
+        // ...and so does a Dolby Vision decoder playing it: the TV shows its Dolby Vision.
+        assertEquals(0, MediaSpec.merged(gaps, gaps.copy(hdr10PlusHeld = 0, decoder = MediaSpec.Decoder.DOLBY_VISION)).hdr10PlusHeld)
+        // Picture & sound says what the TV gets, whatever Settings › This TV says of HDR10+.
+        assertEquals("HDR10+ in the file, not used · TV gets HDR10 (Dolby Vision profile 8 file)",
+            spec.copy(dvSignal = DvBaseLayer.SIGNAL_HDR10).rangeLine(hdrScreen = true, plusReaches = true))
+        assertEquals("HDR10+ in the file, not used · TV gets HDR10", gaps.rangeLine(hdrScreen = true))
+        assertEquals("HDR10+", gaps.copy(hdr10PlusHeld = 0).rangeLine(hdrScreen = true, plusReaches = true))
     }
 }

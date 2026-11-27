@@ -127,13 +127,13 @@ class SeasonPackTest {
     private fun answers(episode: EpisodeRef = e6) =
         listOf(parsed(Addon.MEDIAFUSION, mfAnswer(episode)), parsed(Addon.TORRENTIO, tioAnswer()), parsed(Addon.TORZ, torzAnswer(episode)))
 
-    /** The Max on its TV: HDR10 (no Dolby Vision), DD and DD+ passed through; the line measured at 122 Mb/s. */
+    /** The Max on its TV: HDR10 (no Dolby Vision), DD and DD+ passed through. */
     private val plan = TvPlan(true, listOf(setOf(Hdr.HDR10, Hdr.HDR10_PLUS), setOf(Hdr.HLG)), 2160, setOf(SoundFormat.AC3, SoundFormat.EAC3),
         dv7AsHdr10 = true)
     private val now = 1_764_000_000_000L
 
     private fun input(measured: (String) -> Measured? = { null }, episode: EpisodeRef = e6) =
-        RankInput(plan, listOf("en"), measured, 28, episode = true, lineMbps = 122.0, now = now, episodeRef = episode)
+        RankInput(plan, listOf("en"), measured, 28, episode = true, now = now, episodeRef = episode)
 
     /** What this TV measured when the Amen file played (MediaFusion's offer, no index: kept for E6 only). */
     private val amenPlayed = Measured(MediaSpec(sizeBytes = amenBytes, overallBps = 5_162_000, videoBps = 4_800_000,
@@ -648,7 +648,6 @@ class SeasonPackTest {
         elapsed = { loop.now },
         wall = { now },
         online = { true },
-        lineMbps = { 122.0 },
     )
 
     private fun list(target: SourceTarget = ep6): SourceList {

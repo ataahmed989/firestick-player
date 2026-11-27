@@ -116,8 +116,8 @@ class PackSizeTest {
         dv7AsHdr10 = true)
     private val now = 1_764_000_000_000L
 
-    private fun input(measured: (String) -> Measured? = { null }, line: Double? = null) =
-        RankInput(plan, listOf("en"), measured, 28, episode = true, lineMbps = line, now = now, episodeRef = e9)
+    private fun input(measured: (String) -> Measured? = { null }) =
+        RankInput(plan, listOf("en"), measured, 28, episode = true, now = now, episodeRef = e9)
 
     private fun rows(vararg answers: List<ParsedStream>, count: Int? = null, measured: Map<String, Measured> = emptyMap()): List<PlaybackSource> {
         val merged = SourceMerge.merge(answers.toList(), 28, episode = true, { count }) { r -> measured[r.measuredKey(e9)]?.spec?.sizeBytes }
@@ -223,7 +223,6 @@ class PackSizeTest {
         elapsed = { loop.now },
         wall = { now },
         online = { true },
-        lineMbps = { 122.0 },
         seasonEpisodes = { title, season ->
             countAsked++
             if (title.id == show.id && season == 1) seasonCount else null

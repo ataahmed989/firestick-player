@@ -391,8 +391,14 @@ object SourcesModel {
             f.codec, f.bitDepth?.let { "$it-bit" }).joinToString(" · ").ifEmpty { "Not stated" })
         // HDR10+ only where it reaches the TV: elsewhere the TV gets the HDR10 inside.
         // Not for a profile 8 file not played yet: what its base layer is shows once it plays.
+        // HDR10+ a play here kept from the TV for a reason of the file's own: said, with the reason.
+        val held = spec?.takeIf { it.hdr10Plus && it.hdr10PlusHeld != 0 }?.let { MediaSpec.heldWords(it.hdr10PlusHeld) }
         if (plan != null && !SourceRank.dv8Unmeasured(played, plan)) PlayRules.tvHdr(s, plan)?.let {
-            out += "This TV shows" to if (it == "HDR10+" && !plan.hdr10PlusReaches) "HDR10 (HDR10+ in the file)" else it
+            out += "This TV shows" to when {
+                it == "HDR10+" && !plan.hdr10PlusReaches -> "HDR10 (HDR10+ in the file)"
+                it == "HDR10" && held != null -> "HDR10 (HDR10+ in the file, not used: $held)"
+                else -> it
+            }
         }
         (played.dvProfile ?: f.dvProfile ?: spec?.dvProfile?.takeIf { it > 0 })?.let { p ->
             val how = when {

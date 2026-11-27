@@ -1233,7 +1233,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             backdrop?.suspended = false
         }
         val vsync = VsyncFix(this)
-        val hdr10Plus = Hdr10PlusGate(this)
+        val hdr10Plus = Hdr10PlusGate(this) { prefs.hdr10PlusReaches }
         // "Faster downloads", as set when this film or source starts; null is one request, as ever.
         val twoRanges = if (prefs.fasterDownloads) TwoRanges() else null
         filmRanges = twoRanges
@@ -6027,7 +6027,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val rates = embeddedCues.source(link)?.rates
         // Dolby Vision profile 7 that this TV plays as its HDR10 base layer is described, and kept, as HDR10.
         val base = MediaSpec.of(video, audio, DvBaseLayer.playedAsBase(video?.sampleMimeType, video?.codecs, DvBaseLayer.tvPlaysBase),
-            app.fireplayer.player.PlayFacts.decoderMime, app.fireplayer.player.PlayFacts.hdr10PlusSeen)
+            app.fireplayer.player.PlayFacts.decoderMime, app.fireplayer.player.PlayFacts.hdr10PlusSeen,
+            app.fireplayer.player.PlayFacts.hdr10PlusHeld)
         val w = p.videoSize.width.takeIf { it > 0 } ?: base.width
         val h = p.videoSize.height.takeIf { it > 0 } ?: base.height
         val videoBps = rates?.bps(video?.id) ?: 0L
@@ -6087,7 +6088,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         ).joinToString(" · ").ifEmpty { null }?.let { pairs += "Frame" to fact(it) }
         // On a TV that reports no HDR the Fire TV turns HDR into SDR, and HDR10+ reaches the TV only where Settings › This
         // TV says so: said, so the row doesn't claim what isn't seen.
-        pairs += "Range" to fact(spec.rangeLine(hdrScreen(), prefs.hdr10PlusReaches && hdr10PlusGate?.mask == false))
+        pairs += "Range" to fact(spec.rangeLine(hdrScreen(), prefs.hdr10PlusReaches && hdr10PlusGate?.mask == false &&
+            !app.fireplayer.player.PlayFacts.hdr10PlusKept))
         // The picture's own rate; while it's measured, the file's average stands in, said as such.
         pairs += "Data" to fact(
             if (spec.videoBps > 0) "${MediaSpec.mbps(spec.videoBps)} · " +
@@ -6238,16 +6240,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     /**
      * What a film from the add-ons is seen to arrive at, once measured over enough seconds, whatever was answered about
-     * its stalls: kept for "Best for this TV" and Next source, newest first, up or down
-     * ([app.fireplayer.vod.sources.LineRate.seen]). The lists in memory rank again when it moved.
+     * its stalls: kept for the film buffer's sizing ([lineMbpsForBuffer]), newest first, up or down
+     * ([app.fireplayer.vod.sources.LineRate.seen]). "Best for this TV" doesn't weigh it: one file's server says nothing
+     * of another's ([app.fireplayer.vod.sources.SourceRank]).
      */
     private fun noteLineSpeed() {
         if (source == null || !diagMade.isInitialized()) return
         val d = diag.download
         if (d.sustainedSeconds < app.fireplayer.vod.play.FilmSupply.MIN_SECONDS) return
-        if (app.fireplayer.vod.sources.LineRate.of(sourcePrefs, two = measuredWithTwo()).seen(d.sustainedMbps)) {
-            (Sources.get(this) as? app.fireplayer.vod.sources.DefaultSourcesRepository)?.rerank()
-        }
+        app.fireplayer.vod.sources.LineRate.of(sourcePrefs, two = measuredWithTwo()).seen(d.sustainedMbps)
     }
 
     /** Whether what is measured of this film goes with the two-connection speed ([app.fireplayer.vod.sources.LineRate.forTwo]). */
@@ -6956,11 +6957,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         override fun runtimeMinutes(): Int = source?.request?.let { PlayerMeta.runtimeMinutes(it, vodDetails) } ?: 0
 
         override fun lineShort(mbps: Double) {
-            // Two connections' combined speed is kept apart from one connection's: each ranks the lists with its own.
-            // Under the key the lists are ranked by, so a film the server kept on one request still teaches them.
+            // Two connections' combined speed is kept apart from one connection's (the film buffer reads its own).
             app.fireplayer.vod.sources.LineRate.of(sourcePrefs, two = measuredWithTwo()).short(mbps)
-            // The lists in memory rank again: the Sources panel says at once which files this connection can't keep up with.
-            (Sources.get(this@PlayerActivity) as? app.fireplayer.vod.sources.DefaultSourcesRepository)?.rerank()
         }
 
         override fun playNext(next: PlayRequest) {

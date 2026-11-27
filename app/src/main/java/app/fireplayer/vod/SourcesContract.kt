@@ -226,7 +226,7 @@ enum class TvFit { MEASURED_OK, LIKELY, UNKNOWN, LIKELY_NOT }
  * ones before. [IMAX_ALWAYS] is first only with Settings › This TV › IMAX first: always.
  */
 enum class RankStep {
-    IMAX_ALWAYS, PLAYS, CACHED, LANGUAGE_KNOWN, ROOM, HEIGHT, HDR, RATE, KIND, DYNAMIC_HDR, IMAX, LANGUAGE, SOUND,
+    IMAX_ALWAYS, PLAYS, CACHED, LANGUAGE_KNOWN, HEIGHT, HDR, RATE, KIND, DYNAMIC_HDR, IMAX, LANGUAGE, SOUND,
     SMOOTH, SIZE, SEEDERS,
 }
 
@@ -932,8 +932,9 @@ data class TvPlan(
     /** [TvCapabilities.dv7AsHdr10] of the TV's reading, whatever the plan: what this Stick does with profile 7. */
     val dv7AsHdr10: Boolean? = null,
     /**
-     * [ThisTv.hdr10PlusReaches], whatever the plan: only then is HDR10+ preferred, and said to be what this TV shows.
-     * Off by default: on the user's Sticks HDR10+ never reached the TV from FirePlayer (it gets the HDR10 inside).
+     * [ThisTv.hdr10PlusReaches], whatever the plan: only then is HDR10+ preferred, and said to be what this TV shows
+     * (on a TV that reports it). The reader sets it ([app.fireplayer.vod.sources.ThisTvReader]: On unless the viewer
+     * turned it off); false here only for a plan made by hand.
      */
     val hdr10PlusReaches: Boolean = false,
 )
@@ -955,7 +956,7 @@ interface ThisTv {
 
     fun setImaxAlways(on: Boolean) = Unit
 
-    /** Settings › This TV › HDR10+ reaches this TV: off unless the TV was seen to show HDR10+ from FirePlayer. */
+    /** Settings › This TV › HDR10+ reaches this TV: On unless the viewer turned it off ([app.fireplayer.data.Prefs.DEFAULT_HDR10_PLUS]). */
     fun hdr10PlusReaches(): Boolean = false
 
     fun setHdr10PlusReaches(on: Boolean) = Unit
