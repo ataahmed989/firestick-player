@@ -40,7 +40,7 @@ class SourcesModelTest {
     private val list = Fixtures.list(target, imax + uhd + fhd + hd + notReady, lastUsed = fhd[1])
 
     private val plan = TvPlan(true, listOf(setOf(Hdr.HDR10, Hdr.HDR10_PLUS), setOf(Hdr.HLG)), 2160, emptySet())
-    private fun input(lineMbps: Double? = null) = RankInput(plan, listOf("en"), { null }, 173, episode = false, lineMbps = lineMbps)
+    private fun input() = RankInput(plan, listOf("en"), { null }, 173, episode = false)
 
     private fun sd(i: Int, readiness: Readiness = Readiness.PROBABLY_READY, height: Int = 480) =
         Fixtures.source(i, readiness = readiness, height = height,
@@ -294,19 +294,15 @@ class SourcesModelTest {
     }
 
     @Test
-    fun aLighterCopyChosenForThisConnectionSaysSo() {
+    fun theBestsReasonNeverNamesAConnection() {
         val copies = listOf(Fixtures.source(1, mbps = 26.0), Fixtures.source(2, mbps = 69.0), Fixtures.source(3, mbps = 87.0))
-        val slow = SourceRank.rank(copies, input(lineMbps = 72.0))
-        val best = SourceRank.best(slow)!!
-        assertEquals("k1", best.key)
-        assertEquals("Lighter 4K: your connection keeps up with it", SourcesModel.reason(best, Fixtures.list(target, slow, best = best)))
-        // Nothing measured: the usual reason.
-        val fast = SourceRank.rank(copies, input())
-        assertEquals("4K · HDR10 · WEB · cached", SourcesModel.reason(SourceRank.best(fast)!!, Fixtures.list(target, fast)))
-        // Every copy too heavy for the line: no "lighter", and the best's warning ends the reason.
-        val heavy = SourceRank.rank(copies.drop(1), input(lineMbps = 72.0))
-        val reason = SourcesModel.reason(SourceRank.best(heavy)!!, Fixtures.list(target, heavy))
-        assertTrue(reason, reason.startsWith("4K · HDR10 · WEB · cached · ⚠ Needs "))
+        val ranked = SourceRank.rank(copies, input())
+        val best = SourceRank.best(ranked)!!
+        // Nearest the preferred bitrate (60): the 69 Mb/s copy, with the usual reason and no connection words.
+        assertEquals("k2", best.key)
+        val reason = SourcesModel.reason(best, Fixtures.list(target, ranked, best = best))
+        assertEquals("4K · HDR10 · WEB · cached", reason)
+        assertFalse(reason, reason.contains("connection"))
     }
 
     @Test

@@ -6240,16 +6240,15 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     /**
      * What a film from the add-ons is seen to arrive at, once measured over enough seconds, whatever was answered about
-     * its stalls: kept for "Best for this TV" and Next source, newest first, up or down
-     * ([app.fireplayer.vod.sources.LineRate.seen]). The lists in memory rank again when it moved.
+     * its stalls: kept for the film buffer's sizing ([lineMbpsForBuffer]), newest first, up or down
+     * ([app.fireplayer.vod.sources.LineRate.seen]). "Best for this TV" doesn't weigh it: one file's server says nothing
+     * of another's ([app.fireplayer.vod.sources.SourceRank]).
      */
     private fun noteLineSpeed() {
         if (source == null || !diagMade.isInitialized()) return
         val d = diag.download
         if (d.sustainedSeconds < app.fireplayer.vod.play.FilmSupply.MIN_SECONDS) return
-        if (app.fireplayer.vod.sources.LineRate.of(sourcePrefs, two = measuredWithTwo()).seen(d.sustainedMbps)) {
-            (Sources.get(this) as? app.fireplayer.vod.sources.DefaultSourcesRepository)?.rerank()
-        }
+        app.fireplayer.vod.sources.LineRate.of(sourcePrefs, two = measuredWithTwo()).seen(d.sustainedMbps)
     }
 
     /** Whether what is measured of this film goes with the two-connection speed ([app.fireplayer.vod.sources.LineRate.forTwo]). */
@@ -6958,11 +6957,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         override fun runtimeMinutes(): Int = source?.request?.let { PlayerMeta.runtimeMinutes(it, vodDetails) } ?: 0
 
         override fun lineShort(mbps: Double) {
-            // Two connections' combined speed is kept apart from one connection's: each ranks the lists with its own.
-            // Under the key the lists are ranked by, so a film the server kept on one request still teaches them.
+            // Two connections' combined speed is kept apart from one connection's (the film buffer reads its own).
             app.fireplayer.vod.sources.LineRate.of(sourcePrefs, two = measuredWithTwo()).short(mbps)
-            // The lists in memory rank again: the Sources panel says at once which files this connection can't keep up with.
-            (Sources.get(this@PlayerActivity) as? app.fireplayer.vod.sources.DefaultSourcesRepository)?.rerank()
         }
 
         override fun playNext(next: PlayRequest) {

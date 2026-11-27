@@ -192,6 +192,8 @@ class TitlePage(
     /** The page's look-up of what Play would start, and that target's key. */
     private var dwell: Cancel? = null
     private var dwellKey: String? = null
+    /** The runtime last handed to the sources for [dwellKey] (minutes; null: none known then). */
+    private var dwellRuntime: Int? = null
     /** What the add-ons said so far for [dwellKey]. */
     private var shownList: SourceList? = null
     /** Play waiting for the add-ons; and where it was pressed (Play, or an episode card). */
@@ -507,10 +509,20 @@ class TitlePage(
         if (paused || released) return
         val tgt = if (enabled) playTargetNow() else null
         val key = tgt?.key
-        if (key == dwellKey) return
+        val runtime = tgt?.let { TitleDetails.runtimeMinutes(it.title.runtime) }
+        if (key == dwellKey) {
+            // The same title, its runtime known now (opened from Search, its details came after): the list held for it
+            // ranks again by it, from the answers it has ([SourcesRepository.cached]); nothing is asked again.
+            if (tgt != null && runtime != null && runtime != dwellRuntime) {
+                dwellRuntime = runtime
+                s.cached(tgt)
+            }
+            return
+        }
         dwell?.cancel()
         dwell = null
         dwellKey = key
+        dwellRuntime = runtime
         shownList = null
         buttons.setSourcesLabel(PlayRules.sourcesLabel(null))
         // Play now starts something else (or nothing): a rest on it is for that.
@@ -555,6 +567,7 @@ class TitlePage(
         dwell?.cancel()
         dwell = null
         dwellKey = null
+        dwellRuntime = null
         panelLookup?.cancel()
         panelLookup = null
         if (wait?.isWaiting == true) {
