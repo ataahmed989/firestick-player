@@ -495,9 +495,20 @@ class TitlePage(
     private fun playTargetNow(): SourceTarget? {
         if (isShow) {
             val ep = target?.episode ?: return null
-            return SourceTarget(details.title, ep.ref)
+            return SourceTarget(sourceTitle(), ep.ref)
         }
-        return SourceTarget(details.title, null)
+        return SourceTarget(sourceTitle(), null)
+    }
+
+    /**
+     * The title the sources are looked up and ranked for: with the runtime the details found, also when only TMDB had it
+     * ([TitleDetails.runtimeMin]; Cinemeta's runtime is the title's own): the add-ons' sizes rank over it.
+     */
+    private fun sourceTitle(): Title {
+        val t = details.title
+        if (TitleDetails.runtimeMinutes(t.runtime) != null) return t
+        val min = details.runtimeMin?.takeIf { it > 0 } ?: return t
+        return t.copy(runtime = "$min min")
     }
 
     /**
@@ -656,7 +667,7 @@ class TitlePage(
 
     /** OK on an aired episode card: that episode, from where it stopped if it can resume. */
     private fun playEpisode(ep: Episode) {
-        val tgt = SourceTarget(details.title, ep.ref)
+        val tgt = SourceTarget(sourceTitle(), ep.ref)
         play(tgt, PlayRules.startAt(host.repo?.positionOf(ep), fromBeginning = false), fromButtons = false)
     }
 

@@ -164,7 +164,7 @@ class RuntimeLaterTest {
         val engine = engine()
         look(engine, SourceTarget(sparse))
         holdWork = true
-        // Play pressed as the details arrive: the play's own look-up brings the runtime.
+        // The details arrive as Play is pressed: the title page hands the runtime over.
         val mid = engine.cached(SourceTarget(rich))!!
         assertFalse(mid.complete)
         assertNull(mid.best)
@@ -179,6 +179,48 @@ class RuntimeLaterTest {
         runWork()
         val ready = opened.filterIsInstance<Opened.Ready>().single()
         assertEquals(ReleaseKey(H2, 0), ready.source.release)
+        assertEquals(1, asked)
+    }
+
+    @Test
+    fun aLookUpBringingTheRuntimeRanksTheHeldAnswersAgainWithoutAskingAgain() {
+        val engine = engine()
+        assertEquals(ReleaseKey(H1, 0), look(engine, SourceTarget(sparse)).best?.release)
+        assertEquals(1, asked)
+        // The Sources panel (or a play) looks the title up with its runtime, nothing handed over before.
+        holdWork = true
+        val got = ArrayList<SourceList>()
+        val cancel = engine.lookUp(SourceTarget(rich), LookupWhy.SOURCES, null) { got += it }
+        loop.advance()
+        // Until the rank by 198 min is in: still looking, no Best.
+        assertFalse(got.last().complete)
+        assertNull(got.last().best)
+        holdWork = false
+        runWork()
+        assertTrue(got.last().complete)
+        assertEquals(ReleaseKey(H2, 0), got.last().best?.release)
+        // The answers held were ranked again: the add-ons weren't asked.
+        assertEquals(1, asked)
+        cancel.cancel()
+    }
+
+    @Test
+    fun aPlayHandedTheListRankedWithoutTheRuntimeWaitsForTheNewRankAndStartsItsBest() {
+        val engine = engine()
+        // The title page's list from Search: complete, its Best ranked over an assumed 120 minutes.
+        val stale = look(engine, SourceTarget(sparse))
+        assertTrue(stale.complete)
+        assertEquals(ReleaseKey(H1, 0), stale.best?.release)
+        holdWork = true
+        // Play, its target with the runtime the details brought, handed that stale list.
+        val session = engine.session(PlayRequest(SourceTarget(rich), StartAt.Beginning, PlayOrigin.TITLE_PAGE, list = stale))
+        val opened = ArrayList<Opened>()
+        session.open(null, OpenWhy.START) { opened += it }
+        loop.advance()
+        assertTrue(opened.none { it is Opened.Ready })
+        holdWork = false
+        runWork()
+        assertEquals(ReleaseKey(H2, 0), opened.filterIsInstance<Opened.Ready>().single().source.release)
         assertEquals(1, asked)
     }
 
