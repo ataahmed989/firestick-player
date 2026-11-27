@@ -111,6 +111,23 @@ class RowMathTest {
     }
 
     @Test
+    fun aTrimKeepsThePicturesOnScreen() {
+        val tops = floatArrayOf(422f, 886f, 1350f, 1814f, 2278f)
+        val heights = FloatArray(5) { 464f }
+        // Back from a film on Home, focus on the first row: both rows on screen keep their posters (the second used
+        // to show only names until focus moved).
+        assertEquals(setOf(0, 1), RowMath.trimKeeps(0, 0f, 992f, tops, heights))
+        // Row 2 chosen: what shows stays; the row above it, kept for Up but out of view, lets go.
+        assertEquals(setOf(2, 3, 4), RowMath.trimKeeps(2, 1350f, 992f, tops, heights))
+        // Focus in the header (no row chosen): the rows on screen still keep theirs.
+        assertEquals(setOf(0, 1), RowMath.trimKeeps(-1, 0f, 992f, tops, heights))
+        // Never more than the rows bound while there's room.
+        for ((k, offset) in listOf(0 to 0f, 2 to 1350f, 4 to 2278f)) {
+            assertTrue(RowMath.boundRows(k, offset, 992f, tops, heights).containsAll(RowMath.trimKeeps(k, offset, 992f, tops, heights)))
+        }
+    }
+
+    @Test
     fun rankNumberFitsItsRoom() {
         val size = 223.8f
         // A single digit narrower than the room keeps the full size.

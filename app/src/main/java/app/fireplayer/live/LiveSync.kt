@@ -15,7 +15,6 @@ import java.io.BufferedInputStream
 import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.zip.GZIPInputStream
 
@@ -29,7 +28,11 @@ import java.util.zip.GZIPInputStream
  *
  * Every request to a provider goes through [SyncGuard] first: a channel from that provider playing is let go (an
  * update the viewer asked for) or the update waits for a quiet moment (an automatic one), and the update holds one
- * connection lease of its own. A failure of any kind leaves the stored channels and guide as they were.
+ * connection lease of its own. An automatic update already under way when a film starts (or when the provider's own
+ * channel wants its connection) stops at its next safe point: a download's next read, before storing what was read,
+ * between the steps of clearing old programmes. It is put off, not failed: no status is written, it counts as not
+ * tried, and it runs again at the next quiet moment. A failure of any kind, or a stop, leaves the stored channels and
+ * guide as they were.
  */
 class LiveSync private constructor(context: Context) {
 
@@ -46,13 +49,13 @@ class LiveSync private constructor(context: Context) {
     private val main = Handler(Looper.getMainLooper())
     private val listeners = LinkedHashSet<Listener>()
     private val running = java.util.concurrent.atomic.AtomicInteger()
-    private val guard = SyncGuard(
+    private val guard: SyncGuard = SyncGuard(
         app as Application, main,
         onQuiet = { updateDue() },
         notice = { text -> for (l in listeners.toList()) l.onUpdateNotice(text) },
     )
-    /** When an automatic update last tried each playlist ("p:id") and EPG ("e:id"), so a failing one isn't asked at every turn. */
-    private val tried = ConcurrentHashMap<String, Long>()
+    /** When an automatic update last tried each playlist and EPG, so a failing one isn't asked at every turn. */
+    private val tries = SyncPlan.Tries()
 
     val busy: Boolean get() = running.get() > 0
 
@@ -89,7 +92,9 @@ class LiveSync private constructor(context: Context) {
      * while something from the same provider plays (they wait, [SyncGuard]).
      */
     fun updateDue(now: Long = System.currentTimeMillis()) = submit(Trigger.AUTO, epgOnly = false) {
-        val due = db.playlists().filter { SyncPlan.isDue(now, it.lastSync, it.updateHours.coerceAtLeast(1) * HOUR_MS, tried["p:" + it.id] ?: 0L) }
+        // What a guide update stopped for a film left behind goes first (almost always nothing: a set in memory).
+        db.tidyProgrammes(guard::goesOn)
+        val due = db.playlists().filter { SyncPlan.isDue(now, it.lastSync, it.updateHours.coerceAtLeast(1) * HOUR_MS, tries.last("p:" + it.id)) }
         val synced = due.filter { p -> syncChannels(p).also { notify(p.id) } }
         // The due playlists' EPGs, plus every EPG when a due playlist has none of its own (it borrows theirs), plus
         // any EPG older than the EPG update interval (Live FirePlayer Settings) whether or not its playlist is due.
@@ -100,9 +105,10 @@ class LiveSync private constructor(context: Context) {
         val epgSeen = db.epgStatuses().associate { it.source to it.lastSync }
         // EPGs follow their own interval (Live FirePlayer Settings): one never loaded, or older than the interval, is
         // read again; a due playlist without an EPG of its own still has the others read for it.
-        val sources = all.filter { epgUrl(it) != null && (needFallback || SyncPlan.isDue(now, epgSeen[it.id] ?: 0L, epgEvery, tried["e:" + it.id] ?: 0L)) }
-        // Past programmes are cleared at most every few hours (it scans every listing).
+        val sources = all.filter { epgUrl(it) != null && (needFallback || SyncPlan.isDue(now, epgSeen[it.id] ?: 0L, epgEvery, tries.last("e:" + it.id))) }
+        // Past programmes are cleared at most every few hours (it scans every listing): not while a film plays.
         if (now - lastPrune >= PRUNE_EVERY_MS) {
+            guard.check()
             db.pruneProgrammes(now - PAST_KEEP_MS)
             lastPrune = now
         }
@@ -127,6 +133,8 @@ class LiveSync private constructor(context: Context) {
             guard.begin(trigger, epgOnly)
             try {
                 job()
+            } catch (t: SyncPlan.PutOff) {
+                // An automatic update stopped for a quiet moment (said where it stopped part-way): it runs again then.
             } catch (t: Throwable) {
                 Log.w(TAG, "Live sync failed: ${t.javaClass.simpleName}")
             } finally {
@@ -147,14 +155,22 @@ class LiveSync private constructor(context: Context) {
     /**
      * Before a request for [p] to [url]: true to go ahead. False when it waits for a quiet moment (nothing is
      * recorded) or the provider's connection is in use (said in the playlist's status when [onRefused] is given).
+     * An automatic job stopped meanwhile (a film started) ends here ([SyncPlan.PutOff]): the rest waits as well.
      */
     private fun cleared(p: Playlist, url: String, key: String, onRefused: ((String) -> Unit)? = null): Boolean {
+        guard.check()
         if (!guard.clear(p, url)) {
             guard.refusal?.let { onRefused?.invoke(it) }
             return false
         }
-        tried[key] = System.currentTimeMillis()
+        tries.began(key, System.currentTimeMillis())
         return true
+    }
+
+    /** [p]'s request for [key] stopped part-way for a quiet moment: as if not tried, nothing written ([what] for the log). */
+    private fun putOff(p: Playlist, key: String, what: String) {
+        tries.putOff(key)
+        Log.i(TAG, "$what for \"${p.name}\": put off part-way until nothing plays")
     }
 
     // ---- Channels ----------------------------------------------------------------------------------------------
@@ -166,7 +182,7 @@ class LiveSync private constructor(context: Context) {
         try {
             val parsed: ParsedPlaylist = when (p.kind) {
                 PlaylistKind.XTREAM -> {
-                    val api = XtreamApi(p)
+                    val api = XtreamApi(p, guard::check)
                     val account = api.get(null)?.let { XtreamParser.account(it) }
                     if (account == null) {
                         val why = Http.failure()
@@ -200,6 +216,8 @@ class LiveSync private constructor(context: Context) {
                         db.setPlaylistStatus(p.id, "Not updated: the provider listed no channels", syncedAt = null, expiresAt = account.expiresAt, maxConnections = account.maxConnections)
                         return false
                     }
+                    // Read: stored only if nothing came in front meanwhile.
+                    guard.check()
                     val t2 = SystemClock.elapsedRealtime()
                     val removed = db.applySync(p.id, result)
                     db.setPlaylistStatus(p.id, "Updated: ${result.channels.size} channels", now, account.expiresAt, account.maxConnections)
@@ -213,7 +231,7 @@ class LiveSync private constructor(context: Context) {
                         return true
                     }
                     // Read as it arrives, line by line: a large playlist is never held whole in memory.
-                    val parsed = Http.lines(p.url, MAX_PLAYLIST_BYTES) { M3uParser.parse(it) }
+                    val parsed = Http.lines(p.url, MAX_PLAYLIST_BYTES, guard::check) { M3uParser.parse(it) }
                     if (parsed.entries.isEmpty() && !parsed.header) {
                         db.setPlaylistStatus(p.id, "That link isn't an M3U playlist", syncedAt = null)
                         return false
@@ -225,11 +243,16 @@ class LiveSync private constructor(context: Context) {
                     M3uParser.toPlaylist(p.id, parsed)
                 }
             }
-            // Stored first; only then recorded as updated (a failure leaves the last good update's time and EPG link).
+            // Stored first, if nothing came in front meanwhile; only then recorded as updated (a failure leaves the last
+            // good update's time and EPG link).
+            guard.check()
             val removed = db.applySync(p.id, parsed)
             db.setPlaylistStatus(p.id, "Updated: ${parsed.channels.size} channels", now, playlistEpgUrl = parsed.epgUrl ?: "")
             Log.i(TAG, "Playlist \"${p.name}\": ${parsed.channels.size} channels, ${parsed.groups.size} groups, $removed removed")
             return true
+        } catch (t: SyncPlan.PutOff) {
+            putOff(p, "p:" + p.id, "Playlist")
+            throw t
         } catch (t: Throwable) {
             runCatching { db.setPlaylistStatus(p.id, "Couldn't update: ${SyncPlan.describe(t)}", syncedAt = null) }
             Log.w(TAG, "Playlist \"${p.name}\" failed: ${t.javaClass.simpleName}")
@@ -254,16 +277,19 @@ class LiveSync private constructor(context: Context) {
         // An empty download from the same address never empties the guide (a new address may: it's what it lists).
         val before = db.epgStatuses().firstOrNull { it.source == p.id }
         val accept = { count: Int -> SyncPlan.mayReplaceGuide(count, before?.programmes ?: 0, before?.url == url) }
+        var stream: CountingInputStream? = null
         try {
             val conn = Http.open(url)
             val t0 = SystemClock.elapsedRealtime()
             try {
-                val counted = CountingInputStream(conn.second)
+                // Each read is a safe point: stopped there, the guide keeps what it had.
+                val counted = CountingInputStream(conn.second, guard::check)
+                stream = counted
                 val count = counted.use { input ->
                     val parser = Xml.newPullParser()
                     parser.setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, false)
                     parser.setInput(input, null)
-                    db.replaceProgrammes(p.id, url, now - PAST_KEEP_MS, now, accept) { put ->
+                    db.replaceProgrammes(p.id, url, now - PAST_KEEP_MS, now, accept, guard::goesOn) { put ->
                         XmltvReader.read(parser, wanted, now - PAST_KEEP_MS, now + FUTURE_KEEP_MS) { item -> put(item.channel, item.programme) }
                     }
                 }
@@ -272,6 +298,11 @@ class LiveSync private constructor(context: Context) {
                 conn.first.disconnect()
             }
         } catch (t: Throwable) {
+            // Stopped for a quiet moment (the XML reader may have wrapped that): put off, nothing written.
+            if (t is SyncPlan.PutOff || stream?.putOff == true) {
+                putOff(p, "e:" + p.id, "EPG")
+                throw t as? SyncPlan.PutOff ?: SyncPlan.PutOff()
+            }
             // The guide keeps what it had, and its last update time.
             runCatching { db.setEpgStatus(p.id, url, "Couldn't update: ${SyncPlan.describe(t)}", syncedAt = null) }
             Log.w(TAG, "EPG for \"${p.name}\" failed: ${t.javaClass.simpleName}")
@@ -301,8 +332,11 @@ class LiveSync private constructor(context: Context) {
 }
 
 
-/** Xtream Codes calls for one playlist, by its server address and login. */
-class XtreamApi(private val p: Playlist) {
+/**
+ * Xtream Codes calls for one playlist, by its server address and login. [check] runs before each read of an answer
+ * (an update's safe point: it may throw [SyncPlan.PutOff]).
+ */
+class XtreamApi(private val p: Playlist, private val check: (() -> Unit)? = null) {
     private val base: String = p.url.trim().trimEnd('/').let { if ("://" in it) it else "http://$it" }
 
     fun get(action: String?): String? {
@@ -310,7 +344,7 @@ class XtreamApi(private val p: Playlist) {
             .appendQueryParameter("username", p.username)
             .appendQueryParameter("password", p.password)
         if (action != null) b.appendQueryParameter("action", action)
-        return Http.text(b.build().toString(), 64 * 1024 * 1024)
+        return Http.text(b.build().toString(), 64 * 1024 * 1024, check)
     }
 
     fun xmltvUrl(): String = Uri.parse("$base/xmltv.php").buildUpon()
@@ -365,8 +399,11 @@ object Http {
         }
     }
 
-    /** The whole answer as text, or null (why: [failure]); one longer than [maxChars] is a failure, never cut off. */
-    fun text(url: String, maxChars: Int): String? {
+    /**
+     * The whole answer as text, or null (why: [failure]); one longer than [maxChars] is a failure, never cut off.
+     * [check] runs before each read; a [SyncPlan.PutOff] it throws goes on to the caller.
+     */
+    fun text(url: String, maxChars: Int, check: (() -> Unit)? = null): String? {
         lastFailure.set(null)
         val (conn, input) = try { open(url) } catch (t: Throwable) { lastFailure.set(t); return null }
         return try {
@@ -374,6 +411,7 @@ object Http {
                 val out = StringBuilder()
                 val buf = CharArray(16 * 1024)
                 while (true) {
+                    check?.invoke()
                     val n = r.read(buf)
                     if (n < 0) break
                     if (out.length + n > maxChars) throw SyncPlan.TooLarge()
@@ -381,6 +419,8 @@ object Http {
                 }
                 out.toString()
             }
+        } catch (t: SyncPlan.PutOff) {
+            throw t
         } catch (t: Exception) {
             lastFailure.set(t)
             null
@@ -389,14 +429,21 @@ object Http {
         }
     }
 
-    /** Reads [url] line by line into [read], as it arrives; throws on any failure, or past [maxBytes]. */
-    fun <T> lines(url: String, maxBytes: Long, read: (Sequence<String>) -> T): T {
+    /**
+     * Reads [url] line by line into [read], as it arrives; throws on any failure, or past [maxBytes]. [check] runs
+     * before each read (it may throw [SyncPlan.PutOff]).
+     */
+    fun <T> lines(url: String, maxBytes: Long, check: (() -> Unit)? = null, read: (Sequence<String>) -> T): T {
         val (conn, input) = open(url)
+        val counted = CountingInputStream(input, check)
         try {
-            val counted = CountingInputStream(input)
             return counted.bufferedReader().useLines { lines ->
                 read(lines.onEach { if (counted.count > maxBytes) throw SyncPlan.TooLarge() })
             }
+        } catch (t: Throwable) {
+            // A stop at a safe point stays a stop, whatever the reader made of it.
+            if (counted.putOff && t !is SyncPlan.PutOff) throw SyncPlan.PutOff()
+            throw t
         } finally {
             conn.disconnect()
         }
@@ -411,12 +458,38 @@ object Http {
     }
 }
 
-/** Counts the bytes read through it (how big an EPG download was, for the log). */
-private class CountingInputStream(private val inner: InputStream) : java.io.FilterInputStream(inner) {
+/**
+ * Counts the bytes read through it (how big an EPG download was, for the log). [check] runs before each read: an
+ * update's safe point, which may stop it ([SyncPlan.PutOff]).
+ */
+internal class CountingInputStream(inner: InputStream, private val check: (() -> Unit)? = null) : java.io.FilterInputStream(inner) {
     var count = 0L
         private set
 
-    override fun read(): Int = super.read().also { if (it >= 0) count++ }
+    /**
+     * Its [check] stopped it: a put-off, whatever the reader made of it (an XML parser reports what its stream threw
+     * while it looks for the encoding as an invalid stream of its own).
+     */
+    var putOff = false
+        private set
 
-    override fun read(b: ByteArray, off: Int, len: Int): Int = super.read(b, off, len).also { if (it > 0) count += it }
+    override fun read(): Int {
+        safePoint()
+        return super.read().also { if (it >= 0) count++ }
+    }
+
+    override fun read(b: ByteArray, off: Int, len: Int): Int {
+        safePoint()
+        return super.read(b, off, len).also { if (it > 0) count += it }
+    }
+
+    private fun safePoint() {
+        val c = check ?: return
+        try {
+            c()
+        } catch (t: SyncPlan.PutOff) {
+            putOff = true
+            throw t
+        }
+    }
 }

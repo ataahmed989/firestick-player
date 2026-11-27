@@ -19,10 +19,14 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   for the update (the picture stays, one line says why) or, for an automatic update, says to wait.
  * - The update takes one connection lease of its own from the same [PlayerHost.budget] as playback, so the app never
  *   opens more connections to a provider than the account allows.
+ * - An automatic update already under way stops at its next safe point ([goesOn], [check]) once a film is in
+ *   front, or once its request would now wait (the provider's own channel, or Live TV about to tune one, wants the
+ *   connection): put off, not failed ([SyncPlan.jobGoesOn]).
  * - [end] returns the lease and brings the channel back at live; automatic updates that waited run again at the
  *   next quiet moment (nothing playing), and every hour the app stays open updates that came due are looked for.
  *
- * [clear] and [end] run on the update thread (LiveSync's worker); every look at playback happens on the main thread.
+ * [clear], [goesOn], [check] and [end] run on the update thread (LiveSync's worker); every look at playback happens on
+ * the main thread.
  */
 class SyncGuard(
     private val app: Application,
@@ -33,7 +37,7 @@ class SyncGuard(
     private val notice: (String) -> Unit,
 ) {
     // ---- Update thread state (one job at a time) ----
-    private var trigger = SyncPlan.Trigger.AUTO
+    @Volatile private var trigger = SyncPlan.Trigger.AUTO
     private var epgOnly = false
     private var heldKey: String? = null
     private val leases = LinkedHashSet<String>()
@@ -43,22 +47,42 @@ class SyncGuard(
     /** Why the last [clear] said no (shown as the playlist's status when it wasn't a deferral). */
     var refusal: String? = null
         private set
+    /** The job under way, a new token for each [begin]: a stop asked for ([stopped]) is for that job alone. */
+    @Volatile private var job = Any()
+    /** The automatic job whose request under way would now wait ([lookAgain]): it stops at its next safe point. */
+    @Volatile private var stopped: Any? = null
 
     // ---- Main thread state ----
     private var films = 0
+    /** A film is in front ([films] above 0), read at the update's safe points. */
+    @Volatile private var filmOn = false
     private var started = 0
     private var watching = false
     private var holding = false
+    /** The automatic request under way, looked at again as live playback changes ([lookAgain]); null otherwise. */
+    private var underWay: UnderWay? = null
+    /** The live player whose status is followed (while waiting for a quiet moment or an automatic request runs). */
+    private var listening: PlayerHost? = null
+
+    private class UnderWay(val job: Any, val account: String, val url: String, val provider: String)
 
     init {
         app.registerActivityLifecycleCallbacks(object : Application.ActivityLifecycleCallbacks {
             override fun onActivityStarted(activity: Activity) {
                 started++
-                if (activity is PlayerActivity) films++
+                if (activity is PlayerActivity) {
+                    films++
+                    // An automatic update under way stops at its next safe point ([goesOn]).
+                    filmOn = true
+                }
             }
             override fun onActivityStopped(activity: Activity) {
                 started = (started - 1).coerceAtLeast(0)
-                if (activity is PlayerActivity) { films = (films - 1).coerceAtLeast(0); checkQuiet() }
+                if (activity is PlayerActivity) {
+                    films = (films - 1).coerceAtLeast(0)
+                    filmOn = films > 0
+                    checkQuiet()
+                }
             }
             override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {}
             override fun onActivityResumed(activity: Activity) {}
@@ -70,6 +94,7 @@ class SyncGuard(
 
     /** A job starts (update thread). */
     fun begin(trigger: SyncPlan.Trigger, epgOnly: Boolean) {
+        job = Any()
         this.trigger = trigger
         this.epgOnly = epgOnly
         heldKey = null
@@ -79,16 +104,32 @@ class SyncGuard(
     }
 
     /**
+     * Whether the job goes on at this safe point (update thread): the viewer's own always does; an automatic one not
+     * once a film is in front or its request was stopped ([SyncPlan.jobGoesOn]). False marks it put off: it runs again
+     * at the next quiet moment.
+     */
+    fun goesOn(): Boolean {
+        if (SyncPlan.jobGoesOn(trigger, filmOn, stopped === job)) return true
+        deferred = true
+        return false
+    }
+
+    /** As [goesOn], stopping the job with [SyncPlan.PutOff]: at a download's next read, before storing what was read. */
+    fun check() {
+        if (!goesOn()) throw SyncPlan.PutOff()
+    }
+
+    /**
      * Before a request for [p]'s playlist or EPG to [requestUrl] (update thread). True: go ahead. False: skip it,
      * either put off ([deferred]) or refused ([refusal], the connection is in use).
      */
     fun clear(p: Playlist, requestUrl: String): Boolean {
         refusal = null
         val auto = trigger == SyncPlan.Trigger.AUTO
+        val token = job
         val result = onMain(if (auto) Step.DEFER else Step.GO) {
             val host = PlayerHost.peek()
-            val src: LiveSession.Source? = host?.session?.takeIf { it.state == LiveSession.State.PLAYING }?.source
-            val action = SyncPlan.decide(trigger, p.id, requestUrl, p.url, SyncPlan.Playing(src?.url, src?.account, films > 0, host?.screenOn == true))
+            val action = SyncPlan.decide(trigger, p.id, requestUrl, p.url, playingNow(host))
             if (action == SyncPlan.Action.DEFER) return@onMain Step.DEFER
             var letGo = false
             if (action == SyncPlan.Action.LET_GO && host != null) {
@@ -102,6 +143,11 @@ class SyncGuard(
             if ((letGo || SyncPlan.usesProvider(p.url, requestUrl)) && p.id !in leases) {
                 if (!PlayerHost.budget.acquire(p.id, p.maxConnections, LEASE)) return@onMain Step.BUSY
                 leases += p.id
+            }
+            // An automatic request is looked at again as live playback changes, until the job ends.
+            if (auto) {
+                underWay = UnderWay(token, p.id, requestUrl, p.url)
+                listen()
             }
             if (letGo) Step.SETTLE else Step.GO
         }
@@ -134,8 +180,36 @@ class SyncGuard(
                     host.backAfterUpdate()
                 }
             }
+            underWay = null
             if (waitForQuiet) watchQuiet()
+            listen()
         }
+    }
+
+    /** What plays now, as far as updates care (main thread). */
+    private fun playingNow(host: PlayerHost? = PlayerHost.peek()): SyncPlan.Playing {
+        val src: LiveSession.Source? = host?.session?.takeIf { it.state == LiveSession.State.PLAYING }?.source
+        return SyncPlan.Playing(src?.url, src?.account, films > 0, host?.screenOn == true)
+    }
+
+    /**
+     * Live playback changed: an automatic request under way that would now wait (the provider's own channel plays,
+     * or Live TV is about to tune one: [SyncPlan.requestGoesOn]) stops at its next safe point, so its connection is
+     * the channel's in a moment rather than after the whole download. Main thread.
+     */
+    private fun lookAgain() {
+        val w = underWay ?: return
+        if (stopped === w.job) return
+        if (!SyncPlan.requestGoesOn(SyncPlan.Trigger.AUTO, w.account, w.url, w.provider, playingNow())) stopped = w.job
+    }
+
+    /** The live player's status is followed while it's needed: waiting for a quiet moment, or an automatic request under way. */
+    private fun listen() {
+        val host = if (watching || underWay != null) PlayerHost.peek() else null
+        if (host === listening) return
+        listening?.removeListener(statusListener)
+        listening = host
+        host?.addListener(statusListener)
     }
 
     // ---- The hold line ----
@@ -164,13 +238,18 @@ class SyncGuard(
 
     private val statusListener = object : PlayerHost.Listener {
         // Not acted on inside the host's own call: it may be going through its listeners.
-        override fun onLiveStatus(status: PlayerHost.Status) { main.post { checkQuiet() } }
+        override fun onLiveStatus(status: PlayerHost.Status) {
+            main.post {
+                lookAgain()
+                checkQuiet()
+            }
+        }
     }
 
     private fun watchQuiet() {
         if (watching) return
         watching = true
-        PlayerHost.peek()?.addListener(statusListener)
+        listen()
         main.post { checkQuiet() }
     }
 
@@ -180,7 +259,7 @@ class SyncGuard(
         val livePlaying = host != null && (host.session.state == LiveSession.State.PLAYING || host.screenOn)
         if (livePlaying || films > 0) return
         watching = false
-        host?.removeListener(statusListener)
+        listen()
         onQuiet()
     }
 
