@@ -200,8 +200,17 @@ class SyncPlanTest {
         XmltvReader.read(parser, setOf("a"), 0L, Long.MAX_VALUE) { all++ }
         assertEquals(3000, all)
         assertFalse(whole.putOff)
-        // A file that breaks off is a failure, never taken for a stop.
-        val broken = CountingInputStream(java.io.ByteArrayInputStream(xml.copyOf(xml.size / 2))) {}
+        // A download cut off half-way (the connection reset) is a failure, never taken for a stop.
+        val cut = object : java.io.InputStream() {
+            val inner = java.io.ByteArrayInputStream(xml)
+            var left = xml.size / 2
+            override fun read(): Int = if (left-- <= 0) throw java.io.IOException("reset") else inner.read()
+            override fun read(b: ByteArray, off: Int, len: Int): Int {
+                if (left <= 0) throw java.io.IOException("reset")
+                return inner.read(b, off, minOf(len, left)).also { left -= it }
+            }
+        }
+        val broken = CountingInputStream(cut) {}
         val failed = runCatching {
             val p2 = org.kxml2.io.KXmlParser()
             p2.setInput(broken, null)

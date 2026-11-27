@@ -274,10 +274,11 @@ class LiveSync private constructor(context: Context) {
             return
         }
         if (!cleared(p, url, "e:" + p.id) { db.setEpgStatus(p.id, url, it, syncedAt = null) }) return
-        // An empty download from the same address never empties the guide (a new address may: it's what it lists).
+        // An empty download from the same address never empties the guide (a new address may: it's what it lists). Nor
+        // does one stopped part-way, whatever the reader made of the stop: what it read is never the whole guide.
         val before = db.epgStatuses().firstOrNull { it.source == p.id }
-        val accept = { count: Int -> SyncPlan.mayReplaceGuide(count, before?.programmes ?: 0, before?.url == url) }
         var stream: CountingInputStream? = null
+        val accept = { count: Int -> stream?.putOff != true && SyncPlan.mayReplaceGuide(count, before?.programmes ?: 0, before?.url == url) }
         try {
             val conn = Http.open(url)
             val t0 = SystemClock.elapsedRealtime()
