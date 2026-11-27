@@ -145,6 +145,45 @@ class TitlePageRepositoryTest {
     }
 
     @Test
+    fun tmdbDetailsStoredBeforeDetailsPartsWereKeptAreFetchedOnceMore() {
+        key = "k".repeat(32)
+        serveDune()
+        // What an earlier version stored an hour ago: fresh, but without "v" and Details' portraits, studios, countries.
+        val parsed = TitlePageFixtures.tmdb("tmdb_movie_details_appended.json", Kind.MOVIE)
+        val old = TmdbDetails.write(parsed).apply {
+            remove("v"); remove("castPics"); remove("networks"); remove("studios"); remove("countries")
+        }
+        val cache = JsonCache(File(dir, "vod")) { now }
+        cache.write(TmdbDetails.key(Kind.MOVIE, 693134), old, TmdbDetails.FRESH_MS, now - 3600_000L)
+        // TMDB failing: the stored details are kept, as with any due fetch.
+        tmdb.detailsError = java.io.IOException("offline")
+        val failed = repo().allDetails(dune)
+        assertEquals(listOf("movie|693134"), tmdb.detailsCalls)
+        assertTrue(failed.last().second)
+        assertEquals("PG-13", failed.last().first.ageRating)
+        assertTrue(failed.last().first.castPictures.isEmpty())
+        // TMDB back: shown at once from what's stored, then with the portraits and studio from the one new request.
+        tmdb.detailsError = null
+        val calls = repo().allDetails(dune)
+        assertEquals(listOf("movie|693134", "movie|693134"), tmdb.detailsCalls)
+        assertEquals("PG-13", calls.first().first.ageRating)
+        val d = calls.last().first
+        assertTrue(calls.last().second)
+        assertEquals("https://image.tmdb.org/t/p/w185/fixture_c1.jpg", d.castPictures.first())
+        assertEquals(listOf("Legendary Pictures"), d.studios)
+        // Stored again in the current form: the next visit asks nothing.
+        val next = repo().allDetails(dune)
+        assertEquals(listOf(true), next.map { it.second })
+        assertEquals(d.castPictures, next.single().first.castPictures)
+        assertEquals(2, tmdb.detailsCalls.size)
+        // Only the title page fetches it again: More Like This takes the old form as it is.
+        val film = Title("tt0000001", Kind.MOVIE, "Other", tmdbId = 693135)
+        cache.write(TmdbDetails.key(Kind.MOVIE, 693135), old.put("id", 693135), TmdbDetails.FRESH_MS, now)
+        repo().allSimilar(film)
+        assertEquals(2, tmdb.detailsCalls.size)
+    }
+
+    @Test
     fun aRefusedKeyCountsAsNone() {
         key = "k".repeat(32)
         serveDune()

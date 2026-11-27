@@ -2,7 +2,10 @@ package app.fireplayer.ui
 
 import android.content.Context
 import android.content.res.ColorStateList
+import android.graphics.Canvas
+import android.graphics.Paint
 import android.graphics.Rect
+import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
@@ -65,6 +68,66 @@ class CenterScrollView @JvmOverloads constructor(
     override fun onDetachedFromWindow() {
         glide.stop()
         super.onDetachedFromWindow()
+    }
+
+    /**
+     * A slim bar at the right edge, while the list is longer than the window: for a window read with Up and Down
+     * ([SidePanel.scrollHint]). Off by default; its paints exist only while it's on.
+     */
+    var slimBar = false
+        set(on) {
+            if (field == on) return
+            field = on
+            // Made while a window shows it, let go with it.
+            bar = if (on) SlimBar(resources.displayMetrics.density) else null
+            invalidate()
+        }
+
+    /** While [slimBar] is on, told after each layout whether the list is longer than the window (posted, not mid-layout). */
+    var onOverflow: ((Boolean) -> Unit)? = null
+
+    private class SlimBar(density: Float) {
+        val width = 3f * density
+        val inset = 4f * density
+        val minThumb = 24f * density
+        val track = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x1FFFFFFF }
+        val thumb = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x8CFFFFFF.toInt() }
+        val rect = RectF()
+    }
+    private var bar: SlimBar? = null
+
+    /** How far the list reaches past the window, in px (0: it fits). */
+    private fun overflow(): Int = ((getChildAt(0)?.height ?: 0) - (height - paddingTop - paddingBottom)).coerceAtLeast(0)
+
+    override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+        super.onLayout(changed, l, t, r, b)
+        val report = onOverflow
+        if (slimBar && report != null) {
+            val over = overflow() > 0
+            post { if (slimBar) report(over) }
+        }
+    }
+
+    override fun draw(canvas: Canvas) {
+        super.draw(canvas)
+        // After the list and its faded edges, so the bar isn't faded with them.
+        val b = bar ?: return
+        if (!slimBar) return
+        val max = overflow()
+        if (max <= 0) return
+        // Drawn in the list's own coordinates: the window's top is at scrollY.
+        val view = height - paddingTop - paddingBottom
+        val trackTop = scrollY + paddingTop + b.inset
+        val trackLength = view - 2 * b.inset
+        if (trackLength <= 0f) return
+        val right = (width - paddingRight).toFloat()
+        val r = b.width / 2f
+        b.rect.set(right - b.width, trackTop, right, trackTop + trackLength)
+        canvas.drawRoundRect(b.rect, r, r, b.track)
+        val thumb = (trackLength * view / (view + max)).coerceIn(b.minThumb.coerceAtMost(trackLength), trackLength)
+        val top = trackTop + (trackLength - thumb) * (scrollY.toFloat() / max).coerceIn(0f, 1f)
+        b.rect.set(right - b.width, top, right, top + thumb)
+        canvas.drawRoundRect(b.rect, r, r, b.thumb)
     }
 
     /**

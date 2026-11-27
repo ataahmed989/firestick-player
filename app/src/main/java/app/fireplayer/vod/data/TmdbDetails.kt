@@ -22,6 +22,14 @@ object TmdbDetails {
     const val LIST_KEPT = 20
     /** Cast names kept for Details. */
     const val CAST_KEPT = 15
+    /** Networks (a show's) or studios (a film's) kept for Details. */
+    const val MAKERS_KEPT = 3
+    /**
+     * The stored form's version, kept in it as "v": 2 since Details' portraits, networks, studios and countries are kept.
+     * Details stored before (no "v") still read, without those parts, and count as due for a fetch when a title page
+     * opens ([current]).
+     */
+    const val FORMAT = 2
 
     /** The parts appended to the one details call. */
     fun append(kind: Kind): String =
@@ -56,7 +64,10 @@ object TmdbDetails {
      * What the title page takes from TMDB. [ageRating] is the US one (a film's theatrical certification first; "NR"
      * and the like count as none); [runtimeMin] a film's length (a show's usual episode length); [releaseDate] as TMDB
      * writes it; [status] as TMDB words it ("Returning Series", "Ended"…); [backdrop] a path; [cast] in billing order (at
-     * most [CAST_KEPT]); [directors] and [writers] a film's (each name once); [createdBy] a show's.
+     * most [CAST_KEPT]); [directors] and [writers] a film's (each name once); [createdBy] a show's. The rest, for
+     * Details, comes in the same answer: [castPictures] each cast member's portrait path, in [cast]'s order (null for one
+     * TMDB has none of; empty when it has none at all); [networks] a show's (as `networks`), [studios] a film's
+     * production companies, at most [MAKERS_KEPT] each; [countries] where it was made (`production_countries`).
      */
     data class Extras(
         val tmdbId: Int,
@@ -76,7 +87,19 @@ object TmdbDetails {
         val similar: List<Item> = emptyList(),
         /** The language it was made in, ISO 639-1 ("en", "ko"); null when TMDB doesn't say. */
         val originalLanguage: String? = null,
+        val castPictures: List<String?> = emptyList(),
+        val networks: List<String> = emptyList(),
+        val studios: List<String> = emptyList(),
+        val countries: List<String> = emptyList(),
+        /** The stored form it was read from ([FORMAT] for an answer just parsed; 1 for one stored before "v" was kept). */
+        val format: Int = FORMAT,
     )
+
+    /**
+     * Whether stored details hold everything a title page shows: none (TMDB had no such title) or ones stored in this
+     * [FORMAT]. Older ones are still shown, and fetched again once (the stored copy kept should the fetch fail).
+     */
+    fun current(e: Extras?): Boolean = e == null || e.format >= FORMAT
 
     /** A details answer (with [append]'s parts) as [Extras]; null without an id. */
     fun parse(text: String, kind: Kind): Extras? {
@@ -85,6 +108,13 @@ object TmdbDetails {
         val show = kind == Kind.SERIES
         val credits = o.optJSONObject("credits")
         val crew = objects(credits?.optJSONArray("crew"))
+        // Each name once, in billing order, with its portrait.
+        val cast = objects(credits?.optJSONArray("cast"))
+            .withIndex()
+            .sortedWith(compareBy({ it.value.optInt("order", Int.MAX_VALUE) }, { it.index }))
+            .mapNotNull { c -> c.value.text("name")?.let { it to c.value.text("profile_path")?.takeIf { p -> p.startsWith("/") } } }
+            .distinctBy { it.first }
+            .take(CAST_KEPT)
         return Extras(
             tmdbId = id,
             kind = kind,
@@ -98,19 +128,21 @@ object TmdbDetails {
             status = o.text("status"),
             backdrop = o.text("backdrop_path")?.takeIf { it.startsWith("/") },
             createdBy = objects(o.optJSONArray("created_by")).mapNotNull { it.text("name") }.distinct(),
-            cast = objects(credits?.optJSONArray("cast"))
-                .withIndex()
-                .sortedWith(compareBy({ it.value.optInt("order", Int.MAX_VALUE) }, { it.index }))
-                .mapNotNull { it.value.text("name") }
-                .distinct()
-                .take(CAST_KEPT),
+            cast = cast.map { it.first },
             directors = if (show) emptyList() else crew.filter { it.text("job") == "Director" }.mapNotNull { it.text("name") }.distinct(),
             writers = if (show) emptyList() else crew.filter { c -> c.text("job")?.let { it in WRITING_JOBS } == true }.mapNotNull { it.text("name") }.distinct(),
             recommendations = items(o.optJSONObject("recommendations"), kind),
             similar = items(o.optJSONObject("similar"), kind),
             originalLanguage = o.text("original_language")?.lowercase(java.util.Locale.ROOT),
+            castPictures = if (cast.any { it.second != null }) cast.map { it.second } else emptyList(),
+            networks = if (show) names(o.optJSONArray("networks")).take(MAKERS_KEPT) else emptyList(),
+            studios = if (show) emptyList() else names(o.optJSONArray("production_companies")).take(MAKERS_KEPT),
+            countries = names(o.optJSONArray("production_countries")),
         )
     }
+
+    /** The `name` of each object in [a], each once, in order. */
+    private fun names(a: JSONArray?): List<String> = objects(a).mapNotNull { it.text("name") }.distinct()
 
     /**
      * The US age rating from what [append] adds: a show's `content_ratings` US entry; a film's `release_dates` US
@@ -140,6 +172,7 @@ object TmdbDetails {
     // ---- The trimmed form kept on disk ----
 
     fun write(e: Extras): JSONObject = JSONObject().apply {
+        put("v", e.format)
         put("id", e.tmdbId)
         put("type", e.kind.type)
         e.imdbId?.let { put("imdb", it) }
@@ -154,6 +187,11 @@ object TmdbDetails {
         if (e.cast.isNotEmpty()) put("cast", JSONArray(e.cast))
         if (e.directors.isNotEmpty()) put("directors", JSONArray(e.directors))
         if (e.writers.isNotEmpty()) put("writers", JSONArray(e.writers))
+        // Details' parts, each left out when empty: details stored before they were kept read as having none.
+        if (e.castPictures.isNotEmpty()) put("castPics", JSONArray(e.castPictures.map { it ?: "" }))
+        if (e.networks.isNotEmpty()) put("networks", JSONArray(e.networks))
+        if (e.studios.isNotEmpty()) put("studios", JSONArray(e.studios))
+        if (e.countries.isNotEmpty()) put("countries", JSONArray(e.countries))
         put("recommendations", writeItems(e.recommendations))
         put("similar", writeItems(e.similar))
     }
@@ -162,6 +200,7 @@ object TmdbDetails {
         if (o == null) return null
         val id = o.optInt("id", 0).takeIf { it > 0 } ?: return null
         val kind = kindOf(o.text("type")) ?: return null
+        val cast = o.optJSONArray("cast").texts()
         return Extras(
             tmdbId = id,
             kind = kind,
@@ -173,13 +212,28 @@ object TmdbDetails {
             status = o.text("status"),
             backdrop = o.text("backdrop"),
             createdBy = o.optJSONArray("createdBy").texts(),
-            cast = o.optJSONArray("cast").texts(),
+            cast = cast,
             directors = o.optJSONArray("directors").texts(),
             writers = o.optJSONArray("writers").texts(),
             recommendations = readItems(o.optJSONArray("recommendations")),
             similar = readItems(o.optJSONArray("similar")),
             originalLanguage = o.text("lang"),
+            castPictures = pictures(o.optJSONArray("castPics"), cast.size),
+            networks = o.optJSONArray("networks").texts(),
+            studios = o.optJSONArray("studios").texts(),
+            countries = o.optJSONArray("countries").texts(),
+            format = o.optInt("v", 1),
         )
+    }
+
+    /**
+     * The stored portraits, one per cast name ("" for none): empty when there are none, or when they don't pair up
+     * with the names (a damaged entry shows no portraits rather than the wrong ones).
+     */
+    private fun pictures(a: JSONArray?, castSize: Int): List<String?> {
+        if (a == null || a.length() != castSize) return emptyList()
+        val out = (0 until a.length()).map { i -> (a.opt(i) as? String)?.takeIf { it.startsWith("/") } }
+        return if (out.any { it != null }) out else emptyList()
     }
 
     internal fun writeItems(items: List<Item>) = JSONArray().apply {

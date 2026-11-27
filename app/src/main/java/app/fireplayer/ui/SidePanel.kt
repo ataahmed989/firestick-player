@@ -93,7 +93,8 @@ class SidePanel(private val activity: Activity) {
         root.setOnKeyListener { _, keyCode, event ->
             val vertical = keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN
             if (vertical && arrowScroll && !longShown && event.action == KeyEvent.ACTION_DOWN && focusables().isEmpty()) {
-                val step = rows.dp(ARROW_SCROLL_DP)
+                // A press moves a few lines; held, the repeats keep it gliding at an even, readable pace.
+                val step = rows.dp(if (event.repeatCount > 0) ARROW_HOLD_DP else ARROW_SCROLL_DP)
                 scroll.glideBy(if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) step else -step)
             }
             vertical || keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
@@ -109,6 +110,108 @@ class SidePanel(private val activity: Activity) {
      */
     fun scrollsWithArrows() {
         arrowScroll = true
+    }
+
+    /** Views pinned under the window's title, outside its scrolling list ([pinned]); made the first time one asks. */
+    private var pinnedBox: LinearLayout? = null
+    /** The "↕ Scroll" foot under the list ([scrollHint]); made the first time a window asks for it. */
+    private var foot: View? = null
+    private var hint = false
+
+    /**
+     * [view] stays under the window's title while its list scrolls (a title's year and length, a hairline), for a window
+     * read with the arrows ([scrollHint]). Given again each time the window is drawn; other windows have none.
+     */
+    fun pinned(view: View) {
+        val box = pinnedBox ?: LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            val panel = root as ViewGroup
+            // In line with the title's words at the start and with the list's at the end, short of the slim bar's room
+            // ([scrollHint]): a hairline here spans the same as one in the list and the foot's.
+            panel.addView(this, panel.indexOfChild(title) + 1, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                marginStart = rows.dp(TITLE_INSET_DP)
+                marginEnd = rows.dp(BAR_ROOM_DP)
+            })
+        }.also { pinnedBox = it }
+        box.addView(view)
+        box.visibility = View.VISIBLE
+    }
+
+    /**
+     * A window read with Up and Down ([scrollsWithArrows]) shows that it goes on: a slim bar at the list's right edge and
+     * "↕ Scroll" under it, only while the list is longer than the window.
+     */
+    fun scrollHint() {
+        hint = true
+        // Room at the list's right for the bar, so it never lies over what the window shows.
+        list.setPaddingRelative(list.paddingStart, list.paddingTop, rows.dp(BAR_ROOM_DP), list.paddingBottom)
+        if (foot == null) {
+            foot = scrollFoot().also { f ->
+                val panel = root as ViewGroup
+                panel.addView(f, panel.indexOfChild(scroll) + 1)
+            }
+            scroll.onOverflow = { over -> foot?.let { f -> f.visibility = if (hint && over) View.VISIBLE else View.GONE } }
+        }
+        scroll.slimBar = true
+    }
+
+    /**
+     * "↕ Scroll", centred under a hairline. The hairline spans what the pinned one and a hairline in the list do: from
+     * the title's words to the slim bar's room.
+     */
+    private fun scrollFoot(): View = LinearLayout(activity).apply {
+        orientation = LinearLayout.VERTICAL
+        visibility = View.GONE
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            topMargin = rows.dp(6)
+        }
+        addView(DetailsLook.hairline(activity).apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, DetailsLook.hairlinePx(activity)).apply {
+                marginStart = rows.dp(TITLE_INSET_DP)
+                marginEnd = rows.dp(BAR_ROOM_DP)
+            }
+        })
+        addView(LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(0, rows.dp(8), 0, 0)
+            val muted = ContextCompat.getColor(activity, R.color.text_muted)
+            addView(ImageView(activity).apply {
+                setImageResource(R.drawable.ic_scroll_hint)
+                imageTintList = android.content.res.ColorStateList.valueOf(muted)
+            }, LinearLayout.LayoutParams(rows.dp(14), rows.dp(14)).apply { marginEnd = rows.dp(5) })
+            addView(TextView(activity).apply {
+                text = "Scroll"
+                typeface = ResourcesCompat.getFont(activity, R.font.figtree_500)
+                setTextColor(muted)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, DetailsLook.LINE_SP)
+            })
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+    }
+
+    /**
+     * Takes away what the last window pinned or showed under its list: each window gives its own again. [closing]: the
+     * window is closing, and the views made for them go too, so nothing of it stays.
+     */
+    private fun clearPinned(closing: Boolean = false) {
+        pinnedBox?.let {
+            it.removeAllViews()
+            it.visibility = View.GONE
+        }
+        hint = false
+        scroll.slimBar = false
+        foot?.visibility = View.GONE
+        if (list.paddingEnd != 0) list.setPaddingRelative(list.paddingStart, list.paddingTop, 0, list.paddingBottom)
+        if (closing) {
+            val panel = root as ViewGroup
+            pinnedBox?.let { panel.removeView(it) }
+            foot?.let { panel.removeView(it) }
+            pinnedBox = null
+            foot = null
+            scroll.onOverflow = null
+        }
     }
 
     /**
@@ -219,6 +322,7 @@ class SidePanel(private val activity: Activity) {
         root.animate().cancel()
         root.visibility = View.GONE
         list.removeAllViews()
+        clearPinned(closing = true)
         if (longShown) hideLong()
         lastEntry = null
         lastEntryIndex = -1
@@ -230,7 +334,8 @@ class SidePanel(private val activity: Activity) {
         activity.window.decorView.jumpDrawablesToCurrentState()
     }
 
-    fun setTitle(text: String) {
+    /** The window's title; it may carry a badge after it (the Details window's parental rating, [DetailsLook.titled]). */
+    fun setTitle(text: CharSequence) {
         title.text = text
     }
 
@@ -278,6 +383,7 @@ class SidePanel(private val activity: Activity) {
         liveValues.clear()
         pendingLong = null
         arrowScroll = false
+        clearPinned()
         renderer?.invoke(this)
         val entries = pendingLong
         pendingLong = null
@@ -318,7 +424,9 @@ class SidePanel(private val activity: Activity) {
                 lastEntry = key
                 lastEntryIndex = index
             }
-            (root as ViewGroup).addView(v, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+            // In the list's place, above anything under it.
+            val panel = root as ViewGroup
+            panel.addView(v, panel.indexOfChild(scroll) + 1, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         }
         if (!longShown) {
             longShown = true
@@ -1188,6 +1296,15 @@ class SidePanel(private val activity: Activity) {
 
         /** How far one press of Up or Down moves a window read with the arrows ([scrollsWithArrows]): about three lines. */
         const val ARROW_SCROLL_DP = 60
+
+        /** How far each repeat of a held Up or Down moves it on: a steady glide that can still be read. */
+        const val ARROW_HOLD_DP = 30
+
+        /** The title's words sit this far in from the window's content (side_panel.xml's padding on the title). */
+        private const val TITLE_INSET_DP = 4
+
+        /** Room for the slim bar right of a window's list while it shows one ([scrollHint]). */
+        private const val BAR_ROOM_DP = 14
 
         /** The icon beside each heading, by its name; headings not listed have none. */
         private val HEADING_ICONS = mapOf(
