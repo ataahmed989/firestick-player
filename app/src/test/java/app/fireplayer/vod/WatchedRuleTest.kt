@@ -107,6 +107,30 @@ class WatchedRuleTest {
     }
 
     @Test
+    fun exitLeavesTheTitleWhereItIsOnlyWithAKnownSceneStillAhead() {
+        // Guardians of the Galaxy (7241 s): SkipDB's credits from 7079.8 s to the end, so the Exit card comes; IntroDB's
+        // scene at 7210 s. Exit as the card's count runs out (7090 s): the scene is ahead.
+        val film = 7_241 * s
+        val credits = 7_079_800L
+        val scene = 7_210 * s
+        assertTrue(WatchedRule.sceneAhead(7_090 * s, film, credits, scene))
+        assertTrue(WatchedRule.sceneAhead(scene - 3 * s - 1, film, credits, scene))
+        // From 3 s before the scene, and at the very end: watched, Exit is the end.
+        assertFalse(WatchedRule.sceneAhead(scene - 3 * s, film, credits, scene))
+        assertFalse(WatchedRule.sceneAhead(film - WatchedRule.VERY_END_MS, film, credits, scene))
+        // No scene known (credits alone, or nothing): never ahead, whatever the position (Exit is the end, as always).
+        assertFalse(WatchedRule.sceneAhead(7_090 * s, film, credits, null))
+        assertFalse(WatchedRule.sceneAhead(7_000 * s, film, credits, null))
+        assertFalse(WatchedRule.sceneAhead(7_090 * s, film, null, null))
+        // A "scene" the rule doesn't trust (the first half, past the end) isn't one; nor without the file's length.
+        assertFalse(WatchedRule.sceneAhead(7_090 * s, film, credits, 1_000 * s))
+        assertFalse(WatchedRule.sceneAhead(7_090 * s, film, credits, film + s))
+        assertFalse(WatchedRule.sceneAhead(7_090 * s, 0L, credits, scene))
+        // Another app's video left there: its end isn't reached either, so its place is kept (savePosition).
+        assertFalse(endReached(7_090 * s, film, credits, scene))
+    }
+
+    @Test
     fun aSwitchStartedPastItsEndKeepsNoPlaceTheRuleCountsAsWatched() {
         val film = 130 * min
         // Barely played from a switch at its end: its place is kept only while the rule doesn't count it as watched.

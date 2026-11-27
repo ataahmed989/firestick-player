@@ -1040,10 +1040,19 @@ object WatchedRule {
      * when known, else the credits' start ([creditsAtMs]); null when neither is known. Only a time in the file's second
      * half counts (credits and what follows them are there; [app.fireplayer.player.SkipRules.fits] keeps only those).
      */
-    fun endAt(durationMs: Long, creditsAtMs: Long?, sceneAtMs: Long?): Long? {
-        fun trusted(t: Long?) = t?.takeIf { durationMs > 0 && it >= durationMs / 2 && it < durationMs }
-        return trusted(sceneAtMs) ?: trusted(creditsAtMs)
-    }
+    fun endAt(durationMs: Long, creditsAtMs: Long?, sceneAtMs: Long?): Long? =
+        trusted(durationMs, sceneAtMs) ?: trusted(durationMs, creditsAtMs)
+
+    /**
+     * A known real scene after the credits ([sceneAtMs], as [endAt] trusts it) that [positionMs] hasn't reached by the
+     * rule ([countsAsWatched]): the end card's Exit then leaves the title where it is, in Continue Watching for the
+     * scene, instead of at its end, watched (the first point of the rule). False with no such scene known.
+     */
+    fun sceneAhead(positionMs: Long, durationMs: Long, creditsAtMs: Long?, sceneAtMs: Long?): Boolean =
+        trusted(durationMs, sceneAtMs) != null && !countsAsWatched(positionMs, durationMs, creditsAtMs, sceneAtMs)
+
+    /** [t] when it lies in the second half of a file [durationMs] long ([endAt]); else null. */
+    private fun trusted(durationMs: Long, t: Long?): Long? = t?.takeIf { durationMs > 0 && it >= durationMs / 2 && it < durationMs }
 }
 
 // ---- The engine's door ----------------------------------------------------------------------------------------------

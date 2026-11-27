@@ -16,6 +16,7 @@ import app.fireplayer.vod.PlayRequest
 import app.fireplayer.vod.StartAt
 import app.fireplayer.vod.Sources
 import app.fireplayer.vod.TitleDetails
+import app.fireplayer.vod.WatchedRule
 import app.fireplayer.vod.endReached
 import app.fireplayer.vod.data.VodRepositories
 import app.fireplayer.vod.play.MainTicker
@@ -480,6 +481,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private var controlsShown = false
     private var moreShown = false
     private var completed = false
+    /** Exit on the end card noted a video another app opened as watched to its end: leaving notes nothing more. */
+    private var endNoted = false
     /** The item playing before the latest switch, so a finished episode's resume point can be cleared. */
     private var playingIndex = 0
     /** Whether the current player was built with libass ("Keep embedded styling" on). */
@@ -1662,6 +1665,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             it.record(pos, if (dur == C.TIME_UNSET) 0L else dur, ends?.creditsAt, ends?.sceneAt)
             return
         }
+        // Exit on the end card noted its end already ([exitAfterCredits]): leaving notes nothing more.
+        if (endNoted) return
         // Watched to the end: the last 3 minutes, or with its credits (or a scene after them) known, those reached.
         val finished = dur != C.TIME_UNSET && endReached(pos, dur, ends?.creditsAt, ends?.sceneAt)
         prefs.savePosition(entry.key, if (pos > 30_000 && !finished && !p.isCurrentMediaItemLive) pos else 0L)
@@ -1954,9 +1959,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             }
             completed = true
             if (s != null) {
-                // Watched to the end; the next episode then starts from its own sources, when there is one.
+                // Watched to the end, recorded once; the next episode then starts from its own sources, when there is one.
                 val e = currentEnds()
-                player?.duration?.takeIf { it > 0 }?.let { d -> s.record(d, d, e?.creditsAt, e?.sceneAt) }
+                player?.duration?.takeIf { it > 0 }?.let { d -> s.recordEnd(d, d, e?.creditsAt, e?.sceneAt) }
                 if (s.ended(prefs.playNextEpisode)) return
             } else {
                 prefs.savePosition(entries.getOrNull(player?.currentMediaItemIndex ?: 0)?.key ?: "", 0L)
@@ -3284,20 +3289,27 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         return null
     }
 
-    /** Exit, after a film's credits: watched to the end, back to where it was opened from. */
+    /**
+     * Exit, after a film's credits: watched to the end, back to where it was opened from. With a known real scene after
+     * the credits still ahead (another source's than the credits', so the card came all the same), it leaves as Back
+     * does: where it is, by the watched rule's first point not watched, so it stays in Continue Watching for the scene.
+     */
     private fun exitAfterCredits() {
         val p = player ?: return
         hidePostPlay()
-        completed = true
-        // From Films & Shows: the library marks it watched (the credits ran).
-        source?.let { s ->
-            val e = currentEnds()
-            p.duration.takeIf { it > 0 }?.let { d -> s.record(d, d, e?.creditsAt, e?.sceneAt) }
+        val e = currentEnds()
+        if (WatchedRule.sceneAhead(p.currentPosition, p.duration, e?.creditsAt, e?.sceneAt)) {
+            finishWithResult()
+            return
         }
+        completed = true
+        // From Films & Shows: the library marks it watched (the credits ran), once: leaving records nothing after it.
+        source?.let { s -> p.duration.takeIf { it > 0 }?.let { d -> s.recordEnd(d, d, e?.creditsAt, e?.sceneAt) } }
         entries.getOrNull(p.currentMediaItemIndex)?.let {
             prefs.savePosition(it.key, 0L)
             noteWatched(it, p.currentPosition, p.duration, finished = true, live = p.isCurrentMediaItemLive)
         }
+        endNoted = true
         finishWithResult()
     }
 
@@ -3608,11 +3620,12 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         val s = source
         if (s != null) {
             // From Films & Shows: this one counts as watched (the credits began; moving on is leaving any scene after
-            // them too), and the next starts from its own sources, the same kind as this one's.
+            // them too), recorded once: the save as the next one starts records nothing after it. The next starts from
+            // its own sources, the same kind as this one's.
             hidePostPlay()
             val e = currentEnds()
             p.duration.takeIf { it > 0 }?.let { d ->
-                s.record(maxOf(p.currentPosition, e?.creditsAt ?: 0L, e?.sceneAt ?: 0L), d, e?.creditsAt, e?.sceneAt)
+                s.recordEnd(maxOf(p.currentPosition, e?.creditsAt ?: 0L, e?.sceneAt ?: 0L).coerceAtMost(d), d, e?.creditsAt, e?.sceneAt)
             }
             s.ended(playNext = true)
             return
