@@ -461,6 +461,46 @@ class MkvKeyframesTest {
     }
 
     @Test
+    fun aLongFilmsIndexWithEveryTracksLinesGivesEveryKeyframe() {
+        // Three hours, a keyframe a second, and four subtitle tracks' lines every other second: 32400 points, coming a
+        // piece of 16 KiB at a time as the film's reader hands them on.
+        val all = ArrayList<Listed>()
+        for (s in 0 until 10_800) {
+            all += Listed(s * 1000L, 1, s * 4_000_000L + 500)
+            if (s % 2 == 0) for (track in 3..6) all += Listed(s * 1000L + 100 * track, track, s * 4_000_000L + 2_000_000L)
+        }
+        val bytes = indexOf(all)
+        val at = 43_200_000_000L
+        val r = read(bytes, 16 * 1024, at = at)
+        assertNull(r.failure)
+        assertTrue(r.done)
+        assertEquals(10_800, r.count)
+        assertEquals(32_400, r.points)
+        val inner = media3(all.map { it.time to it.cluster }, SEGMENT, 10_800_000_000L)
+        val map = r.build(inner, SEGMENT, at + bytes.size)!!
+        assertEquals(10_800, map.count)
+        for (s in listOf(0, 1, 1023, 1024, 1025, 5000, 10_799)) {
+            assertPoint(s * 1_000_000L, SEGMENT + s * 4_000_000L + 500, map.getSeekPoints(s * 1_000_000L + 999_999L).first)
+            // Media3's own point for the same time is the last line before it, when the second has lines.
+            if (s % 2 == 0) assertEquals(s * 1_000_000L + 600_000L, inner.getSeekPoints(s * 1_000_000L + 999_999L).first.timeUs)
+        }
+    }
+
+    @Test
+    fun onlyAJumpsOwnFirstPictureGetsItsLine() {
+        // Made at 5000 (the box's clock), on from 2648732 ms of the film.
+        assertTrue(JumpLine.own(2_648_774L, 2_648_732L, shownAt = 5_900L, armedAt = 5_000L))
+        assertTrue(JumpLine.own(2_648_732L, 2_648_732L, shownAt = 5_000L, armedAt = 5_000L))
+        // A picture ahead of the sound is the jump's too (what the line is there to show).
+        assertTrue(JumpLine.own(2_652_149L, 2_648_732L, shownAt = 6_300L, armedAt = 5_000L))
+        // The first picture of the jump before it, shown before this one was made: keys came faster than pictures.
+        assertFalse(JumpLine.own(2_648_774L, 2_648_732L, shownAt = 4_990L, armedAt = 5_000L))
+        // Or shown just as it was made, from a minute back or on, where that jump had gone.
+        assertFalse(JumpLine.own(2_588_732L, 2_648_732L, shownAt = 5_002L, armedAt = 5_000L))
+        assertFalse(JumpLine.own(2_708_732L, 2_648_732L, shownAt = 5_002L, armedAt = 5_000L))
+    }
+
+    @Test
     fun theKeyframeInTheLogIsOnlyThisJumpsOwn() {
         assertEquals(-1L, JumpLine.keyMs(null, 5_200L))
         assertEquals(4_000L, JumpLine.keyMs(MkvJump.Mark(5_200_000L, 4_000_000L), 5_200L))

@@ -3,6 +3,7 @@ package app.fireplayer.player
 import android.media.MediaFormat
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import androidx.annotation.OptIn
 import androidx.media3.common.C
 import androidx.media3.common.Format
@@ -22,12 +23,13 @@ import androidx.media3.exoplayer.video.VideoFrameMetadataListener
  * it in an MKV with no index, or one whose index couldn't be read for keyframes, and in other kinds of file.
  *
  * Here the first frame after a break in the frames (a jump, or the start) is told to onFirstFrame on the main thread with
- * its time, and the caller compares it with where the film is.
+ * its time and when it was handed over to be shown (SystemClock.elapsedRealtime), and the caller compares it with where
+ * the film is.
  */
 @OptIn(UnstableApi::class)
 class JumpFrameCheck(
     private val inner: VideoFrameMetadataListener,
-    private val onFirstFrame: (frameMs: Long) -> Unit,
+    private val onFirstFrame: (frameMs: Long, shownAt: Long) -> Unit,
 ) : VideoFrameMetadataListener {
 
     private val main = Handler(Looper.getMainLooper())
@@ -46,7 +48,8 @@ class JumpFrameCheck(
         // Frames that follow on (dropped ones included) aren't a new start.
         if (last != C.TIME_UNSET && presentationTimeUs - last in 1..BREAK_US) return
         val frameMs = presentationTimeUs / 1000
-        main.post { onFirstFrame(frameMs) }
+        val shownAt = SystemClock.elapsedRealtime()
+        main.post { onFirstFrame(frameMs, shownAt) }
     }
 
     private companion object {
@@ -72,6 +75,19 @@ object JumpLine {
         return "${if (start) "start at" else "jump to"} $targetMs ms: on from $landedMs ms, first picture at $frameMs ms " +
             "(${if (off >= 0) "+" else ""}$off ms from the sound) after $waitMs ms$key"
     }
+
+    /**
+     * Whether the first frame after a break, from [frameMs] of the film and handed over to be shown at [shownAt], is the
+     * first picture of the jump made at [armedAt] that went on from [landedMs]. Not one shown before the jump was made
+     * (the picture of the jump before it, when keys follow each other faster than pictures come), nor one from before
+     * where the film goes on or from far after it.
+     */
+    fun own(frameMs: Long, landedMs: Long, shownAt: Long, armedAt: Long): Boolean =
+        shownAt >= armedAt && frameMs >= landedMs - BEFORE_MS && frameMs <= landedMs + AHEAD_MS
+
+    /** A jump's first picture is at most this much before where the film goes on (a frame, rounded), or after it. */
+    private const val BEFORE_MS = 1_000L
+    private const val AHEAD_MS = 20_000L
 
     /** The keyframe [mark] gave for the jump that went on from [landedMs], in ms; -1 when it isn't that jump's. */
     internal fun keyMs(mark: MkvJump.Mark?, landedMs: Long): Long =

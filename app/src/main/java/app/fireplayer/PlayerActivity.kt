@@ -2134,14 +2134,19 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         jumpLogNoteBefore = MkvJump.last
     }
 
-    /** The first frame after a break in the frames ([JumpFrameCheck]): the jump's line for the log, then its check. */
-    private fun firstFrameAfterBreak(frameMs: Long) {
+    /**
+     * The first frame after a break in the frames ([JumpFrameCheck]), handed over to be shown at [shownAt]: the jump's
+     * line for the log when it's that jump's first picture ([JumpLine.own]), then its check.
+     */
+    private fun firstFrameAfterBreak(frameMs: Long, shownAt: Long) {
         val at = jumpLogAt
         if (at != 0L) {
-            jumpLogAt = 0L
-            val waited = SystemClock.elapsedRealtime() - at
-            // Later than this it's some other break's frame (the next episode's first), not this jump's.
-            if (waited <= JUMP_LOG_WINDOW_MS) {
+            val waited = shownAt - at
+            if (waited > JUMP_LOG_WINDOW_MS) {
+                // So long after, it's some other break's frame (the next episode's first), not this jump's.
+                jumpLogAt = 0L
+            } else if (JumpLine.own(frameMs, jumpLogLandedMs, shownAt, at)) {
+                jumpLogAt = 0L
                 val key = JumpLine.keyMs(MkvJump.last.takeIf { it !== jumpLogNoteBefore }, jumpLogLandedMs)
                 android.util.Log.i(TAG, JumpLine.text(jumpLogTargetMs, jumpLogLandedMs, frameMs, waited, key, jumpLogStart))
             }

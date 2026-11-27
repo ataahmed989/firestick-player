@@ -7,6 +7,7 @@ import androidx.media3.common.MimeTypes
 import androidx.media3.common.ParserException
 import androidx.media3.common.util.ParsableByteArray
 import androidx.media3.extractor.DefaultExtractorInput
+import androidx.media3.extractor.ChunkIndex
 import androidx.media3.extractor.Extractor
 import androidx.media3.extractor.ExtractorOutput
 import androidx.media3.extractor.ExtractorsFactory
@@ -1226,6 +1227,28 @@ class SeekableMkvTest {
     }
 
     @Test
+    fun anIndexOfTheVideosKeyframesAloneGivesTheSamePointsAsMedia3() {
+        // Nothing listed but the picture's keyframes (a film with no subtitles in it, or a muxer that lists only those):
+        // every jump goes exactly where it went before, a keyframe a cluster or one every 4 s.
+        for (gop in listOf(1, 4)) {
+            val film = film(tracksLast = false, pad = 70_000, gop = gop)
+            val mine = read(film, wrapped()).out.seekMap!!
+            val theirs = read(film, media3()).out.seekMap!!
+            assertTrue(mine is KeyframeSeekMap)
+            assertEquals((mine as KeyframeSeekMap).count, mine.points)
+            assertEquals(theirs.durationUs, mine.durationUs)
+            for (t in 0L..11_990_000L step 110_000L) {
+                val a = theirs.getSeekPoints(t)
+                val b = mine.getSeekPoints(t)
+                assertEquals(a.first.timeUs, b.first.timeUs)
+                assertEquals(a.first.position, b.first.position)
+                assertEquals(a.second.timeUs, b.second.timeUs)
+                assertEquals(a.second.position, b.second.position)
+            }
+        }
+    }
+
+    @Test
     fun aFilmInAnotherTimeUnitHasItsKeyframesAtMedia3sTimes() {
         // A tenth of a millisecond a unit: every time in the file counts ten times less. The keyframes still sit at the
         // times Media3 gives the same points (checked against its reading before they're used).
@@ -1250,6 +1273,87 @@ class SeekableMkvTest {
         assertEquals(1L, two.number)
         assertEquals(2, two.count)
         assertEquals(23.976f, two.frameRate, 0.001f)
+    }
+
+    // --- A film as FFmpeg wrote it
+
+    /**
+     * test/resources/mkv/long-gop-ffmpeg.mkv: 24 s of VP9 picture (track 1) with a keyframe every 4 s, Opus sound (2) and
+     * a subtitle line (3) half a second into every second, in clusters half a second long (as a heavy film's are),
+     * written by FFmpeg 6.1.1:
+     *
+     *     ffmpeg -f lavfi -i testsrc2=size=64x36:rate=24:duration=24 -f lavfi -i sine=frequency=300:sample_rate=48000:duration=24
+     *       -i lines.srt -map 0:v -map 1:a -map 2:s -c:v libvpx-vp9 -b:v 12k -g 96 -keyint_min 96 -c:a libopus -b:a 6k -ac 1
+     *       -c:s srt -cluster_time_limit 500 -fflags +bitexact -map_metadata -1 long-gop-ffmpeg.mkv
+     *
+     * Its index, at the end of the file, lists 30 points: the 6 keyframes and the 24 lines, each line's with how long it
+     * lasts, and a CRC-32 before them.
+     */
+    private fun ffmpegFilm(): Film {
+        val bytes = requireNotNull(javaClass.getResource("/mkv/long-gop-ffmpeg.mkv")) { "missing fixture" }.readBytes()
+        val layout = MkvHeader.layout(bytes, bytes.size)!!
+        // The Segment's children, one after the other: where each cluster starts.
+        val clusters = ArrayList<Long>()
+        var at = layout.segmentStart.toInt()
+        while (at + 12 <= bytes.size) {
+            val idLength = MkvHeader.vintLength(bytes[at])
+            var id = 0L
+            repeat(idLength) { id = (id shl 8) or (bytes[at + it].toLong() and 0xFF) }
+            val sizeLength = MkvHeader.vintLength(bytes[at + idLength])
+            var size = (bytes[at + idLength].toLong() and 0xFF) and (0xFFL shr sizeLength)
+            for (i in 1 until sizeLength) size = (size shl 8) or (bytes[at + idLength + i].toLong() and 0xFF)
+            if (id == 0x1F43B675L) clusters += at.toLong()
+            at += idLength + sizeLength + size.toInt()
+        }
+        val contents = clusters.map { it + 4 + MkvHeader.vintLength(bytes[it.toInt() + 4]) }
+        return Film(bytes, layout.segmentStart, layout.tracks, layout.cues, clusters, contents, emptyList(), emptyList(), emptyList())
+    }
+
+    @Test
+    fun inAFilmFromFFmpegMedia3LandsOnALinesPointAndThePictureComesFromLater() {
+        val film = ffmpegFilm()
+        assertEquals(49, film.clusters.size)
+        val r = read(film, media3())
+        val map = r.out.seekMap!!
+        assertTrue(map is ChunkIndex)
+        assertEquals(30, (map as ChunkIndex).length)
+        // A jump to 7.2 s by the film's rule: on from the line at 6.5 s, and the first keyframe from its cluster on is
+        // the one at 8 s. To 2.9 s: the line at 2.5 s, and the picture from 4 s.
+        for ((target, landed, picture) in listOf(Triple(7_200_000L, 6_500_000L, 8_000_000L), Triple(2_900_000L, 2_500_000L, 4_000_000L))) {
+            val points = map.getSeekPoints(target)
+            val at = FILM_SEEK.resolveSeekPositionUs(target, points.first.timeUs, points.second.timeUs)
+            assertEquals(landed, at)
+            assertEquals(picture, firstKeyFrom(r, map.getSeekPoints(at).first, at))
+        }
+    }
+
+    @Test
+    fun inAFilmFromFFmpegEveryJumpStartsItsPictureNoLaterThanItsSound() {
+        val film = ffmpegFilm()
+        val r = read(film, wrapped())
+        val map = r.out.seekMap!!
+        assertTrue(map is KeyframeSeekMap)
+        assertEquals(6, (map as KeyframeSeekMap).count)
+        assertEquals(30, map.points)
+        // The same requests as Media3 makes: the file's start, its index, then the first cluster.
+        assertEquals(read(film, media3()).loader.opens, r.loader.opens)
+        val rules = listOf(FILM_SEEK, SeekParameters.CLOSEST_SYNC, SeekParameters.EXACT, SeekParameters(0L, 1_000L))
+        for (rule in rules) for (target in 0L..23_750_000L step 250_000L) {
+            val points = map.getSeekPoints(target)
+            val at = rule.resolveSeekPositionUs(target, points.first.timeUs, points.second.timeUs)
+            val from = map.getSeekPoints(at).first
+            // The keyframe at or before where the film goes on: read from its cluster, and the first picture to come.
+            val key = at / 4_000_000L * 4_000_000L
+            assertEquals("to $target", key, from.timeUs)
+            assertTrue("to $target", from.position in film.clusters)
+            assertEquals("to $target", key, firstKeyFrom(r, from, at))
+            assertEquals("to $target", key, r.video().times.first())
+            if (rule === FILM_SEEK) {
+                assertTrue("to $target", at <= target && at >= target - 2_000_000L)
+                if (target - key <= 2_000_000L) assertEquals("to $target", key, at)
+            }
+            if (rule === SeekParameters.CLOSEST_SYNC) assertEquals("to $target", 0L, at % 4_000_000L)
+        }
     }
 
     private companion object {
