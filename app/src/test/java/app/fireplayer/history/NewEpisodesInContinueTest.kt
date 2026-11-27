@@ -17,10 +17,12 @@ import app.fireplayer.vod.data.Fixtures
 import app.fireplayer.vod.data.JsonCache
 import app.fireplayer.vod.data.MemoryIdStore
 import app.fireplayer.vod.data.MemoryLibraryStore
+import app.fireplayer.vod.data.PageRows
 import app.fireplayer.vod.data.RowLayoutStore
 import app.fireplayer.vod.data.RowLayouts
 import app.fireplayer.vod.play.VodLaunch
 import app.fireplayer.vod.sources.RecordedLibrary
+import app.fireplayer.vod.ui.RowRules
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -35,7 +37,8 @@ import java.util.concurrent.Executor
 /**
  * With a page's Next Episodes row off, its Continue Watching has the caught-up shows' new episodes instead, from their
  * start, placed by their air date among the others' last plays; with it on, as before; never both on one page. Glass
- * Home's row is Home's, and is told when Home's Next Episodes row goes on or off.
+ * Home's row is Home's, and its three lists (items?lists) are the Home, Movies and TV Shows pages' rows, each by its
+ * own page's Next Episodes row; it is told when one goes on or off.
  */
 class NewEpisodesInContinueTest {
     private val min = 60_000L
@@ -56,12 +59,15 @@ class NewEpisodesInContinueTest {
     private val main = Executor { mainQueue += it }
     private var notices = 0
 
-    private val repo: DefaultVodRepository = DefaultVodRepository(
+    private val idStore = MemoryIdStore()
+
+    /** FirePlayer as it starts on the TV: the library, the cache and Settings › Rows as they were stored. */
+    private fun newRepo(): DefaultVodRepository = DefaultVodRepository(
         http = http,
         tmdb = FakeTmdb(),
         tmdbKey = { "" },
         cache = JsonCache(File(dir, "vod")) { now },
-        idStore = MemoryIdStore(),
+        idStore = idStore,
         libraryStore = store,
         main = main,
         io = direct,
@@ -71,10 +77,13 @@ class NewEpisodesInContinueTest {
         rowStore = rowStore,
     ).also { r -> ContinueNotice.attach(r, { mainQueue += it }) { notices++ } }
 
+    private var repo: DefaultVodRepository = newRepo()
+
     private val homeContinue = RowSpec("home.continue", "Continue Watching", RowStyle.WIDE, Source.ContinueWatching(null), continueRow = true)
     private val homeNext = RowSpec("home.next_episodes", "Next Episodes", RowStyle.POSTER, Source.NextEpisodes())
     private val showsContinue = RowSpec("shows.continue", "Continue Watching · Series", RowStyle.WIDE, Source.ContinueWatching(Kind.SERIES), continueRow = true)
     private val showsNext = RowSpec("shows.next_episodes", "Next Episodes", RowStyle.POSTER, Source.NextEpisodes())
+    private val moviesContinue = PageRows.rows(Page.MOVIES, 2009).single { it.key == "movies.continue" }
 
     @After
     fun cleanUp() {
@@ -234,5 +243,115 @@ class NewEpisodesInContinueTest {
         assertEquals(Page.HOME, RowLayouts.pageOf("home.continue"))
         assertEquals(Page.MOVIES, RowLayouts.pageOf("movies.add.continue.series"))
         assertNull(RowLayouts.pageOf("continue"))
+    }
+
+    /** A page's Continue Watching row as it shows it (its first 15): each card's row id and episode. */
+    private fun page(row: RowSpec): List<String> = RowRules.shown(cards(row)).map { c ->
+        LibraryContinue.idOf(c.title.kind, c.title.id) + (c.episode?.let { " S${it.season}E${it.episode}" } ?: "")
+    }
+
+    /** Glass Home's list [name] of the three the provider answers items?lists with ([VodContinue.lists]). */
+    private fun list(name: String): List<String> = ids(VodContinue.lists(repo).single { it.first == name }.second)
+
+    /** The provider's [rows] as [page] has its cards: each row's id and episode. */
+    private fun ids(rows: List<WatchHistory.Row>): List<String> =
+        rows.map { r -> r.id + (if (r.kind == WatchHistory.Kind.EPISODE) " S${r.season}E${r.episode}" else "") }
+
+    /**
+     * After FirePlayer's main thread has run: Glass Home told [told] more times, and its three lists FirePlayer's three
+     * pages' Continue Watching rows, card for card; Home's also what items alone answers.
+     */
+    private fun assertListsArePages(what: String, told: Int): Map<String, List<String>> {
+        val before = notices
+        runMain()
+        assertEquals("$what: Glass Home told", told, notices - before)
+        val names = listOf(VodContinue.HOME, VodContinue.MOVIES, VodContinue.SHOWS)
+        assertEquals(names, VodContinue.lists(repo).map { it.first })
+        assertEquals("$what: Home's", page(homeContinue), list(VodContinue.HOME))
+        assertEquals("$what: as items answers", ids(VodContinue.rows(repo)), list(VodContinue.HOME))
+        assertEquals("$what: Movies'", page(moviesContinue), list(VodContinue.MOVIES))
+        assertEquals("$what: TV Shows'", page(showsContinue), list(VodContinue.SHOWS))
+        return names.associateWith { list(it) }
+    }
+
+    /**
+     * Glass Home's three lists follow each page's own Next Episodes row, as FirePlayer's pages do: Home's list takes
+     * the new episode when Home's row is off, the TV Shows list when the TV Shows page's is, and the Movies list never
+     * (films only). Each switch is told to Glass Home; never in a page's Continue Watching and its Next Episodes both.
+     */
+    @Test
+    fun glassHomesListsFollowEachPagesNextEpisodesRow() {
+        caughtUpThenNewEpisode()
+        val pulpId = LibraryContinue.idOf(Kind.MOVIE, pulp.id)
+        val godfatherId = LibraryContinue.idOf(Kind.MOVIE, godfather.id)
+        val newEpisode = LibraryContinue.idOf(Kind.SERIES, bb.id) + " S2E1"
+        val films = listOf(pulpId, godfatherId)
+
+        var lists = assertListsArePages("every Next Episodes row on", told = 0)
+        assertEquals(films, lists[VodContinue.HOME])
+        assertEquals(films, lists[VodContinue.MOVIES])
+        assertEquals(emptyList<String>(), lists[VodContinue.SHOWS])
+
+        repo.rowSettings.setOn(Page.HOME, homeNext.key, false)
+        lists = assertListsArePages("Home's off", told = 1)
+        assertEquals(listOf(pulpId, newEpisode, godfatherId), lists[VodContinue.HOME])
+        assertEquals(films, lists[VodContinue.MOVIES])
+        // TV Shows keeps its row on: there it's in Next Episodes.
+        assertEquals(emptyList<String>(), lists[VodContinue.SHOWS])
+        assertEquals(1, cards(showsNext).size)
+
+        repo.rowSettings.setOn(Page.SHOWS, showsNext.key, false)
+        lists = assertListsArePages("TV Shows' off too", told = 1)
+        assertEquals(listOf(pulpId, newEpisode, godfatherId), lists[VodContinue.HOME])
+        assertEquals(films, lists[VodContinue.MOVIES])
+        assertEquals(listOf(newEpisode), lists[VodContinue.SHOWS])
+        // From its start, placed by its air date.
+        val row = VodContinue.lists(repo).single { it.first == VodContinue.SHOWS }.second.single()
+        assertEquals(0L, row.positionMs)
+        assertEquals(s2e1Aired, row.lastWatched)
+
+        repo.rowSettings.setOn(Page.HOME, homeNext.key, true)
+        lists = assertListsArePages("Home's back on, TV Shows' off", told = 1)
+        assertEquals(films, lists[VodContinue.HOME])
+        assertEquals(listOf(newEpisode), lists[VodContinue.SHOWS])
+        assertEquals(1, cards(homeNext).size)
+        // Glass Home's play of the TV Shows tab's row (a list Home's hasn't): the new episode, from its start.
+        val entry = repo.library.continueEntry(Kind.SERIES, bb.id)!!
+        assertEquals(EpisodeRef(2, 1), entry.episode?.copy(name = null))
+        assertEquals(0L, entry.positionMs)
+
+        // Removed in Glass Home's TV Shows tab: out of every list, and of Home's Next Episodes, until played.
+        assertTrue(VodContinue.remove(repo, LibraryContinue.idOf(Kind.SERIES, bb.id)))
+        lists = assertListsArePages("the new episode removed in the TV Shows tab", told = 1)
+        assertEquals(films, lists[VodContinue.HOME])
+        assertEquals(emptyList<String>(), lists[VodContinue.SHOWS])
+        assertTrue(cards(homeNext).isEmpty())
+    }
+
+    /**
+     * After a restart (Settings › Rows and the library read back as stored): the same three lists, a new episode
+     * where its page's Next Episodes row is off, and a film stopped in its last 3 minutes before its known credits
+     * still in Glass Home's Home and Movies lists with its place, as on FirePlayer's pages.
+     */
+    @Test
+    fun glassHomesListsAreTheSameAfterARestart() {
+        caughtUpThenNewEpisode()
+        repo.rowSettings.setOn(Page.SHOWS, showsNext.key, false)
+        // The Godfather stopped 2 minutes before its end, a minute before its credits: not watched.
+        now += min
+        RecordedLibrary(repo.library).recordPlayback(godfather, null, 173 * min, 175 * min, 174 * min, null)
+        val before = assertListsArePages("before", told = 1)
+        val godfatherId = LibraryContinue.idOf(Kind.MOVIE, godfather.id)
+        assertEquals(godfatherId, before.getValue(VodContinue.HOME).first())
+        assertEquals(godfatherId, before.getValue(VodContinue.MOVIES).first())
+        assertEquals(listOf(LibraryContinue.idOf(Kind.SERIES, bb.id) + " S2E1"), before[VodContinue.SHOWS])
+        val godfatherRow = VodContinue.rows(repo).first()
+        assertEquals(173 * min, godfatherRow.positionMs)
+
+        repo = newRepo()
+        val after = assertListsArePages("after a restart", told = 0)
+        assertEquals(before, after)
+        assertEquals(173 * min, VodContinue.rows(repo).first().positionMs)
+        assertFalse(repo.isWatched(godfather.id))
     }
 }
