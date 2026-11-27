@@ -15,6 +15,12 @@ internal object RowRules {
     /** Cards shown in a row; one more is asked for, to know whether there are more ([seeAll]). */
     const val ROW_CARDS = 15
 
+    /**
+     * The cards a row shows of its source's answer, in its order: the first [ROW_CARDS] (See all has the rest). Home's
+     * Continue Watching row is its first ones, and so is Glass Home's row (history/VodContinue.rows).
+     */
+    fun <T> shown(answer: List<T>): List<T> = answer.take(ROW_CARDS)
+
     /** A row that goes on takes this many more titles at a time ([pages]), up to [ROW_MAX] cards. */
     const val ROW_MORE = 15
     const val ROW_MAX = 60

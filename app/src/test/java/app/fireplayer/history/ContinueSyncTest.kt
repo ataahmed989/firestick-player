@@ -18,6 +18,7 @@ import app.fireplayer.vod.data.JsonCache
 import app.fireplayer.vod.data.MemoryIdStore
 import app.fireplayer.vod.data.MemoryLibraryStore
 import app.fireplayer.vod.sources.RecordedLibrary
+import app.fireplayer.vod.ui.RowRules
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -30,10 +31,11 @@ import java.time.Instant
 import java.util.concurrent.Executor
 
 /**
- * Glass Home's Continue Watching row is FirePlayer's: the provider's rows ([VodContinue.rows], what [ContinueProvider]
- * answers) against Home's Continue Watching row as its page loads it, after every kind of change, with Glass Home told
- * of each change once ([ContinueNotice]); a Remove in either app is a Remove in both, and a title taken out comes back
- * only when it's played again.
+ * Glass Home's Continue Watching row is FirePlayer Home's, card for card: the provider's rows ([VodContinue.rows], what
+ * [ContinueProvider] answers) against Home's Continue Watching row as its page loads and shows it (its first 15), after
+ * every kind of change, with Glass Home told of each change once ([ContinueNotice]); the videos other apps opened here
+ * are never in it. A Remove in either app is a Remove in both, and a title taken out comes back only when it's played
+ * again.
  */
 class ContinueSyncTest {
     private val min = 60_000L
@@ -61,9 +63,9 @@ class ContinueSyncTest {
     /** Glass Home told (content://…continue/items). */
     private var notices = 0
     /**
-     * The videos other apps (TiviMate) opened in FirePlayer's player, as ContinueWatching keeps them for Glass Home's
-     * row; the library's Remove and Mark watched take a title's copies away from them as ContinueWatching.removeCopies
-     * does.
+     * The videos other apps (TiviMate) opened in FirePlayer's player, as ContinueWatching keeps them (never in Glass
+     * Home's row now); the library's Remove and Mark watched take a title's copies away from them as
+     * ContinueWatching.removeCopies does.
      */
     private val tivimate = ArrayList<WatchHistory.Row>()
 
@@ -106,16 +108,21 @@ class ContinueSyncTest {
         recorded.recordPlayback(title, episode, positionMs, durationMs, creditsAtMs = null)
     }
 
-    /** FirePlayer Home's Continue Watching row as its page loads it: each card's row id, episode and minutes left. */
-    private fun firePlayer(): List<String> {
+    /**
+     * FirePlayer Home's Continue Watching row as its page loads and shows it (VodPage: one more than shown asked for,
+     * [RowRules.shown]), or with [all] every card its source has (its See all): each card's row id, episode and minutes
+     * left.
+     */
+    private fun firePlayer(all: Boolean = false): List<String> {
         var got: List<Card> = emptyList()
-        repo.load(continueSpec, 0, 100) { cards, _ -> got = cards }
+        repo.load(continueSpec, 0, if (all) 100 else RowRules.ROW_CARDS + 1) { cards, _ -> got = cards }
         runMain()
-        return got.map { c -> line(LibraryContinue.idOf(c.title.kind, c.title.id), c.episode, minutesIn(c.caption)) }
+        val shown = if (all) got else RowRules.shown(got)
+        return shown.map { c -> line(LibraryContinue.idOf(c.title.kind, c.title.id), c.episode, minutesIn(c.caption)) }
     }
 
     /** Glass Home's row: the provider's rows in their order, with Glass Home's own time left. */
-    private fun glassHome(): List<String> = VodContinue.rows(repo, tivimate).map { r ->
+    private fun glassHome(): List<String> = VodContinue.rows(repo).map { r ->
         val ep = if (r.kind == WatchHistory.Kind.EPISODE) EpisodeRef(r.season, r.episode) else null
         line(r.id, ep, if (r.durationMs > 0) glassMinutes(r.positionMs, r.durationMs) else null)
     }
@@ -139,8 +146,8 @@ class ContinueSyncTest {
         runMain()
         assertEquals("$what: Glass Home told", told, notices - before)
         val rows = firePlayer()
-        // Glass Home's rows of the library's titles (the videos other apps opened here are Glass Home's only).
-        assertEquals(what, rows, glassHome().filter { LibraryContinue.isLibraryId(it.substringBefore(' ')) })
+        // Glass Home's row is Home's, whole: nothing more (no video another app opened here), nothing less.
+        assertEquals(what, rows, glassHome())
         assertEquals("$what: a title once", rows.size, rows.map { it.substringBefore(' ') }.distinct().size)
         return rows
     }
@@ -324,87 +331,105 @@ class ContinueSyncTest {
         WatchHistory.Row(id, WatchHistory.Kind.MOVIE, name, year, 0, 0, null, tmdbId, positionMs, durationMs, at, "host:8080")
 
     /** Glass Home's cards for The Godfather: each row's id and minutes left. */
-    private fun godfathers(): List<String> = VodContinue.rows(repo, tivimate).filter { it.title == "The Godfather" }
+    private fun godfathers(): List<String> = VodContinue.rows(repo).filter { it.title == "The Godfather" }
         .map { "${it.id} ${glassMinutes(it.positionMs, it.durationMs)}" }
 
     private val gf = Title("tt0068646", Kind.MOVIE, "The Godfather", year = "1972", tmdbId = 238)
     private val heat = Title("tt0113277", Kind.MOVIE, "Heat", year = "1995", tmdbId = 949)
 
     /**
-     * Seen in review: The Godfather in FirePlayer's library (25m left) and a copy TiviMate opened in FirePlayer's player,
-     * played after it. Glass Home showed TiviMate's copy (watched last): another time left, another place than FirePlayer
-     * Home's card; and Remove in FirePlayer hid only the library's, so TiviMate's stayed in Glass Home. Now a library
-     * title is its own card alone in Glass Home's row, and Remove in either app takes every copy.
+     * The user's choice: Glass Home shows only what FirePlayer's Home shows. A copy of a library title TiviMate opened in
+     * FirePlayer's player, played after the library's, and a video only TiviMate played: in neither row, whenever they
+     * were played; Remove in either app still takes the title's copies from the history (ContinueWatching.removeCopies).
      */
     @Test
-    fun aTitleInTheLibraryIsItsCardAloneAndRemoveTakesEveryCopy() {
+    fun videosOtherAppsOpenedAreNeverInGlassHomesRow() {
         play(gf, 9_005_000L, 10_528_000L)
         play(heat, 30 * min, 170 * min)
         now += min
         tivimate += other("00000000000000a1", "The Godfather", 1972, 238, 10 * min, 175 * min, now)
-        tivimate += other("00000000000000a2", "Pulp Fiction", 1994, 680, 40 * min, 154 * min, now - 10 * day)
+        tivimate += other("00000000000000a2", "Pulp Fiction", 1994, 680, 40 * min, 154 * min, now)
         runMain()
-        // One card, the library's, where FirePlayer's Home has it (second, after Heat), 25m left as there.
+        // Home's two cards, in Home's order, The Godfather at the library's 25m left; TiviMate's videos nowhere.
+        assertEquals(listOf("${id(heat)} film 140", "${id(gf)} film 25"), assertSame("TiviMate played since", told = 0))
         assertEquals(listOf("${id(gf)} 25"), godfathers())
-        assertEquals(listOf(id(heat), id(gf), "00000000000000a2"), VodContinue.rows(repo, tivimate).map { it.id })
-        assertEquals(firePlayer(), glassHome().filter { it.startsWith("vod-") })
 
-        // Remove on its card in FirePlayer: TiviMate's copy goes with it, before Glass Home is told.
+        // Remove on its card in FirePlayer: out of both; TiviMate's copy goes from the history with it.
         repo.removeFromContinueWatching(gf.id)
+        assertEquals(listOf("${id(heat)} film 140"), assertSame("removed in FirePlayer"))
         assertTrue(tivimate.none { it.title == "The Godfather" })
-        assertSame("removed in FirePlayer")
-        assertEquals(emptyList<String>(), godfathers())
-        assertEquals(listOf(id(heat), "00000000000000a2"), VodContinue.rows(repo, tivimate).map { it.id })
 
-        // Played again in TiviMate after that: back in Glass Home's row (other apps' videos are Glass Home's only).
+        // Played again in TiviMate after that: still only Home's cards.
         now += min
         tivimate += other("00000000000000a3", "The Godfather", 1972, 238, 12 * min, 175 * min, now)
-        assertEquals(listOf("00000000000000a3 163"), godfathers())
+        assertEquals(listOf("${id(heat)} film 140"), assertSame("played again in TiviMate", told = 0))
 
-        // Played again here: the library's card is the title's again, TiviMate's copy left out.
+        // Played again here: back in both, the library's card, first.
         play(gf, 9_100_000L, 10_528_000L)
-        assertSame("played again here")
-        assertEquals(listOf("${id(gf)} 24"), godfathers())
+        assertEquals(listOf("${id(gf)} film 24", "${id(heat)} film 140"), assertSame("played again here"))
 
-        // Remove in Glass Home (the library's card): every copy goes here too.
-        assertTrue(VodContinue.remove(repo, id(gf)))
-        assertSame("removed in Glass Home")
+        // Watched to its end here, then marked unwatched (it was done: kept out of Continue Watching): in neither.
+        play(gf, 10_500_000L, 10_528_000L)
+        assertSame("watched to its end")
+        repo.setWatched(gf, false)
+        assertEquals(listOf("${id(heat)} film 140"), assertSame("marked unwatched"))
         assertEquals(emptyList<String>(), godfathers())
-        assertTrue(tivimate.none { it.title == "The Godfather" })
     }
 
     /**
-     * A copy another app opened, played before the library's last play: it never comes up in the title's place, after
-     * the title is watched to its end, marked watched, or taken out. One played after the library's, then the title
-     * marked watched here: it goes too.
+     * Home's row with more than 15 titles: films, a show gone on to its next episode, one marked unwatched, titles taken
+     * out, marked watched, watched to their end, and videos TiviMate opened since. Glass Home's row is Home's first 15
+     * cards, in Home's order, at the same episode and time left; the 16th and later (Home's See all) aren't in it.
      */
     @Test
-    fun anOlderCopyNeverComesUpInTheTitlesPlace() {
-        tivimate += other("00000000000000b1", "The Godfather", 1972, 238, 50 * min, 175 * min, now)
-        play(gf, 9_005_000L, 10_528_000L)
+    fun glassHomesRowIsHomesFirst15CardForCard() {
+        repo.details(bb) { _, _ -> }
         runMain()
-        assertEquals(listOf("${id(gf)} 25"), godfathers())
-        // Watched to its end here: out of FirePlayer's Home, and out of Glass Home's row (TiviMate's older copy too).
-        play(gf, 10_500_000L, 10_528_000L)
-        assertSame("watched to its end")
-        assertEquals(emptyList<String>(), godfathers())
-        assertEquals(1, tivimate.size)
-
-        // Marked unwatched (it was done: kept out of Continue Watching): still in neither, TiviMate's copy neither.
-        repo.setWatched(gf, false)
-        assertSame("marked unwatched")
-        assertEquals(emptyList<String>(), godfathers())
-
-        // TiviMate played it after the library's last play: that copy shows in Glass Home (watched again elsewhere).
-        now += min
-        tivimate += other("00000000000000b2", "The Godfather", 1972, 238, 70 * min, 175 * min, now)
+        val films = (1..16).map { i -> Title("tt90000%02d".format(i), Kind.MOVIE, "Film $i", year = "2001", tmdbId = 5000 + i) }
+        for ((i, f) in films.withIndex()) play(f, (10L + i) * min, 120 * min)
+        play(gf, 9_005_000L, 10_528_000L)
         play(heat, 30 * min, 170 * min)
-        assertEquals(listOf("00000000000000b2 105"), godfathers())
-        // Then Mark watched here: it goes too.
-        repo.setWatched(gf, true)
-        assertSame("marked watched")
-        assertEquals(emptyList<String>(), godfathers())
-        assertTrue(tivimate.none { it.title == "The Godfather" })
+        play(pulp, 10 * min, 154 * min)
+        play(rotk, 60 * min, 200 * min)
+        play(bb, 20 * min, 47 * min, EpisodeRef(1, 1))
+        // Breaking Bad's first episode watched to its end: it goes on with the next, from its start.
+        play(bb, 46 * min, 47 * min, EpisodeRef(1, 1))
+        // Taken out (here, and in Glass Home), marked watched, watched to its end.
+        repo.removeFromContinueWatching(pulp.id)
+        assertTrue(VodContinue.remove(repo, id(heat)))
+        repo.setWatched(films[15], true)
+        play(rotk, 198 * min, 200 * min)
+        // Marked unwatched while in Continue Watching: stays, back at its start.
+        repo.setWatched(gf, false)
+        // TiviMate opened three videos since, one a copy of a film in the row.
+        now += min
+        tivimate += other("00000000000000c1", "Film 3", 2001, 5003, 5 * min, 120 * min, now)
+        tivimate += other("00000000000000c2", "Some Other Film", 2010, 777, 5 * min, 100 * min, now)
+        tivimate += other("00000000000000c3", "Another", 2012, 0, 50 * min, 100 * min, now)
+        runMain()
+
+        val all = firePlayer(all = true)
+        // In Home's row's source: the show, The Godfather, and the 15 films not marked; Home shows 15, See all the rest.
+        assertEquals(17, all.size)
+        val home = firePlayer()
+        assertEquals(RowRules.ROW_CARDS, home.size)
+        assertEquals(all.take(15), home)
+        assertEquals(home, glassHome())
+        assertEquals("${id(bb)} S1E2 -", home[0])
+        assertEquals("${id(gf)} film 175", home[1])
+        // The latest played first: films 15 down to 3; films 2 and 1 only in See all.
+        assertEquals((15 downTo 3).map { "${id(films[it - 1])} film ${120 - (10 + it - 1)}" }, home.drop(2))
+        val shown = glassHome().map { it.substringBefore(' ') }
+        assertFalse(id(films[1]) in shown || id(films[0]) in shown)
+        // Nothing taken out, marked or done, and no video TiviMate opened.
+        for (t in listOf(pulp, heat, rotk, films[15])) assertFalse(id(t) in shown)
+        assertTrue(VodContinue.rows(repo).all { LibraryContinue.isLibraryId(it.id) })
+        // Every card of it answers Glass Home's asks: its play, and (a show's) its Episodes window's, as on Home.
+        for (r in VodContinue.rows(repo)) {
+            val (kind, titleId) = LibraryContinue.parse(r.id)!!
+            assertTrue(r.id, repo.library.continueEntry(kind, titleId) != null)
+            assertEquals(r.id, kind == Kind.SERIES, r.hasEpisodes)
+        }
     }
 
     /**

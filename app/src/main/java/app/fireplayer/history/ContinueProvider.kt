@@ -11,13 +11,14 @@ import app.fireplayer.data.Settings
 import app.fireplayer.titles.TitleService
 
 /**
- * Glass Home's Continue Watching row reads what was watched here (content://app.fireplayer.continue/items), newest
- * first: the films and shows played from Films & Shows (the VOD library, [VodContinue]) and the videos other apps
- * opened here ([ContinueWatching]), and removes a title from it (…/items/ID). For a show it lists every episode (…/items/ID/episodes, see
- * [ShowEpisodes]): that read blocks and may ask the provider and TMDB, so Glass Home makes it off its main thread. Only
- * Glass Home and FirePlayer itself are answered; anyone else gets nothing, without an error. The rows say what each
- * title is and how far along, and the provider's address as FirePlayer's Source row shows it ("host:port"); never
- * the login, nor where a title plays from.
+ * Glass Home's Continue Watching row reads FirePlayer Home's here (content://app.fireplayer.continue/items): the same
+ * cards in the same order, at most 15 ([VodContinue.rows]); the videos other apps opened here ([ContinueWatching]) are
+ * kept but not listed. It removes a title from it (…/items/ID). For a show it lists every episode
+ * (…/items/ID/episodes, see [ShowEpisodes]): that read blocks and may ask the provider and TMDB, so Glass Home makes it
+ * off its main thread. An id of another app's video that Glass Home still has from before (earlier versions listed
+ * them) is still answered: its episodes, its Remove, and its play ([ContinueWatching.ACTION_RESUME]). Only Glass
+ * Home and FirePlayer itself are answered; anyone else gets nothing, without an error. The rows say what each title is
+ * and how far along; never a login, nor where a title plays from.
  */
 class ContinueProvider : ContentProvider() {
 
@@ -51,16 +52,8 @@ class ContinueProvider : ContentProvider() {
             return cursor
         }
         if (match != ITEMS) return cursor
-        val others = try {
-            ContinueWatching.rows(context)
-        } catch (e: Exception) {
-            Log.w(TAG, "Couldn't read the watch history: ${e.javaClass.simpleName}")
-            emptyList()
-        }
-        // Films & Shows' own Continue Watching (the VOD library) with them, the latest watched first; a title of the
-        // library's is its card alone, as on FirePlayer's Home (LibraryContinue.merge).
-        val rows = VodContinue.rows(context, others)
-        for (r in rows) {
+        // FirePlayer Home's Continue Watching row, card for card.
+        for (r in VodContinue.rows(context)) {
             val values = mapOf(
                 "id" to r.id,
                 "kind" to r.kind.code,

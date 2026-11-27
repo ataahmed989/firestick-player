@@ -51,7 +51,16 @@ class LibraryContinueTest {
 
     @Test
     fun showWithoutEpisodeAndUnmatchedTitles() {
-        assertNull(LibraryContinue.row(Progress(show, null, 1, 2, 3)))
+        // A show naming no episode is a card on Home all the same: its row, no episode, its Episodes window to choose one.
+        val noEpisode = LibraryContinue.row(Progress(show, null, 1, 2, 3))!!
+        assertEquals("vod-s-tt0903747", noEpisode.id)
+        assertEquals("episode", noEpisode.kind.code)
+        assertEquals(0, noEpisode.season)
+        assertEquals(0, noEpisode.episode)
+        assertNull(noEpisode.episodeTitle)
+        assertTrue(noEpisode.hasEpisodes)
+        // Without a name Glass Home can't show it.
+        assertNull(LibraryContinue.row(Progress(Title("tt2", Kind.MOVIE, " "), null, 1, 2, 3)))
         val bare = LibraryContinue.row(Progress(Title("tt1", Kind.MOVIE, "X"), null, -5, -1, 3))!!
         assertEquals(0, bare.tmdbId)
         assertEquals(0, bare.year)
@@ -78,13 +87,6 @@ class LibraryContinueTest {
         assertNull(LibraryContinue.parse("vod-m-tt_2"))
         assertNull(LibraryContinue.parse("vod-m-a/b"))
         assertNull(LibraryContinue.parse(null))
-    }
-
-    @Test
-    fun mergeNewestFirst() {
-        fun r(id: String, at: Long) = WatchHistory.Row(id, WatchHistory.Kind.MOVIE, id, 0, 0, 0, null, 0, 0, 0, at)
-        val merged = LibraryContinue.merge(listOf(r("vod-m-a", 30), r("vod-m-b", 10)), listOf(r("0000000000000001", 20)))
-        assertEquals(listOf("vod-m-a", "0000000000000001", "vod-m-b"), merged.map { it.id })
     }
 
     @Test
