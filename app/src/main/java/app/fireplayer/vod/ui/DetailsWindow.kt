@@ -48,8 +48,8 @@ internal fun SidePanel.titleDetails(d: TitleDetails) {
     // ---- Pinned: the title and its badge, the line under it, a hairline ----
     setTitle(DetailsLook.titled(c, d.title.name, TitleRules.ratingBadge(d)))
     val line = TitleRules.detailsLine(d)
-    // Close under the title (whose own margin is set for a window's rows).
-    if (line.isNotEmpty()) pinned(DetailsLook.line(c, line).apply { layoutParams = params(top = -LINE_PULL_DP) })
+    // Right under the title (pulled any closer, its tops were cut off by the title's box on the TV).
+    if (line.isNotEmpty()) pinned(DetailsLook.line(c, line).apply { layoutParams = params() })
     pinned(DetailsLook.hairline(c).apply {
         layoutParams = params(top = if (line.isNotEmpty()) 12 else 2, bottom = 4, height = DetailsLook.hairlinePx(c))
     })
@@ -195,5 +195,3 @@ private const val NAME_SP = 12f
 private const val FACE_Y = 0.22f
 /** Above each section after the first. */
 private const val SECTION_GAP_DP = 18
-/** How much closer the line under the title sits than a window's rows would. */
-private const val LINE_PULL_DP = 5
