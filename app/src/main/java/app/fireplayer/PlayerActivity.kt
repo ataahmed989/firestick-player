@@ -2205,7 +2205,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // The start's timing, once: from OK (or this screen's start) to this first picture.
         if (!launch.done) {
             launchMark(LaunchLog.FRAME)
-            android.util.Log.i(PlaybackDiag.TAG, launch.line(launchNote))
+            // A first link checked ahead, as the viewer rested on what OK plays: said beside the steps (never a link).
+            val ahead = source?.session?.aheadNote()
+            android.util.Log.i(PlaybackDiag.TAG, launch.line(listOfNotNull(launchNote.ifEmpty { null }, ahead).joinToString(" · ")))
         }
         // The first picture of a new player or video, or after a jump: the glass copies it.
         backdrop?.frameChanged()
