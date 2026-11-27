@@ -342,6 +342,153 @@ class MkvKeyframesTest {
         assertEquals("it lists no keyframe of track 2", r.failure)
     }
 
+    // --- Read lightly: the same answer whether a point is taken where it lies or a byte at a time
+
+    /** [body] under [id] with its size in two bytes, as some tools write it. */
+    private fun wide(id: Long, vararg body: ByteArray): ByteArray {
+        val payload = body.fold(ByteArray(0)) { a, b -> a + b }
+        return idBytes(id) + byteArrayOf((0x40 or (payload.size shr 8)).toByte(), payload.size.toByte()) + payload
+    }
+
+    /** Everything [r] took from the index, and how it ended. */
+    private fun taken(r: CueReader): List<Any?> {
+        fun field(name: String) = CueReader::class.java.getDeclaredField(name).apply { isAccessible = true }.get(r)
+        val n = r.count
+        return listOf(
+            r.failure, r.done, r.points, n,
+            (field("timesUs") as LongArray).take(n), (field("clusters") as LongArray).take(n),
+            field("firstAlone"), field("lastAlone"),
+        )
+    }
+
+    @Test
+    fun anotherTracksPlaceIsPassedOverFromWhereItNamesItsTrack() {
+        // A line's place: its track first, then nothing that's looked at (here not even bytes that read as anything).
+        val line = el(0xB7, el(0xF7, uint(3)), ByteArray(14) { 0xFF.toByte() })
+        val first = point(0, 1 to 500L)
+        val lineOnly = el(0xBB, el(0xB3, uint(2000)), line)
+        // A keyframe sharing its point with a line, and its own place with the cluster written last.
+        val shared = el(0xBB, el(0xB3, uint(4000)), line, el(0xB7, el(0xF7, uint(1)), el(0xF0, uint(77, 2)), el(0xF1, uint(4_000_500L))))
+        val last = point(8000, 1 to 8_000_500L)
+        val bytes = cues(first, lineOnly, shared, last)
+        val whole = read(bytes)
+        assertNull(whole.failure)
+        assertTrue(whole.done)
+        assertEquals(3, whole.count)
+        assertEquals(4, whole.points)
+        for (piece in listOf(1, 2, 7, 19)) assertEquals("$piece at a time", taken(whole), taken(read(bytes, piece)))
+        // The line's place counts as one: the keyframe at 4 s isn't its point's only place, so it isn't one of the two
+        // held to Media3's reading (which has the line's place for that point).
+        val inner = media3(listOf(0L to 500L, 2000L to 1_900_000L, 4000L to 3_900_000L, 8000L to 8_000_500L), SEGMENT, 12_000_000L)
+        val map = whole.build(inner, SEGMENT, LENGTH)!!
+        assertPoint(4_000_000L, SEGMENT + 4_000_500L, map.getSeekPoints(7_999_999L).first)
+        // The rest of a line's place never shown at all (skipped by the reader) is fine too.
+        val start = bytes.size - first.size - lineOnly.size - shared.size - last.size
+        val restAt = start + first.size + lineOnly.size - 14
+        val unseen = CueReader(AT, 1, 1_000_000)
+        unseen.feed(AT, bytes, 0, restAt)
+        unseen.feed(AT + restAt + 14, bytes, restAt + 14, bytes.size - restAt - 14)
+        assertEquals(taken(whole), taken(unseen))
+        // But not a byte of the video's own cluster (the last before the eight bytes of what comes after it in its place).
+        val lostAt = start + first.size - 9
+        val lost = CueReader(AT, 1, 1_000_000)
+        lost.feed(AT, bytes, 0, lostAt)
+        lost.feed(AT + lostAt + 1, bytes, lostAt + 1, bytes.size - lostAt - 1)
+        assertNotNull(lost.failure)
+        assertNull(lost.build(inner, SEGMENT, LENGTH))
+    }
+
+    @Test
+    fun pointsNotWrittenThePlainWayReadTheSameAsPlainOnes() {
+        // Sizes in two bytes, numbers padded to eight, a Void inside a point and inside a place, the block's number (an ID
+        // of two bytes), the time after the place: each read a byte at a time between plain points taken where they lie.
+        val plain = cues(point(0, 1 to 500L), point(500, 3 to 333_000L), point(4000, 1 to 4_000_500L), point(4500, 3 to 4_333_000L),
+            point(8000, 1 to 8_000_500L), point(9000, 3 to 9_333_000L), point(12_000, 1 to 12_000_500L))
+        val odd = cues(
+            point(0, 1 to 500L),
+            wide(0xBB, el(0xB3, uint(500)), place(3, 333_000L)),
+            el(0xBB, el(0xB3, uint(4000, 8)), el(0xB7, el(0xF7, uint(1, 8)), el(0xF1, uint(4_000_500L, 8)))),
+            el(0xBB, el(0xEC, ByteArray(5)), wide(0xB7, el(0xF7, uint(3)), el(0xF1, uint(4_333_000L))), wide(0xB3, uint(4500))),
+            el(0xBB, el(0xB7, el(0xEC, ByteArray(3)), el(0x5378, uint(2)), wide(0xF1, uint(8_000_500L)), wide(0xF7, uint(1))), el(0xB3, uint(8000))),
+            el(0xBB, el(0xB3, uint(9000)), el(0xB7, el(0x5378, uint(2)), el(0xF7, uint(3)), el(0xF1, uint(9_333_000L)))),
+            point(12_000, 1 to 12_000_500L),
+        )
+        val expected = taken(read(plain))
+        assertEquals(4, read(plain).count)
+        assertEquals(7, read(plain).points)
+        for (piece in listOf(odd.size, 1, 3, 11, 50)) assertEquals("$piece at a time", expected, taken(read(odd, piece)))
+    }
+
+    @Test
+    fun anyIndexReadsTheSameHoweverItsBytesArrive() {
+        // Indexes of every shape, right and wrong: whole in one piece (points taken where they lie), a byte at a time
+        // (never), and in pieces of any size (both, with points across the joins) end the same, with the same taken.
+        val random = kotlin.random.Random(11)
+        fun number(v: Long) = if (random.nextInt(12) == 0) uint(v, 8) else uint(v)
+        fun make(id: Long, vararg body: ByteArray) = if (random.nextInt(10) == 0) wide(id, *body) else el(id, *body)
+        var good = 0
+        var keyframes = 0
+        repeat(400) { round ->
+            val children = ArrayList<ByteArray>()
+            var time = 0L
+            // One round in four has more wrong with it: times going back, a point without its time, a place of the wrong size.
+            val wrong = round % 4 == 3
+            repeat(random.nextInt(1, 40)) {
+                time += when (random.nextInt(10)) {
+                    0 -> 0L
+                    1 -> if (wrong) -700L else 40L
+                    else -> random.nextLong(1, 3000)
+                }
+                if (time < 0) time = 0
+                val parts = ArrayList<ByteArray>()
+                if (!(wrong && random.nextInt(30) == 0)) parts += make(0xB3, number(time))
+                repeat(random.nextInt(1, 4)) {
+                    val inPlace = ArrayList<ByteArray>()
+                    if (random.nextInt(15) != 0) inPlace += make(0xF7, number(random.nextLong(1, 4)))
+                    if (random.nextInt(15) != 0) inPlace += make(0xF1, number(time * 1000 + random.nextLong(0, 900)))
+                    if (random.nextBoolean()) inPlace += make(0xF0, uint(random.nextLong(0, 60_000)))
+                    if (random.nextBoolean()) inPlace += make(0xB2, uint(random.nextLong(0, 5000)))
+                    if (random.nextInt(8) == 0) inPlace += el(0x5378, uint(1))
+                    if (random.nextInt(8) == 0) inPlace += el(0xEC, ByteArray(random.nextInt(0, 6)))
+                    if (random.nextInt(3) == 0) inPlace.shuffle(random)
+                    val place = make(0xB7, *inPlace.toTypedArray())
+                    // A place that says it's shorter or longer than it is.
+                    if (wrong && random.nextInt(40) == 0 && place.size > 4) place[1] = (place[1] + random.nextInt(-2, 3)).toByte()
+                    parts += place
+                }
+                if (random.nextInt(10) == 0) parts += el(0xEC, ByteArray(random.nextInt(0, 9)))
+                if (random.nextInt(6) == 0) parts.shuffle(random)
+                children += make(0xBB, *parts.toTypedArray())
+                if (random.nextInt(12) == 0) children += el(0xEC, ByteArray(random.nextInt(0, 30)))
+                if (random.nextInt(25) == 0) children += el(0xBF, ByteArray(4))
+            }
+            val bytes = cues(*children.toTypedArray())
+            val whole = read(bytes)
+            val expected = taken(whole)
+            if (whole.done) {
+                good++
+                keyframes += whole.count
+            }
+            assertEquals("index $round a byte at a time", expected, taken(read(bytes, 1)))
+            repeat(6) {
+                val piece = random.nextInt(2, 120)
+                assertEquals("index $round, $piece at a time", expected, taken(read(bytes, piece)))
+            }
+            // In pieces of no one size.
+            val r = CueReader(AT, 1, 1_000_000)
+            var i = 0
+            while (i < bytes.size) {
+                val n = minOf(random.nextInt(1, 90), bytes.size - i)
+                r.feed(AT + i, bytes, i, n)
+                i += n
+            }
+            assertEquals("index $round in uneven pieces", expected, taken(r))
+        }
+        // Most of them read to the end with keyframes in them, and some gave up: both ends were compared.
+        assertTrue("$good read whole", good in 250..390)
+        assertTrue("$keyframes keyframes", keyframes > 1000)
+    }
+
     // --- An index that doesn't read as one, or doesn't agree with Media3's reading of it
 
     @Test

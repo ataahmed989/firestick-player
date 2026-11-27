@@ -22,6 +22,12 @@ import androidx.media3.extractor.SeekPoint
  * player jumps by instead of Media3's. Whenever the index doesn't read as expected, isn't seen whole, or doesn't
  * agree with what Media3 read from the same bytes, there is none and jumps go by Media3's own as they always did.
  *
+ * It's read before the film can start, so it's read lightly. A point lying whole in the piece handed over, written
+ * the plain way muxers write them, is taken where it lies ([whole]) and only the bytes that matter are looked at: a
+ * place that names another track first, as a subtitle line's does (most of a remux's index), is passed over from
+ * there, and a time is only worked out for a keyframe. Anything else (a point across two pieces, a longer ID or size)
+ * goes a byte at a time through the same rules, so the answer is the same however the bytes arrive.
+ *
  * Fed on the loading thread only.
  */
 @OptIn(UnstableApi::class)
@@ -75,6 +81,8 @@ internal class CueReader(
     private var videoCluster = -1L
     private var track = -1L
     private var cluster = -1L
+    // The place being read names another track: the rest of it is passed over, and it counts as a place.
+    private var other = false
 
     /** Nothing more is wanted: read whole, or given up on. */
     val over: Boolean get() = done || failure != null
@@ -134,6 +142,11 @@ internal class CueReader(
                 if (left == 0L && !closed()) return
                 continue
             }
+            if (level == 1 && phase == ID && got == 0) {
+                i = whole(b, i, end)
+                if (i < 0) return
+                if (i == end) break
+            }
             val v = b[i].toInt() and 0xFF
             i++
             next++
@@ -173,6 +186,102 @@ internal class CueReader(
                 }
             }
         }
+    }
+
+    /**
+     * The points lying whole in [b] from [from] up to [end], each written the plain way (one-byte IDs and sizes, numbers
+     * under eight bytes), taken where they lie: the same rules as a byte at a time ([opened], [closed]), without the
+     * steps. Stops at the first that isn't plain or isn't all there, which is then read a byte at a time. Returns where
+     * in [b] reading goes on from, -1 when nothing more is wanted (the index's end, or given up).
+     */
+    private fun whole(b: ByteArray, from: Int, end: Int): Int {
+        val video = videoTrack
+        // No further than the index's own end.
+        val limit = if (cuesEnd - next < end - from) from + (cuesEnd - next).toInt() else end
+        var p = from
+        each@ while (limit - p >= 2) {
+            if (b[p] != POINT) break
+            // A size in one byte has its top bit set; all ones is no size stated.
+            val ps = b[p + 1].toInt()
+            if (ps >= -1) break
+            val pe = p + 2 + (ps and 0x7F)
+            if (pe > limit) break
+            var timeAt = -1
+            var timeEnd = -1
+            var places = 0
+            var videoCluster = -1L
+            var q = p + 2
+            while (q < pe) {
+                if (pe - q < 2) break@each
+                val id = b[q]
+                val size = b[q + 1].toInt()
+                if (id >= 0 || size >= -1) break@each
+                val e = q + 2 + (size and 0x7F)
+                if (e > pe) break@each
+                if (id == TIME) {
+                    if (e - q > 9) break@each
+                    timeAt = q + 2
+                    timeEnd = e
+                } else if (id == PLACES) {
+                    var track = -1L
+                    var cluster = -1L
+                    var other = false
+                    var r = q + 2
+                    while (r < e) {
+                        if (e - r < 2) break@each
+                        val placeId = b[r]
+                        val placeSize = b[r + 1].toInt()
+                        if (placeId >= 0 || placeSize >= -1) break@each
+                        val re = r + 2 + (placeSize and 0x7F)
+                        if (re > e) break@each
+                        if (placeId == TRACK || placeId == CLUSTER) {
+                            if (re - r > 9) break@each
+                            var v = 0L
+                            var k = r + 2
+                            while (k < re) {
+                                v = (v shl 8) or (b[k].toLong() and 0xFF)
+                                k++
+                            }
+                            if (placeId == CLUSTER) {
+                                cluster = v
+                            } else {
+                                track = v
+                                if (v != video) {
+                                    other = true
+                                    break
+                                }
+                            }
+                        }
+                        r = re
+                    }
+                    if (other) {
+                        places++
+                    } else if (cluster >= 0) {
+                        places++
+                        if (track == video && videoCluster < 0) videoCluster = cluster
+                    }
+                }
+                q = e
+            }
+            if (timeAt < 0 || places == 0) break
+            points++
+            if (videoCluster >= 0) {
+                var time = 0L
+                var k = timeAt
+                while (k < timeEnd) {
+                    time = (time shl 8) or (b[k].toLong() and 0xFF)
+                    k++
+                }
+                if (!add(time, videoCluster, alone = places == 1)) {
+                    next += pe - from
+                    return -1
+                }
+            }
+            p = pe
+        }
+        next += p - from
+        if (next == cuesEnd) done = true
+        return if (done) -1 else p
     }
 
     /**
@@ -231,6 +340,7 @@ internal class CueReader(
                     level = 3
                     track = -1
                     cluster = -1
+                    other = false
                     phase = ID
                     return closed()
                 }
@@ -260,7 +370,10 @@ internal class CueReader(
     private fun took() {
         when (id) {
             ID_CUE_TIME -> time = value
-            ID_CUE_TRACK -> track = value
+            ID_CUE_TRACK -> {
+                track = value
+                if (value != videoTrack) other = true
+            }
             ID_CUE_CLUSTER_POSITION -> cluster = value
         }
     }
@@ -271,8 +384,18 @@ internal class CueReader(
         got = 0
         if (level == 3) {
             if (next > placeEnd) return failed("a point's place ends early")
-            if (next < placeEnd) return true
-            if (cluster >= 0) {
+            if (next < placeEnd) {
+                // Another track's place (a subtitle line's, mostly): nothing more of it is wanted.
+                if (other) {
+                    left = placeEnd - next
+                    phase = SKIP
+                }
+                return true
+            }
+            // Another track's place counts as one without its cluster being looked for: the index's rules say it has one.
+            if (other) {
+                places++
+            } else if (cluster >= 0) {
                 places++
                 if (track == videoTrack && videoCluster < 0) videoCluster = cluster
             }
@@ -397,6 +520,12 @@ internal class CueReader(
         const val ID_CUE_TRACK_POSITIONS = 0xB7L
         const val ID_CUE_TRACK = 0xF7L
         const val ID_CUE_CLUSTER_POSITION = 0xF1L
+        // The same as bytes, for points taken where they lie.
+        const val POINT = 0xBB.toByte()
+        const val TIME = 0xB3.toByte()
+        const val PLACES = 0xB7.toByte()
+        const val TRACK = 0xF7.toByte()
+        const val CLUSTER = 0xF1.toByte()
         /** An index this close after where a read starts may be come to by that read. */
         const val NEAR = 4L * 1024 * 1024
         /** A keyframe every 40 ms of a film ten hours long is fewer. */
