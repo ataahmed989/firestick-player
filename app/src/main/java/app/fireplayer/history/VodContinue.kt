@@ -11,42 +11,64 @@ import app.fireplayer.vod.TitleDetails
 import app.fireplayer.vod.data.DefaultVodRepository
 import app.fireplayer.vod.data.VodRepositories
 import app.fireplayer.vod.play.VodLaunch
+import app.fireplayer.vod.ui.RowRules
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
- * Films & Shows' Continue Watching for Glass Home ([ContinueProvider]): its rows ([LibraryContinue]), taking one off,
- * a show's episodes, and the play a row starts (Glass Home's RESUME and PLAY_EPISODE), which is a Continue card's on
- * Home: the same file, its add-on asked first, from where it stopped, no title page and no question. Logs say only the
- * kind of a failure, never an add-on, a release or a link.
+ * Films & Shows' Continue Watching for Glass Home ([ContinueProvider]): its rows ([LibraryContinue]) for its Home row
+ * ([rows]) and its Movies and TV Shows tabs ([lists]), taking one off, a show's episodes, and the play a row starts
+ * (Glass Home's RESUME and PLAY_EPISODE), which is a Continue card's on Home: the same file, its add-on asked first,
+ * from where it stopped, no title page and no question. Logs say only the kind of a failure, never an add-on, a
+ * release or a link.
  */
 object VodContinue {
     private const val TAG = "FirePlayerContinue"
     /** The longest Glass Home's Episodes window waits for a show's details (stored ones come at once). */
     private const val DETAILS_WAIT_S = 8L
 
-    /**
-     * Glass Home's whole row: the library's rows with [others] (the videos other apps opened here), the latest played
-     * first, a library title's copies among [others] left out ([LibraryContinue.merge]); just [others] when the library
-     * can't be read.
-     */
-    fun rows(context: Context, others: List<WatchHistory.Row>): List<WatchHistory.Row> = try {
-        rows(VodRepositories.repository(context), others)
+    /** The names of Glass Home's lists ([lists]), as the provider's "list" column has them. */
+    const val HOME = "home"
+    const val MOVIES = "movies"
+    const val SHOWS = "shows"
+
+    /** Glass Home's Home row ([rows]); empty when the library can't be read. */
+    fun rows(context: Context): List<WatchHistory.Row> = try {
+        rows(VodRepositories.repository(context))
     } catch (e: Exception) {
         Log.w(TAG, "Couldn't read Films & Shows' Continue Watching: ${e.javaClass.simpleName}")
-        others
+        emptyList()
     }
 
-    /** [repo]'s rows ([rows]) with [others]: what Glass Home's row is made from ([ContinueProvider]). */
-    internal fun rows(repo: DefaultVodRepository, others: List<WatchHistory.Row>): List<WatchHistory.Row> =
-        LibraryContinue.merge(rows(repo), others, if (others.isEmpty()) emptyList() else repo.library.played())
+    /**
+     * Glass Home's row: FirePlayer Home's Continue Watching row as it is now, and nothing else (not the videos other
+     * apps opened here: their history stays, unlisted). Made as Home's row is: the library's Continue Watching for films
+     * and series (Source.ContinueWatching(null), [app.fireplayer.vod.data.VodLibrary.continueEntries]: taken out, marked
+     * watched, a show gone on to its next episode), the cards that row shows of it ([RowRules.shown]: the first 15). The
+     * same titles in the same order, at the same episode and place; read from the library each time, never a copy kept.
+     */
+    internal fun rows(repo: DefaultVodRepository): List<WatchHistory.Row> = rows(repo, null)
+
+    /** Glass Home's lists ([lists]); empty when the library can't be read. */
+    fun lists(context: Context): List<Pair<String, List<WatchHistory.Row>>> = try {
+        lists(VodRepositories.repository(context))
+    } catch (e: Exception) {
+        Log.w(TAG, "Couldn't read Films & Shows' Continue Watching: ${e.javaClass.simpleName}")
+        emptyList()
+    }
 
     /**
-     * [repo]'s Continue Watching as Glass Home's rows: read from the library each time (never a copy kept), so they are
-     * Home's Continue Watching row as it is now, the same titles in the same order, at the same episode and place.
+     * Glass Home's three lists ([ContinueProvider]'s items?lists), by name: Home's row ([rows]), then the Movies page's
+     * and the TV Shows page's Continue Watching rows (movies.continue, shows.continue), each made as its row is: the
+     * library's Continue Watching of that kind (Source.ContinueWatching(Kind.MOVIE), (Kind.SERIES)), the cards the row
+     * shows of it ([RowRules.shown]). Read from the library each time.
      */
-    internal fun rows(repo: DefaultVodRepository): List<WatchHistory.Row> =
-        repo.library.continueEntries().mapNotNull { LibraryContinue.row(it) }
+    internal fun lists(repo: DefaultVodRepository): List<Pair<String, List<WatchHistory.Row>>> =
+        listOf(HOME to rows(repo, null), MOVIES to rows(repo, Kind.MOVIE), SHOWS to rows(repo, Kind.SERIES))
+
+    /** The Continue Watching row of [kind] (null: Home's, films and series) as its page shows it. */
+    private fun rows(repo: DefaultVodRepository, kind: Kind?): List<WatchHistory.Row> =
+        RowRules.shown(repo.library.continueEntries(kind)).mapNotNull { LibraryContinue.row(it) }
 
     /** Takes a library row's title out of Continue Watching (its resume point stays); false for no such row. */
     fun remove(context: Context, id: String): Boolean = remove(VodRepositories.repository(context), id)

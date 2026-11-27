@@ -614,20 +614,141 @@ class FilmBufferStartTest {
         val fullUs = ((plan.budgetBytes - 6 * 30_000_000.0 / 8) / (30_000_000.0 / 8) * 1_000_000).toLong()
         assertTrue("$fullUs", fullUs in 11_500_000L..12_500_000L)
         // The 15 s a move asks for never fit (1.0.366 held 25 s of it): it moves with all but 2 s of what does, and
-        // never with under 10 s. Here with 10 s, which the full buffer is over.
+        // never with under the 5 s a squeezed buffer keeps.
         assertTrue(fullUs < FilmMemory.MOVE_COVER_US)
-        assertEquals(10_000_000L, FilmMemory.moveCoverUs(fullUs, heldDown = true))
+        assertEquals(fullUs - FilmMemory.MOVE_MARGIN_US, FilmMemory.moveCoverUs(fullUs, heldDown = true))
         assertTrue(FilmMemory.moveCoverUs(fullUs, heldDown = true) < fullUs)
         assertEquals(11_900_000L, FilmMemory.moveCoverUs(13_900_000L, heldDown = true))
         // The Max's 35 Mb/s copy at 84 MiB, a little over 14 s of it: 12 s and a bit.
         assertEquals(12_400_000L, FilmMemory.moveCoverUs(14_400_000L, heldDown = true))
-        assertEquals(10_000_000L, FilmMemory.moveCoverUs(8_000_000L, heldDown = true))
+        // Eight seconds ahead: 6 s, not the 10 s it never reaches. Under 7 s: 5 s.
+        assertEquals(6_000_000L, FilmMemory.moveCoverUs(8_000_000L, heldDown = true))
+        assertEquals(FilmMemory.MIN_AHEAD_US, FilmMemory.moveCoverUs(6_200_000L, heldDown = true))
         // Room for the 15 s, what fits not measured yet, or a buffer at the size it ever had: 15 s, as ever.
         assertEquals(15_000_000L, FilmMemory.moveCoverUs(25_000_000L, heldDown = true))
         assertEquals(15_000_000L, FilmMemory.moveCoverUs(17_000_000L, heldDown = true))
         assertEquals(15_000_000L, FilmMemory.moveCoverUs(0L, heldDown = true))
         assertEquals(15_000_000L, FilmMemory.moveCoverUs(13_900_000L, heldDown = false))
         assertEquals(15_000_000L, FilmMemory.moveCoverUs(5_000_000L, heldDown = false))
+    }
+
+    // How much of a film of [rateMbps] is ahead when the buffer of [plan] is full as it plays (FilmLoadControl stops
+    // loading at FilmMemory.fillLimit, keeping [floorUs] ahead), with what's kept behind (6 s up to the plan's cap).
+    private fun fullAheadUs(plan: FilmBufferPlan, floorUs: Long, rateMbps: Double): Long {
+        val bytesPerUs = rateMbps / 8.0
+        val behind = minOf(plan.backBufferMs * 1000.0 * bytesPerUs, plan.backCapBytes.toDouble())
+        var ahead = FilmMemory.ROOM_MIN_US
+        while (ahead < 120_000_000L) {
+            val allocated = (ahead * bytesPerUs + behind).toLong()
+            if (allocated >= FilmMemory.fillLimit(plan.budgetBytes, plan.budgetBytes, ahead, plan.everBytes, floorUs)) return ahead
+            ahead += 50_000L
+        }
+        return ahead
+    }
+
+    @Test fun aHeavyFilmInASmallStartMovesBeforeItRunsDry() {
+        // Found in review: the Max with 450 MiB free starts a 38 Mb/s film from TiviMate (its rate not known): 64 MiB,
+        // of which 8 s and a little more are ahead when full, where 1.0.366's 112 held 19 s. The 10 s a move asked for
+        // at the least were never there: a server fallen under the film's rate ran it dry, and it moved in the stall.
+        val plan = FilmMemory.withSecondRequest(stick(450), longSpans)
+        assertEquals(64, mib(plan.budgetBytes))
+        assertEquals(112, mib(plan.everBytes))
+        val full = fullAheadUs(plan, FilmMemory.THIN_AHEAD_US, 38.0)
+        assertTrue("$full", full in 8_500_000L..9_200_000L)
+        val cover = FilmMemory.moveCoverUs(full, heldDown = true)
+        assertTrue("$cover $full", cover < full)
+        assertEquals(full - FilmMemory.MOVE_MARGIN_US, cover)
+        // 1.0.366 at its whole size: 19 s, and the 15 s it always asked for.
+        val then = FilmMemory.withSecondRequest(stick(700), longSpans)
+        assertTrue(fullAheadUs(then, FilmMemory.MIN_AHEAD_US, 38.0) in 19_000_000L..20_000_000L)
+        assertEquals(FilmMemory.MOVE_COVER_US, FilmMemory.moveCoverUs(19_000_000L, heldDown = false))
+        // Every start held down by free memory, whatever the film and with or without the long spans: what a move
+        // asks for is less than what the full buffer holds, so a slow server is left while the film still plays.
+        for (two in listOf(false, true)) {
+            for (free in 300L..567L step 8) {
+                for ((rate, line) in listOf(0.0 to 0.0, 30.0 to 83.0, 38.0 to 50.0, 45.0 to 83.0, 58.0 to 70.0, 58.0 to 90.0, 65.0 to 83.0, 80.0 to 90.0)) {
+                    val planned = stick(free, rate, line)
+                    val p = if (two && FilmMemory.longSpansFit(planned)) FilmMemory.withSecondRequest(planned, longSpans) else planned
+                    if (p.budgetBytes >= p.everBytes) continue
+                    val floorUs = if (p.aheadFloorUs > 0L) p.aheadFloorUs else FilmMemory.THIN_AHEAD_US
+                    val fullUs = fullAheadUs(p, floorUs, if (rate > 0.0) rate else 38.0)
+                    val asks = FilmMemory.moveCoverUs(fullUs, heldDown = true)
+                    assertTrue("$two $free $rate: $asks of $fullUs", asks < fullUs)
+                    assertTrue("$two $free $rate", asks >= FilmMemory.MIN_AHEAD_US)
+                }
+            }
+        }
+    }
+
+    // ---- A stall in a buffer started small
+
+    // The film ahead at which FilmLoadControl.shouldStartPlayback plays on in the [stalls]th stall, from the pieces it
+    // uses (its limit, roomInStallUs, StallCushion): a film of [rateMbps] arriving at [fill] times its rate, [behindUs]
+    // kept behind, the buffer filling to [fillBytes] and stopping at [limitAt] for what's ahead.
+    private fun stallWaitUs(fillBytes: Int, limitAt: (Long) -> Int, rateMbps: Double, behindUs: Long, stalls: Int, fill: Float): Long {
+        val bytesPerUs = rateMbps / 8.0
+        val wanted = StallCushion.wantedUs(stalls, fill)
+        var ahead = 0L
+        while (ahead < 60_000_000L) {
+            val allocated = ((ahead + behindUs) * bytesPerUs).toLong()
+            if (allocated >= limitAt(ahead)) return ahead
+            val room = FilmMemory.roomInStallUs(ahead, behindUs, allocated, fillBytes.toLong())
+            if (ahead >= StallCushion.waitUs(stalls, wanted, room, fill)) return ahead
+            ahead += 50_000L
+        }
+        return ahead
+    }
+
+    @Test fun aStallInASmallStartWaitsForWhatItDidIn366() {
+        // Found in review: the Plus with 397 MiB free, its 58 Mb/s film at 80 MiB. After its second stall, on a line
+        // bringing 0.95 of the film's rate, it played on with 6 s ahead where 1.0.366 waited for 10: on a line that
+        // can't keep up, stalls came about twice as often until the buffer grew back.
+        val plus = stick(397, rateMbps = 58.0, lineMbps = 83.0)
+        val behindUs = (plus.backCapBytes / (58.0 / 8.0)).toLong()
+        val wasFill = plus.everBytes
+        val then = stallWaitUs(wasFill, { FilmMemory.fillLimit(wasFill, wasFill, it) }, 58.0, behindUs, 2, 0.95f)
+        val before = stallWaitUs(plus.budgetBytes, { FilmMemory.fillLimit(plus.budgetBytes, plus.budgetBytes, it, plus.everBytes, plus.aheadFloorUs) }, 58.0, behindUs, 2, 0.95f)
+        assertTrue("$then", then in 9_900_000L..10_100_000L)
+        assertTrue("$before", before in 5_900_000L..6_200_000L)
+        val stallFill = FilmMemory.stallFillBytes(plus.budgetBytes, plus.budgetBytes, plus.everBytes, 0)
+        assertEquals(plus.everBytes, stallFill)
+        assertEquals(then, stallWaitUs(stallFill, { FilmMemory.stallLimit(stallFill, plus.budgetBytes, plus.everBytes, it) }, 58.0, behindUs, 2, 0.95f))
+
+        // Whatever is free, the film, the line, the squeeze and the stall: the wait is 1.0.366's, its limit never under
+        // what the buffer's own is at that moment, and never over what it ever was.
+        for (two in listOf(false, true)) {
+            for (free in listOf(300L, 388L, 397L, 450L, 540L, 567L, 700L)) {
+                for ((rate, line) in listOf(0.0 to 0.0, 38.0 to 50.0, 58.0 to 70.0, 58.0 to 83.0, 65.0 to 83.0, 80.0 to 90.0)) {
+                    val planned = stick(free, rate, line)
+                    val spans = two && FilmMemory.longSpansFit(planned)
+                    val plan = if (spans) FilmMemory.withSecondRequest(planned, longSpans) else planned
+                    val extra = plan.spanExtraBytes
+                    val was = ((asEver(free) - if (spans) 16 else 0) * mib).toInt()
+                    assertEquals(was, plan.everBytes)
+                    val real = if (rate > 0.0) rate else 58.0
+                    val behind = minOf(plan.backBufferMs * 1000L, (plan.backCapBytes / (real / 8.0)).toLong())
+                    val floorUs = if (plan.aheadFloorUs > 0L) plan.aheadFloorUs else FilmMemory.THIN_AHEAD_US
+                    for (step in 0..FilmMemory.STEPS) {
+                        val cap = FilmMemory.capFor(plan.budgetBytes, step, extra)
+                        val fillNow = FilmMemory.stallFillBytes(cap, plan.budgetBytes, plan.everBytes, step, extra)
+                        val wasCap = FilmMemory.capFor(was, step, extra)
+                        assertEquals("$two $free $rate $step", wasCap, fillNow)
+                        for (aheadUs in listOf(0L, 4_999_999L, 5_000_000L, 7_999_999L, 8_000_000L, 30_000_000L)) {
+                            val stall = FilmMemory.stallLimit(fillNow, plan.budgetBytes, plan.everBytes, aheadUs)
+                            assertTrue(stall >= FilmMemory.fillLimit(cap, plan.budgetBytes, aheadUs, plan.everBytes, floorUs))
+                            assertTrue(stall <= plan.everBytes)
+                        }
+                        for (stalls in 1..3) {
+                            for (fill in listOf(0.7f, 0.95f, 1.1f)) {
+                                val now = stallWaitUs(fillNow, { FilmMemory.stallLimit(fillNow, plan.budgetBytes, plan.everBytes, it) }, real, behind, stalls, fill)
+                                val was366 = stallWaitUs(wasCap, { FilmMemory.fillLimit(wasCap, was, it) }, real, behind, stalls, fill)
+                                assertEquals("$two $free $rate $step $stalls $fill", was366, now)
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // ---- Another copy in the same player (Sources, Next source)

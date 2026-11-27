@@ -60,12 +60,6 @@ class DefaultVodRepository(
     rowStore: RowLayoutStore = RowLayoutStore.Memory(),
     /** Kept for each film or episode beside the copy it was left on, and forgotten with it ([VodLibrary]). */
     keptWithCopy: KeptWithCopy? = null,
-    /**
-     * Titles the viewer took out of Continue Watching (Remove, here or in Glass Home) or marked watched, told before
-     * anyone hears of the change: their copies other apps opened go from Glass Home's row with them
-     * ([app.fireplayer.history.ContinueWatching.removeCopies]).
-     */
-    private val continueGone: (List<Title>) -> Unit = {},
 ) : VodRepository {
 
     private val listeners = CopyOnWriteArrayList<() -> Unit>()
@@ -231,14 +225,10 @@ class DefaultVodRepository(
     override fun inMyList(id: String) = library.inMyList(id)
     override fun setInMyList(title: Title, inList: Boolean) = library.setInMyList(title, inList)
     override fun isWatched(id: String) = library.isWatched(id)
-    override fun setWatched(title: Title, watched: Boolean) {
-        // Watched: its copies other apps opened are done with too (Glass Home's row never shows one in its place).
-        if (watched) runCatching { continueGone(listOf(title)) }
-        library.setWatched(title, watched)
-    }
+    override fun setWatched(title: Title, watched: Boolean) = library.setWatched(title, watched)
 
     override fun hasHistory(title: Title): Boolean = library.hasHistory(title)
-    override fun removeFromContinueWatching(id: String) = library.removeFromContinueWatching(id, continueGone)
+    override fun removeFromContinueWatching(id: String) = library.removeFromContinueWatching(id)
 
     override fun addLibraryListener(listener: () -> Unit) {
         listeners += listener

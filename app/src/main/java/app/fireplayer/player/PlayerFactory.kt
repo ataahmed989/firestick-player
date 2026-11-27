@@ -655,7 +655,7 @@ private class GatedLoadControl(private val inner: LoadControl, private val allow
  * the budget is then raised once room has been made ([roomMade]: all but [reserveBytes] of what's free), and a step at
  * a time once memory has been quiet ([grow]). A budget started under what it ever was on a Fire TV Stick ([everBytes])
  * meanwhile only limits what's held beyond the seconds a film needs ahead, and never holds more than it ever did
- * ([limit]).
+ * ([limit]); in a stall it waits for and holds what it ever did ([stallCapBytes]).
  */
 @OptIn(UnstableApi::class)
 private class FilmLoadControl(
@@ -717,6 +717,12 @@ private class FilmLoadControl(
      * the playback thread.
      */
     @Volatile private var capBytes = plannedBytes
+    /**
+     * What the buffer fills to in a stall ([FilmMemory.stallFillBytes]): [capBytes], or for a budget started under what
+     * it ever was, what that size fills to at the same squeeze. Set on the main thread with [capBytes], read on the
+     * playback thread.
+     */
+    @Volatile private var stallCapBytes = FilmMemory.stallFillBytes(plannedBytes, plannedBytes, everBytes, 0, extraBytes)
     // When memory let go of was last freed while squeezed (elapsedRealtime), on the playback thread.
     private var trimmedAt = 0L
 
@@ -773,7 +779,7 @@ private class FilmLoadControl(
         measure(parameters, waiting = true)
         forgetRoomIfRaised()
         // Memory full means nothing more can come before playing on.
-        val limit = limit(capBytes, budgetBytes, parameters.bufferedDurationUs)
+        val limit = limit(parameters)
         if (allocator.totalBytesAllocated >= limit) return true
         val buffered = parameters.bufferedDurationUs
         val rate = fillRate()
@@ -781,11 +787,12 @@ private class FilmLoadControl(
         // What fits: as measured when the buffer was last full (forgotten whenever what it fills to changes). Before it
         // ever was, worked out from what's loaded. In a stall the memory also holds what's kept behind: what fits ahead
         // is worked out from the bytes at every check without it (a buffer on a line too slow to ever fill it, or one
-        // whose squeeze has lifted, counts as it is now), and as last measured full only when that can't be told.
+        // whose squeeze has lifted, counts as it is now), and as last measured full only when that can't be told. A
+        // buffer started small counts what it ever held there (stallCapBytes), as the wait after a stall always did.
         val measured = if (fullPeriod == parameters.mediaPeriodId.periodUid) fullUs else 0L
         val room = if (parameters.rebuffering) {
             val behindUs = minOf(keptBehindMs() * 1000L, parameters.playbackPositionUs)
-            FilmMemory.roomInStallUs(buffered, behindUs, allocator.totalBytesAllocated.toLong(), capBytes.toLong())
+            FilmMemory.roomInStallUs(buffered, behindUs, allocator.totalBytesAllocated.toLong(), stallCapBytes.toLong())
                 .takeIf { it > 0L } ?: measured
         } else {
             FilmMemory.roomUs(measured, buffered, allocator.totalBytesAllocated.toLong(), limit.toLong())
@@ -850,9 +857,15 @@ private class FilmLoadControl(
      * line as it was measured before this film, not by how this one arrives, which reads too fast once the buffer is
      * full and loads in bursts), up to what it ever was ([everBytes]) and no further; any other is its own limit, as
      * ever. Never more than the limit of 1.0.366 at any moment, so the wait before a film starts or plays on after a
-     * jump, which goes by it ([shouldStartPlayback]), is never longer than it was. Playback thread.
+     * jump, which goes by it ([shouldStartPlayback]), is never longer than it was. In a stall, 1.0.366's limit itself
+     * ([FilmMemory.stallLimit]): the wait to play on goes by what fits there, as it did. Playback thread.
      */
-    private fun limit(cap: Int, budget: Int, aheadUs: Long): Int = FilmMemory.fillLimit(cap, budget, aheadUs, everBytes, aheadFloorUs)
+    private fun limit(parameters: LoadControl.Parameters): Int {
+        val aheadUs = parameters.bufferedDurationUs
+        val budget = budgetBytes
+        if (parameters.rebuffering) return FilmMemory.stallLimit(stallCapBytes, budget, everBytes, aheadUs)
+        return FilmMemory.fillLimit(capBytes, budget, aheadUs, everBytes, aheadFloorUs)
+    }
 
     /** Seconds of film arriving per second of loading, once there's enough to tell; null before that. */
     private fun fillRate(): Float? = if (loadingMs < MEASURE_MS) null else loadedUs / 1000f / loadingMs
@@ -935,7 +948,7 @@ private class FilmLoadControl(
         val budget = budgetBytes
         if (cap < budget) freeLetGo(cap)
         val allocated = allocator.totalBytesAllocated
-        val limit = limit(cap, budget, parameters.bufferedDurationUs)
+        val limit = limit(parameters)
         // Full by size (not by the two minutes ahead that a lighter film reaches first): this much of it fits. (A live
         // channel's is never read: shouldStartPlayback leaves those to Media3's own rule.)
         if (allocated >= limit && parameters.bufferedDurationUs >= FilmMemory.ROOM_MIN_US) {
@@ -967,8 +980,10 @@ private class FilmLoadControl(
      */
     fun squeeze(step: Int): Int {
         this.step = step
-        val cap = FilmMemory.capFor(budgetBytes, step, extraBytes)
+        val budget = budgetBytes
+        val cap = FilmMemory.capFor(budget, step, extraBytes)
         if (cap != capBytes) raised = true
+        stallCapBytes = FilmMemory.stallFillBytes(cap, budget, everBytes, step, extraBytes)
         capBytes = cap
         allocator.setTargetBufferSize(cap)
         FilmSockets.squeezed = step > 0
@@ -1014,9 +1029,10 @@ private class FilmLoadControl(
     /** The budget is [next] from now on, when that is more: the squeeze of the moment applies to it. 0 when it stays. */
     private fun raisedTo(next: Int): Int {
         if (next <= budgetBytes) return 0
+        val cap = FilmMemory.capFor(next, step, extraBytes)
+        stallCapBytes = FilmMemory.stallFillBytes(cap, next, everBytes, step, extraBytes)
         budgetBytes = next
         raised = true
-        val cap = FilmMemory.capFor(next, step, extraBytes)
         capBytes = cap
         allocator.setTargetBufferSize(cap)
         return next
