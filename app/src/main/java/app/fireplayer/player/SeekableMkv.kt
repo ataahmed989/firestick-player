@@ -42,6 +42,10 @@ import java.util.Locale
  * other: Media3's reader passes over every block it meets before it knows the tracks, so the whole file was read before
  * the film could start (79 s for a 1 GB episode). The track list is read first instead ([SeekableMkvExtractor.Detour]).
  * A file with no SeekHead to say where its track list is has its last 64 KiB looked at for it.
+ *
+ * And a jump in a file with an index lands on a keyframe of the picture: the index's points for the video track alone
+ * ([CueReader], [KeyframeSeekMap]), not every track's as Media3 takes them. A subtitle line's point isn't a place the
+ * picture can start, and a jump that landed on one showed the picture from seconds after where the sound began.
  */
 @OptIn(UnstableApi::class)
 class SeekableMkvExtractorsFactory(
@@ -98,6 +102,17 @@ private class SeekableMkvExtractor(
 
     /** The file's own index, when it has one: where a damaged stretch is got past. */
     private var index: SeekMap? = null
+
+    /** Where the Segment's contents begin and where its SeekHead says the index (Cues) is, from the first bytes; -1 unknown. */
+    private var segmentStart = -1L
+    private var cuesListedAt = -1L
+    /** The video track's number when the file has just the one video track; 0 otherwise. */
+    private var videoTrack = 0L
+    /** Takes the video's keyframes from the index as it's read ([CueReader]); null before it can, and once the index is told. */
+    private var cueReader: CueReader? = null
+    private var mapTold = false
+    /** The jumps' map by the video's keyframes, when the index gave one; jumps go by Media3's own otherwise. */
+    private var keyframes: KeyframeSeekMap? = null
     private var recovery: Recovery? = null
     // Damaged stretches got past in this file, so one that's damaged throughout ends in an error.
     private var recovered = 0
@@ -166,8 +181,21 @@ private class SeekableMkvExtractor(
                 }
                 val position = input?.position ?: -1L
                 val usable = !seekMap.isSeekable && seekMap.durationUs != C.TIME_UNSET && length > 0 && position > 0
+                // The index has been through by now, or there's none: nothing more of it is looked at.
+                val cues = cueReader
+                cueReader = null
+                mapTold = true
                 if (!usable) {
-                    if (seekMap.isSeekable && seekMap.durationUs != C.TIME_UNSET) index = seekMap
+                    if (seekMap.isSeekable && seekMap.durationUs != C.TIME_UNSET) {
+                        index = seekMap
+                        // Jumps go by the video's keyframes when the index gave them, so the picture starts where the
+                        // sound does; by Media3's reading of it (every track's points) when it didn't.
+                        val keyed = cues?.build(seekMap, segmentStart, length)
+                        keyframes = keyed
+                        if (logs) Log.i(TAG, "mkv index: " + indexText(keyed, cues?.failure))
+                        output.seekMap(keyed ?: seekMap)
+                        return
+                    }
                     output.seekMap(seekMap)
                     return
                 }
@@ -189,6 +217,7 @@ private class SeekableMkvExtractor(
             // Scanned once it's been read: a connection that failed on it (tried again from the start) has it read again.
             readHeader(input)
             headerScanned = true
+            watchIndex()
         }
         // Null once the track list has been read (or when it's where it should be): one look per read.
         detour?.let { d -> d.step(input, seekPosition)?.let { return it } }
@@ -206,7 +235,14 @@ private class SeekableMkvExtractor(
         }
         // The file's index, at its end: Media3 reads it a byte or two at a time (millions of reads for a long film), each
         // going through every layer below, so it's handed out from big pieces read at once.
-        val batched = if (length > 0 && input.position >= length - IndexCache.TAIL) BatchedInput(input) else null
+        // An index kept elsewhere (before the clusters, as some tools write it) is read in pieces too from just before
+        // it, so its keyframes can be taken as it passes ([CueReader]).
+        val cues = cueReader
+        val batched = if (length > 0 && (input.position >= length - IndexCache.TAIL || cues != null && cues.near(input.position))) {
+            BatchedInput(input, cues)
+        } else {
+            null
+        }
         if (batched != null) this.input = batched
         return try {
             inner.read(batched ?: input, seekPosition)
@@ -253,6 +289,9 @@ private class SeekableMkvExtractor(
         recovery = null
         lastSampleUs = C.TIME_UNSET
         jumpedToUs = timeUs
+        if (position == 0L) cueReader?.restart()
+        // For the log's line of this jump: the keyframe the index gave for it.
+        if (logs && (position != 0L || timeUs != 0L)) MkvJump.last = MkvJump.Mark(timeUs, keyframes?.keyframeUs(timeUs) ?: -1L)
         inner.seek(position, timeUs)
         search = if (active && (position != 0L || timeUs != 0L)) Search(timeUs) else null
     }
@@ -519,7 +558,9 @@ private class SeekableMkvExtractor(
                 found.video?.let {
                     videoFrameRate = it.frameRate
                     dvSignal = it.dvSignal
+                    videoTrack = if (it.count == 1) it.number else 0L
                 }
+                watchIndex()
                 return tracksAt + size
             } catch (e: EOFException) {
                 return -1
@@ -738,8 +779,11 @@ private class SeekableMkvExtractor(
         video?.let {
             videoFrameRate = it.frameRate
             dvSignal = it.dvSignal
+            videoTrack = if (it.count == 1) it.number else 0L
         }
         val layout = runCatching { MkvHeader.layout(header, size) }.getOrNull()
+        segmentStart = layout?.segmentStart ?: -1L
+        cuesListedAt = layout?.cues ?: -1L
         val late = layout?.lateTracks(size, length) ?: -1L
         if (layout != null && late > 0) {
             detour = Detour(layout.segmentStart, late)
@@ -762,6 +806,25 @@ private class SeekableMkvExtractor(
     }
 
     private fun vintLength(first: Byte): Int = MkvHeader.vintLength(first)
+
+    /**
+     * Has the index's keyframes taken as it's read, once the file's first bytes (or a track list read first) have said
+     * where the index is and which track the video is: one video track only, since with more the index can't say which
+     * one plays. Left as it was otherwise, and jumps go by Media3's reading of the index.
+     */
+    private fun watchIndex() {
+        if (mapTold || cueReader != null || videoTrack <= 0L) return
+        if (cuesListedAt <= segmentStart || segmentStart < 0L || (length > 0 && cuesListedAt >= length)) return
+        cueReader = CueReader(cuesListedAt, videoTrack, timescaleNs)
+    }
+
+    /** "10812 keyframes of 31402 points, jumps land on them", or why jumps go by Media3's reading of the index. */
+    private fun indexText(keyed: KeyframeSeekMap?, failure: String?): String = when {
+        keyed != null -> "${keyed.count} keyframes of ${keyed.points} points (video track $videoTrack), jumps land on them"
+        failure != null -> "jumps as Media3 reads it ($failure)"
+        videoTrack <= 0L -> "jumps as Media3 reads it (not one video track known from the track list)"
+        else -> "jumps as Media3 reads it (no SeekHead says where it is)"
+    }
 
     companion object {
         private const val TAG = "FirePlayerMkv"
@@ -806,8 +869,11 @@ private class SeekableMkvExtractor(
  */
 internal object MkvHeader {
 
-    /** [frameRate] 0 when not stated; [dvSignal] null without a record. */
-    class Video(val frameRate: Float, val dvSignal: Int?)
+    /**
+     * [frameRate] 0 when not stated; [dvSignal] null without a record. [number]: the track's number (TrackNumber), as the
+     * index (Cues) names it; 0 when not stated. [count]: how many video tracks the bytes hold.
+     */
+    class Video(val frameRate: Float, val dvSignal: Int?, val number: Long = 0, val count: Int = 1)
 
     /**
      * The video track in the first [size] bytes of [h]: the frame rate of the first one stating it (as before), the
@@ -829,18 +895,19 @@ internal object MkvHeader {
     private class VideoPick {
         private var fps = 0f
         private var signal: Int? = null
-        private var seen = false
+        private var number = 0L
+        private var count = 0
 
         fun entry(h: ByteArray, start: Int, end: Int) {
-            if (fps != 0f) return
-            trackEntry(h, start, end)?.let { v ->
-                fps = v.frameRate
-                if (!seen) signal = v.dvSignal
-                seen = true
+            val v = trackEntry(h, start, end) ?: return
+            if (count++ == 0) {
+                signal = v.dvSignal
+                number = v.number
             }
+            if (fps == 0f) fps = v.frameRate
         }
 
-        fun video(): Video? = if (seen) Video(fps, signal) else null
+        fun video(): Video? = if (count > 0) Video(fps, signal, number, count) else null
     }
 
     /**
@@ -1031,16 +1098,18 @@ internal object MkvHeader {
         var video = false
         var frameNs = 0L
         var signal: Int? = null
+        var number = 0L
         forEachElement(h, start, end) { id, s, e ->
             when (id) {
                 ID_TRACK_TYPE -> video = uint(h, s, e) == 1L
+                ID_TRACK_NUMBER -> number = uint(h, s, e)
                 ID_DEFAULT_DURATION -> frameNs = uint(h, s, e)
                 ID_BLOCK_ADDITION_MAPPING -> if (signal == null) signal = dvRecord(h, s, e)
             }
         }
         if (!video) return null
         // 8 to 250 fps; anything else is a bad value.
-        return Video(if (frameNs in 4_000_000L..125_000_000L) 1e9f / frameNs else 0f, signal)
+        return Video(if (frameNs in 4_000_000L..125_000_000L) 1e9f / frameNs else 0f, signal, number)
     }
 
     /** A BlockAdditionMapping's Dolby Vision record's signal; null when it holds another kind, or none. */
@@ -1158,7 +1227,11 @@ internal object MkvHeader {
  * on from. Anything else asked of it (a peek, a retry position) goes straight to [base] from then on.
  */
 @OptIn(UnstableApi::class)
-internal class BatchedInput(private val base: ExtractorInput) : ExtractorInput {
+internal class BatchedInput(
+    private val base: ExtractorInput,
+    /** Shown every piece as it's read (and what's read past one): the index's keyframes are taken from them. */
+    private val cues: CueReader? = null,
+) : ExtractorInput {
     private val chunk = ByteArray(CHUNK)
     private var chunkLength = 0
     // Handed out of the chunk, not yet taken from base.
@@ -1191,6 +1264,7 @@ internal class BatchedInput(private val base: ExtractorInput) : ExtractorInput {
             return false
         }
         chunkLength = n
+        cues?.feed(base.position, chunk, 0, n)
         return true
     }
 
@@ -1223,7 +1297,10 @@ internal class BatchedInput(private val base: ExtractorInput) : ExtractorInput {
         // More than the piece holds: all of it from base in one go, which either reads it all or leaves its position as
         // it was. Taken in parts, a failed read (a dropped connection) left base part of the way into it, and the read
         // tried again from there came out of step.
-        return whole { base.readFully(target, offset, length, allowEndOfInput) }
+        return whole {
+            val at = base.position
+            base.readFully(target, offset, length, allowEndOfInput).also { if (it) cues?.feed(at, target, offset, length) }
+        }
     }
 
     /** [read] of a whole request from [base], after what was handed out is taken from it; pieces start afresh after. */
@@ -1257,7 +1334,10 @@ internal class BatchedInput(private val base: ExtractorInput) : ExtractorInput {
             return true
         }
         // As in readFully: a skip past the piece is base's, in one go
-        return whole { base.skipFully(length, allowEndOfInput) }
+        return whole {
+            val at = base.position
+            base.skipFully(length, allowEndOfInput).also { if (it) cues?.passed(at, length) }
+        }
     }
 
     override fun skipFully(length: Int) {

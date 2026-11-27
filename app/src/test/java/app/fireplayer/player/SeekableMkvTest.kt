@@ -11,7 +11,9 @@ import androidx.media3.extractor.Extractor
 import androidx.media3.extractor.ExtractorOutput
 import androidx.media3.extractor.ExtractorsFactory
 import androidx.media3.extractor.PositionHolder
+import androidx.media3.exoplayer.SeekParameters
 import androidx.media3.extractor.SeekMap
+import androidx.media3.extractor.SeekPoint
 import androidx.media3.extractor.TrackOutput
 import androidx.media3.extractor.mkv.MatroskaExtractor
 import androidx.media3.extractor.text.SubtitleParser
@@ -48,6 +50,8 @@ class SeekableMkvTest {
         val clusterContents: List<Long>,
         val videoTimesUs: List<Long>,
         val audioTimesUs: List<Long>,
+        /** The clusters that start with a keyframe (each a second on from the last: cluster 4 starts at 4 s). */
+        val keyClusters: List<Int> = clusters.indices.toList(),
     ) {
         val length get() = bytes.size.toLong()
     }
@@ -105,11 +109,18 @@ class SeekableMkvTest {
         el(0x4282, "matroska".toByteArray()), el(0x4287, uint(4)), el(0x4285, uint(2)))
 
     /** [soundPrivate]: a CodecPrivate this big in the sound track, for a track list far bigger than usual. */
-    private fun trackList(dv: Boolean, audioCodec: Boolean = true, soundPrivate: Int = 0): ByteArray {
+    private fun trackList(
+        dv: Boolean, audioCodec: Boolean = true, soundPrivate: Int = 0, subtitles: Boolean = false, secondVideo: Boolean = false,
+    ): ByteArray {
         val mapping = if (dv) el(0x41E4, el(0x41E7, uint(0x64766343)), el(0x41ED, record(DvBaseLayer.SIGNAL_HLG))) else ByteArray(0)
         val video = el(0xAE, el(0xD7, uint(1)), el(0x73C5, uint(11)), el(0x83, uint(1)), el(0x86, "V_VP9".toByteArray()),
             el(0x23E383, uint(41_708_333)), el(0xE0, el(0xB0, uint(1920)), el(0xBA, uint(1080))), mapping)
-        return el(0x1654AE6B, video, soundEntry(audioCodec, soundPrivate))
+        // A subtitle track (3), and a second picture (4): neither has blocks of its own in the clusters.
+        val text = if (subtitles) el(0xAE, el(0xD7, uint(3)), el(0x73C5, uint(33)), el(0x83, uint(0x11)),
+            el(0x86, "S_TEXT/UTF8".toByteArray())) else ByteArray(0)
+        val other = if (secondVideo) el(0xAE, el(0xD7, uint(4)), el(0x73C5, uint(44)), el(0x83, uint(1)),
+            el(0x86, "V_VP9".toByteArray()), el(0xE0, el(0xB0, uint(640)), el(0xBA, uint(360)))) else ByteArray(0)
+        return el(0x1654AE6B, video, soundEntry(audioCodec, soundPrivate), text, other)
     }
 
     private fun soundEntry(codec: Boolean = true, privateSize: Int = 0): ByteArray = el(0xAE, el(0xD7, uint(2)), el(0x73C5, uint(22)),
@@ -124,13 +135,14 @@ class SeekableMkvTest {
      */
     private fun cluster(
         i: Int, random: Random, broken: Boolean = false, video: MutableList<Long>, audio: MutableList<Long>, inject: ByteArray? = null,
+        key: Boolean = true,
     ): ByteArray {
         val blocks = ArrayList<Pair<Int, ByteArray>>()
         for (k in 0 until 24) {
             val rel = k * 1000 / 24
             val data = random.nextBytes(3000)
             if (k == 23 && inject != null) inject.copyInto(data, data.size - inject.size - 10)
-            blocks += rel * 2 to block(1, rel, if (k == 0) 0x80 else 0, data)
+            blocks += rel * 2 to block(1, rel, if (k == 0 && key) 0x80 else 0, data)
             if (!broken) video += (i * 1000L + rel) * 1000
         }
         for (k in 0 until 32) {
@@ -155,6 +167,13 @@ class SeekableMkvTest {
      * list ([tracksListedAt] when given: a wrong place) and the index ([cues]: whether it has one). [padBeforeTracks]: a
      * Void this big right before the track list. [segmentSizeKnown]: the Segment's size stated, or "unknown". [garbage]:
      * written into the last cluster's last picture.
+     *
+     * [gop]: a keyframe only every so many clusters (seconds), the index listing those for the video track (1).
+     * [subtitleCues]: the index lists a subtitle line too (track 3) half a second into every cluster, as mkvmerge and
+     * FFmpeg write it, each point with the place inside its cluster and how long the line lasts; a Void and a CRC-32
+     * sit in the index as well. [sharedPoints]: a line at each keyframe's own time shares the keyframe's point, the
+     * line's place first (as FFmpeg writes points). [cuesFirst]: the index before the clusters, right after the track
+     * list. [secondVideo]: a second video track in the track list. [videoCues]: whether the index lists the video at all.
      */
     private fun film(
         tracksLast: Boolean = true,
@@ -170,20 +189,43 @@ class SeekableMkvTest {
         padBeforeTracks: Int = 0,
         segmentSizeKnown: Boolean = true,
         garbage: ByteArray? = null,
+        gop: Int = 1,
+        subtitleCues: Boolean = false,
+        sharedPoints: Boolean = false,
+        cuesFirst: Boolean = false,
+        secondVideo: Boolean = false,
+        videoCues: Boolean = true,
+        timescaleNs: Long = 1_000_000,
     ): Film {
         val random = Random(42)
         val video = ArrayList<Long>()
         val audio = ArrayList<Long>()
         val clusterBytes = (0 until count).map {
-            cluster(it, random, it == brokenCluster, video, audio, inject = if (it == count - 1) garbage else null)
+            cluster(it, random, it == brokenCluster, video, audio, inject = if (it == count - 1) garbage else null, key = it % gop == 0)
         }
-        val info = el(0x1549A966, el(0x2AD7B1, uint(1_000_000)), el(0x4489, float64(count * 1000.0)))
-        val tracks = trackList(dv, audioCodec, soundPrivate)
+        val info = el(0x1549A966, el(0x2AD7B1, uint(timescaleNs)), el(0x4489, float64(count * 1000.0)))
+        val tracks = trackList(dv, audioCodec, soundPrivate, subtitles = subtitleCues || sharedPoints, secondVideo = secondVideo)
         val void = if (pad > 0) el(0xEC, ByteArray(pad)) else ByteArray(0)
         val trackPad = if (padBeforeTracks > 0) el(0xEC, ByteArray(padBeforeTracks)) else ByteArray(0)
-        fun cuesOf(positions: List<Long>) = el(0x1C53BB6B, *positions.mapIndexed { i, p ->
-            el(0xBB, el(0xB3, uint(i * 1000L, 8)), el(0xB7, el(0xF7, uint(1)), el(0xF1, uint(p, 8))))
-        }.toTypedArray())
+        val plain = gop == 1 && !subtitleCues && !sharedPoints && videoCues
+        fun place(track: Int, p: Long, more: Boolean) = if (!more) el(0xB7, el(0xF7, uint(track.toLong())), el(0xF1, uint(p, 8)))
+            else el(0xB7, el(0xF7, uint(track.toLong())), el(0xF1, uint(p, 8)), el(0xF0, uint(1234, 2)), el(0xB2, uint(400)))
+        fun cuesOf(positions: List<Long>): ByteArray {
+            // As it always was for a film with a keyframe a cluster and nothing else listed.
+            if (plain) return el(0x1C53BB6B, *positions.mapIndexed { i, p ->
+                el(0xBB, el(0xB3, uint(i * 1000L, 8)), el(0xB7, el(0xF7, uint(1)), el(0xF1, uint(p, 8))))
+            }.toTypedArray())
+            val points = ArrayList<ByteArray>()
+            points += el(0xBF, ByteArray(4))
+            positions.forEachIndexed { i, p ->
+                val key = i % gop == 0 && videoCues
+                if (key && sharedPoints) points += el(0xBB, el(0xB3, uint(i * 1000L)), place(3, p, true), place(1, p, true))
+                else if (key) points += el(0xBB, el(0xB3, uint(i * 1000L)), place(1, p, true))
+                if (subtitleCues) points += el(0xBB, el(0xB3, uint(i * 1000L + 500)), place(3, p, true))
+                if (i == 1) points += el(0xEC, ByteArray(40))
+            }
+            return el(0x1C53BB6B, *points.toTypedArray())
+        }
         fun seekHeadOf(info: Long, tracks: Long, cuesAt: Long) = if (!seekHead) ByteArray(0) else el(0x114D9B74,
             seekEntry(0x1549A966, info), seekEntry(0x1654AE6B, tracks), *(if (cues) arrayOf(seekEntry(0x1C53BB6B, cuesAt)) else emptyArray()))
 
@@ -198,11 +240,15 @@ class SeekableMkvTest {
             tracksRel = rel
             rel += tracks.size
         }
+        // An index before the clusters holds their places, which come after it: its size doesn't hang on them.
+        val cuesSize = if (cues) cuesOf(clusterBytes.map { 0L }).size else 0
+        val cuesRelFirst = rel
+        if (cuesFirst) rel += cuesSize
         rel += void.size
         val clusterRels = clusterBytes.map { c -> rel.also { rel += c.size } }
-        val cuesRel = rel
+        val cuesRel = if (cuesFirst) cuesRelFirst else rel
         val cuesBytes = if (cues) cuesOf(clusterRels) else ByteArray(0)
-        rel += cuesBytes.size
+        if (!cuesFirst) rel += cuesBytes.size
         if (tracksLast) {
             rel += trackPad.size
             tracksRel = rel
@@ -214,9 +260,10 @@ class SeekableMkvTest {
             children += seekHeadOf(infoRel, listedTracksRel, cuesRel)
             children += info
             if (!tracksLast) children += listOf(trackPad, tracks)
+            if (cuesFirst) children += cuesBytes
             children += void
             children += clusterBytes
-            children += cuesBytes
+            if (!cuesFirst) children += cuesBytes
             if (tracksLast) children += listOf(trackPad, tracks)
             val body = cat(children)
             val size = if (segmentSizeKnown) sizeBytes(body.size.toLong(), 8) else byteArrayOf(1) + ByteArray(7) { -1 }
@@ -225,11 +272,12 @@ class SeekableMkvTest {
         val clusters = clusterRels.map { segmentStart + it }
         // A cluster's contents start after its 4-byte ID and its size.
         val contents = clusters.mapIndexed { i, p -> p + 4 + MkvHeader.vintLength(clusterBytes[i][4]) }
+        val keys = clusters.indices.filter { it % gop == 0 }
         var made = Film(build(tracksRel), segmentStart, segmentStart + tracksRel, segmentStart + cuesRel, clusters, contents,
-            video, audio)
+            video, audio, keys)
         if (tracksListedAt != null) {
             made = Film(build(tracksListedAt(made) - segmentStart), made.segmentStart, made.tracksAt, made.cuesAt, made.clusters,
-                made.clusterContents, video, audio)
+                made.clusterContents, video, audio, keys)
         }
         return made
     }
@@ -237,7 +285,11 @@ class SeekableMkvTest {
     // --- Reading it as Media3's loader does
 
     /** Hands out the film a few kB at a time from where each connection opens, counting what was handed out. */
-    private class Loader(private val file: ByteArray, private val clusterRegion: LongRange? = null) {
+    private class Loader(
+        private val file: ByteArray, private val clusterRegion: LongRange? = null,
+        /** The most a connection hands out at once. */
+        private val step: Long = 4096L,
+    ) {
         val opens = ArrayList<Long>()
         var served = 0L
         var servedInClusters = 0L
@@ -260,7 +312,7 @@ class SeekableMkvTest {
                     dropAt = -1
                     throw IOException("dropped")
                 }
-                val n = minOf(length.toLong(), file.size - cursor, 4096L).toInt()
+                val n = minOf(length.toLong(), file.size - cursor, step).toInt()
                 System.arraycopy(file, cursor.toInt(), buffer, offset, n)
                 clusterRegion?.let { r ->
                     val from = maxOf(cursor, r.first)
@@ -332,11 +384,16 @@ class SeekableMkvTest {
             events += "seekMap"
         }
 
-        fun clearSamples() = tracks.values.forEach { it.times.clear() }
+        fun clearSamples() = tracks.values.forEach {
+            it.times.clear()
+            it.keys.clear()
+        }
 
         inner class Track(val id: Int) : TrackOutput {
             val formats = ArrayList<Format>()
             val times = ArrayList<Long>()
+            /** The times of the samples marked as keyframes. */
+            val keys = ArrayList<Long>()
             private val scratch = ByteArray(8192)
 
             override fun format(format: Format) {
@@ -357,6 +414,7 @@ class SeekableMkvTest {
                     events += "first sample"
                 }
                 times += timeUs
+                if (flags and C.BUFFER_FLAG_KEY_FRAME != 0) keys += timeUs
             }
         }
     }
@@ -368,8 +426,8 @@ class SeekableMkvTest {
 
     private class Read(val loader: Loader, val out: Out, val extractor: Extractor, val result: Int)
 
-    private fun read(film: Film, extractor: Extractor, dropAt: Long = -1, failOpenAt: Long = -1): Read {
-        val loader = Loader(film.bytes, film.clusters.first() until film.cuesAt)
+    private fun read(film: Film, extractor: Extractor, dropAt: Long = -1, failOpenAt: Long = -1, step: Long = 4096L): Read {
+        val loader = Loader(film.bytes, film.clusters.first() until film.cuesAt, step)
         loader.dropAt = dropAt
         loader.failOpenAt = failOpenAt
         val out = Out(loader)
@@ -982,5 +1040,220 @@ class SeekableMkvTest {
         // Let go and opened again (a reopen after a stall): timed from then.
         assertNull(clock.tracks(empty = true, now = 100_000L, bytes = 2_000L * 1_048_576))
         assertEquals("prepared +1500ms got=3.0MB", clock.tracks(empty = false, now = 101_500L, bytes = 2_003L * 1_048_576))
+    }
+
+    // --- Jumps land on the video's keyframes, as the index lists them
+
+    /** The first keyframe of the picture read from [point] on, as a load after a jump to [timeUs] reads it. */
+    private fun firstKeyFrom(r: Read, point: SeekPoint, timeUs: Long = point.timeUs): Long {
+        r.out.clearSamples()
+        r.loader.load(r.extractor, point.position, timeUs, stop = { r.video().keys.isNotEmpty() })
+        return r.video().keys.first()
+    }
+
+    /** A keyframe every 4 s, each in the index, which lists a subtitle line half a second into every cluster too. */
+    private fun heavyFilm(tracksLast: Boolean = false, pad: Int = 70_000, cuesFirst: Boolean = false, shared: Boolean = false) =
+        film(tracksLast = tracksLast, pad = pad, gop = 4, subtitleCues = true, sharedPoints = shared, cuesFirst = cuesFirst)
+
+    @Test
+    fun media3TakesASubtitleLinesPointForAPlaceThePictureCanStart() {
+        // Why the picture landed seconds ahead of the sound after a jump: Media3's reader (1.8.0) lists every point of the
+        // index, whatever track it's for. The film's own rule (land on a point up to 2 s before the time asked for)
+        // takes a jump to 7.2 s to the line at 6.5 s; the sound starts there, and the first keyframe from that cluster
+        // on is the one at 8 s: the picture 1.5 s ahead.
+        val film = heavyFilm()
+        val r = read(film, media3())
+        val map = r.out.seekMap!!
+        val points = map.getSeekPoints(7_200_000L)
+        val at = FILM_SEEK.resolveSeekPositionUs(7_200_000L, points.first.timeUs, points.second.timeUs)
+        assertEquals(6_500_000L, at)
+        val from = map.getSeekPoints(at).first
+        assertEquals(film.clusters[6], from.position)
+        assertEquals(8_000_000L, firstKeyFrom(r, from))
+    }
+
+    @Test
+    fun aJumpLandsOnTheVideosKeyframeNotOnASubtitleLinesPoint() {
+        val film = heavyFilm()
+        val r = read(film, wrapped())
+        val map = r.out.seekMap!!
+        assertTrue(map is KeyframeSeekMap)
+        assertEquals(3, (map as KeyframeSeekMap).count)
+        // Every point the index lists, the CRC-32 and the Void in it passed over: 3 keyframes and 12 lines.
+        assertEquals(15, map.points)
+        assertEquals(12_000_000L, map.durationUs)
+        // The same jump to 7.2 s: no keyframe in the 2 s before it, so the sound starts 2 s before (as always), and the
+        // film is read from the keyframe before that, at 4 s, which is the very first picture to come.
+        val points = map.getSeekPoints(7_200_000L)
+        assertEquals(4_000_000L, points.first.timeUs)
+        assertEquals(8_000_000L, points.second.timeUs)
+        val at = FILM_SEEK.resolveSeekPositionUs(7_200_000L, points.first.timeUs, points.second.timeUs)
+        assertEquals(5_200_000L, at)
+        val from = map.getSeekPoints(at).first
+        assertEquals(film.clusters[4], from.position)
+        val before = MkvJump.last
+        assertEquals(4_000_000L, firstKeyFrom(r, from, at))
+        assertEquals(4_000_000L, r.video().times.first())
+        // The film's reader notes the keyframe it gave for the jump, for the log's line.
+        val note = MkvJump.last!!
+        assertTrue(note !== before)
+        assertEquals(5_200_000L, note.timeUs)
+        assertEquals(4_000_000L, note.keyUs)
+        assertEquals(4_000L, JumpLine.keyMs(note, 5_200L))
+        // And a jump to 5.5 s lands on that keyframe itself: sound and picture from 4 s, nothing to decode on the way.
+        val near = map.getSeekPoints(5_500_000L)
+        assertEquals(4_000_000L, FILM_SEEK.resolveSeekPositionUs(5_500_000L, near.first.timeUs, near.second.timeUs))
+    }
+
+    @Test
+    fun whereverAJumpGoesThePictureStartsNoLaterThanTheSound() {
+        // Every rule the player jumps by, to every quarter second of the film: the film's own (a keyframe up to 2 s
+        // before), the preview's (the nearest keyframe), exactly there, and the film following the preview.
+        val film = heavyFilm(shared = true)
+        val r = read(film, wrapped())
+        val map = r.out.seekMap!!
+        assertTrue(map is KeyframeSeekMap)
+        val keys = film.keyClusters.map { it * 1_000_000L }
+        assertEquals(listOf(0L, 4_000_000L, 8_000_000L), keys)
+        val rules = listOf(FILM_SEEK, SeekParameters.CLOSEST_SYNC, SeekParameters.EXACT, SeekParameters(0L, 1_000L))
+        for (rule in rules) for (target in 0L..11_750_000L step 250_000L) {
+            val points = map.getSeekPoints(target)
+            val at = rule.resolveSeekPositionUs(target, points.first.timeUs, points.second.timeUs)
+            val from = map.getSeekPoints(at).first
+            val key = keys.last { it <= at }
+            assertEquals("to $target", key, from.timeUs)
+            assertEquals("to $target", film.clusters[(key / 1_000_000L).toInt()], from.position)
+            // The first keyframe read from there is that one: never a picture from after where the sound starts.
+            assertEquals("to $target", key, firstKeyFrom(r, from))
+            if (rule === FILM_SEEK) {
+                // Never after the time asked for, never more than 2 s before; on the keyframe itself when one is that near.
+                assertTrue("to $target", at <= target && at >= target - 2_000_000L)
+                if (target - key <= 2_000_000L) assertEquals("to $target", key, at)
+            }
+            if (rule === SeekParameters.CLOSEST_SYNC) assertTrue("to $target", at in keys)
+        }
+    }
+
+    @Test
+    fun theFilmFollowsThePreviewToTheKeyframeItShowed() {
+        // The skip preview shows the keyframe nearest the target and says where it is; the film then jumps there with
+        // 1 ms to spare. Nearest to 6.9 s is the keyframe at 8 s: the film is read from it and it's the first picture.
+        val film = heavyFilm()
+        val r = read(film, wrapped())
+        val map = r.out.seekMap!!
+        val points = map.getSeekPoints(6_900_000L)
+        val shown = SeekParameters.CLOSEST_SYNC.resolveSeekPositionUs(6_900_000L, points.first.timeUs, points.second.timeUs)
+        assertEquals(8_000_000L, shown)
+        val there = map.getSeekPoints(shown)
+        val at = SeekParameters(0L, 1_000L).resolveSeekPositionUs(shown, there.first.timeUs, there.second.timeUs)
+        assertEquals(8_000_000L, at)
+        assertEquals(film.clusters[8], map.getSeekPoints(at).first.position)
+        assertEquals(8_000_000L, firstKeyFrom(r, map.getSeekPoints(at).first))
+        // By Media3's own reading the preview said 6.5 s (a line's point) while showing the picture from 8 s.
+        val theirs = read(film, media3()).out.seekMap!!.getSeekPoints(6_900_000L)
+        assertEquals(6_500_000L, SeekParameters.CLOSEST_SYNC.resolveSeekPositionUs(6_900_000L, theirs.first.timeUs, theirs.second.timeUs))
+    }
+
+    @Test
+    fun theKeyframesAreTakenWhereverTheIndexAndTheTrackListAre() {
+        // The track list after the clusters (read first), the index at the end; the index before the clusters, in a film
+        // big enough that its start isn't read in pieces anyway; and the usual, the index in the film's last bytes with
+        // the clusters far from the start. The same requests as Media3 makes where the track list is at the start.
+        val late = read(heavyFilm(tracksLast = true), wrapped())
+        assertTrue(late.out.seekMap is KeyframeSeekMap)
+        assertEquals(4_000_000L, late.out.seekMap!!.getSeekPoints(7_900_000L).first.timeUs)
+        for (cuesFirst in listOf(true, false)) {
+            val film = heavyFilm(pad = 17_000_000, cuesFirst = cuesFirst)
+            assertTrue(film.length > IndexCache.TAIL + 1_000_000)
+            assertEquals(cuesFirst, film.cuesAt < film.clusters.first())
+            val mine = read(film, wrapped())
+            val theirs = read(film, media3())
+            assertTrue("index first: $cuesFirst", mine.out.seekMap is KeyframeSeekMap)
+            assertEquals(theirs.loader.opens, mine.loader.opens)
+            assertEquals(if (cuesFirst) listOf(0L) else listOf(0L, film.cuesAt, film.clusterContents[0]), mine.loader.opens)
+            assertEquals(theirs.out.events, mine.out.events)
+            assertEquals(film.videoTimesUs, mine.video().times)
+            assertEquals(theirs.audio().times, mine.audio().times)
+            val point = mine.out.seekMap!!.getSeekPoints(7_900_000L).first
+            assertEquals(film.clusters[4], point.position)
+            assertEquals(4_000_000L, firstKeyFrom(mine, point))
+        }
+    }
+
+    @Test
+    fun aConnectionDroppedInTheMiddleOfTheIndexStillGivesItsKeyframes() {
+        // The film handed out 64 or 7 bytes at a time, so the index comes in many pieces, with numbers and whole
+        // elements cut across them; and the connection dropped at every 37th byte of it in turn.
+        val film = heavyFilm(shared = true)
+        val whole = read(film, wrapped()).out.seekMap as KeyframeSeekMap
+        val size = MkvHeader.elementSize(film.bytes, film.bytes.size, 0x1C53BB6BL, film.cuesAt.toInt())
+        assertTrue(size > 400)
+        val tries = listOf(64L to -1L, 7L to -1L) + (0 until size step 37).map { 64L to film.cuesAt + it } +
+            (0 until size step 101).map { 7L to film.cuesAt + it }
+        for ((step, drop) in tries) {
+            val r = read(film, wrapped(), dropAt = drop, step = step)
+            val map = r.out.seekMap
+            assertTrue("dropped at $drop, $step at a time", map is KeyframeSeekMap)
+            assertEquals(film.videoTimesUs, r.video().times)
+            assertEquals(whole.count, (map as KeyframeSeekMap).count)
+            assertEquals(whole.points, map.points)
+            for (t in 0L..11_000_000L step 500_000L) {
+                assertEquals(whole.getSeekPoints(t).first.timeUs, map.getSeekPoints(t).first.timeUs)
+                assertEquals(whole.getSeekPoints(t).first.position, map.getSeekPoints(t).first.position)
+            }
+        }
+    }
+
+    @Test
+    fun anIndexThatCannotSayWhereThePictureStartsIsLeftToMedia3() {
+        // Two video tracks (the index can't say which one plays), or no point for the video at all: jumps go by Media3's
+        // reading of the index, exactly as before.
+        val films = listOf(
+            film(tracksLast = false, pad = 70_000, gop = 4, subtitleCues = true, secondVideo = true),
+            film(tracksLast = false, pad = 70_000, gop = 4, subtitleCues = true, videoCues = false),
+        )
+        for (film in films) {
+            val mine = read(film, wrapped()).out.seekMap!!
+            val theirs = read(film, media3()).out.seekMap!!
+            assertFalse(mine is KeyframeSeekMap)
+            assertTrue(mine.isSeekable)
+            for (t in 0L..11_500_000L step 250_000L) {
+                assertEquals(theirs.getSeekPoints(t).first.timeUs, mine.getSeekPoints(t).first.timeUs)
+                assertEquals(theirs.getSeekPoints(t).first.position, mine.getSeekPoints(t).first.position)
+                assertEquals(theirs.getSeekPoints(t).second.timeUs, mine.getSeekPoints(t).second.timeUs)
+            }
+        }
+    }
+
+    @Test
+    fun aFilmInAnotherTimeUnitHasItsKeyframesAtMedia3sTimes() {
+        // A tenth of a millisecond a unit: every time in the file counts ten times less. The keyframes still sit at the
+        // times Media3 gives the same points (checked against its reading before they're used).
+        val film = film(tracksLast = false, pad = 70_000, gop = 4, subtitleCues = true, timescaleNs = 100_000)
+        val r = read(film, wrapped())
+        val map = r.out.seekMap!!
+        assertTrue(map is KeyframeSeekMap)
+        val point = map.getSeekPoints(790_000L).first
+        assertEquals(400_000L, point.timeUs)
+        assertEquals(film.clusters[4], point.position)
+        assertEquals(400_000L, firstKeyFrom(r, point))
+    }
+
+    @Test
+    fun theTrackListSaysWhichTrackIsTheVideoAndWhetherItIsTheOnlyOne() {
+        fun video(film: Film) = film.bytes.copyOf(65_536).let { MkvHeader.video(it, it.size)!! }
+        val one = video(film(tracksLast = false))
+        assertEquals(1L, one.number)
+        assertEquals(1, one.count)
+        assertEquals(23.976f, one.frameRate, 0.001f)
+        val two = video(film(tracksLast = false, secondVideo = true))
+        assertEquals(1L, two.number)
+        assertEquals(2, two.count)
+        assertEquals(23.976f, two.frameRate, 0.001f)
+    }
+
+    private companion object {
+        /** The film's own rule for a jump ([PlayerFactory.FILM_SEEK]): a keyframe up to 2 s before, never after. */
+        val FILM_SEEK = SeekParameters(2_000_000L, 0L)
     }
 }

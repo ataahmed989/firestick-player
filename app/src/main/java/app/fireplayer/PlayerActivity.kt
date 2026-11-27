@@ -101,6 +101,7 @@ import app.fireplayer.player.DisplaySwitch
 import app.fireplayer.player.FpsMeter
 import app.fireplayer.player.GraphicsTrim
 import app.fireplayer.player.JumpFrameCheck
+import app.fireplayer.player.JumpLine
 import app.fireplayer.player.FrameRateMatcher
 import app.fireplayer.player.FreezeWatch
 import app.fireplayer.player.PictureWatch
@@ -150,6 +151,7 @@ import app.fireplayer.ui.BarWatch
 import app.fireplayer.ui.CountdownPill
 import app.fireplayer.player.SkipTimes
 import app.fireplayer.player.MkvChapters
+import app.fireplayer.player.MkvJump
 import app.fireplayer.player.Segments
 import app.fireplayer.ui.DimmerWindow
 import app.fireplayer.ui.EpisodesSheet
@@ -1285,7 +1287,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         diag.fillBytes = built.fillBytes
         diag.note = ::diagNote
         p.addAnalyticsListener(diag)
-        p.setVideoFrameMetadataListener(JumpFrameCheck(fpsMeter, ::checkFrameAfterJump))
+        p.setVideoFrameMetadataListener(JumpFrameCheck(fpsMeter, ::firstFrameAfterBreak))
         fpsMeter.reset()
         p.pauseAtEndOfMediaItems = sleepAtEnd
         p.trackSelectionParameters = savedTrackParams ?: defaultTrackParams(p.trackSelectionParameters)
@@ -1330,6 +1332,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         previewGuard.reset()
         // TIME_UNSET starts VOD at the beginning and live at the live edge.
         try {
+            // A film starting part-way in (resumed): the log says where its first picture came against the sound.
+            if (position > 0L) jumpLogArm(position, start = true) else jumpLogAt = 0L
             p.setMediaItems(items, index, position)
             p.prepare()
             launchMark(LaunchLog.PLAYER)
@@ -1985,6 +1989,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         }
         // The next episode's preloaded start is playing now: nothing more to load ahead.
         preloadNext(false)
+        // Its first picture isn't that of a jump made near the end of the last one.
+        if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) jumpLogAt = 0L
         val now = player?.currentMediaItemIndex ?: playingIndex
         if (seeking && reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO && now != playingIndex && seekOffsetMs < 0) {
             // The episode ended while a jump back in it was being lined up: make that jump instead of moving on.
@@ -2105,6 +2111,39 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     // Set by a jump the viewer made, used up by the first frame after it.
     private var frameCheckArmed = false
 
+    // The jump (or start part-way in) whose first picture the log's line waits for: when it was made (0: none waits),
+    // where it was to go and where the film went on from.
+    private var jumpLogAt = 0L
+    private var jumpLogTargetMs = 0L
+    private var jumpLogLandedMs = 0L
+    private var jumpLogStart = false
+    // What the film's reader had noted before it ([MkvJump]): a note that's another one by then is this jump's.
+    private var jumpLogNoteBefore: MkvJump.Mark? = null
+
+    /** A jump to [targetMs] is made (or, [start], a film set to start there): its first picture gets a line in the log. */
+    private fun jumpLogArm(targetMs: Long, start: Boolean = false) {
+        jumpLogAt = SystemClock.elapsedRealtime()
+        jumpLogTargetMs = targetMs
+        jumpLogLandedMs = targetMs
+        jumpLogStart = start
+        jumpLogNoteBefore = MkvJump.last
+    }
+
+    /** The first frame after a break in the frames ([JumpFrameCheck]): the jump's line for the log, then its check. */
+    private fun firstFrameAfterBreak(frameMs: Long) {
+        val at = jumpLogAt
+        if (at != 0L) {
+            jumpLogAt = 0L
+            val waited = SystemClock.elapsedRealtime() - at
+            // Later than this it's some other break's frame (the next episode's first), not this jump's.
+            if (waited <= JUMP_LOG_WINDOW_MS) {
+                val key = JumpLine.keyMs(MkvJump.last.takeIf { it !== jumpLogNoteBefore }, jumpLogLandedMs)
+                android.util.Log.i(TAG, JumpLine.text(jumpLogTargetMs, jumpLogLandedMs, frameMs, waited, key, jumpLogStart))
+            }
+        }
+        checkFrameAfterJump(frameMs)
+    }
+
     /**
      * The first frame after a jump came from later than where the film is (the jump landed on an index point that isn't
      * a keyframe; see [JumpFrameCheck]): the picture would hold there while the sound plays up to it. Jumping exactly to
@@ -2164,6 +2203,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         if (reason == Player.DISCONTINUITY_REASON_SEEK) source?.jumped()
         // A jump of FirePlayer's own back into step isn't checked again.
         if (reason == Player.DISCONTINUITY_REASON_SEEK) frameCheckArmed = SystemClock.elapsedRealtime() - lastFrameFixAt > 1_000L
+        // The log's line for this jump, once its first picture shows; where it went on from, when that's a keyframe
+        // near where it was to go.
+        if (reason == Player.DISCONTINUITY_REASON_SEEK) jumpLogArm(newPosition.positionMs)
+        if (reason == Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT && jumpLogAt != 0L) jumpLogLandedMs = newPosition.positionMs
         // A jump while already waiting is a new wait (the state doesn't change), so the percentage starts again.
         if (reason == Player.DISCONTINUITY_REASON_SEEK) {
             restartPostPlayCount(newPosition.positionMs)
@@ -7872,6 +7915,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         const val FRAME_AHEAD_MAX_MS = 20_000L
         const val FRAME_FIX_GAP_MS = 4_000L
         const val FRAME_CHECK_WINDOW_MS = 8_000L
+        /** A jump's first picture gets its line in the log when it shows within this of the jump. */
+        const val JUMP_LOG_WINDOW_MS = 60_000L
         /** Copies' measurements kept at most; past it they start again. */
         const val MAX_QUALITY_SEEN = 400
         const val SKIP_NOTE_FADE_MS = 250L
