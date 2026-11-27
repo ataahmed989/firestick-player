@@ -446,6 +446,24 @@ class VodHeader(
         main.postDelayed(followArt, FOLLOW_ART_MS)
     }
 
+    /** The Continue card the banner follows (its title, episode and line), or null while it shows its feed. */
+    val followed: Card? get() = following
+
+    /**
+     * The Continue card followed, as the row has it now (the row read again with focus out of it: on Watch now, back
+     * from the episode it played): the same title at its new episode and time left. The words' line and what the buttons
+     * act on ([shownCard]) change in place; the picture, the logo and the wait for the next turn stay as they are.
+     */
+    fun refollow(card: Card) {
+        val was = following ?: return
+        if (was.title.kind != card.title.kind || was.title.id != card.title.id || was == card) return
+        following = card
+        val now = shown ?: return
+        if (now.id != card.title.id) return
+        shownCaption = card.caption
+        facts.text = factsOf(now, card.caption)
+    }
+
     /** Focus left the Continue row: back to the feed's title, the wait for the next one starting again. */
     fun unfollow() {
         if (following == null) return

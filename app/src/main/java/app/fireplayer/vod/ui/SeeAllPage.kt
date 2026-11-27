@@ -174,6 +174,14 @@ class SeeAllPage(private val ctx: Context, private val t: Tokens, private val re
         feed?.replace(id, change)
     }
 
+    /**
+     * The library changed, or the page came back: a grid of the library's (Continue Watching, Next Episodes, My List)
+     * shows it as stored now, focus staying on its title ([sync]). Any other grid stays as it is.
+     */
+    fun reloadLibrary() {
+        if (isOpen) feed?.reload()
+    }
+
     private val syncLater = Runnable { sync(force = false) }
 
     /** Shows the feed's titles: cards filled in place, new posters added only once the grid stands still. */
@@ -191,18 +199,28 @@ class SeeAllPage(private val ctx: Context, private val t: Tokens, private val re
             }
         }
         syncWaitFrom = 0L
-        cards = list
-        // Posters that go: focus moves off them first.
         val focusAt = (0 until grid.childCount).indexOfFirst { grid.getChildAt(it).isFocused }
-        if (focusAt >= list.size && list.isNotEmpty()) grid.getChildAt(list.size - 1).requestFocus()
+        // A library grid: focus goes with the title it's on, wherever it is now (the film played from here: first);
+        // out of the grid (a title page opened from it), the poster chosen does, for focus coming back.
+        val follow = if (f.isLibrary) RowRules.followTitle(if (focusAt >= 0) focusAt else chosen, cards, false, list, false) else -1
+        if (focusAt < 0 && follow >= 0) chosen = follow
+        cards = list
+        // Posters that go: focus moves off them first (none left: to the page itself).
+        if (focusAt >= list.size && list.isNotEmpty()) grid.getChildAt(if (follow >= 0) follow else list.size - 1).requestFocus()
+        if (list.isEmpty() && grid.hasFocus()) root.requestFocus()
         while (grid.childCount > list.size) {
             (grid.getChildAt(grid.childCount - 1) as CardView).releaseImage()
             grid.removeViewAt(grid.childCount - 1)
         }
         while (grid.childCount < list.size) grid.addView(poster())
         list.forEachIndexed { i, c -> (grid.getChildAt(i) as CardView).bind(c) }
+        if (focusAt >= 0 && follow >= 0 && !grid.getChildAt(follow).isFocused) {
+            grid.getChildAt(follow).requestFocus()
+            // There at once, not gliding through the grid.
+            settle()
+            labelTo(chosen, now = true)
+        }
         if (grid.hasFocus()) label.show(list.getOrNull(chosen)?.title?.name)
-        if (list.isEmpty() && grid.hasFocus()) root.requestFocus()
         // The first posters came while the grid held focus itself: into them.
         if (root.isFocused && grid.childCount > 0) takeFocus()
         bindImages()
@@ -228,14 +246,19 @@ class SeeAllPage(private val ctx: Context, private val t: Tokens, private val re
             val row = RowMath.gridRow(chosen, grid.columns)
             // The title goes to the new poster: its words once, then a glide (Glass Home's focus curve).
             label.show(cards.getOrNull(chosen)?.title?.name)
-            val x = (RowMath.gridColumn(chosen, grid.columns) * pitchX).roundToInt().toFloat()
-            label.glideTo(x, (labelTop + (row * pitchY).roundToInt()).toFloat(), 1f)
+            labelTo(chosen, now = false)
             spring.glideTo(RowMath.gridTarget(row, pitchY))
             bindImages()
             val f = feed ?: return@setOnFocusChangeListener
             if (RowMath.needMore(row, RowMath.gridRows(grid.childCount, grid.columns))) f.loadNext()
         }
         setOnKeyListener { v, keyCode, event -> onKey(v as CardView, keyCode, event) }
+    }
+
+    /** The title under poster [i]: gliding there, or there [now]. */
+    private fun labelTo(i: Int, now: Boolean) {
+        val x = (RowMath.gridColumn(i, grid.columns) * pitchX).roundToInt().toFloat()
+        label.glideTo(x, (labelTop + (RowMath.gridRow(i, grid.columns) * pitchY).roundToInt()).toFloat(), 1f, now)
     }
 
     private fun onKey(v: CardView, keyCode: Int, event: KeyEvent): Boolean {

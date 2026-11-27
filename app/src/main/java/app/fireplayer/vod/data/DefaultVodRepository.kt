@@ -226,6 +226,7 @@ class DefaultVodRepository(
     override fun setInMyList(title: Title, inList: Boolean) = library.setInMyList(title, inList)
     override fun isWatched(id: String) = library.isWatched(id)
     override fun setWatched(title: Title, watched: Boolean) = library.setWatched(title, watched)
+
     override fun hasHistory(title: Title): Boolean = library.hasHistory(title)
     override fun removeFromContinueWatching(id: String) = library.removeFromContinueWatching(id)
 

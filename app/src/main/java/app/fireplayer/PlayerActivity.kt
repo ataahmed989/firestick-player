@@ -101,6 +101,7 @@ import app.fireplayer.player.DisplaySwitch
 import app.fireplayer.player.FpsMeter
 import app.fireplayer.player.GraphicsTrim
 import app.fireplayer.player.JumpFrameCheck
+import app.fireplayer.player.LeaveSave
 import app.fireplayer.player.FrameRateMatcher
 import app.fireplayer.player.FreezeWatch
 import app.fireplayer.player.PictureWatch
@@ -300,8 +301,11 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private var bufferWait: () -> BufferWait? = { null }
     /** The film's player as built, for squeezing its buffer and putting up libass's overlay; null without a player. */
     private var builtPlayer: PlayerFactory.Built? = null
-    /** How far the film's buffer is squeezed for the TV's memory; kept across new players (see checkMemory). */
-    private val memoryPressure = MemoryPressure()
+    /**
+     * How far the film's buffer is squeezed for the TV's memory, and when it may grow; kept across new players (see
+     * checkMemory). An eighth at a time on a Fire TV Stick, as ever on the others.
+     */
+    private val memoryPressure by lazy { MemoryPressure(fine = FilmMemory.tier(this).tight) }
 
     // Views
     private lateinit var root: ViewGroup
@@ -597,6 +601,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private fun launchMark(step: String) = launch.mark(step, SystemClock.elapsedRealtime())
     /** When Back (or the film's end) began closing this screen; 0 when it isn't closing. For the "leave" line in the log. */
     private var leftAt = 0L
+    /** Whether onStop saves the place again after leaving saved it (only when a jump landed since). */
+    private val leaveSave = LeaveSave()
     /** The receiver refused this play's sound: decoded on the Stick for the rest of it. */
     private var soundOnDevice = false
     // When the player last went off screen without closing (the TV slept, the screensaver, Home while paused).
@@ -906,7 +912,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         seekPreview.release()
         notice = false
         retryPending = false
-        savePosition()
+        // Left with Back (or the film's end): finishWithResult saved already, with the player stopped since. Saved again,
+        // the library wrote the same place a second time and Glass Home was told twice. A jump lined up as Home was
+        // pressed lands only now (commitSeek above), or by its timer since: that place is saved (LeaveSave).
+        if (leaveSave.saveOnStop()) savePosition()
         source?.pause()
         // Before the player goes, so no copy is taken of a film being taken down.
         backdrop?.stop()
@@ -1222,6 +1231,10 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         // "Faster downloads", as set when this film or source starts; null is one request, as ever.
         val twoRanges = if (prefs.fasterDownloads) TwoRanges() else null
         filmRanges = twoRanges
+        // On a Fire TV Stick, how small the buffer may start with little free goes by the copy's own rate and what
+        // this connection was measured to bring (FilmMemory.plan). Only read there, and only for that.
+        val copyMbps = copyMbpsForBuffer()
+        val lineMbps = lineMbpsForBuffer(copyMbps)
         val built = PlayerFactory.build(
             context = this,
             delays = delays,
@@ -1241,9 +1254,14 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             freshLinks = source != null,
             keepBudgetBytes = keepBudgetBytes,
             twoRanges = twoRanges,
+            rateMbps = copyMbps,
+            lineMbps = lineMbps,
         )
         keepBudgetBytes = 0
         builtAt = SystemClock.elapsedRealtime()
+        // A buffer started small grows only once memory has been quiet from here on.
+        memoryPressure.filmStarted(builtAt)
+        growWaitTold = false
         // A new buffer holds nothing yet: what it gives back under a squeeze is counted from there (checkMemory).
         heldAtCollect = 0L
         vsyncFix = vsync.also { it.start() }
@@ -1788,6 +1806,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             duration?.let { result.putExtra("extra_duration", it) }
         }
         savePosition()
+        leaveSave.left()
         // Silence at once, and the film let go of: its decoders and what was loaded ahead are freed now, on the
         // player's own thread, while the TV changes back to its usual refresh rate (the screen blank anyway). Paused
         // instead, all of that came with the release a second later, in the middle of the app's first moments back
@@ -2967,19 +2986,23 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     }
 
     /**
-     * From [postPlayTick] every 10 s: Fire OS saying memory is low squeezes the film's buffer to three quarters, and to
-     * half when it's still low half a minute later; two minutes without it give a step back (see [MemoryPressure]).
-     * Fire OS's own trim requests come through [onTrimMemory], but may come late or not at all for the app in front.
+     * From [postPlayTick] every 10 s: Fire OS saying memory is low squeezes the film's buffer, two minutes without it
+     * give a step back, and a buffer started small for want of free memory grows a step when memory has been quiet and
+     * the TV has the room (see [MemoryPressure], [FilmMemory.grown]). Fire OS's own trim requests come through
+     * [onTrimMemory], but may come late or not at all for the app in front.
      */
     private fun checkMemory() {
         if (player == null) return
-        if (memoryPressure.checked(FilmMemory.lowNow(this), SystemClock.elapsedRealtime())) {
-            squeezeFilmBuffer()
+        val memory = FilmMemory.now(this)
+        val now = SystemClock.elapsedRealtime()
+        if (memoryPressure.checked(memory.low, now)) {
+            squeezeFilmBuffer(if (memory.low) "Fire OS says memory is low, ${memory.freeBytes shr 20} MiB free" else "no memory warning lately, ${memory.freeBytes shr 20} MiB free")
             return
         }
+        val built = builtPlayer ?: return
+        if (memoryPressure.mayGrow(now)) growFilmBuffer(built, memory.freeBytes, now)
         // Squeezed and coming down to its new size: what it has let go of meanwhile goes back to the TV, a good
         // piece at a time (see FilmMemory.givenBack).
-        val built = builtPlayer ?: return
         val held = built.filmBytes()
         if (FilmMemory.givenBack(memoryPressure.step, held, heldAtCollect)) {
             heldAtCollect = held
@@ -2992,14 +3015,70 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     /** What the film's buffer held when its memory was last collected for a squeeze, or when it was squeezed (bytes). */
     private var heldAtCollect = 0L
+    /**
+     * The average rate of the source playing or being opened, in Mb/s, for the size its buffer starts with on a Fire TV
+     * Stick ([FilmMemory.plan]); 0 on every other TV (never read there), and when it isn't known.
+     */
+    private fun copyMbpsForBuffer(): Double = if (FilmMemory.tier(this).tight) source?.rateMbps() ?: 0.0 else 0.0
 
-    /** Gives the film's buffer the size [memoryPressure] calls for now. */
-    private fun squeezeFilmBuffer() {
+    /** What this connection was measured to bring lately, in Mb/s, for a copy of [copyMbps]; 0 when not asked or not known. */
+    private fun lineMbpsForBuffer(copyMbps: Double): Double =
+        if (copyMbps > 0.0) app.fireplayer.vod.sources.LineRate.of(sourcePrefs, two = prefs.fasterDownloads).current() ?: 0.0 else 0.0
+
+    /**
+     * Another copy starts in the player that is there ([playInstead]): a buffer started small on a Fire TV Stick goes
+     * by this copy's rate from here, not the first one's ([PlayerFactory.Built.forCopy]). [known]: the copy is the
+     * source being opened, whose rate the add-ons or an earlier play may know; a copy from the film's own list isn't.
+     */
+    private fun bufferForCopy(known: Boolean) {
+        val built = builtPlayer ?: return
+        // At its TV's size (every start with enough free, every other TV): nothing to change, nothing read.
+        if (built.growNeedBytes() <= 0L) return
+        val copyMbps = if (known) copyMbpsForBuffer() else 0.0
+        val lineMbps = lineMbpsForBuffer(copyMbps)
+        val bytes = built.forCopy(copyMbps, lineMbps)
+        if (bytes > 0) {
+            android.util.Log.i(TAG, "Another copy, about ${Math.round(copyMbps)} Mb/s" +
+                (if (lineMbps > 0.0) " on a connection bringing ${Math.round(lineMbps)}" else "") +
+                ": the film's buffer is ${bytes shr 20} MiB from now, for " +
+                "${FilmMemory.aheadFloorFor(copyMbps, lineMbps) / 1_000_000L} s of it ahead (of ${built.mostBytes shr 20})")
+        }
+    }
+
+    /** How far [squeezeFilmBuffer] last found the buffer squeezed, to tell a step down from a step back. */
+    private var squeezeTold = 0
+    /** The log has said what a buffer waiting to grow waits for; said again only after it grew or a new player. */
+    private var growWaitTold = false
+
+    /**
+     * Memory has been quiet: a buffer started below its TV's size takes a step up when [freeBytes] leave room for it,
+     * and says so in the log; when they don't, it says once what it waits for.
+     */
+    private fun growFilmBuffer(built: PlayerFactory.Built, freeBytes: Long, now: Long) {
+        val need = built.growNeedBytes()
+        if (need <= 0L) return
+        val bytes = built.grow(freeBytes)
+        if (bytes > 0) {
+            memoryPressure.grew(now)
+            growWaitTold = false
+            android.util.Log.i(TAG, "Memory quiet, ${freeBytes shr 20} MiB free (${need shr 20} needed): the film's buffer grows to " +
+                "${bytes shr 20} MiB (of ${built.mostBytes shr 20})")
+        } else if (!growWaitTold) {
+            growWaitTold = true
+            android.util.Log.i(TAG, "Memory quiet, but ${freeBytes shr 20} MiB free: the film's buffer stays at " +
+                "${built.fillBytes() shr 20} MiB (of ${built.mostBytes shr 20}) until ${need shr 20} are")
+        }
+    }
+
+    /** Gives the film's buffer the size [memoryPressure] calls for now; [why] is what called for it, for the log. */
+    private fun squeezeFilmBuffer(why: String) {
         val built = builtPlayer ?: return
         val step = memoryPressure.step
+        val down = step > squeezeTold
+        squeezeTold = step
         val bytes = built.squeeze(step)
-        android.util.Log.i(TAG, (if (step > 0) "TV short of memory" else "TV's memory back") +
-            ": the film's buffer now fills to ${bytes shr 20} MiB (step $step)")
+        android.util.Log.i(TAG, (if (down) "TV short of memory" else if (step > 0) "TV's memory easing" else "TV's memory back") +
+            " ($why): the film's buffer now fills to ${bytes shr 20} MiB (step $step of ${FilmMemory.STEPS})")
         if (step > 0) {
             // The pictures the Episodes sheet and the details windows left in memory go too (up to 12 MB; what's on
             // screen stays, the rest comes back from disk when next shown). The pages behind only do this when Fire
@@ -3013,7 +3092,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
 
     /**
      * Fire OS asking the app in front to use less memory: the film's buffer gives a quarter back when memory is running
-     * low, and half when it's critical, until two minutes go by without it (see [checkMemory]). A paused film is let
+     * low, and half when it's critical (an eighth and a quarter on a Fire TV Stick, where it goes a step at a
+     * time), until two minutes go by without it (see [checkMemory], [MemoryPressure]). A paused film is let
      * go of instead when it's critical ([sleepFilm]), and a screen with no film loaded trims what it keeps when the
      * app is no longer in front ([trimWithoutFilm]).
      */
@@ -3040,7 +3120,9 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             sleepFilm("paused, TV critically short of memory")
             return
         }
-        if (memoryPressure.trimAsked(step, SystemClock.elapsedRealtime())) squeezeFilmBuffer()
+        if (memoryPressure.trimAsked(step, SystemClock.elapsedRealtime())) {
+            squeezeFilmBuffer(if (step == 2) "Fire OS asked: memory is critical" else "Fire OS asked: memory is running low")
+        }
     }
 
     /**
@@ -4455,6 +4537,8 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         } else {
             p?.seekTo(target)
         }
+        // Landing after leaving saved (Home or the sleep timer mid-jump): onStop saves this place.
+        if (p != null) leaveSave.moved()
         seeking = false
         updateOverlay()
         updateProgress()
@@ -6456,6 +6540,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
     private fun playCopy(copy: Copies.Copy) {
         val p = player ?: return
         val current = entries.getOrNull(p.currentMediaItemIndex) ?: return
+        bufferForCopy(known = false)
         playInstead(copy.uri, current.rawTitle, null, p.currentPosition)
     }
 
@@ -6672,6 +6757,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
             bufferingInfo.visibility = View.GONE
             val p = player
             if (switching && p != null && entries.isNotEmpty()) {
+                bufferForCopy(known = true)
                 playInstead(uri, vodRawTitle(request), vodKey(request, ready), startMs)
                 return
             }

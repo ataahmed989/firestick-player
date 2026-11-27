@@ -6,8 +6,8 @@ import app.fireplayer.vod.Kind
 import app.fireplayer.vod.data.Progress
 
 /**
- * Films & Shows' Continue Watching (the VOD library, vod.db) as rows of Glass Home's Continue Watching
- * ([ContinueProvider]), beside the rows of videos other apps opened ([ContinueWatching]). Pure, for tests.
+ * Films & Shows' Continue Watching (the VOD library, vod.db) as the rows of Glass Home's Continue Watching
+ * ([ContinueProvider], [VodContinue.rows]). Pure, for tests.
  *
  * A library row's id is "vod-m-ID" (a film) or "vod-s-ID" (a series), ID being the title's id (IMDb's "tt…") with any
  * character outside letters, digits, '.', ':' and '-' written as "_" and its UTF-8 bytes in hex, so an id is always one
@@ -36,13 +36,13 @@ object LibraryContinue {
     }
 
     /**
-     * Glass Home's row for a Continue Watching entry: a film, or the series at its episode. Null for a series that names
-     * no episode (Glass Home could only resume it on a title page, which it has none of).
+     * Glass Home's row for a Continue Watching entry, as its card on Home: a film, or the series at its episode (one
+     * naming no episode, as its card: no episode, and its Episodes window to choose one). Null for a title without a
+     * name or an id, which Glass Home can't show.
      */
     fun row(p: Progress): WatchHistory.Row? {
         val title = p.title
         val ep = p.episode
-        if (title.kind == Kind.SERIES && ep == null) return null
         if (title.name.isBlank() || title.id.isEmpty()) return null
         val show = title.kind == Kind.SERIES
         return WatchHistory.Row(
@@ -62,10 +62,6 @@ object LibraryContinue {
             hasEpisodes = show,
         )
     }
-
-    /** Both lists as one, the latest watched first (of two at the same time, the library's first); an id once. */
-    fun merge(library: List<WatchHistory.Row>, others: List<WatchHistory.Row>): List<WatchHistory.Row> =
-        (library + others).distinctBy { it.id }.sortedByDescending { it.lastWatched }
 
     fun episodeId(season: Int, episode: Int): String = "$season:$episode"
 

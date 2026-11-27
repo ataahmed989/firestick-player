@@ -576,7 +576,12 @@ class VodPage(
         tickClock()
         window?.refresh()
         val now = SystemClock.elapsedRealtime()
-        if (lastLoad == 0L || now - lastLoad > RELOAD_MS) loadAll() else reloadLibrary()
+        if (lastLoad == 0L || now - lastLoad > RELOAD_MS) {
+            loadAll()
+            seeAll?.reloadLibrary()
+        } else {
+            reloadLibrary()
+        }
         updateHeaderPause()
         // My List: the facts asks let go while hidden go out again (titles answered already are skipped).
         if (myList) for (row in visibleRows()) header.askFacts(row.cards.map { it.title })
@@ -1447,9 +1452,13 @@ class VodPage(
         checkEmpty()
     }
 
-    /** My List, Continue Watching and Next Episodes again (the library changed, or the page came back). */
+    /**
+     * My List, Continue Watching and Next Episodes again (the library changed, or the page came back), and See all when
+     * it's open on one of them: what's stored on this TV now, whatever changed it (a play, Glass Home's Remove).
+     */
     private fun reloadLibrary() {
         for (row in rows) if (RowRules.isLibrary(row.spec.source)) load(row)
+        seeAll?.reloadLibrary()
     }
 
     private fun onLibraryChanged() {
@@ -1484,7 +1493,7 @@ class VodPage(
         // An empty cached answer: the fresh one follows (a library row's answer is always final).
         if (!RowRules.isFinal(row.spec.source, cards.isEmpty(), fresh)) return
         row.answered = true
-        val shownCards = cards.take(ROW_CARDS)
+        val shownCards = RowRules.shown(cards)
         val seeAll = RowRules.seeAll(row.spec.source, cards.size) || (cards.isNotEmpty() && Studios.seeAll(row.spec) != null)
         if (RowRules.pages(row.spec.source)) {
             // Loaded again with the viewer further along: the longer list stays while it starts the same.
@@ -1540,14 +1549,17 @@ class VodPage(
         takePendingFocus()
     }
 
-    /** [cards] into [row], unless the viewer is in it and they would move what they're on: then when they leave. */
+    /**
+     * [cards] into [row], unless the viewer is in it and they would move what they're on: then when they leave. A
+     * library row's always at once, the viewer kept on their title ([RowRules.holdsAnswer]).
+     */
     private fun applyAnswer(row: TitleRow, shownCards: List<Card>, seeAll: Boolean) {
         // The viewer is in this row and the new cards would move what they're on: held until they leave it.
-        if (!RowRules.keepsFocus(row.focusedIndex(), row.cards, row.hasSeeAll, shownCards, seeAll)) {
+        if (RowRules.holdsAnswer(row.spec.source, row.focusedIndex(), row.cards, row.hasSeeAll, shownCards, seeAll)) {
             row.pending = shownCards to seeAll
             return
         }
-        showCards(row, shownCards, seeAll)
+        showCards(row, shownCards, seeAll, follow = RowRules.isLibrary(row.spec.source))
     }
 
     /**
@@ -1606,9 +1618,10 @@ class VodPage(
 
     /**
      * Puts [cards] in [row] (in place), shows or hides the row, and keeps focus on something that stays. [mine]: the
-     * viewer's own change (applied at once even in the row they're in).
+     * viewer's own change (applied at once even in the row they're in). [follow]: a library row's answer, focus in the
+     * row going with its title wherever it is now ([RowRules.followTitle]).
      */
-    private fun showCards(row: TitleRow, cards: List<Card>, seeAll: Boolean, mine: Boolean = false) {
+    private fun showCards(row: TitleRow, cards: List<Card>, seeAll: Boolean, mine: Boolean = false, follow: Boolean = false) {
         // A card being moved: the row is the viewer's until it's put down (its order is then stored, and read again).
         if (row === carryRow) return
         row.pending = null
@@ -1617,32 +1630,66 @@ class VodPage(
         if (same) return
         if (cards.isEmpty()) {
             hideRow(row)
+            refollowHeader(row, cards)
             checkEmpty()
             // A row above answering empty: focus asked for may go to one below it now.
             takePendingFocus()
             return
         }
+        val coming = row.visibility != View.VISIBLE
+        val focused = row.focusedIndex()
+        // A library row: the title the viewer is on goes with them wherever it is now (back from a film started from
+        // its Continue card, focus still there: that card, first now); out of the row, the card it was moved along to
+        // does, so Down from the banner's Watch now lands on the same title (a row at its start stays there, the latest
+        // first). Not while a title page or the small window opened from the row is up: they come back to their title.
+        val from = if (!follow || coming || openFrom(row)) -1 else RowRules.followFrom(focused, row.chosen)
+        val to = RowRules.followTitle(from, row.cards, row.hasSeeAll, cards, seeAll)
         // Focus off items that go, before they go.
-        val target = RowRules.focusAfter(row.focusedIndex(), row.cards.size, row.hasSeeAll, cards.size, seeAll)
+        val target = RowRules.focusAfter(focused, row.cards.size, row.hasSeeAll, cards.size, seeAll)
         if (target >= 0) row.items.getOrNull(target)?.requestFocus()
         // A row coming in starts on its first card; on a page made again, on the card chosen in it before ([PagePlace]).
-        val coming = row.visibility != View.VISIBLE
         if (coming) row.chosen = placeBefore.takeChosen(row.spec.key, cards.size + if (seeAll) 1 else 0)
+        // Out of the row: chosen before the cards go in, so a poster's title under it is the right one at once.
+        val moveChosen = to >= 0 && focused < 0 && to != row.chosen
+        if (moveChosen) row.chosen = to
         row.bind(cards, seeAll)
         if (coming) {
             row.motion.snap(row.chosen, isGrown = false)
             row.visibility = View.VISIBLE
             placeShown(row)
+        } else if (moveChosen) {
+            row.motion.snap(row.chosen, isGrown = false)
+        } else if (to >= 0 && focused >= 0 && to != row.focusedIndex() && row.items.getOrNull(to)?.requestFocus() == true) {
+            // There at once, not gliding along the row.
+            row.motion.snap(row.chosen, isGrown = true)
         }
         // In the Continue row, a card taken away: the header follows the card now chosen.
         val at = row.focusedIndex()
         if (row.spec.continueRow && at >= 0) row.cards.getOrNull(at)?.takeIf { followsContinue(row) }?.let { header.follow(it) } ?: header.unfollow()
+        refollowHeader(row, cards)
         if (myList && at >= 0) row.cards.getOrNull(at)?.let { followCard(it) }
         // My List: the facts its titles lack asked for ahead, so its banner shows them whole when one is chosen.
         if (myList) header.askFacts(cards.map { it.title })
         checkEmpty()
         updateImages()
         takePendingFocus()
+    }
+
+    /**
+     * The Continue row read again with focus out of it, the banner following one of its titles (focus went Up to Watch
+     * now, which played it, and is back there): the banner takes that title's new card ([RowRules.refollow]: the next
+     * episode once one is over, the new time left), so its line and Watch now are the row's; the title gone from the
+     * row (removed in Glass Home meanwhile), the banner goes back to its feed, unless another Continue row on the page
+     * still has it (a film followed from Home's own row while an added "Continue Watching · Series" row changes). Not
+     * while a title page or the small window opened from the row is up: focus comes back to the row from those, and
+     * the banner follows the card it lands on.
+     */
+    private fun refollowHeader(row: TitleRow, cards: List<Card>) {
+        if (!row.spec.continueRow || myList || row.focusedIndex() >= 0 || openFrom(row)) return
+        val followed = header.followed ?: return
+        val others = rows.filter { it !== row && it.spec.continueRow && it.visibility == View.VISIBLE }.map { it.cards }
+        val card = RowRules.refollow(followed, cards, others)
+        if (card == null) header.unfollow() else header.refollow(card)
     }
 
     private fun showGenres(row: TitleRow, names: List<String>) {
@@ -1800,6 +1847,10 @@ class VodPage(
      */
     private fun followsContinue(row: TitleRow): Boolean =
         HeaderFollow.follows(row.spec.continueRow, page == Page.HOME, page != Page.HOME || prefs.homeHeaderMatchesContinue)
+
+    /** A title page or the small window opened from [row] is up (each comes back to its own title when it closes). */
+    private fun openFrom(row: TitleRow): Boolean =
+        (titles.isOpen && originRow() === row) || (hold.isOpen && hold.heldRow === row)
 
     /** The header rotates only while it shows and nothing is open over the page. */
     private fun updateHeaderPause() {

@@ -33,11 +33,13 @@ import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 
 /**
- * FirePlayer's side of Glass Home's Continue Watching row. The player notes what it plays ([watched]); Glass Home reads
- * the rows and removes them through [ContinueProvider], and plays one again with [ACTION_RESUME]. For a show it also
- * lists every episode ([episodes]) and plays the one chosen ([ACTION_PLAY_EPISODE]). What it takes to play again (the
- * link, with the provider's login in it, and the headers and names the opening app sent) stays in a file of
- * FirePlayer's own, kept out of backups; the rows only say what the title is, how far along, and the provider's address.
+ * What other apps (TiviMate) opened in FirePlayer's player. The player notes what it plays ([watched]). Glass Home's
+ * Continue Watching row no longer lists these (it is FirePlayer Home's, [VodContinue.rows]); one it still has from
+ * before (earlier versions listed them) is removed through [ContinueProvider] and played again with
+ * [ACTION_RESUME], and for a show it lists every episode ([episodes]) and plays the one chosen ([ACTION_PLAY_EPISODE]).
+ * What it takes to play again (the link, with the provider's login in it, and the headers and names the opening app
+ * sent) stays in a file of FirePlayer's own, kept out of backups; a row only says what the title is, how far along, and
+ * the provider's address.
  *
  * Films and shows are named as the player shows them: under their English names from the title server when it knows
  * them ([TitleBook]), with their TMDB ids, otherwise as read from the name they came with. One the title server has no
@@ -148,18 +150,6 @@ object ContinueWatching {
 
     /** Every film and episode played, newest first: what's known of each, and its link (login and all). */
     fun played(context: Context): List<WatchHistory.Record> = synchronized(lock) { current(context.applicationContext).played() }
-
-    /**
-     * The rows, newest first. Those without a TMDB id (noted before one could be found) are looked up meanwhile
-     * ([lookUp]): not here, as Glass Home waits for the rows.
-     */
-    fun rows(context: Context): List<WatchHistory.Row> {
-        val app = context.applicationContext
-        FixReset.runOnce(app)
-        val rows = synchronized(lock) { current(app).rows() }
-        lookUp(app, rows)
-        return rows
-    }
 
     /**
      * A match put right by hand (Fix match) for the video at [uri]: its row, and its show's, take the TMDB id, name, year

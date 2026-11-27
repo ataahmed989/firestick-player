@@ -15,6 +15,12 @@ internal object RowRules {
     /** Cards shown in a row; one more is asked for, to know whether there are more ([seeAll]). */
     const val ROW_CARDS = 15
 
+    /**
+     * The cards a row shows of its source's answer, in its order: the first [ROW_CARDS] (See all has the rest). Home's
+     * Continue Watching row is its first ones, and so is Glass Home's row (history/VodContinue.rows).
+     */
+    fun <T> shown(answer: List<T>): List<T> = answer.take(ROW_CARDS)
+
     /** A row that goes on takes this many more titles at a time ([pages]), up to [ROW_MAX] cards. */
     const val ROW_MORE = 15
     const val ROW_MAX = 60
@@ -79,6 +85,48 @@ internal object RowRules {
         if (onSeeAll) return newSeeAll
         return old.getOrNull(at)?.title?.id == new.getOrNull(at)?.title?.id
     }
+
+    /**
+     * Whether an answer for a row of [source] waits until the viewer leaves the row: one that would move what they're on
+     * ([keepsFocus]). Never a library row's ([isLibrary]): it's what is stored on this TV, shown as it is at once, the
+     * viewer kept on their title ([followTitle]). Held, Home back from a film started from its Continue card (focus
+     * still on that card) kept the row as it was at the film's start, until the viewer left the row.
+     */
+    fun holdsAnswer(source: Source, at: Int, old: List<Card>, oldSeeAll: Boolean, new: List<Card>, newSeeAll: Boolean): Boolean =
+        !isLibrary(source) && !keepsFocus(at, old, oldSeeAll, new, newSeeAll)
+
+    /**
+     * A library row taking [new] (and See all after them when [newSeeAll]) with the viewer on item [at] of [old]: the
+     * item that keeps them on the same title, wherever it is now (back from a film started from its Continue card:
+     * first); on See all, See all while there still is one, else the last card; the title gone, the same place (the last
+     * card at most, as [focusAfter]). -1 when they aren't in the row, or nothing is left.
+     */
+    fun followTitle(at: Int, old: List<Card>, oldSeeAll: Boolean, new: List<Card>, newSeeAll: Boolean): Int {
+        if (at < 0 || new.isEmpty()) return -1
+        if (oldSeeAll && at == old.size) return if (newSeeAll) new.size else new.size - 1
+        val title = old.getOrNull(at)?.title
+        val i = if (title == null) -1 else new.indexOfFirst { it.title.kind == title.kind && it.title.id == title.id }
+        return if (i >= 0) i else at.coerceAtMost(new.size - 1)
+    }
+
+    /**
+     * The item of a library row whose title stays where the viewer is through an answer ([followTitle]): the one focus
+     * is on ([focused]), else the card the row was moved along to ([chosen], the viewer elsewhere on the page); -1 for a
+     * row at its start, which stays there (the latest played first).
+     */
+    fun followFrom(focused: Int, chosen: Int): Int = if (focused >= 0) focused else if (chosen > 0) chosen else -1
+
+    /**
+     * The card of [cards] (the Continue row read again) for the title the banner follows ([followed]), at its new
+     * episode and time left; else its card in another Continue row on the page ([others]: a Home with an added
+     * "Continue Watching · Series" beside its own, which a film the banner follows was never in); null when no Continue
+     * row has the title any more (the banner then goes back to its feed).
+     */
+    fun refollow(followed: Card, cards: List<Card>, others: List<List<Card>> = emptyList()): Card? =
+        cardOf(followed, cards) ?: others.firstNotNullOfOrNull { cardOf(followed, it) }
+
+    private fun cardOf(followed: Card, cards: List<Card>): Card? =
+        cards.firstOrNull { it.title.kind == followed.title.kind && it.title.id == followed.title.id }
 
     /** Where focus goes when a row's cards change under it: -1 stays put, else the item to move to first. */
     fun focusAfter(at: Int, oldSize: Int, oldSeeAll: Boolean, newSize: Int, newSeeAll: Boolean): Int {

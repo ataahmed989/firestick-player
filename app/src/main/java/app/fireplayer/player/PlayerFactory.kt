@@ -97,12 +97,38 @@ object PlayerFactory {
         val budgetBytes: () -> Int = { 0 },
         /** How the film is arriving and stalling, for the log and the supply check ([FilmFlow]); null for none. */
         val flow: () -> FilmFlow? = { null },
+        private val grower: (Long) -> Int = { 0 },
+        /**
+         * The free memory the buffer's next step up takes, in bytes ([FilmMemory.growNeed]); 0 when it is at its TV's
+         * size (as it is from the start wherever enough memory was free).
+         */
+        val growNeedBytes: () -> Long = { 0L },
+        /** The most the buffer grows to, in bytes: its TV's size for it. */
+        val mostBytes: Int = 0,
+        private val copyChanged: (Double, Double) -> Int = { _, _ -> 0 },
     ) {
         /**
-         * Squeezes the film's buffer while the TV is short of memory: [step] 0 is the whole budget, 1 three quarters,
-         * 2 half (see [FilmMemory.capFor]). Gives back what the buffer now fills to, in bytes.
+         * Squeezes the film's buffer while the TV is short of memory: [step] counts the eighths given back, 0 the
+         * whole budget, 2 three quarters, 4 half (see [FilmMemory.capFor]). Gives back what the buffer now fills to,
+         * in bytes.
          */
         fun squeeze(step: Int): Int = squeezer(step)
+
+        /**
+         * Memory has been quiet ([MemoryPressure.mayGrow]) and [freeBytes] are free now: a buffer started below its
+         * TV's size takes a step up when there's room for it ([FilmMemory.grown]). Gives back the new budget in bytes,
+         * or 0 when it stays as it is.
+         */
+        fun grow(freeBytes: Long): Int = grower(freeBytes)
+
+        /**
+         * Another copy starts in this player (Sources, Next source), at [rateMbps] on a connection measured to bring
+         * [lineMbps] (0: not known). A buffer started small keeps the seconds ahead this copy needs, not the first
+         * one's, and is raised to what a start with this copy would have got when that is more
+         * ([FilmMemory.budgetForCopy]). Gives back the new budget in bytes, or 0 when it stays as it is (always, where
+         * the buffer started at the size it ever had).
+         */
+        fun forCopy(rateMbps: Double, lineMbps: Double): Int = copyChanged(rateMbps, lineMbps)
 
         /**
          * Room has been made for the film since its player was built ([FilmRoom]): [freeBytes] are free now, and
@@ -368,6 +394,13 @@ object PlayerFactory {
         keepBudgetBytes: Int = 0,
         /** "Faster downloads" is on: this player's films may be read with two requests ([TwoRanges]). */
         twoRanges: TwoRanges? = null,
+        /**
+         * The film's own data rate in Mb/s (its size over its length) and what this connection was measured to bring
+         * lately; 0 when not known. Only for how small a buffer may start on a Fire TV Stick with little memory free
+         * ([FilmMemory.plan]): nothing else here reads them.
+         */
+        rateMbps: Double = 0.0,
+        lineMbps: Double = 0.0,
     ): Built {
         IndexCache.dir = context.cacheDir
         val serverSwitch = ServerSwitch()
@@ -389,26 +422,27 @@ object PlayerFactory {
         // half minute. What the TV can spare goes by its memory in all (FilmMemory), not the app's heap limit: Fire OS
         // allows 384 MB even on a Stick with 1.7 GB, where a 230 MB buffer left the TV short of memory and the film
         // losing frames.
-        // And by what's free as the film starts: the decoder's own 4K frames (up to 200 MB) come out of the same memory.
-        val free = FilmMemory.freeNow(context)
-        val planned = FilmMemory.plan(FilmMemory.tier(context), Runtime.getRuntime().maxMemory(), free, keepBudgetBytes)
+        // And by what's free as the film starts: the decoder's own 4K frames (up to 200 MB) come out of the same memory,
+        // and Fire OS starts closing apps under its low mark. A Fire TV Stick with little free starts smaller and grows
+        // back once memory has been quiet (FilmMemory.plan, MemoryPressure).
+        val memory = FilmMemory.now(context)
+        val free = memory.freeBytes
+        val planned = FilmMemory.plan(
+            FilmMemory.tier(context), Runtime.getRuntime().maxMemory(), free, keepBudgetBytes, memory.lowMarkBytes, rateMbps, lineMbps,
+        )
         // "Faster downloads": the second request reads long spans where the memory allows (fewer requests, each with
         // the server's answer time to wait), and the film's own buffer gives up what they add (TwoRanges.longSpans).
         val spanExtra = if (twoRanges != null && FilmMemory.longSpansFit(planned)) twoRanges.longSpans() else 0L
         val plan = FilmMemory.withSecondRequest(planned, spanExtra)
         // A film socket that stops being read holds up to its window in the TV's memory: a narrower one when it's short.
-        FilmSockets.lowMemory = planned.tier == RamTier.TINY || planned.byFreeMemory
+        FilmSockets.lowMemory = planned.tier == RamTier.TINY || planned.leanDownload
         FilmSockets.squeezed = false
         val budget = plan.budgetBytes
         // What's kept behind comes out of the same memory as what's ahead (for a 4K remux, about 8 MB a second), so
         // TVs with less of it keep less, or the room ahead would shrink to a few seconds. Below 10 s, going back one
         // press (10 s, landing up to 2 s early) loads that stretch again (2 s in a 4K film, measured).
         val backBufferMs = plan.backBufferMs
-        Log.i("FirePlayer", "Film buffer: ${plan.tier} memory, ${free shr 20} MiB free, ${budget shr 20} MiB" +
-            (if (plan.byFreeMemory) " (held down by free memory, ${plan.tierBytes shr 20} MiB with room)" else "") +
-            ", ${backBufferMs / 1000} s kept behind" +
-            (if (plan.backCapBytes > 0) " up to ${plan.backCapBytes shr 20} MiB" else "") +
-            (if (plan.spanExtraBytes > 0) ", ${plan.spanExtraBytes shr 20} MiB given to the second request's long spans" else ""))
+        Log.i("FirePlayer", FilmMemory.startWords(plan, free, rateMbps, lineMbps))
         // Owned here so the film's buffer can give memory back while the TV is short of it (FilmLoadControl.squeeze).
         val allocator = DefaultAllocator(/* trimOnReset = */ true, C.DEFAULT_BUFFER_SEGMENT_SIZE)
         val loadControl = FilmLoadControl(
@@ -438,6 +472,14 @@ object PlayerFactory {
             serverSwitch,
             byteMeter?.loader,
             plan.spanExtraBytes,
+            // The long spans' memory is the film's too: what's free must leave it as well.
+            plan.reserveBytes + plan.spanExtraBytes,
+            plan.lowMarkBytes,
+            // What its start counted on ahead; with the film's rate not known, the longer of the two.
+            if (plan.aheadFloorUs > 0L) plan.aheadFloorUs else FilmMemory.THIN_AHEAD_US,
+            plan.everBytes,
+            plan.backBufferMs,
+            plan.backCapBytes,
         )
 
         val builder = ExoPlayer.Builder(context)
@@ -467,7 +509,7 @@ object PlayerFactory {
                 .setMediaSourceFactory(sources)
                 .setRenderersFactory(DelayRenderersFactory(baseRenderers, delays, vsync))
                 .build()
-            return Built(player, null, { loadControl.wait }, { loadControl.allocatedBytes }, loadControl::squeeze, null, keptBehind(sources, plan), { loadControl.fillBytes }, loadControl::roomMade, { loadControl.budget + plan.spanExtraBytes }, { loadControl.flow })
+            return Built(player, null, { loadControl.wait }, { loadControl.allocatedBytes }, loadControl::squeeze, null, keptBehind(sources, plan), { loadControl.fillBytes }, loadControl::roomMade, { loadControl.budget + plan.spanExtraBytes }, { loadControl.flow }, loadControl::grow, loadControl::growNeed, plan.tierBytes, loadControl::forCopy)
         }
 
         // Same wiring as ass-media's buildWithAssSupport, plus our delay wrapper.
@@ -492,7 +534,7 @@ object PlayerFactory {
         // libass's OpenGL overlay goes over the film only once a styled track is chosen (Built.assOverlay): most films
         // have none, and it would otherwise keep its own render thread, GL context and full-screen buffer all film long.
         val overlay = AssOverlay { assSubtitleView.withAssSupport(assHandler) }
-        return Built(player, assHandler, { loadControl.wait }, { loadControl.allocatedBytes }, loadControl::squeeze, overlay, keptBehind(sources, plan), { loadControl.fillBytes }, loadControl::roomMade, { loadControl.budget + plan.spanExtraBytes }, { loadControl.flow })
+        return Built(player, assHandler, { loadControl.wait }, { loadControl.allocatedBytes }, loadControl::squeeze, overlay, keptBehind(sources, plan), { loadControl.fillBytes }, loadControl::roomMade, { loadControl.budget + plan.spanExtraBytes }, { loadControl.flow }, loadControl::grow, loadControl::growNeed, plan.tierBytes, loadControl::forCopy)
     }
 
     /** The film's sources, keeping no more behind than the plan's cap in memory ([BackBuffer]); as they are without one. */
@@ -608,7 +650,10 @@ private class GatedLoadControl(private val inner: LoadControl, private val allow
  *
  * [plannedBytes] is the budget as the player was built, [tierBytes] what this TV's tier allows at most ([inner] stops
  * loading there). They differ only when little memory was free at that moment ([startFreeBytes]; 0 when not known);
- * the budget is then raised once room has been made ([roomMade]).
+ * the budget is then raised once room has been made ([roomMade]: all but [reserveBytes] of what's free), and a step at
+ * a time once memory has been quiet ([grow]). A budget started under what it ever was on a Fire TV Stick ([everBytes])
+ * meanwhile only limits what's held beyond the seconds a film needs ahead, and never holds more than it ever did
+ * ([limit]); in a stall it waits for and holds what it ever did ([stallCapBytes]).
  */
 @OptIn(UnstableApi::class)
 private class FilmLoadControl(
@@ -622,7 +667,27 @@ private class FilmLoadControl(
     private val loaderRate: LoaderRate? = null,
     /** What the second request's long spans hold beyond its usual segments ([FilmMemory.capFor]). */
     private val extraBytes: Int = 0,
+    /** What a start leaves free for everything but the buffer ([FilmBufferPlan.reserveBytes], and the long spans). */
+    private val reserveBytes: Long = FilmMemory.RESERVE_BYTES,
+    /**
+     * The free memory under which Fire OS calls memory low ([FilmBufferPlan.lowMarkBytes]), left free with a margin
+     * by every step up ([grow]); 0 on a TV whose start doesn't go by it.
+     */
+    private val lowMarkBytes: Long = 0L,
+    /** How much of the film a budget started under [everBytes] still keeps ahead, in µs ([limit]). */
+    startAheadFloorUs: Long = FilmMemory.THIN_AHEAD_US,
+    /**
+     * The budget this start had by the rule every TV had ([FilmBufferPlan.everBytes]); [plannedBytes] wherever that
+     * rule still sets it, and more only on a Fire TV Stick that started small.
+     */
+    private val everBytes: Int = plannedBytes,
+    /** What the plan keeps behind ([FilmBufferPlan.backBufferMs], [FilmBufferPlan.backCapBytes]), for [forCopy]. */
+    private val backBufferMs: Int = 0,
+    private val backCapBytes: Long = 0L,
 ) : LoadControl {
+
+    /** [startAheadFloorUs], or the same for the copy that took the first one's place ([forCopy]). */
+    @Volatile private var aheadFloorUs = startAheadFloorUs
 
     /** How long a stretch is kept behind where the film plays, in ms ([BackBuffer]); set once the sources are made. */
     @Volatile var keptBehindMs: () -> Long = { 0L }
@@ -650,6 +715,12 @@ private class FilmLoadControl(
      * the playback thread.
      */
     @Volatile private var capBytes = plannedBytes
+    /**
+     * What the buffer fills to in a stall ([FilmMemory.stallFillBytes]): [capBytes], or for a budget started under what
+     * it ever was, what that size fills to at the same squeeze. Set on the main thread with [capBytes], read on the
+     * playback thread.
+     */
+    @Volatile private var stallCapBytes = FilmMemory.stallFillBytes(plannedBytes, plannedBytes, everBytes, 0, extraBytes)
     // When memory let go of was last freed while squeezed (elapsedRealtime), on the playback thread.
     private var trimmedAt = 0L
 
@@ -706,7 +777,7 @@ private class FilmLoadControl(
         measure(parameters, waiting = true)
         forgetRoomIfRaised()
         // Memory full means nothing more can come before playing on.
-        val limit = FilmMemory.fillLimit(capBytes, budgetBytes, parameters.bufferedDurationUs)
+        val limit = limit(parameters)
         if (allocator.totalBytesAllocated >= limit) return true
         val buffered = parameters.bufferedDurationUs
         val rate = fillRate()
@@ -714,11 +785,12 @@ private class FilmLoadControl(
         // What fits: as measured when the buffer was last full (forgotten whenever what it fills to changes). Before it
         // ever was, worked out from what's loaded. In a stall the memory also holds what's kept behind: what fits ahead
         // is worked out from the bytes at every check without it (a buffer on a line too slow to ever fill it, or one
-        // whose squeeze has lifted, counts as it is now), and as last measured full only when that can't be told.
+        // whose squeeze has lifted, counts as it is now), and as last measured full only when that can't be told. A
+        // buffer started small counts what it ever held there (stallCapBytes), as the wait after a stall always did.
         val measured = if (fullPeriod == parameters.mediaPeriodId.periodUid) fullUs else 0L
         val room = if (parameters.rebuffering) {
             val behindUs = minOf(keptBehindMs() * 1000L, parameters.playbackPositionUs)
-            FilmMemory.roomInStallUs(buffered, behindUs, allocator.totalBytesAllocated.toLong(), capBytes.toLong())
+            FilmMemory.roomInStallUs(buffered, behindUs, allocator.totalBytesAllocated.toLong(), stallCapBytes.toLong())
                 .takeIf { it > 0L } ?: measured
         } else {
             FilmMemory.roomUs(measured, buffered, allocator.totalBytesAllocated.toLong(), limit.toLong())
@@ -777,6 +849,22 @@ private class FilmLoadControl(
         return durationUs != C.TIME_UNSET && parameters.playbackPositionUs + parameters.bufferedDurationUs >= durationUs - 200_000
     }
 
+    /**
+     * How full the buffer may get with [aheadUs] loaded ahead ([FilmMemory.fillLimit]). A budget started under what it
+     * ever was on a Fire TV Stick only limits what's held beyond the seconds a film needs ahead ([aheadFloorUs]: by the
+     * line as it was measured before this film, not by how this one arrives, which reads too fast once the buffer is
+     * full and loads in bursts), up to what it ever was ([everBytes]) and no further; any other is its own limit, as
+     * ever. Never more than the limit of 1.0.366 at any moment, so the wait before a film starts or plays on after a
+     * jump, which goes by it ([shouldStartPlayback]), is never longer than it was. In a stall, 1.0.366's limit itself
+     * ([FilmMemory.stallLimit]): the wait to play on goes by what fits there, as it did. Playback thread.
+     */
+    private fun limit(parameters: LoadControl.Parameters): Int {
+        val aheadUs = parameters.bufferedDurationUs
+        val budget = budgetBytes
+        if (parameters.rebuffering) return FilmMemory.stallLimit(stallCapBytes, budget, everBytes, aheadUs)
+        return FilmMemory.fillLimit(capBytes, budget, aheadUs, everBytes, aheadFloorUs)
+    }
+
     /** Seconds of film arriving per second of loading, once there's enough to tell; null before that. */
     private fun fillRate(): Float? = if (loadingMs < MEASURE_MS) null else loadedUs / 1000f / loadingMs
 
@@ -818,8 +906,10 @@ private class FilmLoadControl(
             // Arriving slower than it plays, for long enough to be sure: the provider may have sent us to a busy
             // server, so ask it for another. A live channel never arrives faster than it plays, so it never counts.
             // While playing, only with enough loaded to cover the reconnect, which some servers refuse for a moment.
+            // A buffer started small moves with what it can hold (FilmMemory.moveCoverUs), or it could never move
+            // while playing.
             if (loadingMs >= SWITCH_AFTER_MS && loadedUs < loadingMs * 1000 && !isLive(parameters) &&
-                (waiting || parameters.bufferedDurationUs >= MOVE_COVER_US) && serverSwitch.request()
+                (waiting || parameters.bufferedDurationUs >= moveCoverUs(periodUid)) && serverSwitch.request()
             ) {
                 // The new server is measured afresh.
                 loadedUs = 0
@@ -832,6 +922,10 @@ private class FilmLoadControl(
         lastPositionUs = positionUs
         lastPeriod = periodUid
     }
+
+    /** How much must be loaded ahead for a move to another server while the film plays ([FilmMemory.moveCoverUs]). */
+    private fun moveCoverUs(periodUid: Any): Long =
+        FilmMemory.moveCoverUs(if (fullPeriod == periodUid) fullUs else 0L, heldDown = budgetBytes < everBytes)
 
     private fun isLive(parameters: LoadControl.Parameters): Boolean {
         if (parameters.targetLiveOffsetUs != C.TIME_UNSET) return true
@@ -852,7 +946,7 @@ private class FilmLoadControl(
         val budget = budgetBytes
         if (cap < budget) freeLetGo(cap)
         val allocated = allocator.totalBytesAllocated
-        val limit = FilmMemory.fillLimit(cap, budget, parameters.bufferedDurationUs)
+        val limit = limit(parameters)
         // Full by size (not by the two minutes ahead that a lighter film reaches first): this much of it fits. (A live
         // channel's is never read: shouldStartPlayback leaves those to Media3's own rule.)
         if (allocated >= limit && parameters.bufferedDurationUs >= FilmMemory.ROOM_MIN_US) {
@@ -877,15 +971,17 @@ private class FilmLoadControl(
     }
 
     /**
-     * Lowers what the buffer fills to while the TV is short of memory, or raises it back: [step] 0 is the whole budget,
-     * 1 three quarters, 2 half ([FilmMemory.capFor]). Memory loaded and let go of is no longer kept beyond the new
+     * Lowers what the buffer fills to while the TV is short of memory, or raises it back: [step] counts the eighths
+     * given back, 0 the whole budget, 4 half ([FilmMemory.capFor]). Memory loaded and let go of is no longer kept beyond the new
      * size; what's in use (the film loaded ahead and kept behind) is let go of as the film plays on. On the main
      * thread; gives back the new size in bytes.
      */
     fun squeeze(step: Int): Int {
         this.step = step
-        val cap = FilmMemory.capFor(budgetBytes, step, extraBytes)
+        val budget = budgetBytes
+        val cap = FilmMemory.capFor(budget, step, extraBytes)
         if (cap != capBytes) raised = true
+        stallCapBytes = FilmMemory.stallFillBytes(cap, budget, everBytes, step, extraBytes)
         capBytes = cap
         allocator.setTargetBufferSize(cap)
         FilmSockets.squeezed = step > 0
@@ -900,12 +996,41 @@ private class FilmLoadControl(
      */
     fun roomMade(freeBytes: Long, gained: Long): Int {
         if (gained > gainedBytes) gainedBytes = gained
-        val now = budgetBytes
-        val next = FilmMemory.afterRoom(now, tierBytes, freeBytes, allocatedBytes, startFreeBytes, gainedBytes)
-        if (next <= now) return 0
+        return raisedTo(FilmMemory.afterRoom(budgetBytes, tierBytes, freeBytes, allocatedBytes, startFreeBytes, gainedBytes, reserveBytes))
+    }
+
+    /**
+     * Memory has been quiet since the film started, or since it was last short ([MemoryPressure.mayGrow]), and
+     * [freeBytes] are free now: a budget still under the tier's takes a step up when that leaves the TV its room
+     * ([FilmMemory.grown]). On the main thread; gives back the new budget in bytes, or 0 when it stays.
+     */
+    fun grow(freeBytes: Long): Int = raisedTo(FilmMemory.grown(budgetBytes, tierBytes, freeBytes, allocatedBytes, lowMarkBytes))
+
+    /** The free memory the next step up takes, in bytes ([FilmMemory.growNeed]); 0 at the tier's size. Any thread. */
+    fun growNeed(): Long {
+        val budget = budgetBytes
+        return if (budget >= tierBytes) 0L else FilmMemory.growNeed(budget, tierBytes, allocatedBytes, lowMarkBytes)
+    }
+
+    /**
+     * Another copy starts in this player, at [rateMbps] on a line measured to bring [lineMbps] (0: not known): the
+     * seconds a budget started small keeps ahead are this copy's from now on, and the budget is what a start with
+     * this copy would have got when that is more ([FilmMemory.budgetForCopy]). Nothing changes where the budget is
+     * what it ever was. On the main thread; gives back the new budget in bytes, or 0 when it stays.
+     */
+    fun forCopy(rateMbps: Double, lineMbps: Double): Int {
+        if (budgetBytes >= everBytes) return 0
+        aheadFloorUs = FilmMemory.aheadFloorFor(rateMbps, lineMbps)
+        return raisedTo(FilmMemory.budgetForCopy(budgetBytes, everBytes, rateMbps, lineMbps, backBufferMs, backCapBytes))
+    }
+
+    /** The budget is [next] from now on, when that is more: the squeeze of the moment applies to it. 0 when it stays. */
+    private fun raisedTo(next: Int): Int {
+        if (next <= budgetBytes) return 0
+        val cap = FilmMemory.capFor(next, step, extraBytes)
+        stallCapBytes = FilmMemory.stallFillBytes(cap, next, everBytes, step, extraBytes)
         budgetBytes = next
         raised = true
-        val cap = FilmMemory.capFor(next, step, extraBytes)
         capBytes = cap
         allocator.setTargetBufferSize(cap)
         return next
@@ -958,7 +1083,6 @@ private class FilmLoadControl(
         const val MEASURE_MS = 700L
         const val RATE_MEMORY_MS = 30_000L
         const val SWITCH_AFTER_MS = 10_000L
-        const val MOVE_COVER_US = 15_000_000L
     }
 }
 

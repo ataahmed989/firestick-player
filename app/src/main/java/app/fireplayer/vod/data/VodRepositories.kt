@@ -1,5 +1,6 @@
 package app.fireplayer.vod.data
 
+import app.fireplayer.history.ContinueNotice
 import app.fireplayer.history.ContinueWatching
 import android.content.Context
 import android.content.SharedPreferences
@@ -51,10 +52,9 @@ object VodRepositories {
             // The sound and subtitles last chosen for a film or episode go when its copy left does.
             keptWithCopy = KeptTracks.of(app),
         ).also { repo ->
-            // Glass Home's Continue Watching row shows the library's too (history/ContinueProvider): it's told of a change.
-            repo.addLibraryListener {
-                runCatching { app.contentResolver.notifyChange(ContinueWatching.ITEMS, null) }
-            }
+            // Glass Home's Continue Watching row is Home's, made from the library (history/ContinueProvider): it's told of
+            // every change (a play's saves, a Remove here or there, a mark, a film or episode finished), once per burst.
+            ContinueNotice.attach(repo, { handler.post(it) }) { app.contentResolver.notifyChange(ContinueWatching.ITEMS, null) }
         }
     }
 
