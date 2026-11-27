@@ -177,7 +177,8 @@ class Prefs(context: Context) {
     /**
      * Settings › This TV › HDR10+ reaches this TV: the TV was seen to show HDR10+ from FirePlayer, so Best prefers
      * HDR10+ copies and Picture & sound says HDR10+. Off (the default): on the user's Sticks it never reached the TV
-     * (the TV gets the HDR10 inside), so HDR10+ is only a fact of the file.
+     * (the TV gets the HDR10 inside), so HDR10+ is only a fact of the file, and it is kept from the decoder
+     * ([app.fireplayer.player.Hdr10PlusGate]): passed on, a Samsung TV's picture went black again and again.
      */
     val hdr10PlusReaches: Boolean
         get() = sp.getBoolean(HDR10_PLUS_KEY, false)

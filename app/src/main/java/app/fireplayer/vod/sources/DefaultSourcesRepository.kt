@@ -78,8 +78,6 @@ class DefaultSourcesRepository(
     internal val elapsed: () -> Long,
     internal val wall: () -> Long,
     internal val online: () -> Boolean,
-    /** What this connection was measured to sustain when a film kept stalling for want of it ([LineRate.current]). */
-    private val lineMbps: () -> Double? = { null },
     /** Settings › Playback › Preferred bitrate, Mb/s ([RankInput.preferredMbps]). */
     private val preferredMbps: () -> Double = { SourceRank.PREFERRED_MBPS.toDouble() },
     /** The add-ons' statuses: real use notes in them what it finds ([noted]). */
@@ -115,7 +113,13 @@ class DefaultSourcesRepository(
         var start: Runnable? = null
     }
 
-    private inner class Entry(val target: SourceTarget) {
+    private inner class Entry(target: SourceTarget) {
+        /**
+         * What the list is for. The first look-up's, keeping the richest runtime any look-up of the same key brought
+         * since ([enrich]): Search may hand over a title before its details are known, and the add-ons' sizes are
+         * ranked by size over runtime ([SourceMerge.mergeKeyed]).
+         */
+        var target: SourceTarget = target
         val answers = EnumMap<Addon, Answer>(Addon::class.java)
         val states = EnumMap<Addon, AddonState>(Addon::class.java)
         val failedAt = EnumMap<Addon, Long>(Addon::class.java)
@@ -137,6 +141,11 @@ class DefaultSourcesRepository(
         var version = 0
         /** The add-ons whose answers are in [ranked]; one answered but not yet ranked still counts as looking. */
         var rankedFrom: Set<Addon> = emptySet()
+        /**
+         * The runtime became known (or changed) and the answers held rank again by it ([enrich]): until that rank is in,
+         * the list says it is still looking and names no Best, so nothing plays the pick ranked by the old runtime.
+         */
+        var runtimeRank = false
     }
 
     private val entries = LinkedHashMap<String, Entry>(16, 0.75f, true)
@@ -155,6 +164,7 @@ class DefaultSourcesRepository(
 
     override fun cached(target: SourceTarget): SourceList? {
         val entry = entries[target.key] ?: return null
+        enrich(entry, target)
         expire(entry)
         if (entry.answers.isEmpty() && entry.calls.isEmpty() && entry.failedAt.isEmpty()) return null
         return listOf(entry)
@@ -219,6 +229,7 @@ class DefaultSourcesRepository(
             entry.best = null
             entry.lastUsed = null
             entry.rankedFrom = emptySet()
+            entry.runtimeRank = false
             entry.version++
             // A pick for a link checked ahead asks nothing ([LookupWhy.AHEAD]): only the others' look-ups go on.
             val live = entry.subs.filterNot { it.cancelled || it.start != null || it.why == LookupWhy.AHEAD }
@@ -320,11 +331,30 @@ class DefaultSourcesRepository(
     }
 
     private fun entryFor(target: SourceTarget): Entry {
-        entries[target.key]?.let { return it }
+        entries[target.key]?.let {
+            enrich(it, target)
+            return it
+        }
         val entry = Entry(target)
         entries[target.key] = entry
         trim()
         return entry
+    }
+
+    /**
+     * [target], a later look-up of [entry]'s key, may know the runtime the first didn't (Search hands over a title, its
+     * details come after): a valid runtime is kept with the entry, and the answers held rank again by it, asking the
+     * add-ons nothing ([rebuild]: sizes over the runtime, [SourceMerge.mergeKeyed]). Only when the runtime the list
+     * ranks by changes; one without a runtime never takes away a known one.
+     */
+    private fun enrich(entry: Entry, target: SourceTarget) {
+        val now = TitleDetails.runtimeMinutes(target.title.runtime) ?: return
+        val had = TitleDetails.runtimeMinutes(entry.target.title.runtime)
+        if (now == had) return
+        entry.target = entry.target.copy(title = entry.target.title.copy(runtime = target.title.runtime))
+        if (entry.answers.isEmpty()) return
+        entry.runtimeRank = true
+        rebuild(entry)
     }
 
     /** At most [KEEP] titles: the least recently used without listeners or requests go first. */
@@ -525,7 +555,6 @@ class DefaultSourcesRepository(
         val target = entry.target
         val plan = thisTv.plan()
         val imaxAlways = runCatching { thisTv.imaxAlways() }.getOrDefault(false)
-        val line = runCatching { lineMbps() }.getOrNull()
         val aimMbps = runCatching { preferredMbps() }.getOrDefault(SourceRank.PREFERRED_MBPS.toDouble())
         val preferred = runCatching { language() }.getOrDefault("en")
         val subs = runCatching { subtitles() }.getOrNull()
@@ -542,7 +571,6 @@ class DefaultSourcesRepository(
                     measured = measured,
                     runtimeMin = TitleDetails.runtimeMinutes(target.title.runtime),
                     episode = target.episode != null,
-                    lineMbps = line,
                     imaxAlways = imaxAlways,
                     subtitles = subs,
                     now = now,
@@ -574,6 +602,7 @@ class DefaultSourcesRepository(
             }.getOrNull()
             main.post {
                 if (entry.version != v) return@post
+                entry.runtimeRank = false
                 entry.rankedFrom = from
                 if (made != null) {
                     entry.rowOf = made.rowOf
@@ -598,13 +627,15 @@ class DefaultSourcesRepository(
             val state = if (links(addon) == null) AddonState.NotSet else entry.states[addon] ?: AddonState.NotAsked
             // Answered, but its sources are still being ranked: not final yet, or another add-on's failure would make
             // the list "complete" without them (the rank's post brings the answer in).
-            states[addon] = if (state is AddonState.Answered && addon !in entry.rankedFrom) {
+            states[addon] = if (state is AddonState.Answered && (addon !in entry.rankedFrom || entry.runtimeRank)) {
                 val now = elapsed()
                 AddonState.Asking(now, now + addon.answerLimitMs)
             } else {
                 state
             }
         }
+        // Ranking again by a runtime just learnt ([enrich]): the rows and Best by the old one aren't offered meanwhile.
+        if (entry.runtimeRank) return SourceList(entry.target, states, emptyList(), null, entry.lastUsed, null, entry.plan, entry.wanted)
         return SourceList(entry.target, states, entry.ranked, entry.best, entry.lastUsed, entry.why, entry.plan, entry.wanted)
     }
 
@@ -713,8 +744,6 @@ class DefaultSourcesRepository(
                 elapsed = SystemClock::elapsedRealtime,
                 wall = System::currentTimeMillis,
                 online = online,
-                // With Faster downloads on, what two connections were measured to bring; one connection's otherwise.
-                lineMbps = { LineRate.of(budgetPrefs, two = viewer.fasterDownloads).current() },
                 preferredMbps = { viewer.preferredMbps.toDouble() },
                 checks = checks,
                 filmPlays = { FilmRoom.film != null },

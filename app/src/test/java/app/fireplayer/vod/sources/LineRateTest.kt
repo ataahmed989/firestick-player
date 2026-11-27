@@ -175,51 +175,31 @@ class LineRateTest {
         assertTrue(LineRate.room(76.0, 0.0, remux = true))
     }
 
-    @Test fun bestForThisTvPrefersCopiesLeavingTheLineRoom() {
-        // 72 Mb/s measured: 60 Mb/s still plays (under nine tenths) but leaves no room; 50 does.
+    @Test fun bestForThisTvAimsAtThePreferredBitrateWhateverEarlierFilmsArrivedAt() {
+        // Whatever an earlier film was measured to arrive at, the copy nearest the preferred bitrate (60) leads.
         val ranked = SourceRank.rank(
             listOf(Fixtures.source(1, mbps = 26.0), Fixtures.source(2, mbps = 60.0), Fixtures.source(3, mbps = 50.0)),
-            RankInput(plan, listOf("en"), { null }, 173, episode = false, lineMbps = 72.0),
+            RankInput(plan, listOf("en"), { null }, 173, episode = false),
         )
-        val keys = ranked.map { it.key }
-        assertEquals(TvFit.LIKELY, ranked.first { it.key == "k2" }.fit)
-        assertTrue(keys.toString(), keys.indexOf("k3") < keys.indexOf("k2"))
-        assertTrue(keys.toString(), keys.indexOf("k1") < keys.indexOf("k2"))
-        assertEquals("k2", keys.last())
+        assertEquals(listOf("k2", "k3", "k1"), ranked.map { it.key })
+        assertTrue(ranked.all { it.fit == TvFit.LIKELY && it.warning == null })
     }
 
     // ---- "Best for this TV"
 
     private val plan = TvPlan(true, listOf(setOf(Hdr.HDR10, Hdr.HDR10_PLUS), setOf(Hdr.HLG)), 2160, emptySet())
 
-    private fun rank(lineMbps: Double?) = SourceRank.rank(
+    private fun rank() = SourceRank.rank(
         listOf(Fixtures.source(1, mbps = 26.0), Fixtures.source(2, mbps = 69.0), Fixtures.source(3, mbps = 87.0)),
-        RankInput(plan, listOf("en"), { null }, 173, episode = false, lineMbps = lineMbps),
+        RankInput(plan, listOf("en"), { null }, 173, episode = false),
     )
 
-    @Test fun withNothingMeasuredTheRanksAreAsTheyWere() {
-        val ranked = rank(null)
-        assertTrue(ranked.all { it.fit == TvFit.LIKELY })
-        assertEquals(ranked.map { it.key }, SourceRank.rank(ranked, RankInput(plan, listOf("en"), { null }, 173, episode = false)).map { it.key })
-        // Over 60 Mb/s still only says "High data rate".
-        assertEquals("High data rate", ranked.first { it.key == "k2" }.warning)
-    }
-
-    @Test fun filesTheLineCantKeepUpWithRankLastAndSayWhy() {
-        val ranked = rank(72.0)
-        assertEquals("k1", SourceRank.best(ranked)!!.key)
-        assertEquals("k1", ranked.first().key)
-        val remux = ranked.first { it.key == "k2" }
-        assertEquals(TvFit.LIKELY_NOT, remux.fit)
-        assertEquals("Needs 69 Mb/s · this connection brought 72", remux.warning)
-        assertEquals(TvFit.LIKELY_NOT, ranked.first { it.key == "k3" }.fit)
-        assertEquals(TvFit.LIKELY, ranked.first { it.key == "k1" }.fit)
-        // A faster line measured later: the remux is "likely" again.
-        assertTrue(rank(160.0).all { it.fit == TvFit.LIKELY })
-    }
-
-    @Test fun aFileWhoseRateIsntKnownIsNeverHeldAgainstTheLine() {
-        val (fit, warning) = SourceRank.fit(Fixtures.source(1, mbps = null).facts, plan, null, lineMbps = 20.0)
+    @Test fun noCopyIsSetAsideOrWarnedForTheConnectionBeforeItPlays() {
+        val ranked = rank()
+        // 69 is nearest 60 (its 9 above counting 7.2), then 87 (21.6), then 26 (34).
+        assertEquals(listOf("k2", "k3", "k1"), ranked.map { it.key })
+        assertTrue(ranked.all { it.fit == TvFit.LIKELY && it.warning == null })
+        val (fit, warning) = SourceRank.fit(Fixtures.source(1, mbps = null).facts, plan, null)
         assertEquals(TvFit.LIKELY, fit)
         assertNull(warning)
     }
@@ -232,7 +212,6 @@ class LineRateTest {
     private val ticker = FakeTicker(0L)
     private val direct = Executor { it.run() }
     private val library = FakeLibrary()
-    private var measuredLine: Double? = null
     private val links = hashMapOf(Addon.TORRENTIO to SecretUrl.of(SourceFixtures.TIO)!!)
 
     private val engine = DefaultSourcesRepository(
@@ -282,7 +261,6 @@ class LineRateTest {
         elapsed = { loop.now },
         wall = { 1_000_000_000L },
         online = { true },
-        lineMbps = { measuredLine },
         // A viewer whose preferred bitrate is 100 Mb/s (Settings › Playback): the 94 Mb/s remux is the nearest.
         preferredMbps = { 100.0 },
     )
@@ -325,20 +303,24 @@ class LineRateTest {
         assertEquals(ReleaseKey(H2, 0), session.lighter(500.0)?.release)
     }
 
-    @Test fun onceTheLineIsMeasuredShortTheListSaysSoAndTheBestChanges() {
+    @Test fun aShortLineMeasuredInPlayLeavesTheBestToThePreferredBitrate() {
         val p = play()
         p.firstFrame()
-        measuredLine = 72.0
+        // The playing file arrived at 72 Mb/s and kept stalling: kept for the film buffer, the lists stay as they are.
+        line.short(72.0)
+        assertEquals(72.0, line.current()!!, 0.01)
         engine.rerank()
         loop.advance()
         val list = p.session.list!!
-        assertEquals(ReleaseKey(H2, 0), list.best?.release)
+        assertEquals(ReleaseKey(H1, 0), list.best?.release)
         val remux = list.sources.first { it.release == ReleaseKey(H1, 0) }
-        assertEquals(TvFit.LIKELY_NOT, remux.fit)
-        assertTrue(remux.warning!!.startsWith("Needs 9") && remux.warning!!.endsWith("this connection brought 72"))
-        // The next play of this film starts on the source the line sustains.
+        assertEquals(TvFit.LIKELY, remux.fit)
+        assertNull(remux.warning)
+        // In the play, the file's own reading still finds the lighter copy that fits (Ask / Switch).
+        assertEquals(ReleaseKey(H2, 0), p.session.lighter(72.0 * LineRate.SUSTAIN_SHARE)?.release)
+        // The next play still starts on the copy nearest the preferred bitrate.
         starts.clear()
         play()
-        assertEquals(ReleaseKey(H2, 0), starts.single())
+        assertEquals(ReleaseKey(H1, 0), starts.single())
     }
 }

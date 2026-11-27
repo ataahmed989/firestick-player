@@ -70,8 +70,8 @@ object TvPlanRules {
         "On: a 4K IMAX copy this TV plays is always Best."
 
     /** Settings › This TV › HDR10+ reaches this TV ([app.fireplayer.vod.ThisTv.hdr10PlusReaches]). */
-    const val HDR10_PLUS_NOTE = "Turn on only if the TV shows its HDR10+ sign while FirePlayer plays an HDR10+ copy. " +
-        "Off: the TV gets their HDR10, so they aren't preferred."
+    const val HDR10_PLUS_NOTE = "On: HDR10+ copies send their HDR10+ to the TV and are preferred. Keep it on only " +
+        "if the TV shows its HDR10+ sign and the picture stays steady. Off: the TV gets their steady HDR10."
 
     /**
      * What Automatic does with Dolby Vision on this TV ([TvPlan.dv7AsHdr10]): on a TV without Dolby Vision a file counts

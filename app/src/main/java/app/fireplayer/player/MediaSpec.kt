@@ -68,6 +68,14 @@ data class MediaSpec(
      * [DvBaseLayer.SIGNAL_SDR], [DvBaseLayer.SIGNAL_HLG], [DvBaseLayer.SIGNAL_BLU_RAY]; 0 when not known.
      */
     val dvSignal: Int = 0,
+    /**
+     * Why the HDR10+ in the file ([hdr10Plus]) isn't given to this TV, for a reason of the file's own that its play here
+     * found ([PlayFacts.hdr10PlusHeld]): [Hdr10PlusWatch.HYBRID] (added to a Dolby Vision file the HEVC decoder plays),
+     * [Hdr10PlusWatch.MALFORMED], [Hdr10PlusWatch.GAPS]. The TV gets the steady HDR10 inside, so the copy is ranked and
+     * named as HDR10 here ([app.fireplayer.vod.sources.SourceRank.asPlayedHere]). 0 when its HDR10+ is used wherever the
+     * TV takes it. The numbers are kept between plays: they never change.
+     */
+    val hdr10PlusHeld: Int = 0,
 ) {
     /** The kind of video decoder that played it. */
     enum class Decoder {
@@ -113,7 +121,8 @@ data class MediaSpec(
      * Vision profile 8 file" while that isn't known. HDR10+ seen in the picture ([hdr10Plus]) is said as what the TV
      * gets of it: "HDR10+ in the file · TV gets HDR10" ("… · TV gets HDR10 (Dolby Vision profile 7 base layer)"), as
      * on the user's Sticks, where it never reached the TV from FirePlayer; "HDR10+" only where Settings › This TV says it
-     * reaches the TV ([plusReaches]).
+     * reaches the TV ([plusReaches]); and HDR10+ kept from the TV for a reason of the file's own ([hdr10PlusHeld]) says
+     * so whatever the setting: "HDR10+ in the file, not used · TV gets HDR10 (Dolby Vision profile 8 file)".
      */
     fun rangeLine(hdrScreen: Boolean, plusReaches: Boolean = false): String {
         val plainDv = hdr == "Dolby Vision" && decoder == Decoder.PLAIN && dvProfile != 5
@@ -133,6 +142,7 @@ data class MediaSpec(
         }
         val shown = when {
             tv == null || !hdr10Plus || !hdrScreen || !tv.startsWith("HDR10") -> tv
+            hdr10PlusHeld != 0 -> "HDR10+ in the file, not used · TV gets $tv"
             plusReaches -> "HDR10+" + tv.removePrefix("HDR10")
             else -> "HDR10+ in the file · TV gets $tv"
         }
@@ -155,7 +165,7 @@ data class MediaSpec(
          * [spec] as one line of text, to keep between plays ([decode] reads it back). Field 25 stays empty: it held a
          * measured picture shape once (records with it, and with the shape's looks after the date, still read). Field 27,
          * the Dolby Vision base signal, came later: a record without it (or with those looks there) reads 0, and an older
-         * version ignores it.
+         * version ignores it. Field 28, why its HDR10+ isn't used ([hdr10PlusHeld]), later still, the same way.
          */
         fun encode(spec: MediaSpec): String = listOf(
             spec.videoCodec.orEmpty(), spec.profile.orEmpty(), spec.width, spec.height, spec.fps, spec.bitDepth,
@@ -163,6 +173,7 @@ data class MediaSpec(
             spec.channels, spec.sampleRate, spec.audioBps, spec.audioHow.name, spec.overallBps, spec.sizeBytes,
             spec.measuredSecs, spec.audioLangs, spec.subLangs, spec.dvBaseLayer, spec.dvProfile, spec.decoder.name,
             if (spec.hdr10Plus) 1 else 0, spec.hdrInfo?.let { if (it) 1 else 0 } ?: "", "", spec.playedAt, spec.dvSignal,
+            spec.hdr10PlusHeld,
         ).joinToString(SEP) { it.toString().replace(SEP, " ") }
 
         fun decode(text: String): MediaSpec? {
@@ -190,6 +201,7 @@ data class MediaSpec(
                 },
                 playedAt = f.getOrNull(26)?.toLongOrNull() ?: 0L,
                 dvSignal = f.getOrNull(27)?.toIntOrNull() ?: 0,
+                hdr10PlusHeld = f.getOrNull(28)?.toIntOrNull()?.takeIf { it in HELD } ?: 0,
             )
         }
 
@@ -213,7 +225,31 @@ data class MediaSpec(
                 hdrInfo = now.hdrInfo ?: kept.hdrInfo,
                 playedAt = maxOf(now.playedAt, kept.playedAt),
                 dvSignal = now.dvSignal.takeIf { it > 0 } ?: kept.dvSignal,
+                hdr10PlusHeld = heldAfter(kept, now),
             )
+        }
+
+        /**
+         * Why a copy's HDR10+ isn't used ([hdr10PlusHeld]) after a play ([now]) of one whose earlier plays said [kept]:
+         * what this play found; else nothing once a Dolby Vision decoder played it (the TV shows its Dolby Vision), or
+         * once a play that saw its HDR10+ no longer held it for being added to a Dolby Vision file; else what was found
+         * before, which a short play, or one on a TV that takes no HDR10+ at all, doesn't look for again.
+         */
+        private fun heldAfter(kept: MediaSpec, now: MediaSpec): Int = when {
+            now.hdr10PlusHeld != 0 -> now.hdr10PlusHeld
+            now.decoder == Decoder.DOLBY_VISION -> 0
+            kept.hdr10PlusHeld == Hdr10PlusWatch.HYBRID && now.hdr10Plus -> 0
+            else -> kept.hdr10PlusHeld
+        }
+
+        /** The reasons a record may hold ([hdr10PlusHeld]): the film's own, never the TV's or the setting's. */
+        private val HELD = setOf(Hdr10PlusWatch.HYBRID, Hdr10PlusWatch.MALFORMED, Hdr10PlusWatch.GAPS)
+
+        /** [hdr10PlusHeld] in a few words, for a source's Details. */
+        fun heldWords(why: Int): String = when (why) {
+            Hdr10PlusWatch.HYBRID -> "added to a Dolby Vision file"
+            Hdr10PlusWatch.MALFORMED -> "its values are broken"
+            else -> "not on every frame"
         }
 
         /** Past this much film, older plays count as much as new ones never more. */
@@ -249,7 +285,8 @@ data class MediaSpec(
          * The picture and sound tracks playing, as the file declares them (no bitrates: those are measured). [baseLayer]:
          * the video is Dolby Vision played as its HDR10 base layer ([DvBaseLayer.playedAsBase]), so HDR10 is what's seen.
          * [decoderMime]: the video decoder's MIME type ([PlayFacts.decoderMime]); [hdr10Plus]: HDR10+ seen in the
-         * picture ([PlayFacts.hdr10PlusSeen]).
+         * picture ([PlayFacts.hdr10PlusSeen]); [hdr10PlusHeld]: why it isn't given to the TV, for a reason of the file's
+         * own ([PlayFacts.hdr10PlusHeld]), counted only with HDR10+ seen.
          */
         @OptIn(UnstableApi::class)
         fun of(
@@ -258,6 +295,7 @@ data class MediaSpec(
             baseLayer: Boolean = false,
             decoderMime: String? = null,
             hdr10Plus: Boolean = false,
+            hdr10PlusHeld: Int = 0,
         ): MediaSpec {
             val v = video
             val codecs = v?.codecs
@@ -307,6 +345,7 @@ data class MediaSpec(
                 dvProfile = if (dv) DvBaseLayer.profileOf(codecs) ?: 0 else 0,
                 decoder = decoder,
                 hdr10Plus = hdr10Plus,
+                hdr10PlusHeld = if (hdr10Plus && hdr10PlusHeld in HELD) hdr10PlusHeld else 0,
                 // What reaches the TV: FirePlayer gives generic data where the file has none to a base layer
                 // ([DvBaseLayer.hdr10]) and to a profile 8 track on the HEVC decoder ([DvBaseLayer.hevcColour]); the
                 // file's own otherwise.
