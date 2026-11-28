@@ -18,15 +18,16 @@ import java.util.concurrent.atomic.AtomicBoolean
  * - Before each request to a provider, [clear] lets go of a live channel from that provider when the viewer asked
  *   for the update (the picture stays, one line says why) or, for an automatic update, says to wait.
  * - The update takes one connection lease of its own from the same [PlayerHost.budget] as playback, so the app never
- *   opens more connections to a provider than the account allows.
+ *   opens more connections to a provider than the account allows. An automatic update gives it back as soon as its
+ *   request to that provider is over ([requestDone]); the viewer's own keeps it to the end.
  * - An automatic update already under way stops at its next safe point ([goesOn], [check]) once a film is in
  *   front, or once its request would now wait (the provider's own channel, or Live TV about to tune one, wants the
  *   connection): put off, not failed ([SyncPlan.jobGoesOn]).
  * - [end] returns the lease and brings the channel back at live; automatic updates that waited run again at the
  *   next quiet moment (nothing playing), and every hour the app stays open updates that came due are looked for.
  *
- * [clear], [goesOn], [check] and [end] run on the update thread (LiveSync's worker); every look at playback happens on
- * the main thread.
+ * [clear], [requestDone], [goesOn], [check] and [end] run on the update thread (LiveSync's worker); every look at
+ * playback happens on the main thread.
  */
 class SyncGuard(
     private val app: Application,
@@ -40,7 +41,7 @@ class SyncGuard(
     @Volatile private var trigger = SyncPlan.Trigger.AUTO
     private var epgOnly = false
     private var heldKey: String? = null
-    private val leases = LinkedHashSet<String>()
+    private val leases = SyncPlan.Leases()
     /** Something was put off for a quiet moment in this job. */
     var deferred = false
         private set
@@ -98,7 +99,7 @@ class SyncGuard(
         this.trigger = trigger
         this.epgOnly = epgOnly
         heldKey = null
-        leases.clear()
+        leases.end()
         deferred = false
         refusal = null
     }
@@ -140,11 +141,11 @@ class SyncGuard(
                     startHolding()
                 }
             }
-            if ((letGo || SyncPlan.usesProvider(p.url, requestUrl)) && p.id !in leases) {
+            if ((letGo || SyncPlan.usesProvider(p.url, requestUrl)) && !leases.holds(p.id)) {
                 if (!PlayerHost.budget.acquire(p.id, p.maxConnections, LEASE)) return@onMain Step.BUSY
-                leases += p.id
+                leases.took(p.id)
             }
-            // An automatic request is looked at again as live playback changes, until the job ends.
+            // An automatic request is looked at again as live playback changes, until it is over ([requestDone]).
             if (auto) {
                 underWay = UnderWay(token, p.id, requestUrl, p.url)
                 listen()
@@ -163,26 +164,51 @@ class SyncGuard(
         }
     }
 
+    /**
+     * The request [clear] let go ahead is over, done, failed or put off (update thread). An automatic job gives the
+     * provider's connection back now ([SyncPlan.Leases]): an EPG from another host, read next for minutes on a Stick,
+     * doesn't use it, and Live TV may tune that provider's channel meanwhile. A channel whose comeback the lease
+     * refused comes back now. The viewer's own update keeps the lease until [end].
+     */
+    fun requestDone() {
+        if (trigger != SyncPlan.Trigger.AUTO) return
+        val back = leases.requestDone(trigger)
+        val token = job
+        main.post {
+            for (account in back) PlayerHost.budget.release(account, LEASE)
+            if (back.isNotEmpty()) comeBack(held = null, leaseTaken = true)
+            // Nothing of this job's is under way until its next request: Live TV no longer stops it.
+            if (underWay?.job === token) underWay = null
+            listen()
+        }
+    }
+
     /** The job is over, done or failed (update thread): the lease goes back and the channel comes back. */
     fun end() {
         val held = heldKey
-        val taken = leases.toList()
+        val taken = leases.end()
         val waitForQuiet = deferred
         heldKey = null
-        leases.clear()
         main.post {
             for (account in taken) PlayerHost.budget.release(account, LEASE)
             stopHolding()
-            val host = PlayerHost.peek()
-            if (host != null) {
-                val s = host.session
-                if (SyncPlan.bringBack(held, s.source?.key, s.state == LiveSession.State.SUSPENDED, host.screenOn, taken.isNotEmpty())) {
-                    host.backAfterUpdate()
-                }
-            }
+            comeBack(held, taken.isNotEmpty())
             underWay = null
             if (waitForQuiet) watchQuiet()
             listen()
+        }
+    }
+
+    /**
+     * The update's lease went back (main thread): the channel waiting in the live player comes back at live when it is
+     * the one the update let go of ([held]), or one whose comeback the lease refused ([leaseTaken]):
+     * [SyncPlan.bringBack].
+     */
+    private fun comeBack(held: String?, leaseTaken: Boolean) {
+        val host = PlayerHost.peek() ?: return
+        val s = host.session
+        if (SyncPlan.bringBack(held, s.source?.key, s.state == LiveSession.State.SUSPENDED, host.screenOn, leaseTaken)) {
+            host.backAfterUpdate()
         }
     }
 

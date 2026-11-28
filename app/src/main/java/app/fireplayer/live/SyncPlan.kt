@@ -120,6 +120,30 @@ object SyncPlan {
     /** Whether a request goes to the provider's own host (it then takes the update's connection lease). */
     fun usesProvider(providerUrl: String, requestUrl: String): Boolean = sameHost(providerUrl, requestUrl)
 
+    /**
+     * The provider connections one update job holds in the shared budget, one lease per playlist (account) at most: a
+     * request to the provider's own host, or one that let go of its channel, takes it before it goes. An automatic
+     * job gives it back as soon as that request is over ([requestDone]): what comes next (an EPG from another host,
+     * clearing old programmes) doesn't use the provider's connection, and Live TV may tune one of its channels
+     * meanwhile; the next request to that provider takes it again (or waits). The viewer's own update keeps it to the
+     * [end], so a channel it let go of comes back once, after the whole update. The update thread only.
+     */
+    class Leases {
+        private val held = LinkedHashSet<String>()
+
+        /** Whether the job holds [account]'s lease now. */
+        fun holds(account: String): Boolean = account in held
+
+        /** The job took [account]'s lease. */
+        fun took(account: String) { held += account }
+
+        /** A request is over (done, failed or put off): the leases to give back now. */
+        fun requestDone(trigger: Trigger): List<String> = if (trigger == Trigger.AUTO) end() else emptyList()
+
+        /** The job is over: every lease it still holds, to give back. */
+        fun end(): List<String> = held.toList().also { held.clear() }
+    }
+
     fun sameHost(a: String?, b: String?): Boolean {
         val ha = hostOf(a) ?: return false
         return ha == hostOf(b)

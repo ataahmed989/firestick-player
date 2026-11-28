@@ -28,11 +28,11 @@ import java.util.zip.GZIPInputStream
  *
  * Every request to a provider goes through [SyncGuard] first: a channel from that provider playing is let go (an
  * update the viewer asked for) or the update waits for a quiet moment (an automatic one), and the update holds one
- * connection lease of its own. An automatic update already under way when a film starts (or when the provider's own
- * channel wants its connection) stops at its next safe point: a download's next read, before storing what was read,
- * between the steps of clearing old programmes. It is put off, not failed: no status is written, it counts as not
- * tried, and it runs again at the next quiet moment. A failure of any kind, or a stop, leaves the stored channels and
- * guide as they were.
+ * connection lease of its own (an automatic update only while its request to that provider runs). An automatic
+ * update already under way when a film starts (or when the provider's own channel wants its connection) stops at its
+ * next safe point: a download's next read, before storing what was read, between the steps of clearing old
+ * programmes. It is put off, not failed: no status is written, it counts as not tried, and it runs again at the next
+ * quiet moment. A failure of any kind, or a stop, leaves the stored channels and guide as they were.
  */
 class LiveSync private constructor(context: Context) {
 
@@ -257,6 +257,9 @@ class LiveSync private constructor(context: Context) {
             runCatching { db.setPlaylistStatus(p.id, "Couldn't update: ${SyncPlan.describe(t)}", syncedAt = null) }
             Log.w(TAG, "Playlist \"${p.name}\" failed: ${t.javaClass.simpleName}")
             return false
+        } finally {
+            // An automatic update gives the provider's connection back now, not after the EPGs that follow.
+            guard.requestDone()
         }
     }
 
@@ -307,6 +310,8 @@ class LiveSync private constructor(context: Context) {
             // The guide keeps what it had, and its last update time.
             runCatching { db.setEpgStatus(p.id, url, "Couldn't update: ${SyncPlan.describe(t)}", syncedAt = null) }
             Log.w(TAG, "EPG for \"${p.name}\" failed: ${t.javaClass.simpleName}")
+        } finally {
+            guard.requestDone()
         }
     }
 

@@ -145,6 +145,40 @@ class SyncPlanTest {
         assertTrue(SyncPlan.requestGoesOn(Trigger.MANUAL, "p1", playlistReq, provider, Playing(stream, "p1", film = true, liveScreen = true)))
     }
 
+    @Test fun `an automatic update gives the provider's connection back once its request is over`() {
+        // An M3U playlist (no allowance known: one connection) whose url-tvg guide is on another host.
+        val budget = app.fireplayer.playback.ConnectionBudget()
+        val leases = SyncPlan.Leases()
+        val m3u = "http://line.example.com:8080/get.php?type=m3u_plus"
+        // The playlist request goes to the provider: the update takes its lease, and Live TV can't tune meanwhile.
+        assertTrue(SyncPlan.usesProvider(provider, m3u) && !leases.holds("p1"))
+        assertTrue(budget.acquire("p1", 0, "update"))
+        leases.took("p1")
+        assertFalse(budget.acquire("p1", 0, "live"))
+        // The playlist is in: the lease goes back before the guide from elsewhere is read (minutes on a Stick).
+        for (account in leases.requestDone(Trigger.AUTO)) budget.release(account, "update")
+        assertFalse(leases.holds("p1"))
+        assertFalse(SyncPlan.usesProvider(provider, guideElsewhere))
+        // Live TV tunes one of the playlist's channels while that guide is read; nothing of the update stops it.
+        assertTrue(budget.acquire("p1", 0, "live"))
+        assertTrue(SyncPlan.requestGoesOn(Trigger.AUTO, "p1", guideElsewhere, provider, Playing(stream, "p1", film = false)))
+        assertTrue(leases.end().isEmpty())
+        // The next request to the provider takes the lease again, or waits while its channel plays.
+        assertEquals(Action.DEFER, SyncPlan.decide(Trigger.AUTO, "p1", playlistReq, provider, Playing(stream, "p1", film = false)))
+    }
+
+    @Test fun `the viewer's own update keeps the provider's connection to the end`() {
+        val leases = SyncPlan.Leases()
+        leases.took("p1")
+        // A channel it let go of comes back once, after the whole update, not between its playlist and its guide.
+        assertTrue(leases.requestDone(Trigger.MANUAL).isEmpty())
+        assertTrue(leases.holds("p1"))
+        leases.took("p2")
+        assertEquals(listOf("p1", "p2"), leases.end())
+        assertFalse(leases.holds("p1") || leases.holds("p2"))
+        assertTrue(leases.end().isEmpty())
+    }
+
     @Test fun `a request put off counts as never tried, a failed one keeps its wait`() {
         val h = 3_600_000L
         val now = 30 * h
