@@ -48,6 +48,8 @@ Paused for the user's weekly usage limit. Resume on **Tuesday 2026-12-01, 5:00 A
 - **Multiview:** opening takes 3.2-3.7 s, adding a picture 4.2 s, and closing 200-450 ms on the main thread.
 
 ## To resume
+0. FIRST read `CORRECTIONS.md` (the user's corrections, 28 Nov). It wins over `SPEC.md`; amend the spec
+   accordingly before building, and analyse carefully and intricately.
 1. Re-read `SPEC.md`, then `plan-and-reviews.json` for detail.
 2. Build in this order. Engine stages run one after another in the main repo, and the layout runs in parallel in its
    own worktree:
