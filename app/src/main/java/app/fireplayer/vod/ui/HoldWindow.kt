@@ -117,7 +117,7 @@ class HoldWindow(private val t: Tokens, private val root: ViewGroup, private val
         row: TitleRow? = null,
         listener: TitleRow.Listener? = null,
         otherwise: (() -> Unit)? = null,
-        /** A Continue card's window: "Title page" opens it (OK on the card plays straight away). */
+        /** Opens the held poster's title page, independently of the close/focus fallback. */
         onTitlePage: (() -> Unit)? = null,
     ) {
         val r = host.repo ?: return
@@ -127,7 +127,8 @@ class HoldWindow(private val t: Tokens, private val root: ViewGroup, private val
             close(fade = false, focusBack = false)
             onTitlePage()
         }
-        buttons += listButton(title, r.inMyList(title.id))
+        // Title page, when present, occupies slot 0. Keep updates on the list action's own slot.
+        buttons += listButton(title, r.inMyList(title.id), buttons.size)
         // From memory: a show played since its mark (or on its Continue card) isn't fully watched; part watched, both.
         val watched = TitleMarks.watched(title.kind, r.isWatched(title.id), r.lastPlayed(title), continueRow)
         val offer = TitleMarks.offer(watched, r.hasHistory(title))
@@ -140,19 +141,19 @@ class HoldWindow(private val t: Tokens, private val root: ViewGroup, private val
     /** Closes it ([HoldPopup.close]). */
     fun close(fade: Boolean = true, focusBack: Boolean = true) = popup.close(fade, focusBack)
 
-    private fun listButton(title: Title, inList: Boolean) =
+    private fun listButton(title: Title, inList: Boolean, index: Int) =
         // The sign is an icon now (the narrow list's options all have one place for it), as on the title page.
         HoldPopup.Button(
             if (inList) "Remove from list" else "Add to list",
             if (inList) R.drawable.ic_check else R.drawable.ic_add,
-        ) { toggleList(title) }
+        ) { toggleList(title, index) }
 
     /** + Add to list / − Remove from list: changed at once (the rows too), and the window closes a moment later. */
-    private fun toggleList(title: Title) {
+    private fun toggleList(title: Title, index: Int) {
         val r = host.repo ?: return
         val inList = !r.inMyList(title.id)
         setInList(title, inList)
-        popup.update(0, listButton(title, inList))
+        popup.update(index, listButton(title, inList, index))
         popup.closeAfter(VodSizes.LIST_CLOSE_MS)
     }
 

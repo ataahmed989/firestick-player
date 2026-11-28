@@ -1203,7 +1203,12 @@ class TitlePage(
                 resolve(card.title, index) { found ->
                     val anchor = more.cardViewAt(index) ?: return@resolve
                     if (!anchor.isShown) return@resolve
-                    hold.openPoster(card.copy(title = found), false, anchor, more.items[index], hold.area(VodSizes.HOLD_INSET), more, this) { takeFocusBack() }
+                    hold.openPoster(
+                        card.copy(title = found), false, anchor, more.items[index],
+                        hold.area(VodSizes.HOLD_INSET), more, this,
+                        otherwise = { takeFocusBack() },
+                        onTitlePage = { host.openNext(found) },
+                    )
                 }
             }
             else -> Unit
