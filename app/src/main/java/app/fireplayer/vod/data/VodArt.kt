@@ -40,6 +40,9 @@ object VodArt {
     /** A TMDB poster ("/abc.jpg") at [TMDB_POSTER]. */
     fun tmdbPoster(path: String) = "$TMDB_IMAGES/$TMDB_POSTER$path"
 
+    /** A cast member's TMDB portrait ("/abc.jpg") at `w185` (185 x 278), for Details' small round photos. */
+    fun tmdbProfile(path: String) = "$TMDB_IMAGES/w185$path"
+
     /**
      * A title's [background] at [size]: metahub's size name or TMDB's width swapped in. Any other address is given back
      * as it is, and null stays null.

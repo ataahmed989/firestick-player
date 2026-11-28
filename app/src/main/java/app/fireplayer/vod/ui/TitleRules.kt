@@ -5,7 +5,6 @@ import app.fireplayer.vod.Card
 import app.fireplayer.vod.Day
 import app.fireplayer.vod.Episode
 import app.fireplayer.vod.EpisodeRef
-import app.fireplayer.vod.From
 import app.fireplayer.vod.Kind
 import app.fireplayer.vod.LastPlayed
 import app.fireplayer.vod.PlayAction
@@ -288,37 +287,107 @@ internal object TitleRules {
         return seasons.firstOrNull { it.number > 0 }?.number ?: seasons.firstOrNull()?.number
     }
 
-    // ---- Details (a SidePanel window) ----
+    // ---- Details (⋯ › Details, a SidePanel window) ----
 
-    /** Details' facts, the ones that exist, as name and value. */
+    /**
+     * The line pinned under Details' title, the parts that exist: a film "2009 • 2h 42m"; a show "2017–2019 • 3 seasons
+     * • 48 min per episode".
+     */
+    fun detailsLine(d: TitleDetails): String {
+        val year = d.title.year?.takeIf { it.isNotBlank() }
+        val parts = if (d.title.kind == Kind.MOVIE) {
+            listOf(year, runtime(d.runtimeMin))
+        } else {
+            val n = d.seasonCount
+            listOf(year, if (n <= 0) null else if (n == 1) "1 season" else "$n seasons", perEpisode(d.runtimeMin))
+        }
+        return parts.filterNotNull().joinToString(app.fireplayer.ui.DetailsLook.SEP)
+    }
+
+    /** A show's usual episode length: "48 min per episode", "1h 2m per episode"; null for none. */
+    fun perEpisode(minutes: Int?): String? {
+        if (minutes == null || minutes <= 0) return null
+        return (if (minutes < 60) "$minutes min" else runtime(minutes)) + " per episode"
+    }
+
+    /** The parental rating's badge beside Details' title ("TV-14", "PG-13"): TMDB's US rating; null when it has none. */
+    fun ratingBadge(d: TitleDetails): String? = d.ageRating?.trim()?.takeIf { it.isNotEmpty() }
+
+    /** One of Details' cast: a name, and the portrait TMDB has of them (null: none). */
+    data class Person(val name: String, val picture: String?)
+
+    /** Details' cast, in billing order, at most [DETAILS_CAST] (three rows of three), each with its portrait if any. */
+    fun detailsCast(d: TitleDetails): List<Person> {
+        val names = d.cast?.value.orEmpty()
+        // Portraits pair with the names only when there's one place for each.
+        val pictures = d.castPictures.takeIf { it.size == names.size }
+        return names.indices
+            .mapNotNull { i -> names[i].trim().takeIf { it.isNotEmpty() }?.let { Person(it, pictures?.get(i)?.takeIf { p -> p.isNotBlank() }) } }
+            .distinctBy { it.name }
+            .take(DETAILS_CAST)
+    }
+
+    /** The initials drawn in a portrait's circle when TMDB has no portrait: "Rhenzy Feliz" → "RF", "Zendaya" → "Z". */
+    fun initials(name: String): String {
+        val words = name.split(' ').mapNotNull { w -> w.firstOrNull { it.isLetter() } }
+        return when (words.size) {
+            0 -> ""
+            1 -> words[0].uppercase()
+            else -> "${words.first().uppercase()}${words.last().uppercase()}"
+        }
+    }
+
+    /**
+     * Details' facts, the ones that exist, as label and value. A show: First aired, Genres, Status, IMDb, Country or
+     * Countries, Language, Awards; a film: Released, Genres, IMDb, Country or Countries, Language, Awards. Its year,
+     * length, seasons and rating are on the lines above, not again here.
+     */
     fun detailsFacts(d: TitleDetails): List<Pair<String, String>> {
         val t = d.title
+        val show = t.kind == Kind.SERIES
         val out = ArrayList<Pair<String, String>>()
-        t.year?.takeIf { it.isNotBlank() }?.let { out += "Year" to it }
-        d.released?.let { out += (if (t.kind == Kind.MOVIE) "Released" else "First aired") to dayText(it) }
-        if (t.kind == Kind.SERIES) {
-            d.seasonCount.takeIf { it > 0 }?.let { out += "Seasons" to it.toString() }
-            d.status?.takeIf { it.isNotBlank() }?.let { out += "Status" to it }
+        d.released?.let { out += (if (show) "First aired" else "Released") to dayText(it) }
+        t.genres.map { it.trim() }.filter { it.isNotEmpty() }.takeIf { it.isNotEmpty() }?.let { out += "Genres" to it.joinToString(", ") }
+        if (show) d.status?.trim()?.takeIf { it.isNotEmpty() }?.let { out += "Status" to it }
+        t.imdbRating?.trim()?.takeIf { it.isNotEmpty() }?.let { out += "IMDb" to "★ $it" }
+        d.country?.trim()?.takeIf { it.isNotEmpty() }?.let { c ->
+            out += (if (c.split(',').count { it.isNotBlank() } > 1) "Countries" else "Country") to c
         }
-        runtime(d.runtimeMin)?.let { out += (if (t.kind == Kind.MOVIE) "Length" else "Episodes") to it }
-        d.ageRating?.takeIf { it.isNotBlank() }?.let { out += "Rated" to it }
-        t.genres.filter { it.isNotBlank() }.takeIf { it.isNotEmpty() }?.let { out += "Genres" to it.joinToString(", ") }
-        d.country?.takeIf { it.isNotBlank() }?.let { out += "Country" to it }
-        t.imdbRating?.takeIf { it.isNotBlank() }?.let { out += "IMDb" to "★ $it" }
-        d.awards?.takeIf { it.isNotBlank() }?.let { out += "Awards" to it }
+        d.language?.trim()?.takeIf { it.isNotEmpty() }?.let { out += "Language" to it }
+        d.awards?.let { awardsText(it) }?.let { out += "Awards" to it }
         return out
     }
 
-    /** Where Details' facts came from: "Story from TMDB", "Cast from Cinemeta", … (the ones it has). */
-    fun sourceNotes(d: TitleDetails): List<String> {
-        fun from(f: From) = if (f == From.TMDB) "TMDB" else "Cinemeta"
-        val notes = ArrayList<String>()
-        d.story?.let { notes += "Story from ${from(it.from)}" }
-        d.cast?.let { notes += "Cast from ${from(it.from)}" }
-        (d.directors ?: d.creators ?: d.writers)?.let { notes += "Crew from ${from(it.from)}" }
-        if (d.ageRating != null) notes += "Age rating from TMDB"
-        notes += "Other facts from Cinemeta"
-        return notes
+    /**
+     * Details' production, the ones that exist: a film's Director(s), Writer(s) and Studio(s); a show's Creator(s) and
+     * Original network(s). Names each once, at most [CREW_LISTED] of each.
+     */
+    fun detailsProduction(d: TitleDetails): List<Pair<String, String>> {
+        val out = ArrayList<Pair<String, String>>()
+        fun add(one: String, many: String, names: List<String>?) {
+            val list = names.orEmpty().map { it.trim() }.filter { it.isNotEmpty() }.distinct().take(CREW_LISTED)
+            if (list.isNotEmpty()) out += (if (list.size == 1) one else many) to list.joinToString(", ")
+        }
+        if (d.title.kind == Kind.MOVIE) {
+            add("Director", "Directors", d.directors?.value)
+            add("Writer", "Writers", d.writers?.value)
+            add("Studio", "Studios", d.studios)
+        } else {
+            add("Creator", "Creators", d.creators?.value)
+            add("Original network", "Original networks", d.networks)
+        }
+        return out
+    }
+
+    /**
+     * Cinemeta's awards line, tidied: "Won 2 Oscars. 126 wins & 375 nominations total" → "Won 2 Oscars • 126 wins & 375
+     * nominations"; null when blank.
+     */
+    fun awardsText(awards: String): String? {
+        val parts = awards.split(". ").map { p ->
+            p.trim().removeSuffix(".").trim().let { if (it.endsWith(" total")) it.removeSuffix(" total").trim() else it }
+        }.filter { it.isNotEmpty() }
+        return parts.joinToString(app.fireplayer.ui.DetailsLook.SEP).ifEmpty { null }
     }
 
     // ---- Where the D-pad goes ----
@@ -411,4 +480,8 @@ internal object TitleRules {
     private const val MAX_GENRES = 3
     private const val CAST_SHOWN = 3
     private const val CREW_SHOWN = 2
+    /** Details' cast: three rows of three portraits. */
+    const val DETAILS_CAST = 9
+    /** Details' names per production line (writers can be many). */
+    const val CREW_LISTED = 4
 }

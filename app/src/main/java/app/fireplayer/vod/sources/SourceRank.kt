@@ -108,6 +108,15 @@ object SourceRank {
      */
     const val TROUBLE_KEEP_MS = 7L * 24 * 60 * 60 * 1000
 
+    /**
+     * A record kept before plays were dated (2026-11-24 00:00 UTC, when the date was added) counts as last played then:
+     * it stops counting [TROUBLE_KEEP_MS] after, unless the copy is played again (which dates it).
+     */
+    const val DATED_SINCE = 1_795_478_400_000L
+
+    /** When [h] last played here, for how old its record is: an undated one ([CopyHealth.at] 0) at [DATED_SINCE]. */
+    private fun lastPlayed(h: app.fireplayer.player.CopyHealth): Long = h.at.takeIf { it > 0 } ?: DATED_SINCE
+
     const val DV7_WORDS = "Dolby Vision 7: may not play here"
     const val NEEDS_DV = "Needs a Dolby Vision TV"
     const val BUFFERED = "Buffered here before"
@@ -440,12 +449,13 @@ object SourceRank {
      * Whether a copy counts as one that buffered or dropped frames here ([app.fireplayer.player.CopyHealth.troubled]):
      * not once it last played [TROUBLE_KEEP_MS] ago or more, nor once later plays of it went smoothly enough
      * ([app.fireplayer.player.CopyHealth.buffers], [app.fireplayer.player.CopyHealth.choppy]). Its own record only:
-     * another file arriving quickly says nothing of this one's server. A record with no date counts until it plays well.
+     * another file arriving quickly says nothing of this one's server. A record kept before plays were dated counts as
+     * played at [DATED_SINCE].
      */
     fun troubled(measured: Measured?, now: Long): Boolean {
         val h = measured?.health ?: return false
         if (!h.troubled) return false
-        if (now > 0 && h.at > 0 && now - h.at >= TROUBLE_KEEP_MS) return false
+        if (now > 0 && now - lastPlayed(h) >= TROUBLE_KEEP_MS) return false
         return true
     }
 
@@ -461,7 +471,7 @@ object SourceRank {
         val h = measured?.health ?: return false
         val late = h.watchedMs >= STUTTER_AFTER_MS && h.lateFrames > 0 &&
             h.lateFrames * app.fireplayer.player.CopyHealth.LOST_SHARE > h.lateFrames + h.renderedFrames
-        return (late || h.choppy) && (now <= 0 || h.at <= 0 || now - h.at < TROUBLE_KEEP_MS)
+        return (late || h.choppy) && (now <= 0 || now - lastPlayed(h) < TROUBLE_KEEP_MS)
     }
 
     /** Why this TV can't show a Dolby Vision copy as it is ([DV7_WORDS], [NEEDS_DV]); null when it can, or it isn't one. */

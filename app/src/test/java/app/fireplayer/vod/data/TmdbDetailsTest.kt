@@ -82,6 +82,63 @@ class TmdbDetailsTest {
     }
 
     @Test
+    fun detailsPartsComeInTheSameAnswer() {
+        val film = tmdb("tmdb_movie_details_appended.json", Kind.MOVIE)
+        // A portrait per cast name, in the same order; one TMDB has none of stays empty in its place.
+        assertEquals(listOf("/fixture_c1.jpg", "/fixture_c2.jpg", null, "/fixture_c4.jpg", "/fixture_c5.jpg", "/fixture_c6.jpg"), film.castPictures)
+        assertEquals(film.cast.size, film.castPictures.size)
+        assertEquals(listOf("Legendary Pictures"), film.studios)
+        assertTrue(film.networks.isEmpty())
+        assertEquals(listOf("United States of America"), film.countries)
+        val show = tmdb("tmdb_tv_details_appended.json", Kind.SERIES)
+        assertEquals(listOf("Nickelodeon"), show.networks)
+        assertTrue(show.studios.isEmpty())
+        // No portraits at all: none kept.
+        assertTrue(show.castPictures.isEmpty())
+        assertEquals(listOf("Disney+"), tmdb("tmdb_tv_details_airing.json", Kind.SERIES).networks)
+        // Read defensively: odd entries, a duplicate name, a path that isn't one, more networks than kept.
+        val odd = TmdbDetails.parse("""{"id":7,"networks":[{"name":"A"},"x",{"id":2},{"name":"A"},{"name":"B"},{"name":"C"},{"name":"D"}],
+            "production_countries":[{"name":"France"},null],
+            "credits":{"cast":[{"name":"One","profile_path":"x.jpg","order":1},{"name":"Two","profile_path":"/two.jpg","order":0},
+            {"name":"Two","profile_path":"/again.jpg","order":2},{"profile_path":"/nameless.jpg"}]}}""", Kind.SERIES)!!
+        assertEquals(listOf("A", "B", "C"), odd.networks)
+        assertEquals(listOf("France"), odd.countries)
+        assertEquals(listOf("Two", "One"), odd.cast)
+        assertEquals(listOf("/two.jpg", null), odd.castPictures)
+    }
+
+    @Test
+    fun storedDetailsReadBothWays() {
+        val e = tmdb("tmdb_movie_details_appended.json", Kind.MOVIE)
+        val stored = TmdbDetails.write(e)
+        // The names stay a plain list, as every version stored them; Details' parts are keys of their own.
+        assertEquals("Timothée Chalamet", stored.getJSONArray("cast").getString(0))
+        assertEquals("", stored.getJSONArray("castPics").getString(2))
+        // Stored in this form, marked so: current, nothing to fetch again for it.
+        assertEquals(TmdbDetails.FORMAT, stored.getInt("v"))
+        assertTrue(TmdbDetails.current(TmdbDetails.read(stored)))
+        // Details stored before these parts were kept (no "v") read as before, with none of them, and count as due for
+        // a fetch when a title page opens.
+        val old = JSONObject(stored.toString()).apply {
+            remove("v"); remove("castPics"); remove("networks"); remove("studios"); remove("countries")
+        }
+        val read = TmdbDetails.read(old)!!
+        assertEquals(e.copy(castPictures = emptyList(), networks = emptyList(), studios = emptyList(), countries = emptyList(), format = 1), read)
+        assertFalse(TmdbDetails.current(read))
+        // Everything else in them is still there for the page meanwhile.
+        assertEquals("PG-13", read.ageRating)
+        assertEquals(e.cast, read.cast)
+        // "TMDB has no such title" (a stored null) is never due early.
+        assertTrue(TmdbDetails.current(null))
+        // Written again as read, an old one keeps its own mark: it isn't passed off as current.
+        assertFalse(TmdbDetails.current(TmdbDetails.read(TmdbDetails.write(read))))
+        // Portraits that don't pair up with the names (a damaged entry) are left out, never shown beside the wrong name.
+        val damaged = JSONObject(stored.toString()).apply { put("castPics", org.json.JSONArray(listOf("/a.jpg"))) }
+        assertTrue(TmdbDetails.read(damaged)!!.castPictures.isEmpty())
+        assertEquals(e.cast, TmdbDetails.read(damaged)!!.cast)
+    }
+
+    @Test
     fun oneCallAppendsEverythingAndKeysNeverHoldTheKey() {
         assertEquals("release_dates,credits,recommendations,similar", TmdbDetails.append(Kind.MOVIE))
         assertEquals("content_ratings,external_ids,credits,recommendations,similar", TmdbDetails.append(Kind.SERIES))

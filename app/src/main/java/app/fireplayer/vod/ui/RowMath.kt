@@ -82,6 +82,23 @@ internal object RowMath {
     }
 
     /**
+     * Rows that keep their pictures when memory is short (Fire OS's warning, [VodPage.trimImages]) with the page in
+     * front: those on screen with the column at [offset] (where it is heading) and the chosen [focused] one. Pictures
+     * on screen let go of would leave their cards showing only their names until focus next moved (seen just after a
+     * film, when the warning came as the page was back). The row above the chosen one, kept for Up while there's room
+     * ([boundRows]), lets go when it isn't seen. Arguments as [boundRows]'s.
+     */
+    fun trimKeeps(focused: Int, offset: Float, viewportH: Float, tops: FloatArray, heights: FloatArray): Set<Int> {
+        val out = HashSet<Int>()
+        for (i in tops.indices) {
+            val top = tops[i] - offset
+            if (top + heights[i] > 0f && top < viewportH) out += i
+        }
+        if (focused >= 0 && focused < tops.size) out += focused
+        return out
+    }
+
+    /**
      * The rank number's text size: [size] unless the number, [measured] wide at that size, is wider than [room]; then
      * shrunk to fit ("10"), as Glass Home's ranked shelf does.
      */

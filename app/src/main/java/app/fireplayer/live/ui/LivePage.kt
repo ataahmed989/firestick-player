@@ -2619,9 +2619,12 @@ class ProgressLine(context: Context, private val t: Tokens) : View(context) {
 
 /** The Live TV tab's own remembered state and its provisional settings (separate file: nothing existing changes). */
 class LivePrefs(context: Context) {
-    private val sp = context.getSharedPreferences("fireplayer_live", Context.MODE_PRIVATE)
+    private val sp = context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
 
     companion object {
+        /** The file these are kept in (LiveSync keeps its update tries here too, under keys of their own). */
+        const val FILE = "fireplayer_live"
+
         /** [playLastOnOpening]'s row in Settings › Live TV, as its category lists it. */
         const val PLAY_LAST_ON_OPENING = "Play the last channel on opening"
     }

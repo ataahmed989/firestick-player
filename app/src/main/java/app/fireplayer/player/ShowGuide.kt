@@ -64,8 +64,11 @@ class ShowGuide(
     ) {
         val label: String get() = "S$season E$number"
 
-        /** Its numbers as the Episode details window heads it: "S1 · E2" (its name follows, [name]). */
-        val numbers: String get() = "S$season · E$number"
+        /**
+         * Its numbers as the Episode details window heads it: "S1 • E2" (its name follows, [name]), with the same dot as the
+         * line under it (DetailsLook.SEP).
+         */
+        val numbers: String get() = "S$season • E$number"
 
         /** Whether it is two (or more) of TMDB's episodes joined, numbered as the provider does rather than as TMDB. */
         val joined: Boolean get() = parts.isNotEmpty()

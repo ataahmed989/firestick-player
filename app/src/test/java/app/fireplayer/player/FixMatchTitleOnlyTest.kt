@@ -100,7 +100,9 @@ class FixMatchTitleOnlyTest {
     @Test
     fun theEpisodeWindowIsHeadedByItsNumbers() {
         val ep = ShowGuide.Ep("2-10", "mkv", 2, 10, "", 2, 10, "", "", null, 0, "", ShowGuide.Match.SURE, null)
-        assertEquals("S2 · E10", ep.numbers)
+        // The same dot as the line under it ("Mar 6, 2019 • 48m"), and before the name after it.
+        assertEquals("S2 • E10", ep.numbers)
+        assertEquals("S2${app.fireplayer.ui.DetailsLook.SEP}E10", ep.numbers)
     }
 
     // ---- The one-time reset ----

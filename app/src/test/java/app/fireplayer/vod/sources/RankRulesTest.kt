@@ -378,8 +378,11 @@ class RankRulesTest {
         val choppy = Measured(null, CopyHealth(watchedMs = 20 * 60_000L, droppedFrames = 2_000, renderedFrames = 10_000, at = now - day), null)
         assertTrue(SourceRank.troubled(choppy, now))
         assertFalse(SourceRank.troubled(choppy, now + 7 * day))
-        // A record from before the date was kept: it counts until a play of it goes well.
-        assertTrue(SourceRank.troubled(buffered(0L), now))
+        // A record from before plays were dated counts as played on 2026-11-24: for a week after, then no more.
+        val dated = SourceRank.DATED_SINCE
+        assertTrue(SourceRank.troubled(buffered(0L), dated + 6 * day))
+        assertFalse(SourceRank.troubled(buffered(0L), dated + 7 * day))
+        assertEquals(TvFit.LIKELY, SourceRank.fit(copy.facts, q60r, buffered(0L), now = dated + 8 * day).first)
     }
 
     // ---- The connection ----

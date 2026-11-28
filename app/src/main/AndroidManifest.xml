@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -187,5 +188,30 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/update_paths" />
         </provider>
+
+        <!--
+            ML Kit (picture subtitles read as text, subs/PictureText.kt) starts only when a picture is first read, on
+            the reading thread (MlKit.initialize): its own provider, which started it on the main thread at every app
+            start, is left out. MlKitComponentDiscoveryService stays: it is how ML Kit finds its parts.
+        -->
+        <provider
+            android:name="com.google.mlkit.common.internal.MlKitInitProvider"
+            android:authorities="${applicationId}.mlkitinitprovider"
+            tools:node="remove" />
+
+        <!--
+            ML Kit's usage reports (Google's datatransport): with no backend listed, each report is dropped as it's made
+            ("Transport backend 'cct' is not registered") instead of being stored on the TV and sent later by a
+            scheduled job, so nothing is ever scheduled, stored or uploaded. Text recognition doesn't depend on them.
+        -->
+        <service
+            android:name="com.google.android.datatransport.runtime.backends.TransportBackendDiscovery"
+            tools:node="remove" />
+        <service
+            android:name="com.google.android.datatransport.runtime.scheduling.jobscheduling.JobInfoSchedulerService"
+            tools:node="remove" />
+        <receiver
+            android:name="com.google.android.datatransport.runtime.scheduling.jobscheduling.AlarmManagerSchedulerBroadcastReceiver"
+            tools:node="remove" />
     </application>
 </manifest>

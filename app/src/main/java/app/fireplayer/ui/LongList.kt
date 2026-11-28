@@ -15,7 +15,6 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.content.ContextCompat
-import androidx.core.content.res.ResourcesCompat
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import app.fireplayer.R
@@ -131,10 +130,8 @@ internal class HeadingLine(context: Context, rows: Rows) : LinearLayout(context)
         imageTintList = ColorStateList.valueOf(ContextCompat.getColor(context, R.color.heading_icon))
     }
     private val textView = TextView(context).apply {
-        typeface = ResourcesCompat.getFont(context, R.font.figtree_700)
-        letterSpacing = 0.1f
-        setTextColor(ContextCompat.getColor(context, R.color.heading))
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+        // The same caps as the Details windows' headings.
+        DetailsLook.styleHeading(this)
         isSingleLine = true
         ellipsize = android.text.TextUtils.TruncateAt.END
     }
