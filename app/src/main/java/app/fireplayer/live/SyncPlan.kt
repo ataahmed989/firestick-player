@@ -63,8 +63,115 @@ object SyncPlan {
         }
     }
 
+    // ---- Work under way -------------------------------------------------------------------------------------------
+
+    /**
+     * A request already under way, looked at again as live playback changes: whether it goes on. The viewer's own
+     * always does. An automatic one goes on while it would still be started now ([decide] doesn't say DEFER): the
+     * provider's own channel playing, or the Live TV screen about to tune one, stops a request to the provider's host
+     * (the channel needs that connection); a channel from another provider doesn't (Live TV runs for hours, and its
+     * guide must still be updated meanwhile).
+     */
+    fun requestGoesOn(trigger: Trigger, account: String, requestUrl: String, providerUrl: String, playing: Playing): Boolean =
+        trigger == Trigger.MANUAL || decide(trigger, account, requestUrl, providerUrl, playing) != Action.DEFER
+
+    /**
+     * Whether an update goes on at its next safe point (a download's next read, storing what was read, clearing old
+     * programmes, its next request). The viewer's own always does. An automatic one stops once a film is in front
+     * ([film]: its start needs the memory, the line and the flash) or its request was stopped ([requestStopped],
+     * [requestGoesOn]). It is put off ([PutOff]), not failed: as if not tried ([Tries]), it runs again at the next
+     * quiet moment, and the guide or channels stored stay as they were.
+     */
+    fun jobGoesOn(trigger: Trigger, film: Boolean, requestStopped: Boolean): Boolean =
+        trigger == Trigger.MANUAL || (!film && !requestStopped)
+
+    /** An automatic update stopped at a safe point for a quiet moment ([jobGoesOn]): not a failure. */
+    class PutOff : IOException("put off")
+
+    /**
+     * When automatic updates last tried each playlist ("p:id") and EPG ("e:id"), and how many tries in a row failed, so
+     * a failing one isn't asked at every turn ([isDue]). A try counts as failed until [succeeded] says otherwise (the app
+     * may stop meanwhile). One put off part-way ([putOff]) counts as never made: it is due again at the next quiet moment,
+     * with no retry wait, and an earlier failure's wait stays. Kept in [store] (beside the Live TV settings, so a broken
+     * EPG isn't downloaded again at every start of the app), in memory when none is given. The update thread only.
+     */
+    class Tries(private val store: Store = Memory()) {
+        /** Where the tries are kept: the last try's time and the failures in a row, by key; null for none. */
+        interface Store {
+            fun tried(key: String): Long?
+            fun failed(key: String): Int?
+            fun put(key: String, tried: Long?, failed: Int?)
+        }
+
+        private class Memory : Store {
+            private val tried = HashMap<String, Long>()
+            private val failed = HashMap<String, Int>()
+            override fun tried(key: String) = tried[key]
+            override fun failed(key: String) = failed[key]
+            override fun put(key: String, tried: Long?, failed: Int?) {
+                if (tried == null) this.tried.remove(key) else this.tried[key] = tried
+                if (failed == null) this.failed.remove(key) else this.failed[key] = failed
+            }
+        }
+
+        private var open: String? = null
+        private var before: Pair<Long?, Int?>? = null
+
+        /** When [key] was last tried (0: never). */
+        fun last(key: String): Long = store.tried(key) ?: 0L
+
+        /** How many tries of [key] in a row failed. */
+        fun failures(key: String): Int = store.failed(key) ?: 0
+
+        /** A request for [key] goes ahead at [now]: it counts as failed until [succeeded]. */
+        fun began(key: String, now: Long) {
+            open = key
+            before = store.tried(key) to store.failed(key)
+            store.put(key, now, failures(key) + 1)
+        }
+
+        /** [key] worked: nothing is held back for it any more (its own update interval decides). */
+        fun succeeded(key: String) {
+            if (open == key) open = null
+            if (store.tried(key) != null || store.failed(key) != null) store.put(key, null, null)
+        }
+
+        /** The request for [key] begun last was put off before it finished: as if it hadn't been tried. */
+        fun putOff(key: String) {
+            if (open != key) return
+            val b = before
+            store.put(key, b?.first, b?.second)
+            open = null
+            before = null
+        }
+    }
+
     /** Whether a request goes to the provider's own host (it then takes the update's connection lease). */
     fun usesProvider(providerUrl: String, requestUrl: String): Boolean = sameHost(providerUrl, requestUrl)
+
+    /**
+     * The provider connections one update job holds in the shared budget, one lease per playlist (account) at most: a
+     * request to the provider's own host, or one that let go of its channel, takes it before it goes. An automatic
+     * job gives it back as soon as that request is over ([requestDone]): what comes next (an EPG from another host,
+     * clearing old programmes) doesn't use the provider's connection, and Live TV may tune one of its channels
+     * meanwhile; the next request to that provider takes it again (or waits). The viewer's own update keeps it to the
+     * [end], so a channel it let go of comes back once, after the whole update. The update thread only.
+     */
+    class Leases {
+        private val held = LinkedHashSet<String>()
+
+        /** Whether the job holds [account]'s lease now. */
+        fun holds(account: String): Boolean = account in held
+
+        /** The job took [account]'s lease. */
+        fun took(account: String) { held += account }
+
+        /** A request is over (done, failed or put off): the leases to give back now. */
+        fun requestDone(trigger: Trigger): List<String> = if (trigger == Trigger.AUTO) end() else emptyList()
+
+        /** The job is over: every lease it still holds, to give back. */
+        fun end(): List<String> = held.toList().also { held.clear() }
+    }
 
     fun sameHost(a: String?, b: String?): Boolean {
         val ha = hostOf(a) ?: return false
@@ -99,7 +206,7 @@ object SyncPlan {
 
     // ---- Automatic updates ----------------------------------------------------------------------------------------
 
-    /** After a failed or deferred automatic try, the next automatic try waits at least this long. */
+    /** After a failed automatic try, the next automatic try waits at least this long (one put off doesn't count). */
     const val RETRY_AFTER_MS = 30L * 60 * 1000
 
     /** How often the app looks for updates that came due while it stayed open. */

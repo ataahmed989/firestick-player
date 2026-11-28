@@ -644,16 +644,29 @@ class VodPage(
         return PagePlace.keep(last, shownRows, placeBefore)
     }
 
-    /** Memory is short: pictures of rows other than the chosen one go (all of them under a title page). */
+    /**
+     * Memory is short (Fire OS's warning): the pictures the viewer can't see go, those on screen stay. Let go of, cards
+     * on screen showed only their names until focus next moved: seen on a film's title page and on Home just after a
+     * film, when the warning came as the page was back. Under a title page, the rows' and See all's go (the title
+     * page's own are on screen); under See all, the rows' but the one it came from; otherwise the rows out of view
+     * ([RowMath.trimKeeps]). A page out of sight holds none already ([pause]).
+     */
     fun trimImages() {
         if (titles.isOpen) {
             for (row in rows) row.releaseImages()
             seeAll?.releaseImages()
-            titles.trim()
             return
         }
-        val keep = focusedRow ?: lastRow
-        for (row in rows) if (row !== keep) row.releaseImages()
+        if (!resumed || seeAll?.isOpen == true) {
+            val keep = focusedRow ?: lastRow
+            for (row in rows) if (row !== keep) row.releaseImages()
+            return
+        }
+        val vis = visibleRows()
+        val tops = FloatArray(vis.size) { column.topOf(vis[it]).toFloat() }
+        val heights = FloatArray(vis.size) { vis[it].bandHeight.toFloat() }
+        val keep = RowMath.trimKeeps(vis.indexOf(focusedRow ?: lastRow), pageSpring.target, rowsViewH(), tops, heights)
+        for (row in rows) if (vis.indexOf(row) !in keep) row.releaseImages()
     }
 
     /** The look changed: surfaces made again, cards redrawn. */
@@ -1912,8 +1925,7 @@ class VodPage(
         val offset = pageSpring.target
         val tops = FloatArray(vis.size) { column.topOf(vis[it]).toFloat() }
         val heights = FloatArray(vis.size) { vis[it].bandHeight.toFloat() }
-        val viewH = if (myList) VodSizes.SCREEN_H - VodSizes.fixedRowsTop() else VodSizes.VIEWPORT_H
-        val bound = RowMath.boundRows(k, offset, t.dpf(viewH), tops, heights)
+        val bound = RowMath.boundRows(k, offset, rowsViewH(), tops, heights)
         vis.forEachIndexed { j, row ->
             when {
                 // Not laid out yet: bound once the column's layout has placed it.
@@ -1932,6 +1944,9 @@ class VodPage(
         }
         vis.getOrNull(k + 2)?.let { row -> row.cards.take(8).forEach { ImageLoader.prefetch(pictureOf(row, it)) } }
     }
+
+    /** How tall the rows' viewport is, px: on My List, from under its fixed rows' top to the screen's bottom. */
+    private fun rowsViewH(): Float = t.dpf(if (myList) VodSizes.SCREEN_H - VodSizes.fixedRowsTop() else VodSizes.VIEWPORT_H)
 
     /** The cards of [row] that hold pictures: those near the chosen one, or all of a row whose cards all show. */
     private fun boundCards(row: TitleRow): IntRange =

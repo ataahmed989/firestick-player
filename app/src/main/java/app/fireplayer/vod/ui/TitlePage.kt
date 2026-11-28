@@ -349,12 +349,6 @@ class TitlePage(
         more.applyLook()
     }
 
-    /** Memory is short: only the backdrop and the row focus is in keep their pictures. */
-    fun trim() {
-        if (part != Part.EPISODES) episodes.releaseImages()
-        if (part != Part.MORE) more.releaseImages()
-    }
-
     /** A library change: shown, unless this page showed it already (its own mark, redrawn at once by [marked]). */
     fun onLibraryChanged() {
         if (paused || released) return

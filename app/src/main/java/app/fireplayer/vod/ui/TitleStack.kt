@@ -156,11 +156,6 @@ class TitleStack(private val ctx: Context, private val t: Tokens, private val ho
         for (e in trail.entries) e.page?.applyLook()
     }
 
-    /** Memory is short: the top page keeps only its backdrop and the row focus is in. */
-    fun trim() {
-        trail.top?.page?.trim()
-    }
-
     /** My List, watched marks or Continue Watching changed: the top page shows it (the others when they're back). */
     fun onLibraryChanged() {
         trail.top?.page?.onLibraryChanged()

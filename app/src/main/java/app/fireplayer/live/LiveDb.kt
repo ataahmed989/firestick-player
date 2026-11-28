@@ -275,6 +275,10 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
      * of the source's rows, in batches (the database is never held for a whole download, so the viewer's own changes
      * don't wait). One tiny transaction then points the guide at it, and the old generation is deleted in small
      * steps. (Renaming every row from a staging name to the real one rewrote the whole table: minutes on a TV.)
+     *
+     * An automatic update stopped for a film ([goesOn] false between steps, or [SyncPlan.PutOff] from [fill]) leaves
+     * the guide reading what it read before; the rows it had stored so far, or the old ones not yet deleted, are
+     * deleted later, when nothing plays ([tidyProgrammes]), or at the source's next import.
      */
     fun replaceProgrammes(
         source: String,
@@ -283,6 +287,8 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
         now: Long,
         /** Whether a download of this many programmes may replace the stored ones (false: it fails, nothing changes). */
         accept: (Int) -> Boolean = { true },
+        /** Whether the deleting goes on (an automatic update stops between steps once a film starts). */
+        goesOn: () -> Boolean = { true },
         fill: ((String, Programme) -> Unit) -> Int,
     ): Int {
         val db = writableDatabase
@@ -290,7 +296,11 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
         val newGen = oldGen + 1
         val target = physical(source, newGen)
         // What an interrupted import left behind goes first: every stored name of this source but the one read now.
-        deleteLeftovers(source, keep = physical(source, oldGen))
+        // Stopped before it's all gone, nothing is read (the new rows would join what's left).
+        if (!deleteLeftovers(source, keep = physical(source, oldGen), goesOn)) {
+            untidy += source
+            throw SyncPlan.PutOff()
+        }
         val insert = db.compileStatement(
             "INSERT OR REPLACE INTO program(source, epg_ref, start, stop, title, description, category) VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
@@ -326,14 +336,20 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
             switched = true
             epgChanges.incrementAndGet()
             val t2 = SystemClock.elapsedRealtime()
-            // A failure here only leaves rows behind (removed at the next import), never the ones now read.
-            runCatching { deleteRows(physical(source, oldGen)) }
+            // A failure here only leaves rows behind (removed at the next import), never the ones now read; stopped for a
+            // film, they go when nothing plays.
+            val gone = runCatching { deleteRows(physical(source, oldGen), goesOn) }.getOrDefault(true)
+            if (!gone) untidy += source
             Log.i(TAG, "EPG stored: $count programmes; download + read + store ${t1 - t0} ms (storing ${storingNs / 1_000_000} ms), switch ${t2 - t1} ms, old removed in ${SystemClock.elapsedRealtime() - t2} ms")
             return count
         } catch (t: Throwable) {
-            // A failed download leaves the old listings as they were; its partial rows go.
+            // A failed download leaves the old listings as they were; its partial rows go (when nothing plays, if it
+            // was stopped for a film: deleting them is work of its own).
             runCatching { if (db.inTransaction()) db.endTransaction() }
-            if (!switched) runCatching { deleteRows(target) }
+            if (!switched) {
+                val gone = runCatching { deleteRows(target, goesOn) }.getOrDefault(true)
+                if (!gone) untidy += source
+            }
             throw t
         } finally {
             if (db.inTransaction()) db.endTransaction()
@@ -347,10 +363,29 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
         readableDatabase.rawQuery("SELECT gen FROM epg_status WHERE source = ?", arrayOf(source)).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
 
     /**
+     * Sources whose rows of another generation than the guide's were left by an automatic update stopped for a film
+     * (memory only: after a restart, the source's next import deletes them, as an interrupted one's).
+     */
+    private val untidy: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+    /**
+     * Deletes the rows a stopped guide update left behind ([replaceProgrammes]), in small steps while [goesOn] (an
+     * automatic update's safe points). Nothing to do, almost always: no database is touched.
+     */
+    fun tidyProgrammes(goesOn: () -> Boolean) {
+        if (untidy.isEmpty()) return
+        for (source in untidy.toList()) {
+            if (!goesOn()) return
+            if (deleteLeftovers(source, keep = physical(source, epgGen(source)), goesOn)) untidy.remove(source)
+        }
+    }
+
+    /**
      * Deletes every stored name of [source] except [keep]: the generation 0 name, the old staging name, and any
      * "source@n" an interrupted import or switch left. Names are found by stepping through the key (index seeks).
+     * False when [goesOn] stopped it first.
      */
-    private fun deleteLeftovers(source: String, keep: String) {
+    private fun deleteLeftovers(source: String, keep: String, goesOn: () -> Boolean = { true }): Boolean {
         val names = ArrayList<String>()
         if (keep != source) names += source
         names += source + STAGING
@@ -363,17 +398,23 @@ class LiveDb private constructor(context: Context) : SQLiteOpenHelper(context, "
             if (next != keep) names += next
             after = next
         }
-        for (n in names) deleteRows(n)
+        for (n in names) if (!deleteRows(n, goesOn)) return false
+        return true
     }
 
-    /** Deletes one stored source's rows a few channels at a time, each step its own short transaction. */
-    private fun deleteRows(physicalSource: String) {
+    /**
+     * Deletes one stored source's rows a few channels at a time, each step its own short transaction, while [goesOn].
+     * False when it stopped with rows left.
+     */
+    private fun deleteRows(physicalSource: String, goesOn: () -> Boolean = { true }): Boolean {
         val step = writableDatabase.compileStatement(
             "DELETE FROM program WHERE source = ?1 AND epg_ref IN (SELECT epg_ref FROM program WHERE source = ?1 GROUP BY epg_ref LIMIT 50)",
         )
-        step.use {
+        return step.use {
             it.bindString(1, physicalSource)
-            while (it.executeUpdateDelete() > 0) Unit
+            var more = true
+            while (more && goesOn()) more = it.executeUpdateDelete() > 0
+            !more
         }
     }
 
