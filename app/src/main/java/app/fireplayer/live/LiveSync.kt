@@ -97,7 +97,10 @@ class LiveSync private constructor(context: Context) {
      * automatic update had to wait: playlists and EPGs not updated within their intervals are updated now. Never
      * while something from the same provider plays (they wait, [SyncGuard]).
      */
-    fun updateDue(now: Long = System.currentTimeMillis()) = submit(Trigger.AUTO, epgOnly = false) {
+    fun updateDue(at: Long? = null) = submit(Trigger.AUTO, epgOnly = false) {
+        // The time the job runs, not when it was queued: a job queued behind another would otherwise see that one's
+        // tries as made in the future ([SyncPlan.isDue] lets those go) and ask a failing source again at once.
+        val now = at ?: System.currentTimeMillis()
         // What a guide update stopped for a film left behind goes first (almost always nothing: a set in memory).
         db.tidyProgrammes(guard::goesOn)
         val due = db.playlists().filter { isDue(now, "p:" + it.id, it.lastSync, it.updateHours.coerceAtLeast(1) * HOUR_MS) }
