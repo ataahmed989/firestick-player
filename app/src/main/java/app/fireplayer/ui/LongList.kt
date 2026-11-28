@@ -219,7 +219,8 @@ internal class LongListView(private val activity: Activity, private val rows: Ro
         isVerticalFadingEdgeEnabled = true
         setFadingEdgeLength(rows.dp(24))
         setWillNotDraw(false)
-        clipToPadding = false
+        // Match the native fade's padded bounds: drawing into these strips leaves unfaded card edges.
+        clipToPadding = true
         setPadding(0, rows.dp(2), 0, rows.dp(2))
         // Enough spare rows for a whole window: a window redrawn or opened over another reuses them all.
         recycledViewPool.setMaxRecycledViews(TYPE_ROW, 32)
