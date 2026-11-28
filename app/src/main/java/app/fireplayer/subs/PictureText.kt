@@ -1,5 +1,6 @@
 package app.fireplayer.subs
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Rect
 import android.os.Process
@@ -13,6 +14,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.extractor.text.CuesWithTiming
 import androidx.media3.extractor.text.SubtitleParser
 import com.google.android.gms.tasks.Tasks
+import com.google.mlkit.common.MlKit
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.TextRecognizer
@@ -30,9 +32,15 @@ import java.util.concurrent.TimeUnit
  * so a subtitle's text is usually ready before it's due. The picture that comes back at display time is a copy of
  * the one that was loaded, so the two are matched by their pixels. Only languages written in the Latin alphabet
  * are read; others stay pictures.
+ *
+ * Nothing of text recognition runs until a picture is first read: ML Kit is started then, on the reading thread
+ * ([startMlKit]), not at every app start (its own start-up provider is left out of the manifest), and the reading
+ * thread itself starts with the first picture to read.
  */
 @OptIn(UnstableApi::class)
-class PictureText(private val onRead: () -> Unit) {
+class PictureText(context: Context, private val onRead: () -> Unit) {
+
+    private val app = context.applicationContext
 
     private class Job(
         val key: Long,
@@ -70,7 +78,17 @@ class PictureText(private val onRead: () -> Unit) {
         Thread(r, "FirePlayerOcrRun").apply { isDaemon = true }
     }
 
-    private val worker = Thread({
+    // Started with the first picture to read ([startWorker]): a film without picture subtitles never has it.
+    private var worker: Thread? = null
+
+    private fun startWorker() = synchronized(this) {
+        if (worker == null && !released) worker = Thread(::readLoop, "FirePlayerOcr").apply {
+            isDaemon = true
+            start()
+        }
+    }
+
+    private fun readLoop() {
         Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
         while (!released) {
             val job = try {
@@ -102,9 +120,6 @@ class PictureText(private val onRead: () -> Unit) {
         }
         recognizer?.close()
         recognition.shutdown()
-    }, "FirePlayerOcr").apply {
-        isDaemon = true
-        start()
     }
 
     /**
@@ -172,6 +187,7 @@ class PictureText(private val onRead: () -> Unit) {
             }
         }
         val job = toJob(key, bitmap, track, unknown(language))
+        startWorker()
         if (soon) {
             job.due = true
             jobs.offerFirst(job)
@@ -189,7 +205,9 @@ class PictureText(private val onRead: () -> Unit) {
     fun release() {
         released = true
         jobs.clear()
-        worker.interrupt()
+        val reading = synchronized(this) { worker }
+        // The reading thread closes the reader and its own thread on its way out; never started, there's nothing to close.
+        if (reading != null) reading.interrupt() else recognition.shutdown()
     }
 
     /**
@@ -198,6 +216,8 @@ class PictureText(private val onRead: () -> Unit) {
      */
     fun trimIdle() {
         if (released || !jobs.isEmpty()) return
+        // Nothing has been read yet: there's no reader to close.
+        if (synchronized(this) { worker } == null) return
         jobs.offer(letGo)
     }
 
@@ -333,6 +353,7 @@ class PictureText(private val onRead: () -> Unit) {
     private fun read(job: Job): String? {
         if (broken) return null
         return try {
+            startMlKit(app)
             val client = recognizer
                 ?: TextRecognition.getClient(TextRecognizerOptions.Builder().setExecutor(recognition).build()).also { recognizer = it }
             val image = InputImage.fromByteArray(job.nv21, job.width, job.height, 0, InputImage.IMAGE_FORMAT_NV21)
@@ -393,6 +414,27 @@ class PictureText(private val onRead: () -> Unit) {
         private const val SMALL_HEIGHT = 50
         private const val PAD = 16
         private const val MIN_CONFIDENCE = 0.7f
+
+        private val mlKitLock = Any()
+        @Volatile private var mlKitStarted = false
+
+        /**
+         * Starts ML Kit (once per process), the first time a picture is read, on the reading thread: ML Kit's own
+         * start-up provider, which did it on the main thread at every app start, is left out of the manifest. Its parts
+         * are still found as before (MlKitComponentDiscoveryService stays in the manifest).
+         */
+        private fun startMlKit(context: Context) {
+            if (mlKitStarted) return
+            synchronized(mlKitLock) {
+                if (mlKitStarted) return
+                try {
+                    MlKit.initialize(context)
+                } catch (_: IllegalStateException) {
+                    // Already started: by ML Kit's own provider, should a build have it again.
+                }
+                mlKitStarted = true
+            }
+        }
 
         val PICTURE_FORMATS = setOf(MimeTypes.APPLICATION_PGS, MimeTypes.APPLICATION_VOBSUB, MimeTypes.APPLICATION_DVBSUBS)
 

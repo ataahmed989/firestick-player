@@ -671,7 +671,7 @@ class PlayerActivity : AppCompatActivity(), Player.Listener, GlassBackdrop.Host 
         dimmer = Dimmer(this)
         presets = SubtitlePresets(prefs)
         styler = SubtitleStyler(this)
-        pictureText = PictureText { handler.post { if (readingPictures != null) showCues() } }
+        pictureText = PictureText(this) { handler.post { if (readingPictures != null) showCues() } }
         settingsPanels = SettingsPanels(this, prefs, presets, inPlayer = true)
         frameRateMatcher = FrameRateMatcher(this)
         openSubtitles = OpenSubtitles(prefs)
